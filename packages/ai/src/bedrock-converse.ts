@@ -7,7 +7,14 @@ import {
   type AiToolCall,
   type ModelProviderAdapter,
 } from "./types.js";
-import { BEDROCK_DEFAULT_REGION, BEDROCK_PROVIDER_ID, bedrockRuntimeBaseUrl } from "./bedrock.js";
+import {
+  BEDROCK_DEFAULT_REGION,
+  BEDROCK_PROVIDER_ID,
+  bedrockOpenAiBaseUrl,
+  bedrockRuntimeBaseUrl,
+  isBedrockOpenAiModel,
+} from "./bedrock.js";
+import { OpenAiCompatibleAdapter } from "./openai-compatible.js";
 
 export interface BedrockConverseConfig {
   id?: string;
@@ -173,12 +180,18 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
   private readonly apiKey: string;
   private readonly region: string;
   private readonly baseUrl: string;
+  private readonly openAiCompat: OpenAiCompatibleAdapter;
 
   constructor(config: BedrockConverseConfig) {
     this.id = config.id ?? BEDROCK_PROVIDER_ID;
     this.apiKey = config.apiKey;
     this.region = (config.region ?? BEDROCK_DEFAULT_REGION).trim() || BEDROCK_DEFAULT_REGION;
     this.baseUrl = bedrockRuntimeBaseUrl(this.region);
+    this.openAiCompat = new OpenAiCompatibleAdapter({
+      id: `${this.id}-openai`,
+      apiKey: this.apiKey,
+      baseUrl: bedrockOpenAiBaseUrl(this.region),
+    });
   }
 
   private buildBody(request: AiCompletionRequest): Record<string, unknown> {
@@ -208,6 +221,9 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
   }
 
   async complete(request: AiCompletionRequest): Promise<AiCompletion> {
+    if (isBedrockOpenAiModel(request.model.model)) {
+      return this.openAiCompat.complete(request);
+    }
     const modelId = encodeURIComponent(request.model.model);
     const response = await fetch(`${this.baseUrl}/model/${modelId}/converse`, {
       method: "POST",
@@ -233,6 +249,10 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
   }
 
   async *streamComplete(request: AiCompletionRequest): AsyncIterable<AiStreamChunk> {
+    if (isBedrockOpenAiModel(request.model.model)) {
+      yield* this.openAiCompat.streamComplete!(request);
+      return;
+    }
     // Converse-stream uses AWS eventstream framing; for reliability we complete
     // then emit the reply (tool rounds already prefer complete semantics).
     const completion = await this.complete(request);

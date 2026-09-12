@@ -17,6 +17,7 @@ const testEnv: ApiEnv = {
     "google.gemma-3-12b-it",
     "amazon.nova-lite-v1:0",
     "amazon.nova-pro-v1:0",
+    "openai.gpt-oss-120b",
   ],
   defaultModel: "gpt-4o-mini",
   anthropicApiKey: undefined,

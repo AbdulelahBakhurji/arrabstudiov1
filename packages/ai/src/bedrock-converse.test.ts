@@ -91,6 +91,35 @@ describe("BedrockConverseAdapter", () => {
     }
   });
 
+  it("routes openai.* Bedrock models to the OpenAI-compatible endpoint", async () => {
+    const originalFetch = globalThis.fetch;
+    let seenUrl = "";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      seenUrl = String(input);
+      return new Response(
+        JSON.stringify({
+          id: "cmpl_oss",
+          choices: [{ finish_reason: "stop", message: { role: "assistant", content: "oss hi" } }],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    }) as typeof fetch;
+
+    try {
+      const adapter = new BedrockConverseAdapter({ apiKey: "key", region: "eu-north-1" });
+      const result = await adapter.complete({
+        model: { providerId: "bedrock", model: "openai.gpt-oss-120b" },
+        messages: [{ role: "user", content: "Hi" }],
+      });
+      expect(result.message.content).toBe("oss hi");
+      expect(seenUrl).toBe(
+        "https://bedrock-runtime.eu-north-1.amazonaws.com/openai/v1/chat/completions",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("surfaces Bedrock errors", async () => {
     const originalFetch = globalThis.fetch;
     globalThis.fetch = (async () =>

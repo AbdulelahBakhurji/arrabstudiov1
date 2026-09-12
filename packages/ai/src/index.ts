@@ -19,8 +19,10 @@ export {
   BEDROCK_DEFAULT_MODELS,
   BEDROCK_DEFAULT_REGION,
   BEDROCK_PROVIDER_ID,
+  bedrockOpenAiBaseUrl,
   bedrockRuntimeBaseUrl,
   isBedrockModel,
+  isBedrockOpenAiModel,
   parseBedrockModels,
 } from "./bedrock.js";
 export { BedrockConverseAdapter, type BedrockConverseConfig } from "./bedrock-converse.js";
