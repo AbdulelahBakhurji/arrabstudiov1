@@ -2,7 +2,11 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { parseCsv, parsePort, readOptionalEnv } from "@arrab/core";
 import { defaultStudioDataDir } from "@arrab/database";
-import { EXPLABS_BASE_URL, isExplabsLunaModel } from "./explabs.js";
+import {
+  BEDROCK_DEFAULT_MODEL,
+  BEDROCK_DEFAULT_REGION,
+  parseBedrockModels,
+} from "@arrab/ai";
 
 export interface ApiEnv {
   host: string;
@@ -14,9 +18,11 @@ export interface ApiEnv {
   dataDir: string | undefined;
   openaiApiKey: string | undefined;
   openaiBaseUrl: string;
-  /** Experiential Labs key — required for gpt-5.6-luna. */
-  explabsApiKey: string | undefined;
-  explabsBaseUrl: string;
+  /** Amazon Bedrock long-term API key (AWS_BEARER_TOKEN_BEDROCK). */
+  bedrockApiKey: string | undefined;
+  bedrockRegion: string;
+  /** Up to N Bedrock model IDs available in Arrab. */
+  bedrockModels: string[];
   defaultModel: string;
   anthropicApiKey: string | undefined;
   googleApiKey: string | undefined;
@@ -72,6 +78,11 @@ export function loadApiEnv(): ApiEnv {
   const publicBaseUrl =
     readOptionalEnv("ARRAB_PUBLIC_BASE_URL") ?? `http://${host}:${port}`;
 
+  const bedrockModels = parseBedrockModels(readOptionalEnv("BEDROCK_MODELS"));
+  const defaultModel =
+    readOptionalEnv("ARRAB_DEFAULT_MODEL", bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL) ??
+    BEDROCK_DEFAULT_MODEL;
+
   return {
     host,
     port,
@@ -88,10 +99,12 @@ export function loadApiEnv(): ApiEnv {
     openaiBaseUrl:
       readOptionalEnv("OPENAI_BASE_URL", "https://api.openai.com/v1") ??
       "https://api.openai.com/v1",
-    explabsApiKey: readOptionalEnv("EXPLABS_API_KEY"),
-    explabsBaseUrl:
-      readOptionalEnv("EXPLABS_BASE_URL", EXPLABS_BASE_URL) ?? EXPLABS_BASE_URL,
-    defaultModel: readOptionalEnv("ARRAB_DEFAULT_MODEL", "gpt-4o-mini") ?? "gpt-4o-mini",
+    bedrockApiKey:
+      readOptionalEnv("AWS_BEARER_TOKEN_BEDROCK") ?? readOptionalEnv("BEDROCK_API_KEY"),
+    bedrockRegion:
+      readOptionalEnv("AWS_REGION", BEDROCK_DEFAULT_REGION) ?? BEDROCK_DEFAULT_REGION,
+    bedrockModels,
+    defaultModel,
     anthropicApiKey: readOptionalEnv("ANTHROPIC_API_KEY"),
     googleApiKey: readOptionalEnv("GOOGLE_API_KEY"),
     xaiApiKey: readOptionalEnv("XAI_API_KEY"),
@@ -100,15 +113,25 @@ export function loadApiEnv(): ApiEnv {
   };
 }
 
-/** Fail fast when gpt-5.6-luna is selected but Experiential is not configured. */
-export function assertExplabsConfigured(env: ApiEnv): void {
-  if (!isExplabsLunaModel(env.defaultModel)) {
+/** Fail fast when a Bedrock model is selected but no API key is set. */
+export function assertBedrockConfigured(env: ApiEnv): void {
+  const selectedIsBedrock =
+    env.bedrockModels.includes(env.defaultModel) ||
+    env.defaultModel.startsWith("amazon.") ||
+    env.defaultModel.startsWith("google.") ||
+    env.defaultModel.startsWith("anthropic.") ||
+    env.defaultModel.startsWith("meta.") ||
+    env.defaultModel.startsWith("eu.") ||
+    env.defaultModel.startsWith("us.") ||
+    env.defaultModel.startsWith("apac.");
+
+  if (!selectedIsBedrock) {
     return;
   }
-  if (env.explabsApiKey?.trim()) {
+  if (env.bedrockApiKey?.trim()) {
     return;
   }
   throw new Error(
-    "EXPLABS_API_KEY is not set. Create a key under Settings → API Keys at Experiential Labs, then export EXPLABS_API_KEY (or add it to .env).",
+    "AWS_BEARER_TOKEN_BEDROCK is not set. Create a long-term Bedrock API key in AWS (eu-north-1), then add it to Railway Variables.",
   );
 }

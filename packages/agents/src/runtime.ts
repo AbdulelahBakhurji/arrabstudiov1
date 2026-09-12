@@ -1,9 +1,9 @@
 import type { AiGateway, AiMessage, AiToolCall, AiToolDefinition } from "@arrab/ai";
 import {
   AiGatewayError,
-  EXPLABS_LUNA_MODEL,
-  EXPLABS_PROVIDER_ID,
-  isExplabsLunaModel,
+  BEDROCK_DEFAULT_MODEL,
+  BEDROCK_PROVIDER_ID,
+  isBedrockModel,
   isXaiGrokModel,
   XAI_DEFAULT_MODEL,
   XAI_PROVIDER_ID,
@@ -469,22 +469,28 @@ export class GatewayChatRuntime implements AgentRuntime {
     if (providers.length === 0) {
       throw new AgentRuntimeError(
         "NO_PROVIDER",
-        "No model provider is configured. Set EXPLABS_API_KEY, OPENAI_API_KEY, or ANTHROPIC_API_KEY on the Arrab API.",
+        "No model provider is configured. Set AWS_BEARER_TOKEN_BEDROCK on the Arrab API (Railway Variables).",
         503,
       );
     }
 
     const requestedModel = request.model ?? null;
-    if (isExplabsLunaModel(requestedModel) || (!requestedModel && this.defaultProviderId === EXPLABS_PROVIDER_ID)) {
-      const experiential = gateway.getProvider(EXPLABS_PROVIDER_ID);
-      if (!experiential) {
+    if (
+      isBedrockModel(requestedModel) ||
+      (!requestedModel && this.defaultProviderId === BEDROCK_PROVIDER_ID)
+    ) {
+      const bedrock = gateway.getProvider(BEDROCK_PROVIDER_ID);
+      if (!bedrock) {
         throw new AgentRuntimeError(
           "NO_PROVIDER",
-          "gpt-5.6-luna requires EXPLABS_API_KEY. Create a key under Settings → API Keys at Experiential Labs, then export EXPLABS_API_KEY.",
+          "Bedrock models require AWS_BEARER_TOKEN_BEDROCK. Add the Bedrock API key on Railway, then redeploy.",
           503,
         );
       }
-      return { provider: experiential, modelName: EXPLABS_LUNA_MODEL };
+      return {
+        provider: bedrock,
+        modelName: requestedModel?.trim() || BEDROCK_DEFAULT_MODEL,
+      };
     }
 
     if (isXaiGrokModel(requestedModel) || (!requestedModel && this.defaultProviderId === XAI_PROVIDER_ID)) {
@@ -510,8 +516,8 @@ export class GatewayChatRuntime implements AgentRuntime {
     const defaultModel =
       provider.id === "anthropic"
         ? "claude-3-5-haiku-latest"
-        : provider.id === EXPLABS_PROVIDER_ID
-          ? EXPLABS_LUNA_MODEL
+        : provider.id === BEDROCK_PROVIDER_ID
+          ? BEDROCK_DEFAULT_MODEL
           : provider.id === XAI_PROVIDER_ID
             ? XAI_DEFAULT_MODEL
             : "gpt-4o-mini";

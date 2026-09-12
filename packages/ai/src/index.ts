@@ -15,6 +15,16 @@ export { RegistryAiGateway } from "./gateway.js";
 export { OpenAiCompatibleAdapter, type OpenAiCompatibleConfig } from "./openai-compatible.js";
 export { AnthropicMessagesAdapter, type AnthropicMessagesConfig } from "./anthropic.js";
 export {
+  BEDROCK_DEFAULT_MODEL,
+  BEDROCK_DEFAULT_MODELS,
+  BEDROCK_DEFAULT_REGION,
+  BEDROCK_PROVIDER_ID,
+  bedrockRuntimeBaseUrl,
+  isBedrockModel,
+  parseBedrockModels,
+} from "./bedrock.js";
+export { BedrockConverseAdapter, type BedrockConverseConfig } from "./bedrock-converse.js";
+export {
   EXPLABS_BASE_URL,
   EXPLABS_LUNA_MODEL,
   EXPLABS_PROVIDER_ID,

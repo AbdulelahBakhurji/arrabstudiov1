@@ -57,6 +57,8 @@ export function registerV1Routes(
     persistence: PersistenceMode;
     workspaceId: string;
     defaultModel: string | null;
+    bedrockModels?: string[];
+    bedrockRegion?: string;
   },
 ): void {
   app.get("/v1/meta", async () => {
@@ -426,8 +428,9 @@ export function registerV1Routes(
     configured: deps.gateway.listProviders().length > 0,
     providers: deps.gateway.listProviders().map((provider) => provider.id),
     defaultModel: deps.defaultModel,
-    reasoningEffort: "none" as const,
-    replyPath: "responses" as const,
+    models: deps.bedrockModels ?? [],
+    region: deps.bedrockRegion ?? null,
+    replyPath: "bedrock-converse" as const,
   }));
 
   app.get("/v1/connectors/catalog", async () => ({ items: deps.connectors.catalog() }));
