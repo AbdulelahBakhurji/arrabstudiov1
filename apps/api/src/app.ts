@@ -4,7 +4,10 @@ import {
   BedrockConverseAdapter,
   BEDROCK_DEFAULT_MODEL,
   BEDROCK_PROVIDER_ID,
+  EXPLABS_LUNA_MODEL,
+  EXPLABS_PROVIDER_ID,
   isBedrockModel,
+  isExplabsLunaModel,
   OpenAiCompatibleAdapter,
   RegistryAiGateway,
   XAI_BASE_URL,
@@ -42,6 +45,7 @@ export interface ApiContext {
   flushPersistence?: () => Promise<void>;
   aiGateway: RegistryAiGateway;
   chatRuntime: GatewayChatRuntime;
+  defaultModel: string;
   queries: WorkspaceQueryService;
   commands: WorkspaceCommandService;
   conversations: ConversationService;
@@ -81,6 +85,15 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
       }),
     );
   }
+  if (env.explabsApiKey) {
+    aiGateway.register(
+      new OpenAiCompatibleAdapter({
+        id: EXPLABS_PROVIDER_ID,
+        apiKey: env.explabsApiKey,
+        baseUrl: env.explabsBaseUrl,
+      }),
+    );
+  }
   if (env.openaiApiKey) {
     aiGateway.register(
       new OpenAiCompatibleAdapter({
@@ -108,34 +121,46 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     );
   }
 
-  const bedrockDefault = isBedrockModel(env.defaultModel, env.bedrockModels);
+  const bedrockDefault =
+    Boolean(env.bedrockApiKey) && isBedrockModel(env.defaultModel, env.bedrockModels);
+  const lunaDefault =
+    Boolean(env.explabsApiKey) &&
+    (isExplabsLunaModel(env.defaultModel) || env.defaultModel === EXPLABS_LUNA_MODEL);
   const grokDefault = isXaiGrokModel(env.defaultModel);
   const defaultProviderId = bedrockDefault
     ? BEDROCK_PROVIDER_ID
-    : grokDefault
-      ? XAI_PROVIDER_ID
-      : env.bedrockApiKey
-        ? BEDROCK_PROVIDER_ID
-        : env.openaiApiKey
-          ? "openai"
-          : env.anthropicApiKey
-            ? "anthropic"
-            : env.xaiApiKey
-              ? XAI_PROVIDER_ID
-              : "openai";
+    : lunaDefault
+      ? EXPLABS_PROVIDER_ID
+      : grokDefault
+        ? XAI_PROVIDER_ID
+        : env.bedrockApiKey
+          ? BEDROCK_PROVIDER_ID
+          : env.explabsApiKey
+            ? EXPLABS_PROVIDER_ID
+            : env.openaiApiKey
+              ? "openai"
+              : env.anthropicApiKey
+                ? "anthropic"
+                : env.xaiApiKey
+                  ? XAI_PROVIDER_ID
+                  : "openai";
   const resolvedDefaultModel = bedrockDefault
     ? env.defaultModel
-    : grokDefault
-      ? env.defaultModel || XAI_DEFAULT_MODEL
-      : env.bedrockApiKey
-        ? env.bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL
-        : env.openaiApiKey
-          ? env.defaultModel
-          : env.anthropicApiKey
-            ? "claude-3-5-haiku-latest"
-            : env.xaiApiKey
-              ? XAI_DEFAULT_MODEL
-              : env.defaultModel;
+    : lunaDefault
+      ? EXPLABS_LUNA_MODEL
+      : grokDefault
+        ? env.defaultModel || XAI_DEFAULT_MODEL
+        : env.bedrockApiKey
+          ? env.bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL
+          : env.explabsApiKey
+            ? EXPLABS_LUNA_MODEL
+            : env.openaiApiKey
+              ? env.defaultModel
+              : env.anthropicApiKey
+                ? "claude-3-5-haiku-latest"
+                : env.xaiApiKey
+                  ? XAI_DEFAULT_MODEL
+                  : env.defaultModel;
   const chatRuntime = new GatewayChatRuntime(defaultProviderId);
   const commands = new WorkspaceCommandService(persistence);
   const queries = new WorkspaceQueryService(persistence, commands);
@@ -167,6 +192,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     flushPersistence,
     aiGateway,
     chatRuntime,
+    defaultModel: resolvedDefaultModel,
     queries,
     commands,
     conversations,
@@ -208,21 +234,7 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
   }));
 
   const defaultModel =
-    context.aiGateway.listProviders().length > 0
-      ? isBedrockModel(context.env.defaultModel, context.env.bedrockModels)
-        ? context.env.defaultModel
-        : isXaiGrokModel(context.env.defaultModel)
-          ? context.env.defaultModel || XAI_DEFAULT_MODEL
-          : context.env.bedrockApiKey
-            ? context.env.bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL
-            : context.env.openaiApiKey
-              ? context.env.defaultModel
-              : context.env.anthropicApiKey
-                ? "claude-3-5-haiku-latest"
-                : context.env.xaiApiKey
-                  ? XAI_DEFAULT_MODEL
-                  : context.env.defaultModel
-      : null;
+    context.aiGateway.listProviders().length > 0 ? context.defaultModel : null;
 
   registerV1Routes(app, {
     queries: context.queries,

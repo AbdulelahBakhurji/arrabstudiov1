@@ -11,6 +11,8 @@ const testEnv: ApiEnv = {
   dataDir: undefined,
   openaiApiKey: undefined,
   openaiBaseUrl: "https://api.openai.com/v1",
+  explabsApiKey: undefined,
+  explabsBaseUrl: "https://api.experientiallabs.ai/v1",
   bedrockApiKey: undefined,
   bedrockRegion: "eu-north-1",
   bedrockModels: [

@@ -3,7 +3,10 @@ import {
   AiGatewayError,
   BEDROCK_DEFAULT_MODEL,
   BEDROCK_PROVIDER_ID,
+  EXPLABS_LUNA_MODEL,
+  EXPLABS_PROVIDER_ID,
   isBedrockModel,
+  isExplabsLunaModel,
   isXaiGrokModel,
   XAI_DEFAULT_MODEL,
   XAI_PROVIDER_ID,
@@ -476,7 +479,7 @@ export class GatewayChatRuntime implements AgentRuntime {
 
     const requestedModel = request.model ?? null;
     if (
-      isBedrockModel(requestedModel) ||
+      (isBedrockModel(requestedModel) && !isExplabsLunaModel(requestedModel)) ||
       (!requestedModel && this.defaultProviderId === BEDROCK_PROVIDER_ID)
     ) {
       const bedrock = gateway.getProvider(BEDROCK_PROVIDER_ID);
@@ -490,6 +493,24 @@ export class GatewayChatRuntime implements AgentRuntime {
       return {
         provider: bedrock,
         modelName: requestedModel?.trim() || BEDROCK_DEFAULT_MODEL,
+      };
+    }
+
+    if (
+      isExplabsLunaModel(requestedModel) ||
+      (!requestedModel && this.defaultProviderId === EXPLABS_PROVIDER_ID)
+    ) {
+      const explabs = gateway.getProvider(EXPLABS_PROVIDER_ID);
+      if (!explabs) {
+        throw new AgentRuntimeError(
+          "NO_PROVIDER",
+          "Luna requires EXPLABS_API_KEY on the Arrab API.",
+          503,
+        );
+      }
+      return {
+        provider: explabs,
+        modelName: EXPLABS_LUNA_MODEL,
       };
     }
 
@@ -518,6 +539,8 @@ export class GatewayChatRuntime implements AgentRuntime {
         ? "claude-3-5-haiku-latest"
         : provider.id === BEDROCK_PROVIDER_ID
           ? BEDROCK_DEFAULT_MODEL
+          : provider.id === EXPLABS_PROVIDER_ID
+            ? EXPLABS_LUNA_MODEL
           : provider.id === XAI_PROVIDER_ID
             ? XAI_DEFAULT_MODEL
             : "gpt-4o-mini";
