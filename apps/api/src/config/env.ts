@@ -79,11 +79,15 @@ export function loadApiEnv(): ApiEnv {
   const bedrockModels = parseBedrockModels(readOptionalEnv("BEDROCK_MODELS")).map((id) =>
     normalizeBedrockModelId(id, bedrockRegion),
   );
-  const defaultModel = normalizeBedrockModelId(
+  let defaultModel = normalizeBedrockModelId(
     readOptionalEnv("ARRAB_DEFAULT_MODEL", bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL) ??
       BEDROCK_DEFAULT_MODEL,
     bedrockRegion,
   );
+  // Gemma often lacks account access in EU; default chat to fast Nova Lite instead.
+  if (defaultModel.toLowerCase().startsWith("google.gemma")) {
+    defaultModel = normalizeBedrockModelId("amazon.nova-lite-v1:0", bedrockRegion);
+  }
 
   return {
     host,

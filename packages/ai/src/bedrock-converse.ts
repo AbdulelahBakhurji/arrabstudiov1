@@ -229,7 +229,7 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
   }
 
   private isInvalidModelError(message: string): boolean {
-    return /model identifier is invalid|ValidationException|does not exist|not found|access denied|not authorized/i.test(
+    return /model identifier is invalid|ValidationException|does not exist|not found|access denied|not authorized|operation not allowed|is not authorized|don't have access|do not have access/i.test(
       message,
     );
   }
