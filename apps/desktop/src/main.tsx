@@ -11,8 +11,13 @@ if (!root) {
   throw new Error("Arrab Studio root element is missing");
 }
 
-createRoot(root).render(
-  <StrictMode>
-    <App />
-  </StrictMode>,
-);
+void import("./lib/device-cache")
+  .then(({ hydrateDeviceCache }) => hydrateDeviceCache())
+  .catch(() => undefined)
+  .then(() => {
+    createRoot(root).render(
+      <StrictMode>
+        <App />
+      </StrictMode>,
+    );
+  });

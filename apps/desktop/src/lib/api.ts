@@ -93,12 +93,39 @@ export class ApiRequestError extends Error {
   }
 }
 
+/** Network blips / offline — hide from the main UI chrome. */
+export function isTransientApiError(message: string): boolean {
+  return /cannot reach|can't reach|unavailable|timed out|failed to fetch|network|arrab api timed out|check your connection|unexpected error/i.test(
+    message,
+  );
+}
+
+function isLocalApiBase(url: string): boolean {
+  return /127\.0\.0\.1|localhost/i.test(url);
+}
+
+function unreachableMessage(kind: "timeout" | "network", detail?: string): string {
+  const base = getApiBaseUrl();
+  if (isLocalApiBase(base)) {
+    if (kind === "timeout") {
+      return `Arrab API timed out at ${base} — is pnpm dev:api running?`;
+    }
+    return detail
+      ? `Cannot reach the Arrab API at ${base}: ${detail}`
+      : `Cannot reach the Arrab API at ${base} — start it with pnpm dev:api`;
+  }
+  return kind === "timeout"
+    ? "Arrab timed out. Check your connection and try again."
+    : "Can't reach Arrab right now. Check your connection and try again.";
+}
+
 async function request<T>(
   path: string,
   init?: { method?: string; body?: unknown; timeoutMs?: number },
 ): Promise<T> {
-  const timeoutMs = init?.timeoutMs ?? 15_000;
-  const url = `${getApiBaseUrl()}${path}`;
+  const base = getApiBaseUrl();
+  const timeoutMs = init?.timeoutMs ?? (isLocalApiBase(base) ? 15_000 : 25_000);
+  const url = `${base}${path}`;
   let lastError: unknown = null;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -141,24 +168,19 @@ async function request<T>(
         continue;
       }
       if (aborted) {
-        throw new ApiRequestError(
-          `Arrab API timed out at ${getApiBaseUrl()} — is pnpm dev:api running?`,
-          0,
-        );
+        throw new ApiRequestError(unreachableMessage("timeout"), 0);
       }
-      throw new ApiRequestError(
-        `Cannot reach the Arrab API at ${getApiBaseUrl()} — start it with pnpm dev:api`,
-        0,
-      );
+      throw new ApiRequestError(unreachableMessage("network"), 0);
     } finally {
       window.clearTimeout(timer);
     }
   }
 
   throw new ApiRequestError(
-    lastError instanceof Error
-      ? `Cannot reach the Arrab API at ${getApiBaseUrl()}: ${lastError.message}`
-      : `Cannot reach the Arrab API at ${getApiBaseUrl()}`,
+    unreachableMessage(
+      "network",
+      lastError instanceof Error ? lastError.message : undefined,
+    ),
     0,
   );
 }
@@ -211,6 +233,8 @@ export const arrabApi = {
     request<Agent>("/v1/agents", { method: "POST", body }),
   updateAgent: (id: string, body: UpdateAgentRequest) =>
     request<Agent>(`/v1/agents/${id}`, { method: "PATCH", body }),
+  deleteAgent: (id: string) =>
+    request<{ ok: true }>(`/v1/agents/${id}`, { method: "DELETE" }),
   teams: () => request<CollectionResponse<Team>>("/v1/teams"),
   createTeam: (body: CreateTeamRequest) =>
     request<Team>("/v1/teams", { method: "POST", body }),
@@ -237,66 +261,116 @@ export const arrabApi = {
     body: SendMessageRequest,
     handlers: {
       onToken?: (text: string) => void;
+      onToolStart?: (name: string, detail?: string) => void;
       onTool?: (name: string, result: string) => void;
       onApproval?: (approval: Approval) => void;
       onDone?: (response: SendMessageResponse) => void;
       onError?: (message: string) => void;
     } = {},
   ) => {
-    const response = await fetch(`${getApiBaseUrl()}/v1/conversations/${id}/messages/stream`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
-      body: JSON.stringify(body),
-    });
-    if (!response.ok || !response.body) {
-      const text = await response.text().catch(() => "");
-      throw new ApiRequestError(text || `Stream failed (${response.status})`, response.status);
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let eventName = "message";
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const chunks = buffer.split("\n\n");
-      buffer = chunks.pop() ?? "";
-      for (const chunk of chunks) {
-        const lines = chunk.split("\n");
-        let data = "";
-        for (const line of lines) {
-          if (line.startsWith("event:")) {
-            eventName = line.slice(6).trim();
-          } else if (line.startsWith("data:")) {
-            data += line.slice(5).trim();
-          }
-        }
-        if (!data) continue;
-        try {
-          const parsed = JSON.parse(data) as SendMessageResponse & {
-            text?: string;
-            message?: string;
-            name?: string;
-            result?: string;
-            approval?: Approval;
-          };
-          if (eventName === "token" && parsed.text) {
-            handlers.onToken?.(parsed.text);
-          } else if (eventName === "tool" && parsed.name) {
-            handlers.onTool?.(parsed.name, parsed.result ?? "");
-          } else if (eventName === "approval" && parsed.approval) {
-            handlers.onApproval?.(parsed.approval);
-          } else if (eventName === "done") {
-            handlers.onDone?.(parsed as SendMessageResponse);
-          } else if (eventName === "error") {
-            handlers.onError?.(parsed.message ?? "Stream error");
-          }
-        } catch {
-          // ignore
-        }
-        eventName = "message";
+    const controller = new AbortController();
+    const kill = setTimeout(() => controller.abort(), 180_000);
+    try {
+      const response = await fetch(`${getApiBaseUrl()}/v1/conversations/${id}/messages/stream`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        const text = await response.text().catch(() => "");
+        throw new ApiRequestError(text || `Stream failed (${response.status})`, response.status);
       }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let eventName = "message";
+      let sawDone = false;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split("\n\n");
+        buffer = chunks.pop() ?? "";
+        for (const chunk of chunks) {
+          const lines = chunk.split("\n");
+          let data = "";
+          for (const line of lines) {
+            if (line.startsWith("event:")) {
+              eventName = line.slice(6).trim();
+            } else if (line.startsWith("data:")) {
+              data += line.slice(5).trim();
+            }
+          }
+          if (!data) continue;
+          try {
+            const parsed = JSON.parse(data) as SendMessageResponse & {
+              text?: string;
+              message?: string;
+              name?: string;
+              result?: string;
+              detail?: string;
+              approval?: Approval;
+            };
+            if (eventName === "ready") {
+              // keepalive / proxy flush
+            } else if (eventName === "token" && parsed.text) {
+              handlers.onToken?.(parsed.text);
+            } else if (eventName === "tool_start" && parsed.name) {
+              handlers.onToolStart?.(parsed.name, parsed.detail);
+            } else if (eventName === "tool" && parsed.name) {
+              handlers.onTool?.(parsed.name, parsed.result ?? "");
+            } else if (eventName === "approval" && parsed.approval) {
+              handlers.onApproval?.(parsed.approval);
+            } else if (eventName === "done") {
+              sawDone = true;
+              handlers.onDone?.(parsed as SendMessageResponse);
+            } else if (eventName === "error") {
+              handlers.onError?.(parsed.message ?? "Stream error");
+            }
+          } catch {
+            // ignore
+          }
+          eventName = "message";
+        }
+      }
+      if (!sawDone) {
+        // Proxies sometimes drop SSE; fall back to the solid non-stream path.
+        const fallback = await arrabApi.sendMessage(id, body);
+        if (fallback.assistantMessage?.content) {
+          handlers.onToken?.(fallback.assistantMessage.content);
+        }
+        if (fallback.approval) {
+          handlers.onApproval?.(fallback.approval);
+        }
+        handlers.onDone?.(fallback);
+      }
+    } catch (err: unknown) {
+      if (err instanceof ApiRequestError) throw err;
+      // Network / abort — try non-stream once.
+      try {
+        const fallback = await arrabApi.sendMessage(id, body);
+        if (fallback.assistantMessage?.content) {
+          handlers.onToken?.(fallback.assistantMessage.content);
+        }
+        if (fallback.approval) {
+          handlers.onApproval?.(fallback.approval);
+        }
+        handlers.onDone?.(fallback);
+      } catch (fallbackErr: unknown) {
+        const message =
+          fallbackErr instanceof Error
+            ? fallbackErr.message
+            : err instanceof Error
+              ? err.message
+              : "Stream failed";
+        handlers.onError?.(message);
+        throw fallbackErr instanceof ApiRequestError
+          ? fallbackErr
+          : new ApiRequestError(message, 0);
+      }
+    } finally {
+      clearTimeout(kill);
     }
   },
   goals: (status?: string) =>

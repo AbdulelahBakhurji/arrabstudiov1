@@ -18,14 +18,15 @@
         "height": 900,
         "minWidth": 1100,
         "minHeight": 720,
-        "maximized": true,
+        "maximized": false,
+        "center": true,
         "hiddenTitle": true,
         "titleBarStyle": "Overlay",
         "trafficLightPosition": {
           "x": 16,
-          "y": 18
+          "y": 16
         },
-        "backgroundColor": "#050505",
+        "backgroundColor": "#0a0a0a",
         "devtools": false
       }
     ],

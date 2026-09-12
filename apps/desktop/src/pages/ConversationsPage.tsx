@@ -3,6 +3,13 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import type { Agent, Conversation, Message } from "@arrab/shared";
 import { ApiErrorState, PageHeader } from "@/components/EmptyState";
 import { arrabApi, ApiRequestError } from "@/lib/api";
+import {
+  listCachedChats,
+  loadBestMessages,
+  loadChatHistory,
+  mergeRemoteConversations,
+  usePersistedChat,
+} from "@/lib/chat-history";
 import { cn } from "@/lib/utils";
 
 export function ConversationsPage() {
@@ -33,18 +40,38 @@ export function ConversationsPage() {
         arrabApi.aiStatus(),
       ]);
       setAgents(agentList.items);
-      setConversations(conversationList.items);
+      setConversations(await mergeRemoteConversations(conversationList.items));
       setProviderConfigured(aiStatus.configured);
     } catch (err: unknown) {
+      const cached = await listCachedChats();
+      if (cached.length > 0) {
+        setConversations(
+          cached
+            .map((item) => item.conversation)
+            .filter((item) => !agentFilter || item.agentId === agentFilter),
+        );
+      }
       setError(err instanceof ApiRequestError ? err.message : "Cannot reach the Arrab API");
     }
   }, [agentFilter]);
 
   const loadConversation = useCallback(async (id: string) => {
-    const detail = await arrabApi.conversation(id);
-    setActiveId(id);
-    setActiveTitle(detail.conversation.title ?? "Conversation");
-    setMessages(detail.messages);
+    try {
+      const detail = await arrabApi.conversation(id);
+      const history = await loadBestMessages(id, detail.messages);
+      setActiveId(id);
+      setActiveTitle(detail.conversation.title ?? "Conversation");
+      setMessages(history);
+    } catch {
+      const cached = await loadChatHistory(id);
+      if (cached) {
+        setActiveId(id);
+        setActiveTitle(cached.conversation.title ?? "Conversation");
+        setMessages(cached.messages);
+        return;
+      }
+      throw new Error("Cannot load conversation");
+    }
   }, []);
 
   useEffect(() => {
@@ -62,6 +89,9 @@ export function ConversationsPage() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages, sending]);
+
+  const activeConversation = conversations.find((item) => item.id === activeId) ?? null;
+  usePersistedChat(activeConversation, messages);
 
   useEffect(() => {
     if (!agentFilter || conversationId || bootstrapping || conversations.length > 0) {

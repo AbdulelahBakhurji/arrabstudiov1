@@ -8,6 +8,7 @@ async function main(): Promise<void> {
   const app = await buildApp(context);
 
   const shutdown = async () => {
+    await context.flushPersistence?.();
     await app.close();
     await context.postgres?.close();
   };

@@ -136,6 +136,7 @@ export const CLEARABLE_LOCAL_KEYS = [
   "arrab.workforce.ops",
   "arrab.workforce.directives",
   "arrab.workforce.teamMeta",
+  "arrab.incognito.apiIds",
 ] as const;
 
 export function clearLocalStudioData(options?: { keepAppearance?: boolean }): void {
@@ -157,4 +158,7 @@ export function clearLocalStudioData(options?: { keepAppearance?: boolean }): vo
     // appearance stays unless full wipe requested
   }
   writePrefs(defaultPrefs());
+  void import("./device-cache").then(({ clearDeviceCache }) => clearDeviceCache());
+  void import("./chat-history").then(({ clearChatHistory }) => clearChatHistory());
+  void import("./incognito-vault").then(({ wipeIncognitoVault }) => wipeIncognitoVault());
 }

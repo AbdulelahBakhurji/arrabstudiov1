@@ -76,3 +76,44 @@ export async function searchWorkspace(
     caseSensitive: options.caseSensitive ?? false,
   });
 }
+
+export async function deletePath(
+  root: string,
+  relative: string,
+): Promise<{ path: string; deleted: boolean }> {
+  if (!isTauriRuntime()) {
+    throw new Error("Desktop app required");
+  }
+  return invoke("delete_path", { root, relative });
+}
+
+export async function renamePath(
+  root: string,
+  from: string,
+  to: string,
+): Promise<{ from: string; to: string }> {
+  if (!isTauriRuntime()) {
+    throw new Error("Desktop app required");
+  }
+  return invoke("rename_path", { root, from, to });
+}
+
+export async function createDir(
+  root: string,
+  relative: string,
+): Promise<{ path: string; created: boolean }> {
+  if (!isTauriRuntime()) {
+    throw new Error("Desktop app required");
+  }
+  return invoke("create_dir", { root, relative });
+}
+
+export async function openPath(
+  root: string,
+  relative = "",
+): Promise<{ path: string; opened: boolean }> {
+  if (!isTauriRuntime()) {
+    throw new Error("Desktop app required");
+  }
+  return invoke("open_path", { root, relative: relative || null });
+}

@@ -2,7 +2,16 @@
  * Client-side execution helpers for Arrab agent tools that must run on the desk
  * (filesystem + terminal). Shared by Cowork and Chat.
  */
-import { listDir, readTextFile, searchWorkspace, writeTextFile } from "./fs";
+import {
+  createDir,
+  deletePath,
+  listDir,
+  openPath,
+  readTextFile,
+  renamePath,
+  searchWorkspace,
+  writeTextFile,
+} from "./fs";
 import { isTauriRuntime, runLocalCommand } from "./terminal";
 
 export const CLIENT_EXEC_TOOLS = new Set([
@@ -12,16 +21,32 @@ export const CLIENT_EXEC_TOOLS = new Set([
   "read_file",
   "write_file",
   "apply_patch",
+  "delete_file",
+  "rename_file",
+  "create_dir",
+  "git_status",
+  "git_diff",
+  "open_path",
 ]);
 
-/** Read-only tools — auto-run without an approval card. */
-export const AUTO_CLIENT_TOOLS = new Set(["list_files", "read_file", "search_code"]);
+/** Read-only / low-risk tools — auto-run without an approval card. */
+export const AUTO_CLIENT_TOOLS = new Set([
+  "list_files",
+  "read_file",
+  "search_code",
+  "git_status",
+  "git_diff",
+  "open_path",
+]);
 
 /** Mutating tools — respect Ask / Allow everything policy. */
 export const POLICY_CLIENT_TOOLS = new Set([
   "run_terminal",
   "write_file",
   "apply_patch",
+  "delete_file",
+  "rename_file",
+  "create_dir",
 ]);
 
 export function isClientExecTool(name: string): boolean {
@@ -269,6 +294,67 @@ export async function executeLocalAgentTool(
           toolResult,
         };
       }
+      case "delete_file": {
+        const path = normalizeRel(args.path || "");
+        if (!path) {
+          const msg = "ERROR: delete_file requires path.";
+          return { ok: false, summary: msg, toolResult: msg };
+        }
+        await pushCheckpoint(folderPath, path, "write_file");
+        await deletePath(folderPath, path);
+        const toolResult = `DELETED ${path}`;
+        return { ok: true, summary: toolResult, toolResult };
+      }
+      case "rename_file": {
+        const from = normalizeRel(args.from || args.path || "");
+        const to = normalizeRel(args.to || args.new_path || "");
+        if (!from || !to) {
+          const msg = "ERROR: rename_file requires from and to.";
+          return { ok: false, summary: msg, toolResult: msg };
+        }
+        await renamePath(folderPath, from, to);
+        const toolResult = `RENAMED ${from} → ${to}`;
+        return { ok: true, summary: toolResult, toolResult };
+      }
+      case "create_dir": {
+        const path = normalizeRel(args.path || args.relative || "");
+        if (!path) {
+          const msg = "ERROR: create_dir requires path.";
+          return { ok: false, summary: msg, toolResult: msg };
+        }
+        await createDir(folderPath, path);
+        const toolResult = `CREATED DIR ${path}`;
+        return { ok: true, summary: toolResult, toolResult };
+      }
+      case "git_status": {
+        const result = await runLocalCommand("git status -sb && git diff --stat", folderPath);
+        const toolResult = [
+          `exit_code=${result.code}`,
+          result.stdout.trim() || "(empty)",
+          result.stderr.trim() ? `stderr:\n${result.stderr.trim()}` : null,
+        ]
+          .filter(Boolean)
+          .join("\n");
+        return {
+          ok: result.code === 0,
+          summary: "git status",
+          toolResult,
+        };
+      }
+      case "git_diff": {
+        const path = normalizeRel(args.path || "");
+        const cmd = path ? `git diff -- ${JSON.stringify(path)}` : "git diff";
+        const result = await runLocalCommand(cmd, folderPath);
+        const body = result.stdout.trim().slice(0, 16000) || "(no diff)";
+        const toolResult = [`exit_code=${result.code}`, body].join("\n");
+        return { ok: result.code === 0, summary: "git diff", toolResult };
+      }
+      case "open_path": {
+        const path = normalizeRel(args.path || args.relative || "");
+        await openPath(folderPath, path);
+        const toolResult = `OPENED ${path || "."} in the OS file browser / default app`;
+        return { ok: true, summary: toolResult, toolResult };
+      }
       default: {
         const msg = `ERROR: Unknown local tool '${toolName}'.`;
         return { ok: false, summary: msg, toolResult: msg };
@@ -297,6 +383,12 @@ export function parseToolNameFromApproval(detail: string | null, title: string):
   if (title.startsWith("Read:")) return "read_file";
   if (title.startsWith("List:")) return "list_files";
   if (title.startsWith("Search:")) return "search_code";
+  if (title.startsWith("Delete:")) return "delete_file";
+  if (title.startsWith("Rename:")) return "rename_file";
+  if (title.startsWith("Mkdir:")) return "create_dir";
+  if (title.startsWith("Git status")) return "git_status";
+  if (title.startsWith("Git diff")) return "git_diff";
+  if (title.startsWith("Open:")) return "open_path";
   return null;
 }
 

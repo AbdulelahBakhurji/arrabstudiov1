@@ -241,6 +241,7 @@ export class ConversationService {
     options?: {
       onToken?: (text: string) => void;
       onTool?: (name: string, result: string) => void;
+      onToolStart?: (name: string, detail?: string) => void;
       onApproval?: (approval: Approval) => void;
     },
   ): Promise<SendMessageResponse> {
@@ -588,6 +589,8 @@ export class ConversationService {
           if (event.type === "token") {
             options.onToken(event.text);
             result.output = (result.output ?? "") + event.text;
+          } else if (event.type === "tool_start") {
+            options.onToolStart?.(event.name, event.detail);
           } else if (event.type === "tool") {
             options.onTool?.(event.name, event.result);
             toolsUsed.push(event.name);
@@ -732,6 +735,12 @@ export class ConversationService {
         "read_file",
         "write_file",
         "apply_patch",
+        "delete_file",
+        "rename_file",
+        "create_dir",
+        "git_status",
+        "git_diff",
+        "open_path",
       ].includes(detail.toolName) &&
       !options?.toolResult?.trim()
     ) {
@@ -765,6 +774,12 @@ export class ConversationService {
       "read_file",
       "write_file",
       "apply_patch",
+      "delete_file",
+      "rename_file",
+      "create_dir",
+      "git_status",
+      "git_diff",
+      "open_path",
     ];
     const isLocal = localTools.includes(detail.toolName);
     const resumeInput = [
@@ -807,6 +822,87 @@ export class ConversationService {
       },
       this.gateway,
     );
+
+    if (result.status === "needs_approval" && result.pendingTool) {
+      const toolDetail: CallToolApprovalDetail = {
+        conversationId: conversation.id,
+        toolName: result.pendingTool.name,
+        arguments: result.pendingTool.arguments,
+      };
+      const nextApproval: Approval = {
+        id: brandId<ApprovalId>(this.ids.next("apr")),
+        workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
+        kind: "call_tool",
+        status: "pending",
+        title: result.pendingTool.arguments.title || `Tool: ${result.pendingTool.name}`,
+        detail: JSON.stringify(toolDetail),
+        agentId: brandId<AgentId>(agent.id),
+        taskId: null,
+        createdAt: this.clock.isoNow(),
+        resolvedAt: null,
+      };
+      await this.persistence.approvals.create(nextApproval);
+      await this.record(
+        "created",
+        "approval",
+        nextApproval.id,
+        `Tool approval requested: ${nextApproval.title}`,
+        "agent",
+        agent.id,
+      );
+
+      const assistantMessage: Message = {
+        id: brandId<MessageId>(this.ids.next("msg")),
+        conversationId: conversation.id,
+        role: "assistant",
+        content:
+          result.output?.trim() ||
+          `Next tool awaiting desktop execution: ${nextApproval.title}`,
+        createdAt: this.clock.isoNow(),
+      };
+      await this.persistence.messages.create(assistantMessage);
+      await this.persistence.conversations.update({
+        ...conversation,
+        updatedAt: this.clock.isoNow(),
+      });
+
+      let usage: SendMessageResponse["usage"] = null;
+      if (result.usage && result.providerId && result.model) {
+        usage = result.usage;
+        await this.persistence.usage.append({
+          id: this.ids.next("use"),
+          workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
+          conversationId: conversation.id,
+          agentId: brandId<AgentId>(agent.id),
+          providerId: result.providerId,
+          model: result.model,
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          createdAt: this.clock.isoNow(),
+        });
+      }
+
+      const lastUser =
+        historyMessages.filter((message) => message.role === "user").at(-1) ??
+        ({
+          id: brandId<MessageId>(this.ids.next("msg")),
+          conversationId: conversation.id,
+          role: "user" as const,
+          content: "[approved tool]",
+          createdAt: this.clock.isoNow(),
+        });
+
+      return {
+        userMessage: lastUser,
+        assistantMessage,
+        providerConfigured: true,
+        usage,
+        githubContextAttached: false,
+        sessionUsage: await this.sessionUsageFor(conversation),
+        toolsUsed: [detail.toolName, ...(result.toolsUsed ?? [])],
+        approval: nextApproval,
+      };
+    }
 
     if (result.status !== "completed" || !result.output) {
       throw new ValidationError(result.error ?? "Employee did not continue after approval");

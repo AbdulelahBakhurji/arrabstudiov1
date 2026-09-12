@@ -309,6 +309,9 @@ export function registerV1Routes(
     "/v1/agents/:id",
     async (request) => deps.commands.updateAgent(request.params.id, request.body ?? {}),
   );
+  app.delete<{ Params: { id: string } }>("/v1/agents/:id", async (request) =>
+    deps.commands.deleteAgent(request.params.id),
+  );
   app.get<{ Params: { agentId: string } }>(
     "/v1/agents/:agentId/conversations",
     async (request) => ({
@@ -364,16 +367,29 @@ export function registerV1Routes(
         "Content-Type": "text/event-stream",
         "Cache-Control": "no-cache, no-transform",
         Connection: "keep-alive",
+        "X-Accel-Buffering": "no",
       });
       const write = (event: string, data: unknown) => {
         reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        const flushable = reply.raw as { flush?: () => void };
+        flushable.flush?.();
       };
+      // Flush immediately so proxies don't wait for the first model token.
+      write("ready", { ok: true });
+      const heartbeat = setInterval(() => {
+        try {
+          reply.raw.write(`: ping\n\n`);
+        } catch {
+          // closed
+        }
+      }, 15_000);
       try {
         const response = await deps.conversations.sendMessage(
           request.params.id,
           request.body ?? { content: "" },
           {
             onToken: (text) => write("token", { text }),
+            onToolStart: (name, detail) => write("tool_start", { name, detail }),
             onTool: (name, result) => write("tool", { name, result }),
             onApproval: (approval) => write("approval", { approval }),
           },
@@ -384,6 +400,7 @@ export function registerV1Routes(
           message: error instanceof Error ? error.message : "Stream failed",
         });
       } finally {
+        clearInterval(heartbeat);
         reply.raw.end();
       }
     },
@@ -409,6 +426,7 @@ export function registerV1Routes(
     configured: deps.gateway.listProviders().length > 0,
     providers: deps.gateway.listProviders().map((provider) => provider.id),
     defaultModel: deps.defaultModel,
+    reasoningEffort: "none" as const,
   }));
 
   app.get("/v1/connectors/catalog", async () => ({ items: deps.connectors.catalog() }));

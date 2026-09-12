@@ -245,6 +245,46 @@ export class WorkspaceCommandService {
     return updated;
   }
 
+  async deleteAgent(id: string): Promise<{ ok: true }> {
+    const existing = await this.persistence.agents.getById(id);
+    if (!existing) {
+      throw new NotFoundError("Agent", id);
+    }
+
+    const memberships = await this.persistence.memberships.list();
+    for (const membership of memberships) {
+      if (membership.agentId === id) {
+        await this.persistence.memberships.remove(membership.teamId, id);
+      }
+    }
+
+    const conversations = await this.persistence.conversations.list();
+    for (const conversation of conversations) {
+      if (conversation.agentId === id) {
+        await this.persistence.conversations.update({
+          ...conversation,
+          agentId: null,
+          updatedAt: this.clock.isoNow(),
+        });
+      }
+    }
+
+    const tasks = await this.persistence.tasks.list();
+    for (const task of tasks) {
+      if (task.assigneeAgentId === id) {
+        await this.persistence.tasks.update({
+          ...task,
+          assigneeAgentId: null,
+          updatedAt: this.clock.isoNow(),
+        });
+      }
+    }
+
+    await this.persistence.agents.delete(id);
+    await this.record("updated", "agent", id, `Deleted AI employee "${existing.name}"`);
+    return { ok: true };
+  }
+
   async createTeam(input: CreateTeamRequest): Promise<Team> {
     await this.assertProjectInWorkspace(input.projectId);
     const now = this.clock.isoNow();

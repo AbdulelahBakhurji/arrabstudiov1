@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { parseCsv, parsePort, readOptionalEnv } from "@arrab/core";
+import { defaultStudioDataDir } from "@arrab/database";
 import { EXPLABS_BASE_URL, isExplabsLunaModel } from "./explabs.js";
 
 export interface ApiEnv {
@@ -9,6 +10,8 @@ export interface ApiEnv {
   logLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace";
   corsOrigins: string[];
   databaseUrl: string | undefined;
+  /** Local on-device data directory when Postgres is not configured. */
+  dataDir: string | undefined;
   openaiApiKey: string | undefined;
   openaiBaseUrl: string;
   /** Experiential Labs key — required for gpt-5.6-luna. */
@@ -80,6 +83,7 @@ export function loadApiEnv(): ApiEnv {
       ),
     ),
     databaseUrl: readOptionalEnv("DATABASE_URL"),
+    dataDir: readOptionalEnv("ARRAB_DATA_DIR") ?? defaultStudioDataDir(),
     openaiApiKey: readOptionalEnv("OPENAI_API_KEY"),
     openaiBaseUrl:
       readOptionalEnv("OPENAI_BASE_URL", "https://api.openai.com/v1") ??

@@ -550,14 +550,20 @@ export function EmployeeDeskPage() {
                     </Field>
                   </div>
                   <Field label={t("employeeBio")}>
-                    <textarea value={bio} onChange={(e) => setBio(e.target.value)} rows={3} className="field" />
+                    <textarea
+                      value={bio}
+                      onChange={(e) => setBio(e.target.value)}
+                      rows={4}
+                      className="field field-bio"
+                      placeholder={t("hireBioPlaceholder")}
+                    />
                   </Field>
                   <Field label={t("employeeInstructions")}>
                     <textarea
                       value={instructions}
                       onChange={(e) => setInstructions(e.target.value)}
-                      rows={5}
-                      className="field"
+                      rows={6}
+                      className="field field-instructions"
                       placeholder={t("hireInstructionsPlaceholder")}
                     />
                   </Field>

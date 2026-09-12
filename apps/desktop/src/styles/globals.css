@@ -1,8 +1,8 @@
 @import "tailwindcss";
 
 @theme {
-  --font-sans: "Avenir Next", "Segoe UI", "Helvetica Neue", Helvetica, "Noto Sans Arabic",
-    "SF Arabic", Tahoma, Arial, sans-serif;
+  --font-sans: "SF Pro Display", "SF Pro Text", "Avenir Next", "Segoe UI", "Helvetica Neue",
+    Helvetica, "Noto Sans Arabic", "SF Arabic", Tahoma, Arial, sans-serif;
   --color-background: #040404;
   --color-foreground: #f4f4f4;
   --color-muted: #8a8a8a;
@@ -140,6 +140,74 @@ html.locale-ar .studio-home p {
   animation: arrab-glow 4s ease-in-out infinite;
 }
 
+.home-panel {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 24px;
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.home-btn-primary {
+  border-radius: 980px;
+  background: #ffffff;
+  color: #000000;
+  transition: background 160ms ease, transform 160ms ease;
+}
+
+.home-btn-primary:hover {
+  background: #e8e8e8;
+}
+
+.home-btn-primary:active {
+  transform: scale(0.98);
+}
+
+.home-btn-secondary {
+  border-radius: 980px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: rgba(255, 255, 255, 0.88);
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+}
+
+.home-btn-secondary:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.04);
+  color: #ffffff;
+}
+
+.home-chip {
+  border-radius: 980px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 0.35rem 0.75rem;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+}
+
+.home-chip:hover {
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.home-person {
+  border-radius: 18px;
+  border: 1px solid transparent;
+}
+
+.home-person:hover {
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.home-avatar {
+  border-radius: 980px;
+  background: linear-gradient(160deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0.05));
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
 .arrab-terminal {
   font-family: "SF Mono", "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
 }
@@ -158,6 +226,28 @@ html.locale-ar .studio-home p {
 
 .field:focus {
   border-color: rgba(255, 255, 255, 0.35);
+}
+
+textarea.field {
+  height: 6.5rem;
+  min-height: 6.5rem;
+  max-height: 6.5rem;
+  resize: none !important;
+  overflow-y: auto;
+  padding: 0.75rem 0.85rem;
+  line-height: 1.5;
+}
+
+textarea.field.field-bio {
+  height: 5.25rem;
+  min-height: 5.25rem;
+  max-height: 5.25rem;
+}
+
+textarea.field.field-instructions {
+  height: 8.5rem;
+  min-height: 8.5rem;
+  max-height: 8.5rem;
 }
 
 /* Light theme */
@@ -194,6 +284,53 @@ html.theme-light .arrab-grid {
 
 html.theme-light .arrab-scan {
   background: linear-gradient(to right, transparent, rgba(0, 0, 0, 0.18), transparent);
+}
+
+html.theme-light .home-panel {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+html.theme-light .home-btn-primary {
+  background: #111111;
+  color: #ffffff;
+}
+
+html.theme-light .home-btn-primary:hover {
+  background: #2a2a2a;
+}
+
+html.theme-light .home-btn-secondary {
+  border-color: rgba(0, 0, 0, 0.12);
+  color: rgba(0, 0, 0, 0.75);
+}
+
+html.theme-light .home-btn-secondary:hover {
+  border-color: rgba(0, 0, 0, 0.22);
+  background: rgba(0, 0, 0, 0.03);
+  color: #111111;
+}
+
+html.theme-light .home-chip {
+  border-color: rgba(0, 0, 0, 0.1);
+  color: rgba(0, 0, 0, 0.65);
+}
+
+html.theme-light .home-chip:hover {
+  border-color: rgba(0, 0, 0, 0.2);
+  color: #111111;
+  background: rgba(0, 0, 0, 0.03);
+}
+
+html.theme-light .home-person:hover {
+  border-color: rgba(0, 0, 0, 0.06);
+  background: rgba(0, 0, 0, 0.025);
+}
+
+html.theme-light .home-avatar {
+  background: linear-gradient(160deg, rgba(0, 0, 0, 0.08), rgba(0, 0, 0, 0.03));
+  color: #111111;
+  border-color: rgba(0, 0, 0, 0.08);
 }
 
 html.theme-light .field {
@@ -557,6 +694,252 @@ html.theme-light .placeholder\:text-neutral-600::placeholder {
   color: #fff;
 }
 
+.chat-starter {
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0.95rem 1rem;
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.chat-starter:hover {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.055);
+  transform: translateY(-1px);
+}
+
+.chat-starter:active {
+  transform: scale(0.99);
+}
+
+/* Soft Chat — comfy, not heavy */
+.agent-steps {
+  animation: agent-steps-in 180ms ease-out;
+}
+
+@keyframes agent-steps-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.chat-friendly {
+  background: #0b0b0b;
+}
+
+.chat-friendly .cowork-atmosphere {
+  background:
+    radial-gradient(ellipse 70% 55% at 18% 0%, rgba(255, 255, 255, 0.045), transparent 62%),
+    radial-gradient(ellipse 55% 45% at 88% 100%, rgba(255, 255, 255, 0.028), transparent 58%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent 36%);
+}
+
+.chat-friendly > .relative.z-10 > aside {
+  background: rgba(14, 14, 14, 0.92) !important;
+  border-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+.chat-friendly .chat-soft-toggle {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.chat-friendly .chat-soft-toggle-btn {
+  color: #8a8a8a;
+}
+
+.chat-friendly .chat-soft-toggle-btn.is-on {
+  background: rgba(255, 255, 255, 0.12);
+  color: #f5f5f5;
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset;
+}
+
+.chat-friendly .chat-soft-cta {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.08);
+  color: #f2f2f2;
+}
+
+.chat-friendly .chat-soft-cta:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+.chat-friendly .chat-starter {
+  border-color: rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.chat-friendly .chat-starter:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.045);
+  transform: none;
+}
+
+.chat-friendly .chat-pro-composer {
+  border-color: rgba(255, 255, 255, 0.07);
+  background: rgba(18, 18, 18, 0.88);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.03) inset,
+    0 10px 28px rgba(0, 0, 0, 0.18);
+}
+
+.chat-friendly .chat-pro-composer:focus-within {
+  border-color: rgba(255, 255, 255, 0.12);
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 12px 30px rgba(0, 0, 0, 0.22);
+}
+
+.chat-friendly .chat-pro-icon-btn {
+  color: #7a7a7a;
+}
+
+.chat-friendly .chat-pro-icon-btn:hover,
+.chat-friendly .chat-pro-icon-btn.is-on {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ececec;
+}
+
+.chat-friendly .home-avatar {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.desk-card {
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.desk-preset {
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.025);
+  padding: 0.7rem 0.75rem;
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.desk-preset:hover {
+  border-color: rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.desk-preset.is-on {
+  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.09);
+}
+
+.desk-field {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.desk-field > span {
+  font-size: 12px;
+  color: #737373;
+}
+
+.desk-field input,
+.desk-field textarea,
+.desk-input,
+.desk-textarea {
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.35);
+  padding: 0.65rem 0.8rem;
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+}
+
+.desk-field input,
+.desk-input {
+  height: 2.5rem;
+}
+
+.desk-field textarea,
+.desk-textarea {
+  resize: none !important;
+  height: 7.25rem;
+  min-height: 7.25rem;
+  max-height: 7.25rem;
+  overflow-y: auto;
+  line-height: 1.45;
+}
+
+.desk-field input:focus,
+.desk-field textarea:focus,
+.desk-input:focus,
+.desk-textarea:focus {
+  border-color: rgba(255, 255, 255, 0.24);
+}
+
+.desk-action {
+  display: inline-flex;
+  height: 2.5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  padding: 0 0.75rem;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.desk-action:hover {
+  border-color: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+html.theme-light .desk-card {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.78);
+}
+
+html.theme-light .desk-preset {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(0, 0, 0, 0.02);
+}
+
+html.theme-light .desk-preset.is-on {
+  border-color: rgba(0, 0, 0, 0.18);
+  background: rgba(0, 0, 0, 0.05);
+}
+
+html.theme-light .desk-field input,
+html.theme-light .desk-field textarea,
+html.theme-light .desk-input,
+html.theme-light .desk-textarea {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: #fff;
+  color: #111;
+}
+
+html.theme-light .desk-action {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.9);
+  color: #111;
+}
+
+html.theme-light .chat-starter {
+  border-color: rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.8);
+}
+
+html.theme-light .chat-starter:hover {
+  border-color: rgba(0, 0, 0, 0.16);
+  background: #ffffff;
+}
+
 html.theme-light .chat-pro-cta {
   background: #111;
   color: #fff;
@@ -666,27 +1049,27 @@ html.theme-light .cowork-atmosphere {
 
 .cowork-file-rail {
   display: flex;
-  width: 240px;
+  width: 250px;
   flex-shrink: 0;
   flex-direction: column;
   border-inline-end: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(0, 0, 0, 0.35);
+  background: rgba(7, 7, 7, 0.92);
 }
 
 @media (min-width: 1280px) {
   .cowork-file-rail {
-    width: 280px;
+    width: 290px;
   }
 }
 
 .cowork-agent-tabs {
   display: flex;
   align-items: center;
-  gap: 0.25rem;
+  gap: 0.35rem;
   overflow-x: auto;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-  background: rgba(0, 0, 0, 0.25);
-  padding: 0.4rem 0.75rem;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 0.55rem 0.9rem;
   scrollbar-width: thin;
 }
 
@@ -695,10 +1078,10 @@ html.theme-light .cowork-atmosphere {
   align-items: center;
   gap: 0.4rem;
   white-space: nowrap;
-  border-radius: 0.55rem;
+  border-radius: 980px;
   border: 1px solid transparent;
-  padding: 0.35rem 0.7rem;
-  font-size: 11px;
+  padding: 0.45rem 0.85rem;
+  font-size: 12px;
   color: #737373;
   transition: color 140ms ease, background 140ms ease, border-color 140ms ease;
 }
@@ -709,9 +1092,44 @@ html.theme-light .cowork-atmosphere {
 }
 
 .cowork-agent-tab.is-on {
-  color: #fafafa;
-  border-color: rgba(255, 255, 255, 0.1);
+  color: #111111;
+  border-color: transparent;
+  background: #ffffff;
+}
+
+.cowork-friendly .chat-pro-composer {
+  border-radius: 1.5rem;
+}
+
+.cowork-folder-chip {
+  border-radius: 980px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0.45rem 0.9rem;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.85);
+  transition: background 160ms ease, border-color 160ms ease;
+}
+
+.cowork-folder-chip:hover {
+  border-color: rgba(255, 255, 255, 0.2);
   background: rgba(255, 255, 255, 0.07);
+}
+
+html.theme-light .cowork-folder-chip {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.85);
+  color: #111;
+}
+
+html.theme-light .cowork-agent-tab.is-on {
+  color: #ffffff;
+  background: #111111;
+}
+
+html.theme-light .cowork-file-rail {
+  background: rgba(255, 255, 255, 0.72);
+  border-inline-end-color: rgba(0, 0, 0, 0.08);
 }
 
 .cowork-token-meter {
@@ -877,6 +1295,75 @@ html.theme-light .hq-masthead {
   transform: translateY(-2px) scale(1.05);
   border-color: rgba(255, 255, 255, 0.45);
   z-index: 1;
+}
+
+.hq-map-column {
+  /* drop target highlight only */
+}
+
+.hq-map-add {
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+}
+
+.hq-map-add:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.hq-person {
+  position: relative;
+}
+
+.hq-note {
+  display: block;
+  width: 100%;
+  height: 7.5rem;
+  min-height: 7.5rem;
+  max-height: 7.5rem;
+  resize: none !important;
+  overflow-y: auto;
+  border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.45);
+  padding: 0.85rem 0.95rem;
+  color: #fff;
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+}
+
+.hq-note:focus {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+.hq-note::placeholder {
+  color: #737373;
+}
+
+.hq-select {
+  height: 2.75rem;
+  width: 100%;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(0, 0, 0, 0.45);
+  padding: 0 0.85rem;
+  color: #fff;
+  font-size: 13px;
+  outline: none;
+}
+
+.hq-select:focus {
+  border-color: rgba(255, 255, 255, 0.28);
+}
+
+html.theme-light .hq-note,
+html.theme-light .hq-select {
+  border-color: rgba(0, 0, 0, 0.1);
+  background: rgba(255, 255, 255, 0.85);
+  color: #111;
+}
+
+html.theme-light .hq-note::placeholder {
+  color: #a1a1aa;
 }
 
 .connector-shell {

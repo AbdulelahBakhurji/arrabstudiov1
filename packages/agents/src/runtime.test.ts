@@ -184,7 +184,7 @@ describe("GatewayChatRuntime", () => {
         agent,
         conversationId: null,
         input: "who is on the team?",
-        tools: { teamRoster: "- Ada (eng)\n- Lin (design)" },
+        tools: { teamRoster: "- Ada (eng)\n- Lin (design)", workspaceSummary: "mode=folder" },
       },
       gateway,
     );
@@ -192,5 +192,41 @@ describe("GatewayChatRuntime", () => {
     expect(result.status).toBe("completed");
     expect(result.toolsUsed).toContain("list_team");
     expect(result.output).toBe("Team has 2 people");
+  });
+
+  it("streams tokens live from streamComplete", async () => {
+    const gateway = new RegistryAiGateway();
+    gateway.register({
+      id: "openai",
+      kind: "openai_compatible",
+      async complete(): Promise<AiCompletion> {
+        throw new Error("complete() should not be used while streaming");
+      },
+      async *streamComplete() {
+        yield { type: "token" as const, text: "Hel" };
+        yield { type: "token" as const, text: "lo" };
+        yield {
+          type: "done" as const,
+          completion: {
+            id: "cmpl_stream",
+            model: { providerId: "openai", model: "gpt-4o-mini" },
+            message: { role: "assistant" as const, content: "Hello" },
+            finishReason: "stop" as const,
+            usage: null,
+          },
+        };
+      },
+    });
+    const tokens: string[] = [];
+    let final = "";
+    for await (const event of new GatewayChatRuntime().runStream!(
+      { agent, conversationId: null, input: "hi", model: "gpt-4o-mini" },
+      gateway,
+    )) {
+      if (event.type === "token") tokens.push(event.text);
+      if (event.type === "done") final = event.result.output ?? "";
+    }
+    expect(tokens).toEqual(["Hel", "lo"]);
+    expect(final).toBe("Hello");
   });
 });

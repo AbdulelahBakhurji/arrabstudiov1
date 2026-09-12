@@ -321,6 +321,18 @@ alter table approvals
   check (kind in ('activate_agent', 'run_task', 'git_push', 'call_tool'));
 `;
 
+export const MIGRATION_014_OPERATOR_TITLE_NULLABLE = `
+alter table operator_profiles
+  alter column title drop not null;
+
+alter table operator_profiles
+  alter column title set default null;
+
+update operator_profiles
+set title = null
+where title is not null and length(trim(title)) = 0;
+`;
+
 export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "001_core", sql: MIGRATION_001_CORE },
   { id: "002_conversations", sql: MIGRATION_002_CONVERSATIONS },
@@ -335,4 +347,5 @@ export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "011_session_spend", sql: MIGRATION_011_SESSION_SPEND },
   { id: "012_goals_phase12", sql: MIGRATION_012_GOALS_PHASE12 },
   { id: "013_call_tool_approval", sql: MIGRATION_013_CALL_TOOL_APPROVAL },
+  { id: "014_operator_title_nullable", sql: MIGRATION_014_OPERATOR_TITLE_NULLABLE },
 ];

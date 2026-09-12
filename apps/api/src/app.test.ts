@@ -8,6 +8,7 @@ const testEnv: ApiEnv = {
   logLevel: "error",
   corsOrigins: ["http://localhost:1420"],
   databaseUrl: undefined,
+  dataDir: undefined,
   openaiApiKey: undefined,
   openaiBaseUrl: "https://api.openai.com/v1",
   explabsApiKey: undefined,

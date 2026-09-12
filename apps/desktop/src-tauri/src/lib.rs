@@ -205,8 +205,9 @@ fn run_local_command(command: String, cwd: Option<String>) -> Result<serde_json:
         cmd.args(["/C", trimmed]);
         cmd
     } else {
+        // Cap runaway commands so the desk stays responsive.
         let mut cmd = Command::new("sh");
-        cmd.args(["-lc", trimmed]);
+        cmd.args(["-lc", &format!("ulimit -t 120; {}", trimmed)]);
         cmd
     };
 
@@ -389,6 +390,113 @@ fn set_always_on_top(app: tauri::AppHandle, enabled: bool) -> Result<(), String>
         .map_err(|err| err.to_string())
 }
 
+fn sanitize_segment(value: &str, what: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() || trimmed.len() > 180 {
+        return Err(format!("Invalid {what}"));
+    }
+    if trimmed.contains("..")
+        || !trimmed
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_' || c == '-')
+    {
+        return Err(format!("Invalid {what}"));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn namespace_dir(app: &tauri::AppHandle, namespace: &str) -> Result<PathBuf, String> {
+    let ns = sanitize_segment(namespace, "namespace")?;
+    if ns != "cache" && ns != "chats" && ns != "incognito" {
+        return Err("Unknown store namespace".into());
+    }
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| err.to_string())?
+        .join("store")
+        .join(ns);
+    fs::create_dir_all(&root).map_err(|err| err.to_string())?;
+    Ok(root)
+}
+
+fn store_file(app: &tauri::AppHandle, namespace: &str, key: &str) -> Result<PathBuf, String> {
+    Ok(namespace_dir(app, namespace)?.join(format!(
+        "{}.json",
+        sanitize_segment(key, "key")?
+    )))
+}
+
+#[tauri::command]
+fn device_store_get(
+    app: tauri::AppHandle,
+    namespace: String,
+    key: String,
+) -> Result<Option<String>, String> {
+    let path = store_file(&app, &namespace, &key)?;
+    if !path.is_file() {
+        return Ok(None);
+    }
+    Ok(Some(fs::read_to_string(path).map_err(|err| err.to_string())?))
+}
+
+#[tauri::command]
+fn device_store_set(
+    app: tauri::AppHandle,
+    namespace: String,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    if value.len() > 8_000_000 {
+        return Err("Value is too large to store on this device".into());
+    }
+    let path = store_file(&app, &namespace, &key)?;
+    fs::write(path, value.as_bytes()).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn device_store_remove(app: tauri::AppHandle, namespace: String, key: String) -> Result<(), String> {
+    let path = store_file(&app, &namespace, &key)?;
+    if path.exists() {
+        fs::remove_file(path).map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn device_store_keys(
+    app: tauri::AppHandle,
+    namespace: String,
+    prefix: Option<String>,
+) -> Result<Vec<String>, String> {
+    let dir = namespace_dir(&app, &namespace)?;
+    let prefix = prefix.unwrap_or_default();
+    let mut keys = Vec::new();
+    let read = fs::read_dir(&dir).map_err(|err| err.to_string())?;
+    for item in read.flatten() {
+        let name = item.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".json") {
+            continue;
+        }
+        let key = name.trim_end_matches(".json").to_string();
+        if prefix.is_empty() || key.starts_with(&prefix) {
+            keys.push(key);
+        }
+    }
+    keys.sort();
+    Ok(keys)
+}
+
+#[tauri::command]
+fn device_store_clear(app: tauri::AppHandle, namespace: String) -> Result<(), String> {
+    let dir = namespace_dir(&app, &namespace)?;
+    if dir.exists() {
+        fs::remove_dir_all(&dir).map_err(|err| err.to_string())?;
+        fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
 #[tauri::command]
 fn open_external_url(url: String) -> Result<(), String> {
     let trimmed = url.trim();
@@ -411,6 +519,78 @@ fn open_external_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn delete_path(root: String, relative: String) -> Result<serde_json::Value, String> {
+    let path = resolve_under_root(&root, &relative)?;
+    if !path.exists() {
+        return Err("Path does not exist".into());
+    }
+    if path.is_dir() {
+        fs::remove_dir_all(&path).map_err(|err| err.to_string())?;
+    } else {
+        fs::remove_file(&path).map_err(|err| err.to_string())?;
+    }
+    Ok(serde_json::json!({
+        "path": relative.replace('\\', "/"),
+        "deleted": true,
+    }))
+}
+
+#[tauri::command]
+fn rename_path(root: String, from: String, to: String) -> Result<serde_json::Value, String> {
+    let src = resolve_under_root(&root, &from)?;
+    let dest = resolve_under_root(&root, &to)?;
+    if !src.exists() {
+        return Err("Source path does not exist".into());
+    }
+    if dest.exists() {
+        return Err("Destination already exists".into());
+    }
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    fs::rename(&src, &dest).map_err(|err| err.to_string())?;
+    Ok(serde_json::json!({
+        "from": from.replace('\\', "/"),
+        "to": to.replace('\\', "/"),
+    }))
+}
+
+#[tauri::command]
+fn create_dir(root: String, relative: String) -> Result<serde_json::Value, String> {
+    let path = resolve_under_root(&root, &relative)?;
+    fs::create_dir_all(&path).map_err(|err| err.to_string())?;
+    Ok(serde_json::json!({
+        "path": relative.replace('\\', "/"),
+        "created": true,
+    }))
+}
+
+#[tauri::command]
+fn open_path(root: String, relative: Option<String>) -> Result<serde_json::Value, String> {
+    let path = resolve_under_root(&root, relative.as_deref().unwrap_or(""))?;
+    if !path.exists() {
+        return Err("Path does not exist".into());
+    }
+    let status = if cfg!(target_os = "macos") {
+        Command::new("open").arg(&path).status()
+    } else if cfg!(target_os = "windows") {
+        Command::new("cmd")
+            .args(["/C", "start", "", &path.to_string_lossy()])
+            .status()
+    } else {
+        Command::new("xdg-open").arg(&path).status()
+    }
+    .map_err(|err| err.to_string())?;
+    if !status.success() {
+        return Err("Failed to open path".into());
+    }
+    Ok(serde_json::json!({
+        "path": relative.unwrap_or_else(|| ".".into()).replace('\\', "/"),
+        "opened": true,
+    }))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -421,7 +601,16 @@ pub fn run() {
             read_text_file,
             write_text_file,
             search_workspace,
+            delete_path,
+            rename_path,
+            create_dir,
+            open_path,
             set_always_on_top,
+            device_store_get,
+            device_store_set,
+            device_store_remove,
+            device_store_keys,
+            device_store_clear,
             open_external_url
         ])
         .setup(|app| {

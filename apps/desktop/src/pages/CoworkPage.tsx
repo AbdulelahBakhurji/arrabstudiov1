@@ -25,9 +25,9 @@ import {
   ShieldQuestion,
   SquareTerminal,
   Target,
+  Trash2,
   Users,
   X,
-  Wrench,
 } from "lucide-react";
 import type {
   Agent,
@@ -41,13 +41,18 @@ import type {
   WorkspaceMention,
 } from "@arrab/shared";
 import { ArtifactsPanel, extractArtifacts } from "@/components/ArtifactsPanel";
+import { AgentSteps, friendlyToolTitle, type AgentStep } from "@/components/AgentSteps";
 import { MentionComposer } from "@/components/MentionComposer";
 import { Surface } from "@/components/StudioFrame";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useStudioPrefs } from "@/hooks/useStudioPrefs";
 import { LAST_COWORK_AGENT_KEY, readPrefs } from "@/lib/prefs";
 import { notifyStudio } from "@/lib/notify";
-import { arrabApi, ApiRequestError } from "@/lib/api";
+import { arrabApi, ApiRequestError, isTransientApiError } from "@/lib/api";
+import {
+  defaultSoloAgentBody,
+  ensureDefaultSoloAgent,
+} from "@/lib/agents-bootstrap";
 import {
   executeLocalAgentTool,
   formatToolDiffPreview,
@@ -63,12 +68,12 @@ import {
 import { listDir, readTextFile, writeTextFile, type FsEntry } from "@/lib/fs";
 import { isTauriRuntime, pickFolder, runLocalCommand, type TerminalLine } from "@/lib/terminal";
 import { loadWorkspaceRules } from "@/lib/workspace-rules";
+import { loadBestMessages, listCachedChats, usePersistedChat } from "@/lib/chat-history";
 import { cn } from "@/lib/utils";
 
 type FocusMode = "chat" | "split" | "terminal";
 type DeskTab = "git" | "run" | "notes" | "restore";
 type TerminalPolicy = "ask" | "allow";
-type ToolTrace = { id: string; name: string; result: string; ok?: boolean };
 type AgentTab = {
   key: string;
   kind: "solo" | "team";
@@ -110,10 +115,6 @@ function readSpendPrefs(): { tier: TokenSpendTier; budgetInput: string } {
   } catch {
     return { tier: "low", budgetInput: String(DEFAULT_SESSION_BUDGETS.low) };
   }
-}
-
-function isTransientApiError(message: string): boolean {
-  return /cannot reach|unavailable|timed out|failed to fetch|network/i.test(message);
 }
 
 const RUN_PRESETS = [
@@ -165,7 +166,7 @@ export function CoworkPage() {
   const [sessionBusy, setSessionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null);
-  const [toolTraces, setToolTraces] = useState<ToolTrace[]>([]);
+  const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
   const [pendingApproval, setPendingApproval] = useState<Approval | null>(null);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [streamDraft, setStreamDraft] = useState("");
@@ -184,7 +185,8 @@ export function CoworkPage() {
     }
   });
   const [agentTabs, setAgentTabs] = useState<AgentTab[]>([]);
-  const [activeTabKey, setActiveTabKey] = useState("solo");
+  const [activeTabKey, setActiveTabKey] = useState("");
+  const [deskReady, setDeskReady] = useState(false);
   const [fileTabs, setFileTabs] = useState<FileTab[]>([]);
   const [terminalPolicy, setTerminalPolicy] = useState<TerminalPolicy>(() => {
     try {
@@ -200,11 +202,17 @@ export function CoworkPage() {
   const handledApprovalsRef = useRef(new Set<string>());
   const [terminalBusy, setTerminalBusy] = useState(false);
   const [terminalTall, setTerminalTall] = useState(false);
-  const [deskOpen, setDeskOpen] = useState(true);
-  const [focus, setFocus] = useState<FocusMode>(() =>
-    readPrefs().coworkTerminalDock ? "split" : "split",
-  );
-  const [deskTab, setDeskTab] = useState<DeskTab>("git");
+  const [deskOpen, setDeskOpen] = useState(false);
+  const [focus, setFocus] = useState<FocusMode>("chat");
+  const [filesRailOpen, setFilesRailOpen] = useState(false);
+  const [deskTab, setDeskTab] = useState<DeskTab>("notes");
+  const [tabMenu, setTabMenu] = useState<{
+    key: string;
+    agentId: string | null;
+    x: number;
+    y: number;
+    confirmDelete?: boolean;
+  } | null>(null);
   const [folderPath, setFolderPath] = useState<string | null>(() => {
     try {
       return localStorage.getItem(FOLDER_KEY);
@@ -277,6 +285,8 @@ export function CoworkPage() {
     }
   }, [budgetInput, spendTier]);
 
+  usePersistedChat(conversation, messages);
+
   const boot = useCallback(async () => {
     setError(null);
     try {
@@ -291,8 +301,12 @@ export function CoworkPage() {
       if (preferredFocus === "terminal" || preferredFocus === "chat" || preferredFocus === "split") {
         sessionStorage.removeItem("arrab.coworkFocus");
         setFocus(preferredFocus);
-      } else if (!prefs.coworkTerminalDock) {
+      } else if (prefs.coworkTerminalDock) {
         setFocus("split");
+        setFilesRailOpen(true);
+        setDeskOpen(true);
+      } else {
+        setFocus("chat");
       }
       const [agentList, projectList, ai, teamList] = await Promise.all([
         arrabApi.agents(),
@@ -301,17 +315,14 @@ export function CoworkPage() {
         arrabApi.teams().catch(() => ({ items: [] as Team[] })),
       ]);
       let active = agentList.items.filter((agent) => agent.status !== "archived");
-      if (active.length === 0) {
-        const created = await arrabApi.createAgent({
-          name: "Solo agent",
-          role: "Desktop assistant",
-          specialty: "general",
-          status: "active",
-          instructions:
-            "You are a capable coworker on the operator's laptop. Use list_files, search_code, read_file, apply_patch, write_file, and run_terminal to make real progress. Prefer safe, reversible actions. When arranging a Desktop, organize into clear folders and report what you moved. Keep replies concise.",
-        });
-        active = [created];
-      }
+      active = await ensureDefaultSoloAgent(
+        active,
+        defaultSoloAgentBody(
+          t("chatSoloDefaultName"),
+          t("chatSoloDefaultRole"),
+          t("chatSoloDefaultInstructions"),
+        ),
+      );
       setAgents(active);
       setProjects(projectList.items);
       setProviderConfigured(ai.configured);
@@ -412,17 +423,21 @@ export function CoworkPage() {
           href: "/cowork",
         });
       }
+      setDeskReady(true);
     } catch (err: unknown) {
       const message = err instanceof ApiRequestError ? err.message : t("apiUnavailable");
       if (!isTransientApiError(message)) {
         setError(message);
       }
+      setDeskReady(true);
     }
   }, [prefs.coworkAutoResume, prefs.coworkTerminalDock, prefs.notifyCowork, t]);
 
   useEffect(() => {
     void boot();
-  }, [boot]);
+    // Boot once per Cowork mount. Pref/`t` identity churn used to spawn extra Solo agents.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Heal sticky "API unavailable" once the API is reachable again — silently.
   useEffect(() => {
@@ -531,7 +546,7 @@ export function CoworkPage() {
 
   useEffect(() => {
     chatEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, sending, toolTraces, pendingApproval, streamDraft]);
+  }, [messages, sending, agentSteps, pendingApproval, streamDraft]);
 
   useEffect(() => {
     termEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -583,7 +598,13 @@ export function CoworkPage() {
       setGitLog([log.stdout, log.stderr].filter(Boolean).join("\n").trim());
       const nextBranch = branchResult.stdout.trim();
       setBranch(nextBranch && !nextBranch.includes("fatal") ? nextBranch : null);
-      setBranchInput((current) => current || nextBranch);
+      setBranchInput((current) => current || (nextBranch.includes("fatal") ? "" : nextBranch));
+      // Soften raw git fatals for humans
+      if (/fatal: not a git repository/i.test(status.stderr + status.stdout)) {
+        setGitStatus(t("coworkNotGitRepo"));
+        setGitDiff(t("coworkNotGitRepoHint"));
+        setGitLog("—");
+      }
     } catch {
       // silent
     } finally {
@@ -624,9 +645,9 @@ export function CoworkPage() {
       setOpenFile(null);
       setFileContent("");
       setFileDirty(false);
-      setDeskOpen(true);
-      setFocus("split");
-      setDeskTab("git");
+      setFocus("chat");
+      setFilesRailOpen(false);
+      setDeskOpen(false);
       appendTerm("system", `${t("openedFolder")}: ${path}`);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : t("apiUnavailable"));
@@ -819,9 +840,14 @@ export function CoworkPage() {
   }
 
   const applyConversationDetail = useCallback(
-    (detail: { conversation: Conversation; messages: Message[]; sessionUsage?: SessionUsageSnapshot }) => {
+    async (detail: {
+      conversation: Conversation;
+      messages: Message[];
+      sessionUsage?: SessionUsageSnapshot;
+    }) => {
+      const history = await loadBestMessages(detail.conversation.id, detail.messages);
       setConversation(detail.conversation);
-      setMessages(detail.messages);
+      setMessages(history);
       if (detail.sessionUsage) {
         setSessionUsage(detail.sessionUsage);
       }
@@ -873,18 +899,19 @@ export function CoworkPage() {
 
       if (!wantTeam && !workingAgentId) {
         try {
-          const created = await arrabApi.createAgent({
-            name: "Solo agent",
-            role: "Desktop assistant",
-            specialty: "general",
-            status: "active",
-            instructions:
-              "You are a capable coworker on the operator's laptop. Use tools to inspect and change the open folder. Prefer safe, reversible actions. Keep replies concise.",
-          });
-          setAgents((current) => [created, ...current]);
-          workingAgentId = created.id;
-          setAgentId(created.id);
-          setActiveTabKey(`solo:${created.id}`);
+          const ensured = await ensureDefaultSoloAgent(
+            agents,
+            defaultSoloAgentBody(
+              t("chatSoloDefaultName"),
+              t("chatSoloDefaultRole"),
+              t("chatSoloDefaultInstructions"),
+            ),
+          );
+          setAgents(ensured);
+          workingAgentId = ensured[0]?.id ?? "";
+          if (!workingAgentId) return null;
+          setAgentId(workingAgentId);
+          setActiveTabKey(`solo:${workingAgentId}`);
         } catch (err: unknown) {
           const message = err instanceof ApiRequestError ? err.message : t("apiUnavailable");
           if (!isTransientApiError(message)) setError(message);
@@ -897,7 +924,7 @@ export function CoworkPage() {
       try {
         const loadDetail = async (id: string) => {
           const detail = await arrabApi.conversation(id);
-          applyConversationDetail(detail);
+          await applyConversationDetail(detail);
           return detail.conversation;
         };
 
@@ -940,27 +967,30 @@ export function CoworkPage() {
         return loadDetail(created.id);
       } catch (err: unknown) {
         const message = err instanceof ApiRequestError ? err.message : t("apiUnavailable");
-        if (/unknown agent|not found/i.test(message)) {
+        if (/unknown agent/i.test(message)) {
           try {
             localStorage.removeItem(LAST_COWORK_AGENT_KEY);
-            const created = await arrabApi.createAgent({
-              name: "Solo agent",
-              role: "Desktop assistant",
-              specialty: "general",
-              status: "active",
-              instructions:
-                "You are a capable coworker on the operator's laptop. Use tools to inspect and change the open folder. Keep replies concise.",
-            });
-            setAgents((current) => [created, ...current.filter((item) => item.id !== workingAgentId)]);
-            setAgentId(created.id);
-            setActiveTabKey(`solo:${created.id}`);
+            const latest = await arrabApi.agents();
+            const ensured = await ensureDefaultSoloAgent(
+              latest.items.filter((agent) => agent.status !== "archived"),
+              defaultSoloAgentBody(
+                t("chatSoloDefaultName"),
+                t("chatSoloDefaultRole"),
+                t("chatSoloDefaultInstructions"),
+              ),
+            );
+            setAgents(ensured);
+            const pick = ensured[0];
+            if (!pick) return null;
+            setAgentId(pick.id);
+            setActiveTabKey(`solo:${pick.id}`);
             const convo = await arrabApi.createConversation({
-              agentId: created.id,
-              projectId: null,
+              agentId: pick.id,
+              projectId: pick.projectId,
               spend: spendPayload,
             });
             const detail = await arrabApi.conversation(convo.id);
-            applyConversationDetail(detail);
+            await applyConversationDetail(detail);
             return detail.conversation;
           } catch (retryErr: unknown) {
             const retryMessage =
@@ -970,6 +1000,19 @@ export function CoworkPage() {
           }
         }
         if (!isTransientApiError(message)) setError(message);
+        const cached = await listCachedChats();
+        const match = cached.find((item) =>
+          wantTeam && workingTeamId
+            ? item.conversation.teamId === workingTeamId
+            : Boolean(workingAgentId) && item.conversation.agentId === workingAgentId,
+        );
+        if (match) {
+          await applyConversationDetail({
+            conversation: match.conversation,
+            messages: match.messages,
+          });
+          return match.conversation;
+        }
         return null;
       } finally {
         setSessionBusy(false);
@@ -990,6 +1033,7 @@ export function CoworkPage() {
 
   // Load conversation when agent tab changes.
   useEffect(() => {
+    if (!deskReady) return;
     if (!activeTabKey && !agentId) return;
     let cancelled = false;
     setSessionBusy(true);
@@ -1005,7 +1049,7 @@ export function CoworkPage() {
     };
     // intentionally only when tab/agent changes — startSession identity churn would loop
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTabKey, agentId]);
+  }, [deskReady, activeTabKey, agentId]);
 
   function applyGoal(next: string, kickoff = false) {
     const trimmed = next.trim();
@@ -1109,18 +1153,31 @@ export function CoworkPage() {
       if (status === "approved" && isLocalToolApproval(approval)) {
         const executed = await executeApprovalLocally(approval);
         toolResult = executed.toolResult;
-        setToolTraces((current) => [
-          ...current,
-          {
+        const detail = `${executed.ok ? "OK" : "FAILED"} — ${executed.summary}\n${executed.toolResult}`.slice(
+          0,
+          2500,
+        );
+        setAgentSteps((current) => {
+          const pendingIdx = [...current]
+            .map((step, index) => ({ step, index }))
+            .reverse()
+            .find(
+              ({ step }) =>
+                step.status === "pending" ||
+                step.status === "running" ||
+                step.title.includes(executed.toolName.replace(/_/g, " ")),
+            )?.index;
+          const next: AgentStep = {
             id: `tool-${crypto.randomUUID()}`,
-            name: executed.toolName,
-            result: `${executed.ok ? "OK" : "FAILED"} — ${executed.summary}\n${executed.toolResult}`.slice(
-              0,
-              2500,
-            ),
-            ok: executed.ok,
-          },
-        ]);
+            title: friendlyToolTitle(executed.toolName, detail),
+            detail,
+            status: executed.ok ? "done" : "failed",
+          };
+          if (pendingIdx == null) return [...current, next];
+          const copy = [...current];
+          copy[pendingIdx] = { ...copy[pendingIdx]!, ...next, id: copy[pendingIdx]!.id };
+          return copy;
+        });
       }
       const result = await arrabApi.resolveApproval(approval.id, {
         status,
@@ -1133,28 +1190,26 @@ export function CoworkPage() {
           setSessionUsage(result.continued.sessionUsage);
         }
         if (result.continued.toolsUsed?.length) {
-          setToolTraces((current) => {
-            const skip = new Set(
-              [
-                "run_terminal",
-                "list_files",
-                "search_code",
-                "read_file",
-                "write_file",
-                "apply_patch",
-              ].filter((name) => current.some((trace) => trace.name === name)),
-            );
+          setAgentSteps((current) => {
+            const existingTitles = new Set(current.map((step) => step.title.toLowerCase()));
+            const extras = result.continued!.toolsUsed!.filter((name) => {
+              const title = friendlyToolTitle(name).toLowerCase();
+              return !existingTitles.has(title) && !existingTitles.has(name.replace(/_/g, " "));
+            });
+            if (extras.length === 0) return current;
             return [
               ...current,
-              ...result.continued!.toolsUsed!
-                .filter((name) => !skip.has(name))
-                .map((name) => ({
-                  id: `tool-${crypto.randomUUID()}`,
-                  name,
-                  result: t("approvalGranted"),
-                })),
+              ...extras.map((name) => ({
+                id: `tool-${crypto.randomUUID()}`,
+                title: friendlyToolTitle(name),
+                detail: t("approvalGranted"),
+                status: "done" as const,
+              })),
             ];
           });
+        }
+        if (result.continued.approval) {
+          void handleIncomingApproval(result.continued.approval);
         }
       } else if (status === "rejected") {
         setError(t("chatApprovalRejected"));
@@ -1178,17 +1233,35 @@ export function CoworkPage() {
         isPolicyClientTool(toolName) &&
         terminalPolicyRef.current === "allow");
     if (auto && toolName && isClientExecTool(toolName)) {
-      setToolTraces((current) => [
-        ...current,
+      setAgentSteps((current) => [
+        ...current.map((step) =>
+          step.id === "thinking" && step.status === "running"
+            ? { ...step, status: "done" as const }
+            : step,
+        ),
         {
           id: `tool-${crypto.randomUUID()}`,
-          name: toolName,
-          result: t("coworkTerminalAutoRunning"),
+          title: friendlyToolTitle(toolName, approval.detail ?? undefined),
+          detail: t("coworkTerminalAutoRunning"),
+          status: "running",
         },
       ]);
       await resolveCoworkApproval(approval, "approved");
       return;
     }
+    setAgentSteps((current) => [
+      ...current.map((step) =>
+        step.id === "thinking" && step.status === "running"
+          ? { ...step, status: "done" as const }
+          : step,
+      ),
+      {
+        id: `approval-${approval.id}`,
+        title: friendlyToolTitle(toolName || "tool", approval.detail ?? undefined),
+        detail: approval.detail ?? approval.title,
+        status: "pending",
+      },
+    ]);
     setPendingApproval(approval);
   }
 
@@ -1271,7 +1344,13 @@ export function CoworkPage() {
                 "- For Desktop organization: create clear folders, move files with `mv`, avoid deleting unless asked.",
                 "- After changes, summarize what you did and what remains.",
               ].join("\n")
-          : null,
+          : [
+              "No local folder is open.",
+              "- Use web_search for live facts, docs, and research.",
+              "- Answer questions, plan work, and draft text freely.",
+              "- If the operator opens a folder later, you will get file/terminal tools.",
+              "- Do not claim you edited local files until a folder is attached.",
+            ].join("\n"),
       ]
         .filter(Boolean)
         .join("\n\n") || null,
@@ -1292,7 +1371,9 @@ export function CoworkPage() {
     const attachedMentions = mentions;
     setSending(true);
     setError(null);
-    setToolTraces([]);
+    setAgentSteps([
+      { id: "thinking", title: "thinking", status: "running" },
+    ]);
     setPendingApproval(null);
     setStreamDraft("");
     setDraft("");
@@ -1311,17 +1392,65 @@ export function CoworkPage() {
         },
         {
           onToken: (text) => {
-            setStreamDraft((current) => current + text);
+            setStreamDraft((current) => {
+              if (!current) {
+                setAgentSteps((steps) =>
+                  steps.map((step) =>
+                    step.id === "thinking" && step.status === "running"
+                      ? { ...step, status: "done" }
+                      : step,
+                  ),
+                );
+              }
+              return current + text;
+            });
           },
-          onTool: (name, result) => {
-            setToolTraces((current) => [
-              ...current,
+          onToolStart: (name, detail) => {
+            setAgentSteps((current) => [
+              ...current.map((step) =>
+                step.id === "thinking" && step.status === "running"
+                  ? { ...step, status: "done" as const }
+                  : step,
+              ),
               {
-                id: `tool-${crypto.randomUUID()}`,
-                name,
-                result: result.slice(0, 2000),
+                id: `tool-run-${name}-${crypto.randomUUID()}`,
+                title: friendlyToolTitle(name, detail),
+                detail,
+                status: "running",
               },
             ]);
+          },
+          onTool: (name, result) => {
+            const detail = result.slice(0, 2000);
+            setAgentSteps((current) => {
+              const runningIdx = [...current]
+                .map((step, index) => ({ step, index }))
+                .reverse()
+                .find(
+                  ({ step }) =>
+                    step.status === "running" &&
+                    step.title === friendlyToolTitle(name, step.detail),
+                )?.index;
+              const done: AgentStep = {
+                id: `tool-${crypto.randomUUID()}`,
+                title: friendlyToolTitle(name, detail),
+                detail,
+                status: detail.toLowerCase().includes("fail") ? "failed" : "done",
+              };
+              if (runningIdx == null) {
+                return [
+                  ...current.map((step) =>
+                    step.id === "thinking" && step.status === "running"
+                      ? { ...step, status: "done" as const }
+                      : step,
+                  ),
+                  done,
+                ];
+              }
+              const copy = [...current];
+              copy[runningIdx] = { ...copy[runningIdx]!, ...done, id: copy[runningIdx]!.id };
+              return copy;
+            });
           },
           onApproval: (approval) => {
             void handleIncomingApproval(approval);
@@ -1341,26 +1470,42 @@ export function CoworkPage() {
             ]);
             finalAssistant = response.assistantMessage;
             setStreamDraft("");
+            setAgentSteps((current) =>
+              current.map((step) =>
+                step.status === "running" ? { ...step, status: "done" as const } : step,
+              ),
+            );
             if (response.approval) {
               void handleIncomingApproval(response.approval);
             }
             if (response.toolsUsed?.length) {
-              setToolTraces((current) => {
-                const existing = new Set(current.map((item) => item.name));
-                const extras = response.toolsUsed!.filter((name) => !existing.has(name));
+              setAgentSteps((current) => {
+                const titles = new Set(current.map((step) => step.title.toLowerCase()));
+                const extras = response.toolsUsed!.filter((name) => {
+                  const friendly = friendlyToolTitle(name).toLowerCase();
+                  return !titles.has(friendly) && !titles.has(name.replace(/_/g, " "));
+                });
                 if (extras.length === 0) return current;
                 return [
                   ...current,
                   ...extras.map((name) => ({
                     id: `tool-${crypto.randomUUID()}`,
-                    name,
-                    result: t("chatToolUsed").replace("{name}", name),
+                    title: friendlyToolTitle(name),
+                    detail: t("chatToolUsed").replace("{name}", name),
+                    status: "done" as const,
                   })),
                 ];
               });
             }
           },
           onError: (message) => {
+            setAgentSteps((current) =>
+              current.map((step) =>
+                step.status === "running" || step.status === "pending"
+                  ? { ...step, status: "failed" as const }
+                  : step,
+              ),
+            );
             if (!isTransientApiError(message)) setError(message);
           },
         },
@@ -1410,10 +1555,72 @@ export function CoworkPage() {
     await runInFolder(command);
   }
 
-  const showChat = !folderPath || focus !== "terminal";
-  const showFilesRail = Boolean(folderPath);
-  const showDesk = Boolean(folderPath) && focus === "split" && deskOpen;
-  const showTerminal = Boolean(folderPath) && focus !== "chat";
+  const showChat = focus !== "terminal" || !folderPath;
+  const showFilesRail = Boolean(folderPath) && filesRailOpen;
+  const showDesk = deskOpen;
+  const showTerminal = Boolean(folderPath) && focus === "terminal";
+
+  function closeAgentTab(key: string) {
+    setAgentTabs((current) => {
+      const next = current.filter((tab) => tab.key !== key);
+      if (activeTabKey === key) {
+        const fallback = next[0] ?? null;
+        if (fallback) {
+          setActiveTabKey(fallback.key);
+          if (fallback.kind === "solo" && fallback.agentId) setAgentId(fallback.agentId);
+        } else {
+          setActiveTabKey("solo");
+        }
+        setConversation(null);
+        setMessages([]);
+        setPendingApproval(null);
+        setAgentSteps([]);
+      }
+      return next;
+    });
+    setTabMenu(null);
+  }
+
+  async function deleteAgentFromTab(agentId: string, tabKey: string) {
+    setTabMenu(null);
+    setSessionBusy(true);
+    try {
+      try {
+        await arrabApi.deleteAgent(agentId);
+      } catch {
+        await arrabApi.updateAgent(agentId, { status: "archived" });
+      }
+      setAgents((current) => current.filter((agent) => agent.id !== agentId));
+      closeAgentTab(tabKey);
+    } catch (err: unknown) {
+      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+    } finally {
+      setSessionBusy(false);
+    }
+  }
+
+  async function hireCoworker() {
+    setError(null);
+    setSessionBusy(true);
+    try {
+      const created = await arrabApi.createAgent({
+        name: t("chatSoloDefaultName"),
+        role: t("chatSoloDefaultRole"),
+        specialty: "general",
+        status: "active",
+        instructions: t("chatSoloDefaultInstructions"),
+      });
+      setAgents((current) => [...current, created]);
+      openAgentTab(created);
+      if (folderPath) {
+        await startSession("resume");
+      }
+    } catch (err: unknown) {
+      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+    } finally {
+      setSessionBusy(false);
+    }
+  }
 
   function switchAgentTab(tab: AgentTab) {
     setActiveTabKey(tab.key);
@@ -1424,7 +1631,7 @@ export function CoworkPage() {
     setMessages([]);
     setSessionUsage(null);
     setPendingApproval(null);
-    setToolTraces([]);
+    setAgentSteps([]);
   }
 
   function openAgentTab(agent: Agent) {
@@ -1447,92 +1654,73 @@ export function CoworkPage() {
   }
 
   return (
-    <Surface className="cowork-shell chat-comfy flex h-full flex-col overflow-hidden">
+    <Surface className="cowork-shell chat-comfy cowork-friendly flex h-full flex-col overflow-hidden">
       <div className="cowork-atmosphere pointer-events-none absolute inset-0" />
 
-      <header className="relative z-10 flex shrink-0 items-center gap-3 border-b border-white/[0.06] px-4 py-3 lg:px-6">
+      <header className="relative z-10 flex shrink-0 items-center gap-3 border-b border-white/[0.06] px-4 py-3.5 lg:px-6">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <div
             className={cn(
-              "flex size-9 shrink-0 items-center justify-center rounded-xl border text-[11px] font-medium",
-              folderPath
-                ? "border-white/20 bg-white text-black"
-                : "border-white/[0.1] bg-white/[0.03] text-neutral-300",
+              "home-avatar flex size-11 shrink-0 items-center justify-center text-[12px] font-medium",
+              !folderPath && "opacity-70",
             )}
           >
-            {selectedAgent ? initials(selectedAgent.name) : <Laptop className="size-3.5" />}
+            {selectedAgent ? initials(selectedAgent.name) : <Laptop className="size-4" strokeWidth={1.6} />}
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2">
-              <h1 className="truncate text-[14px] font-medium tracking-[-0.02em] text-white">
+              <h1 className="truncate text-[15px] font-medium tracking-[-0.02em] text-white">
                 {activeAgentTab?.kind === "team"
                   ? t("coworkTeamTab")
                   : selectedAgent?.name ?? t("coworkTitle")}
               </h1>
               {conversation ? (
-                <span className="chat-pro-status">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-white/[0.05] px-2 py-0.5 text-[11px] text-neutral-400">
                   <span className="cowork-pulse size-1.5 rounded-full bg-emerald-400/90" />
                   {t("sessionLive")}
                 </span>
               ) : null}
-              {providerConfigured === false ? (
-                <span className="hidden text-[10px] text-neutral-600 sm:inline">
-                  {t("providerOffline")}
-                </span>
-              ) : null}
             </div>
-            <p className="mt-0.5 truncate text-[11px] text-neutral-500">
+            <p className="mt-0.5 truncate text-[12px] text-neutral-500">
               {folderPath
-                ? [folderName(folderPath), branch ? branch : null, selectedAgent?.role]
+                ? [folderName(folderPath), branch ? branch : null]
                     .filter(Boolean)
                     .join(" · ")
-                : t("coworkNeedFolder")}
+                : t("coworkNoFolderHint")}
             </p>
           </div>
         </div>
 
-        <div className="flex shrink-0 items-center gap-1.5">
-          <div className="cowork-token-meter hidden sm:flex" title={t("coworkTokenUsage")}>
-            <div className="flex items-center gap-1">
-              {(
-                [
-                  ["low", t("chatSpendEco")],
-                  ["medium", t("spendMedium")],
-                  ["high", t("spendHigh")],
-                ] as const
-              ).map(([id, label]) => (
-                <button
-                  key={id}
-                  type="button"
-                  onClick={() => {
-                    setSpendTier(id);
-                    setEcoMode(id === "low");
-                    setBudgetInput(String(DEFAULT_SESSION_BUDGETS[id]));
-                  }}
-                  className={cn(
-                    "rounded px-1.5 py-0.5 text-[9px] uppercase tracking-wide transition",
-                    spendTier === id ? "bg-white text-black" : "text-neutral-600 hover:text-neutral-300",
-                  )}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-            <div className="cowork-token-meter-track">
-              <div
-                className="cowork-token-meter-fill"
-                style={{ width: `${Math.round(spendUsedRatio * 100)}%` }}
-              />
-            </div>
-            <p className="text-[9px] tabular-nums text-neutral-600">
-              {(sessionUsage?.totalTokens ?? 0).toLocaleString()}
-              {sessionUsage?.budget != null ? ` / ${sessionUsage.budget.toLocaleString()}` : ""}
-            </p>
+        <div className="flex shrink-0 items-center gap-2">
+          <div className="hidden items-center gap-1 rounded-2xl bg-white/[0.04] p-1 sm:flex" title={t("coworkTokenUsage")}>
+            {(
+              [
+                ["low", t("chatSpendEco")],
+                ["medium", t("spendMedium")],
+                ["high", t("spendHigh")],
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => {
+                  setSpendTier(id);
+                  setEcoMode(id === "low");
+                  setBudgetInput(String(DEFAULT_SESSION_BUDGETS[id]));
+                }}
+                className={cn(
+                  "h-8 rounded-xl px-2.5 text-[11px] font-medium transition-colors",
+                  spendTier === id ? "bg-white text-black" : "text-neutral-500 hover:text-neutral-200",
+                )}
+              >
+                {label}
+              </button>
+            ))}
           </div>
 
           {folderPath ? (
             <>
-              <div className="hidden items-center rounded-xl border border-white/[0.08] bg-black/30 p-0.5 md:flex">
+              <div className="hidden items-center rounded-2xl bg-white/[0.04] p-1 md:flex">
                 {(
                   [
                     ["chat", t("coworkFocusChat"), MessagesSquare],
@@ -1545,9 +1733,14 @@ export function CoworkPage() {
                     type="button"
                     title={label}
                     aria-label={label}
-                    onClick={() => setFocus(id)}
+                    onClick={() => {
+                      setFocus(id);
+                      if (id === "chat") {
+                        setFilesRailOpen(false);
+                      }
+                    }}
                     className={cn(
-                      "inline-flex size-8 items-center justify-center rounded-lg transition-colors",
+                      "inline-flex size-8 items-center justify-center rounded-xl transition-colors",
                       focus === id ? "bg-white text-black" : "text-neutral-500 hover:text-white",
                     )}
                   >
@@ -1558,58 +1751,64 @@ export function CoworkPage() {
               <button
                 type="button"
                 onClick={() => void chooseFolder()}
-                className="chat-pro-icon-btn"
+                className="home-btn-secondary hidden h-9 items-center gap-1.5 px-3 text-[12px] lg:inline-flex"
+                title={t("changeFolder")}
+              >
+                <FolderOpen className="size-3.5" strokeWidth={1.6} />
+                {t("changeFolder")}
+              </button>
+              <button
+                type="button"
+                onClick={() => void chooseFolder()}
+                className="chat-pro-icon-btn lg:hidden"
                 title={t("changeFolder")}
                 aria-label={t("changeFolder")}
               >
                 <FolderOpen className="size-4" strokeWidth={1.6} />
               </button>
-              <button
-                type="button"
-                onClick={() => void clearFolder()}
-                className="hidden text-[11px] text-neutral-600 hover:text-white lg:inline"
-              >
-                {t("clearFolder")}
-              </button>
-              {branch ? (
-                <span className="hidden items-center gap-1 rounded-lg border border-white/[0.08] px-2 py-1 text-[10px] text-neutral-400 lg:inline-flex">
-                  <GitBranch className="size-3" />
-                  {branch}
-                </span>
-              ) : null}
             </>
           ) : (
             <button
               type="button"
               onClick={() => void chooseFolder()}
-              className="chat-pro-cta !h-8 !px-3 !text-[11px]"
+              className="home-btn-secondary h-9 items-center gap-1.5 px-3 text-[12px] inline-flex"
+              title={t("openPcFolder")}
             >
+              <FolderOpen className="size-3.5" strokeWidth={1.6} />
               {t("openPcFolder")}
             </button>
           )}
 
+          <button
+            type="button"
+            onClick={() => void startSession(conversation ? "fresh" : "resume")}
+            disabled={sessionBusy}
+            className="home-btn-primary hidden h-9 px-4 text-[12px] disabled:opacity-40 sm:inline-flex sm:items-center"
+          >
+            {sessionBusy ? t("connecting") : conversation ? t("newSession") : t("startSession")}
+          </button>
+
           {folderPath ? (
             <button
               type="button"
-              onClick={() => void startSession(conversation ? "fresh" : "resume")}
-              disabled={sessionBusy}
-              className="hidden h-8 rounded-lg bg-white px-3 text-[11px] font-medium text-black disabled:opacity-40 sm:inline-flex sm:items-center"
+              onClick={() => setFilesRailOpen((open) => !open)}
+              className={cn("chat-pro-icon-btn", filesRailOpen && "is-on")}
+              title={t("coworkFilesRail")}
+              aria-label={t("coworkFilesRail")}
             >
-              {sessionBusy ? t("connecting") : conversation ? t("newSession") : t("startSession")}
+              <HardDrive className="size-4" strokeWidth={1.6} />
             </button>
           ) : null}
 
-          {folderPath && focus === "split" ? (
-            <button
-              type="button"
-              onClick={() => setDeskOpen((open) => !open)}
-              className={cn("chat-pro-icon-btn", deskOpen && "is-on")}
-              title={t("chatAdvanced")}
-              aria-label={t("chatAdvanced")}
-            >
-              <PanelRight className="size-4" strokeWidth={1.6} />
-            </button>
-          ) : null}
+          <button
+            type="button"
+            onClick={() => setDeskOpen((open) => !open)}
+            className={cn("chat-pro-icon-btn", deskOpen && "is-on")}
+            title={t("coworkDeskTitle")}
+            aria-label={t("coworkDeskTitle")}
+          >
+            <PanelRight className="size-4" strokeWidth={1.6} />
+          </button>
         </div>
       </header>
 
@@ -1621,27 +1820,27 @@ export function CoworkPage() {
             onClick={() => switchAgentTab(tab)}
             className={cn("cowork-agent-tab", activeTabKey === tab.key && "is-on")}
           >
-            {tab.kind === "team" ? <Users className="size-3" strokeWidth={1.8} /> : null}
+            {tab.kind === "team" ? <Users className="size-3.5" strokeWidth={1.8} /> : null}
             {tab.label}
           </button>
         ))}
-        <div className="ms-auto flex items-center gap-1">
-          <span className="hidden text-[10px] text-neutral-600 lg:inline">{t("coworkAgentsTogether")}</span>
+        <div className="ms-auto flex items-center gap-2">
+          <span className="hidden text-[11px] text-neutral-600 lg:inline">{t("coworkAgentsTogether")}</span>
           <div className="relative">
             <details className="group">
               <summary className="cowork-agent-tab list-none cursor-pointer [&::-webkit-details-marker]:hidden">
-                <Plus className="size-3" strokeWidth={2} />
+                <Plus className="size-3.5" strokeWidth={2} />
                 {t("coworkOpenAgent")}
               </summary>
-              <div className="absolute end-0 top-full z-20 mt-1 min-w-[160px] rounded-xl border border-white/10 bg-[#0a0a0a] py-1 shadow-xl">
+              <div className="absolute end-0 top-full z-20 mt-1.5 min-w-[180px] overflow-hidden rounded-2xl border border-white/10 bg-[#0c0c0c] py-1 shadow-xl">
                 {agents.map((agent) => (
                   <button
                     key={agent.id}
                     type="button"
                     onClick={() => openAgentTab(agent)}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-start text-[11px] text-neutral-300 hover:bg-white/[0.05]"
+                    className="flex w-full items-center gap-2.5 px-3 py-2.5 text-start text-[12px] text-neutral-300 hover:bg-white/[0.05]"
                   >
-                    <span className="flex size-5 items-center justify-center rounded bg-white/10 text-[9px]">
+                    <span className="home-avatar flex size-6 items-center justify-center text-[9px]">
                       {initials(agent.name)}
                     </span>
                     {agent.name}
@@ -1683,46 +1882,58 @@ export function CoworkPage() {
         <div className="flex min-h-0 flex-1">
           {showFilesRail ? (
             <aside className="cowork-file-rail cowork-rise hidden md:flex">
-              <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-2.5">
-                <p className="chat-pro-kicker">{t("coworkFilesRail")}</p>
-                <span className="truncate text-[10px] text-neutral-600">/{dirRel || "."}</span>
+              <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-3.5 py-3">
+                <div className="min-w-0">
+                  <p className="text-[13px] font-medium text-white">{t("coworkFilesRail")}</p>
+                  <p className="mt-0.5 truncate text-[11px] text-neutral-500">
+                    {folderName(folderPath!)}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    disabled={!dirRel}
+                    onClick={() => setDirRel(parentRel(dirRel))}
+                    className="home-btn-secondary h-8 px-2.5 text-[11px] disabled:opacity-30"
+                    title={t("coworkGoUp")}
+                  >
+                    ↑
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFilesRailOpen(false)}
+                    className="chat-pro-icon-btn"
+                    title={t("close")}
+                    aria-label={t("close")}
+                  >
+                    <X className="size-3.5" strokeWidth={1.7} />
+                  </button>
+                </div>
               </div>
-              <div className="flex items-center gap-1 border-b border-white/[0.06] px-2 py-1.5">
-                <button
-                  type="button"
-                  disabled={!dirRel}
-                  onClick={() => setDirRel(parentRel(dirRel))}
-                  className="rounded px-1.5 py-0.5 text-[11px] text-neutral-400 hover:text-white disabled:opacity-30"
-                >
-                  ↑
-                </button>
-                <HardDrive className="size-3 text-neutral-600" />
-                <span className="truncate text-[10px] text-neutral-500">{folderName(folderPath!)}</span>
-              </div>
-              <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-1.5 py-2">
+              <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 py-2">
                 {entries.map((entry) => (
                   <li key={entry.path}>
                     <button
                       type="button"
                       onClick={() => void openEntry(entry)}
                       className={cn(
-                        "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-start text-[11px] transition",
+                        "flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-start text-[12px] transition",
                         openFile === entry.path
                           ? "bg-white/[0.08] text-white"
                           : "text-neutral-400 hover:bg-white/[0.04] hover:text-neutral-200",
                       )}
                     >
                       {entry.kind === "dir" ? (
-                        <FolderOpen className="size-3 shrink-0 text-neutral-500" />
+                        <FolderOpen className="size-3.5 shrink-0 text-neutral-500" />
                       ) : (
-                        <FileCode2 className="size-3 shrink-0 text-neutral-600" />
+                        <FileCode2 className="size-3.5 shrink-0 text-neutral-600" />
                       )}
                       <span className="truncate">{entry.name}</span>
                     </button>
                   </li>
                 ))}
                 {entries.length === 0 ? (
-                  <li className="px-2 py-3 text-[11px] text-neutral-600">{t("openFolderToList")}</li>
+                  <li className="px-2.5 py-4 text-[12px] text-neutral-600">{t("openFolderToList")}</li>
                 ) : null}
               </ul>
               {fileTabs.length > 0 ? (
@@ -1811,22 +2022,50 @@ export function CoworkPage() {
                   />
                 ) : null}
                 {folderPath && !conversation && agents.length === 0 ? (
-                  <EmptyState title={t("noCoworkers")} body={t("coworkEmptyBody")} />
+                  <EmptyState
+                    title={t("coworkHireTitle")}
+                    body={t("coworkHireBody")}
+                    actionLabel={t("coworkHireCta")}
+                    onAction={() => void hireCoworker()}
+                    hero
+                  />
                 ) : null}
                 {folderPath && !conversation && agents.length > 0 ? (
                   <EmptyState
                     title={t("coworkEmptyTitle")}
-                    body={t("coworkPcEmpty")}
+                    body={t("coworkPcEmpty").replace(
+                      "{folder}",
+                      folderName(folderPath),
+                    )}
                     actionLabel={t("startSession")}
                     onAction={() => void startSession("resume")}
+                    hero
                   />
                 ) : null}
                 {folderPath && conversation && messages.length === 0 && !sending ? (
                   <EmptyState
                     title={selectedAgent?.name ?? t("coworker")}
-                    body={t("coworkPcReady")}
+                    body={t("coworkPcReady").replace("{folder}", folderName(folderPath))}
                     soft
                   />
+                ) : null}
+
+                {folderPath && focus === "chat" && !filesRailOpen ? (
+                  <div className="mx-auto mb-4 flex max-w-2xl justify-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFilesRailOpen(true);
+                        setFocus("split");
+                        setDeskOpen(true);
+                      }}
+                      className="cowork-folder-chip inline-flex items-center gap-2"
+                    >
+                      <FolderOpen className="size-3.5" strokeWidth={1.7} />
+                      <span className="truncate max-w-[220px]">{folderName(folderPath)}</span>
+                      <span className="text-neutral-500">{t("coworkShowWorkspace")}</span>
+                    </button>
+                  </div>
                 ) : null}
 
                 <div className="mx-auto flex max-w-2xl flex-col gap-5">
@@ -1851,32 +2090,8 @@ export function CoworkPage() {
                       />
                     ) : null;
                   })()}
-                  {toolTraces.length > 0 ? (
-                    <ul className="space-y-2">
-                      {toolTraces.map((trace) => (
-                        <li
-                          key={trace.id}
-                          className={cn(
-                            "rounded-xl border px-3 py-2.5",
-                            trace.ok === false
-                              ? "border-red-500/25 bg-red-500/[0.06]"
-                              : "border-white/[0.08] bg-white/[0.03]",
-                          )}
-                        >
-                          <p className="flex items-center gap-1.5 text-[11px] text-neutral-400">
-                            <Wrench className="size-3" strokeWidth={1.7} />
-                            {trace.ok === false
-                              ? `Failed · ${trace.name}`
-                              : trace.ok
-                                ? `OK · ${trace.name}`
-                                : t("chatToolUsed").replace("{name}", trace.name)}
-                          </p>
-                          <p className="mt-1 max-h-28 overflow-y-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-neutral-500">
-                            {trace.result}
-                          </p>
-                        </li>
-                      ))}
-                    </ul>
+                  {agentSteps.length > 0 ? (
+                    <AgentSteps steps={agentSteps} thinkingLabel={`${t("thinking")}…`} />
                   ) : null}
                   {pendingApproval ? (
                     <div className="rounded-2xl border border-white/[0.12] bg-[#0c0c0c] p-4">
@@ -1925,22 +2140,11 @@ export function CoworkPage() {
                       coworkerLabel={selectedAgent?.name ?? t("coworker")}
                     />
                   ) : null}
-                  {sending && !streamDraft && !pendingApproval ? (
-                    <div className="flex items-center gap-2 text-xs text-neutral-500">
-                      <span className="cowork-thinking inline-flex gap-1">
-                        <i />
-                        <i />
-                        <i />
-                      </span>
-                      {t("thinking")}
-                    </div>
-                  ) : null}
                   <div ref={chatEnd} />
                 </div>
               </div>
 
-              {folderPath ? (
-                <form
+              <form
                   onSubmit={(event) => void onSend(event)}
                   className="shrink-0 border-t border-white/[0.06] bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 py-4 lg:px-10"
                 >
@@ -2026,7 +2230,9 @@ export function CoworkPage() {
                         folderPath={folderPath}
                         textareaRef={composerRef}
                         disabled={sending}
-                        placeholder={t("coworkMentionPlaceholder")}
+                        placeholder={
+                          folderPath ? t("coworkMentionPlaceholder") : t("coworkChatPlaceholder")
+                        }
                         rows={2}
                         className="!min-h-[56px] border-0 bg-transparent px-1 py-0.5 text-[15px] leading-[1.55] tracking-[-0.01em] text-white shadow-none outline-none placeholder:text-neutral-600 disabled:opacity-40"
                         onSubmit={() => void onSend()}
@@ -2060,6 +2266,7 @@ export function CoworkPage() {
                             type="button"
                             onClick={() => {
                               setFocus("split");
+                              setFilesRailOpen(true);
                               setDeskOpen(true);
                             }}
                             className="chat-pro-icon-btn"
@@ -2073,6 +2280,7 @@ export function CoworkPage() {
                             onClick={() => {
                               setDeskTab("git");
                               setFocus("split");
+                              setFilesRailOpen(true);
                               setDeskOpen(true);
                             }}
                             className="chat-pro-icon-btn"
@@ -2092,33 +2300,33 @@ export function CoworkPage() {
                           </button>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <div className="flex items-center rounded-full border border-white/[0.08] bg-white/[0.03] p-0.5">
+                          <div className="flex items-center rounded-full bg-white/[0.04] p-0.5">
                             <button
                               type="button"
                               onClick={() => applyTerminalPolicy("ask")}
                               className={cn(
-                                "inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[10px] transition",
+                                "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] font-medium transition",
                                 terminalPolicy === "ask"
                                   ? "bg-white text-black"
                                   : "text-neutral-500 hover:text-neutral-300",
                               )}
                               title={t("coworkAskApproval")}
                             >
-                              <ShieldQuestion className="size-3" strokeWidth={1.8} />
+                              <ShieldQuestion className="size-3.5" strokeWidth={1.8} />
                               {t("coworkAskApproval")}
                             </button>
                             <button
                               type="button"
                               onClick={() => applyTerminalPolicy("allow")}
                               className={cn(
-                                "inline-flex h-7 items-center gap-1 rounded-full px-2.5 text-[10px] transition",
+                                "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] font-medium transition",
                                 terminalPolicy === "allow"
                                   ? "bg-white text-black"
                                   : "text-neutral-500 hover:text-neutral-300",
                               )}
                               title={t("coworkAllowEverything")}
                             >
-                              <ShieldCheck className="size-3" strokeWidth={1.8} />
+                              <ShieldCheck className="size-3.5" strokeWidth={1.8} />
                               {t("coworkAllowEverything")}
                             </button>
                           </div>
@@ -2136,14 +2344,27 @@ export function CoworkPage() {
                     </div>
                   </div>
                 </form>
-              ) : null}
             </section>
           ) : null}
 
           {showDesk ? (
-            <aside className="cowork-rise cowork-rise-delay flex w-[300px] shrink-0 flex-col border-s border-white/[0.06] bg-[#060606] xl:w-[320px]">
-              <div className="border-b border-white/[0.06] px-2">
-                <nav className="flex gap-0">
+            <aside className="cowork-rise cowork-rise-delay desk-panel flex w-[280px] shrink-0 flex-col border-s border-white/[0.06] bg-transparent xl:w-[300px]">
+              <div className="flex items-center justify-between gap-2 border-b border-white/[0.06] px-3 py-2.5">
+                <p className="text-[13px] font-medium tracking-tight text-white">
+                  {t("coworkDeskTitle")}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setDeskOpen(false)}
+                  className="chat-pro-icon-btn"
+                  title={t("close")}
+                  aria-label={t("close")}
+                >
+                  <X className="size-3.5" strokeWidth={1.7} />
+                </button>
+              </div>
+              <div className="border-b border-white/[0.06] px-3 pb-2.5 pt-2">
+                <nav className="grid grid-cols-4 gap-1 rounded-xl bg-white/[0.03] p-0.5">
                   {(
                     [
                       ["git", t("gitTab")],
@@ -2157,61 +2378,66 @@ export function CoworkPage() {
                       type="button"
                       onClick={() => setDeskTab(id)}
                       className={cn(
-                        "relative flex-1 px-2 py-3 text-[11px] transition-colors",
-                        deskTab === id ? "text-white" : "text-neutral-600 hover:text-neutral-300",
+                        "h-8 rounded-lg text-[10px] font-medium transition-colors",
+                        deskTab === id
+                          ? "bg-white text-black"
+                          : "text-neutral-500 hover:text-neutral-200",
                       )}
                     >
                       {label}
-                      {deskTab === id ? (
-                        <span className="absolute inset-x-3 bottom-0 h-px bg-white" />
-                      ) : null}
                     </button>
                   ))}
                 </nav>
               </div>
 
-              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
-                {deskTab === "git" ? (
+              <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 py-3">
+                {!folderPath && deskTab !== "notes" ? (
+                  <div className="rounded-xl border border-dashed border-white/10 px-3 py-6 text-center">
+                    <p className="text-[12px] text-neutral-500">{t("coworkDeskNeedsFolder")}</p>
+                    <button
+                      type="button"
+                      onClick={() => void chooseFolder()}
+                      className="mt-3 home-btn-secondary h-8 px-3 text-[11px]"
+                    >
+                      {t("openPcFolder")}
+                    </button>
+                  </div>
+                ) : null}
+                {deskTab === "git" && folderPath ? (
                   <>
-                    <div className="space-y-2">
-                      <p className="chat-pro-kicker">{t("gitStatus")}</p>
-                      <pre className="max-h-28 overflow-y-auto whitespace-pre-wrap text-[11px] text-neutral-400">
+                    <div className="desk-card space-y-2 p-3.5">
+                      <p className="text-[13px] font-medium text-white">{t("gitStatus")}</p>
+                      <pre className="max-h-28 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-neutral-400">
                         {gitStatus || t("openFolderFirst")}
                       </pre>
                     </div>
-                    <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
-                      <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">
-                        {t("gitDiff")}
-                      </p>
-                      <pre className="mt-2 max-h-28 overflow-y-auto whitespace-pre-wrap text-[11px] text-neutral-400">
+                    <div className="desk-card space-y-2 p-3.5">
+                      <p className="text-[13px] font-medium text-white">{t("gitDiff")}</p>
+                      <pre className="max-h-28 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-neutral-400">
                         {gitDiff || t("noDiff")}
                       </pre>
                     </div>
-                    <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
-                      <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">
-                        {t("gitLog")}
-                      </p>
-                      <pre className="mt-2 max-h-24 overflow-y-auto whitespace-pre-wrap text-[11px] text-neutral-400">
+                    <div className="desk-card space-y-2 p-3.5">
+                      <p className="text-[13px] font-medium text-white">{t("gitLog")}</p>
+                      <pre className="max-h-24 overflow-y-auto whitespace-pre-wrap text-[11px] leading-relaxed text-neutral-400">
                         {gitLog || "—"}
                       </pre>
                     </div>
-                    <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
-                      <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">
-                        {t("branches")}
-                      </p>
+                    <div className="desk-card space-y-2 p-3.5">
+                      <p className="text-[13px] font-medium text-white">{t("branches")}</p>
                       <input
                         value={branchInput}
                         onChange={(event) => setBranchInput(event.target.value)}
                         placeholder={t("branchPlaceholder")}
-                        className="field mt-2"
+                        className="desk-input"
                         disabled={!folderPath}
                       />
-                      <div className="mt-2 flex flex-wrap gap-2">
+                      <div className="flex flex-wrap gap-2 pt-1">
                         <button
                           type="button"
                           disabled={!folderPath || terminalBusy}
                           onClick={() => void checkoutBranch()}
-                          className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-neutral-200 disabled:opacity-40"
+                          className="home-btn-secondary h-8 px-3 text-[11px] disabled:opacity-40"
                         >
                           {t("checkout")}
                         </button>
@@ -2219,7 +2445,7 @@ export function CoworkPage() {
                           type="button"
                           disabled={!folderPath || terminalBusy}
                           onClick={() => void createBranch()}
-                          className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-neutral-200 disabled:opacity-40"
+                          className="home-btn-secondary h-8 px-3 text-[11px] disabled:opacity-40"
                         >
                           {t("createBranch")}
                         </button>
@@ -2227,29 +2453,27 @@ export function CoworkPage() {
                           type="button"
                           disabled={!folderPath || terminalBusy}
                           onClick={() => void pullLocal()}
-                          className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-neutral-200 disabled:opacity-40"
+                          className="home-btn-secondary h-8 px-3 text-[11px] disabled:opacity-40"
                         >
                           {t("pull")}
                         </button>
                       </div>
                     </div>
-                    <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
-                      <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">
-                        {t("commitPush")}
-                      </p>
+                    <div className="desk-card space-y-2 p-3.5">
+                      <p className="text-[13px] font-medium text-white">{t("commitPush")}</p>
                       <input
                         value={commitMessage}
                         onChange={(event) => setCommitMessage(event.target.value)}
                         placeholder={t("commitMessagePlaceholder")}
-                        className="field mt-2"
+                        className="desk-input"
                         disabled={!folderPath}
                       />
-                      <div className="mt-2 flex flex-wrap gap-2">
+                      <div className="flex flex-wrap gap-2 pt-1">
                         <button
                           type="button"
                           disabled={!folderPath || terminalBusy}
                           onClick={() => void commitLocal()}
-                          className="rounded-full bg-white px-3 py-1.5 text-xs font-medium text-black disabled:opacity-40"
+                          className="home-btn-primary h-8 px-3 text-[11px] disabled:opacity-40"
                         >
                           {t("commit")}
                         </button>
@@ -2257,7 +2481,7 @@ export function CoworkPage() {
                           type="button"
                           disabled={!folderPath || terminalBusy}
                           onClick={() => void pushLocal()}
-                          className="rounded-full border border-white/15 px-3 py-1.5 text-xs text-neutral-200 disabled:opacity-40"
+                          className="home-btn-secondary h-8 px-3 text-[11px] disabled:opacity-40"
                         >
                           {t("push")}
                         </button>
@@ -2266,20 +2490,20 @@ export function CoworkPage() {
                   </>
                 ) : null}
 
-                {deskTab === "run" ? (
-                  <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
-                    <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">
-                      {t("runPresets")}
-                    </p>
-                    <p className="mt-1 text-xs text-neutral-500">{t("runPresetsBody")}</p>
-                    <div className="mt-3 flex flex-wrap gap-2">
+                {deskTab === "run" && folderPath ? (
+                  <div className="desk-card space-y-3 p-3.5">
+                    <div>
+                      <p className="text-[13px] font-medium text-white">{t("runPresets")}</p>
+                      <p className="mt-1 text-[12px] text-neutral-500">{t("runPresetsBody")}</p>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
                       {RUN_PRESETS.map((preset) => (
                         <button
                           key={preset.id}
                           type="button"
                           disabled={!folderPath || terminalBusy}
                           onClick={() => void runInFolder(preset.command, t(preset.labelKey))}
-                          className="inline-flex items-center gap-1.5 rounded-full border border-white/15 px-3 py-1.5 text-xs text-neutral-200 hover:bg-white/5 disabled:opacity-40"
+                          className="home-btn-secondary inline-flex h-9 items-center gap-1.5 px-3 text-[11px] disabled:opacity-40"
                         >
                           <Play className="size-3" />
                           {t(preset.labelKey)}
@@ -2290,37 +2514,33 @@ export function CoworkPage() {
                 ) : null}
 
                 {deskTab === "notes" ? (
-                  <div className="space-y-4">
-                    <label className="grid gap-2">
-                      <span className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">
-                        {t("sessionNotes")}
-                      </span>
+                  <div className="space-y-3">
+                    <label className="desk-card grid gap-2 p-3.5">
+                      <span className="text-[13px] font-medium text-white">{t("sessionNotes")}</span>
                       <textarea
                         value={notes}
                         onChange={(event) => setNotes(event.target.value)}
                         rows={12}
-                        className="min-h-[220px] w-full resize-none rounded-2xl border border-white/10 bg-black px-3 py-3 text-sm leading-relaxed text-neutral-200 outline-none"
+                        className="min-h-[220px] w-full resize-none rounded-2xl border border-white/[0.07] bg-black/25 px-3 py-3 text-[13px] leading-relaxed text-neutral-200 outline-none focus:border-white/18"
                       />
                       <p className="text-[11px] text-neutral-600">
                         {t("linkedProject")}: {linkedProject?.name ?? t("none")}
                       </p>
                     </label>
-                    <div className="rounded-2xl border border-white/10 bg-black/40 p-4">
+                    <div className="desk-card p-3.5">
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">
-                          {t("activeGoal")}
-                        </p>
+                        <p className="text-[13px] font-medium text-white">{t("activeGoal")}</p>
                         {activeGoal ? (
                           <button
                             type="button"
                             onClick={() => applyGoal("")}
-                            className="text-[11px] text-neutral-400 hover:text-white"
+                            className="text-[12px] text-neutral-400 hover:text-white"
                           >
                             {t("markGoalDone")}
                           </button>
                         ) : null}
                       </div>
-                      <p className="mt-2 text-sm leading-relaxed text-neutral-300">
+                      <p className="mt-2 text-[13px] leading-relaxed text-neutral-300">
                         {activeGoal || t("goalHint")}
                       </p>
                       {!activeGoal ? (
@@ -2331,7 +2551,7 @@ export function CoworkPage() {
                             setGoalDraft("");
                             setGoalEditorOpen(true);
                           }}
-                          className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-white/15 px-3 py-1.5 text-xs text-neutral-200 disabled:opacity-40"
+                          className="home-btn-secondary mt-3 inline-flex h-9 items-center gap-1.5 px-3 text-[12px] disabled:opacity-40"
                         >
                           <Target className="size-3.5" strokeWidth={1.8} />
                           {t("setGoal")}
@@ -2341,7 +2561,7 @@ export function CoworkPage() {
                   </div>
                 ) : null}
 
-                {deskTab === "restore" ? (
+                {deskTab === "restore" && folderPath ? (
                   <div className="space-y-3">
                     <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
                       <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">
@@ -2484,6 +2704,53 @@ export function CoworkPage() {
           </section>
         ) : null}
       </div>
+
+      {tabMenu ? (
+        <div
+          className="fixed inset-0 z-[80]"
+          onClick={() => setTabMenu(null)}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setTabMenu(null);
+          }}
+        >
+          <div
+            className="absolute min-w-[168px] overflow-hidden rounded-2xl border border-white/10 bg-[#111] py-1 shadow-2xl"
+            style={{ left: tabMenu.x, top: tabMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="flex w-full items-center gap-2 px-3 py-2 text-start text-[12px] text-neutral-300 hover:bg-white/[0.05]"
+              onClick={() => closeAgentTab(tabMenu.key)}
+            >
+              <X className="size-3.5" strokeWidth={1.7} />
+              {t("coworkCloseTab")}
+            </button>
+            {tabMenu.agentId ? (
+              tabMenu.confirmDelete ? (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-start text-[12px] text-red-300 hover:bg-white/[0.05]"
+                  onClick={() => void deleteAgentFromTab(tabMenu.agentId!, tabMenu.key)}
+                >
+                  <Trash2 className="size-3.5" strokeWidth={1.7} />
+                  {t("chatDeleteForever")}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2 text-start text-[12px] text-red-300/90 hover:bg-white/[0.05]"
+                  onClick={() => setTabMenu({ ...tabMenu, confirmDelete: true })}
+                >
+                  <Trash2 className="size-3.5" strokeWidth={1.7} />
+                  {t("chatDeleteAgent")}
+                </button>
+              )
+            ) : null}
+          </div>
+        </div>
+      ) : null}
     </Surface>
   );
 }
@@ -2500,7 +2767,7 @@ function MessageBubble({
   const isUser = message.role === "user";
   return (
     <article className={cn("flex flex-col gap-1.5", isUser ? "items-end" : "items-start")}>
-      <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-600">
+      <p className="text-[11px] tracking-wide text-neutral-600">
         {isUser ? youLabel : coworkerLabel}
       </p>
       <div
@@ -2535,33 +2802,33 @@ function EmptyState({
   return (
     <div
       className={cn(
-        "mx-auto flex max-w-lg flex-col items-center px-6 text-center",
-        hero ? "py-20" : soft ? "py-12" : "py-16",
+        "mx-auto flex max-w-md flex-col items-center px-6 text-center",
+        hero ? "py-20" : soft ? "py-14" : "py-16",
       )}
     >
       <div
         className={cn(
-          "mb-5 flex items-center justify-center border border-white/[0.08] bg-white/[0.03]",
-          hero ? "size-16 rounded-[1.35rem]" : "size-12 rounded-2xl",
+          "mb-5 flex items-center justify-center rounded-full border border-white/[0.08] bg-white/[0.04]",
+          hero ? "size-16" : "size-14",
         )}
       >
         <HardDrive
-          className={cn(hero ? "size-6" : "size-5", "text-neutral-400")}
+          className={cn(hero ? "size-6" : "size-5", "text-neutral-300")}
           strokeWidth={1.5}
         />
       </div>
       <h2
         className={cn(
-          "font-medium tracking-[-0.03em] text-white",
-          hero ? "text-[26px]" : "text-[18px]",
+          "font-semibold tracking-[-0.035em] text-white",
+          hero ? "text-[26px]" : "text-[20px]",
         )}
       >
         {title}
       </h2>
-      <p className="mt-2 max-w-md text-[13px] leading-relaxed text-neutral-500">{body}</p>
+      <p className="mt-2 max-w-sm text-[14px] leading-relaxed text-neutral-500">{body}</p>
       {actionLabel && onAction ? (
-        <button type="button" onClick={onAction} className="chat-pro-cta mt-6 gap-2">
-          <FolderOpen className="size-3.5" />
+        <button type="button" onClick={onAction} className="home-btn-primary mt-6 inline-flex h-11 items-center gap-2 px-5 text-[13px]">
+          <FolderOpen className="size-4" />
           {actionLabel}
         </button>
       ) : null}

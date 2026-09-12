@@ -3,6 +3,7 @@ import { AnthropicMessagesAdapter, OpenAiCompatibleAdapter, RegistryAiGateway } 
 import { GatewayChatRuntime } from "@arrab/agents";
 import {
   applyMigrations,
+  createFilePersistence,
   createInMemoryPersistence,
   createPostgresConnection,
   createPostgresPersistence,
@@ -37,6 +38,7 @@ export interface ApiContext {
   env: ApiEnv;
   persistence: Persistence;
   postgres: DatabaseConnection | null;
+  flushPersistence?: () => Promise<void>;
   aiGateway: RegistryAiGateway;
   chatRuntime: GatewayChatRuntime;
   queries: WorkspaceQueryService;
@@ -51,12 +53,17 @@ export interface ApiContext {
 export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
   let persistence: Persistence;
   let postgres: DatabaseConnection | null = null;
+  let flushPersistence: (() => Promise<void>) | undefined;
 
   if (env.databaseUrl) {
     postgres = createPostgresConnection({ connectionString: env.databaseUrl });
     await postgres.ping();
     await applyMigrations(postgres.pool);
     persistence = await createPostgresPersistence(postgres.pool);
+  } else if (env.dataDir) {
+    const file = await createFilePersistence(env.dataDir);
+    persistence = file.persistence;
+    flushPersistence = file.flush;
   } else {
     persistence = createInMemoryPersistence();
   }
@@ -156,6 +163,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     env,
     persistence,
     postgres,
+    flushPersistence,
     aiGateway,
     chatRuntime,
     queries,

@@ -61,6 +61,7 @@ export interface AgentRunResult {
 
 export type AgentStreamEvent =
   | { type: "token"; text: string }
+  | { type: "tool_start"; name: string; detail?: string }
   | { type: "tool"; name: string; result: string }
   | { type: "approval_needed"; tool: AgentPendingTool }
   | { type: "done"; result: AgentRunResult };
@@ -201,6 +202,73 @@ const NATIVE_TOOLS: AiToolDefinition[] = [
     },
   },
   {
+    name: "delete_file",
+    description:
+      "Delete a file or directory under the open local folder. Prefer careful use; checkpoints may restore prior file text. Requires approval unless allow-everything is on.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative path to delete" },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "rename_file",
+    description:
+      "Rename or move a file/directory inside the open local folder. Requires approval unless allow-everything is on.",
+    parameters: {
+      type: "object",
+      properties: {
+        from: { type: "string", description: "Current relative path" },
+        to: { type: "string", description: "New relative path" },
+      },
+      required: ["from", "to"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "create_dir",
+    description: "Create a directory (and parents) inside the open local folder.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative directory path" },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "git_status",
+    description: "Show git status and a short diffstat for the open folder.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    name: "git_diff",
+    description: "Show git diff for the open folder (optional path).",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Optional relative path to scope the diff" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "open_path",
+    description:
+      "Open a file or folder in the operator's OS (Finder / Explorer / default app).",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Relative path (empty = folder root)" },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
     name: "web_search",
     description:
       "Search the live web for up-to-date facts, docs, errors, or news (Grok-style realtime lookup). Use when the answer may have changed or is outside the repo.",
@@ -274,9 +342,15 @@ const CLIENT_EXEC_TOOLS = new Set([
   "read_file",
   "write_file",
   "apply_patch",
+  "delete_file",
+  "rename_file",
+  "create_dir",
+  "git_status",
+  "git_diff",
+  "open_path",
 ]);
 
-const MAX_TOOL_ROUNDS = 8;
+const MAX_TOOL_ROUNDS = 12;
 
 function runSafeTool(
   name: string,
@@ -296,6 +370,12 @@ function runSafeTool(
     case "read_file":
     case "write_file":
     case "apply_patch":
+    case "delete_file":
+    case "rename_file":
+    case "create_dir":
+    case "git_status":
+    case "git_diff":
+    case "open_path":
       return (
         args._clientResult?.trim() ||
         "This tool runs on the desktop client after approval/auto-exec. No result was provided."
@@ -460,7 +540,10 @@ export class GatewayChatRuntime implements AgentRuntime {
     streamTokens: boolean,
   ): AsyncGenerator<AgentStreamEvent, void, undefined> {
     const { provider, modelName } = this.pickProvider(request, gateway);
-    const useNativeTools = provider.supportsTools === true;
+    const workspaceSummary = request.tools?.workspaceSummary ?? "";
+    const hasDesk = /(^|\n)mode=(folder|github)\b/.test(workspaceSummary);
+    // Don't attach the full tool catalog on a plain chat — that stalls Luna on "thinking".
+    const useNativeTools = provider.supportsTools === true && hasDesk;
     const system = this.buildSystem(request, useNativeTools);
     let working: AiMessage[] = [
       system,
@@ -473,13 +556,30 @@ export class GatewayChatRuntime implements AgentRuntime {
     const toolsUsed: string[] = [];
 
     for (let round = 0; round < MAX_TOOL_ROUNDS; round += 1) {
-      const completion = await gateway.complete({
+      const completionRequest = {
         model: { providerId: provider.id, model: modelName },
         messages: working,
         maxOutputTokens: request.maxOutputTokens ?? 280,
         temperature: request.temperature ?? 0.4,
         tools: useNativeTools ? NATIVE_TOOLS : undefined,
-      });
+      };
+      let completion = null as Awaited<ReturnType<AiGateway["complete"]>> | null;
+      let streamedThisRound = false;
+      if (streamTokens) {
+        for await (const chunk of gateway.streamComplete(completionRequest)) {
+          if (chunk.type === "token") {
+            streamedThisRound = true;
+            yield { type: "token", text: chunk.text };
+          } else {
+            completion = chunk.completion;
+          }
+        }
+      } else {
+        completion = await gateway.complete(completionRequest);
+      }
+      if (!completion) {
+        throw new AgentRuntimeError("CHAT_FAILED", "Provider stream ended without a completion", 502);
+      }
       if (completion.usage) {
         inputTokens += completion.usage.inputTokens;
         outputTokens += completion.usage.outputTokens;
@@ -505,7 +605,9 @@ export class GatewayChatRuntime implements AgentRuntime {
 
       if (!pendingName || round === MAX_TOOL_ROUNDS - 1) {
         const output = completion.message.content.trim();
-        if (streamTokens && output) {
+        // Tokens were already streamed live. Only dump the full reply when we
+        // used the non-stream complete() path.
+        if (streamTokens && output && !streamedThisRound) {
           yield { type: "token", text: output };
         }
         yield {
@@ -624,6 +726,77 @@ export class GatewayChatRuntime implements AgentRuntime {
           pendingArgs.path = path;
           pendingArgs.title = `Patch: ${path}`;
           pendingArgs.detail = `Patch ${path}`;
+        } else if (pendingName === "delete_file") {
+          const path = pendingArgs.path?.trim() || "";
+          if (!path) {
+            const missing = "FAILED delete_file: requires path.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.path = path;
+          pendingArgs.title = `Delete: ${path}`;
+          pendingArgs.detail = path;
+        } else if (pendingName === "rename_file") {
+          const from = pendingArgs.from?.trim() || pendingArgs.path?.trim() || "";
+          const to = pendingArgs.to?.trim() || pendingArgs.new_path?.trim() || "";
+          if (!from || !to) {
+            const missing = "FAILED rename_file: requires from and to.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.from = from;
+          pendingArgs.to = to;
+          pendingArgs.title = `Rename: ${from} → ${to}`;
+          pendingArgs.detail = `${from} → ${to}`;
+        } else if (pendingName === "create_dir") {
+          const path = (pendingArgs.path || pendingArgs.relative || "").trim();
+          if (!path) {
+            const missing = "FAILED create_dir: requires path.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.path = path;
+          pendingArgs.title = `Mkdir: ${path}`;
+          pendingArgs.detail = path;
+        } else if (pendingName === "git_status") {
+          pendingArgs.title = "Git status";
+          pendingArgs.detail = "git status -sb && git diff --stat";
+        } else if (pendingName === "git_diff") {
+          const path = pendingArgs.path?.trim() || "";
+          pendingArgs.title = path ? `Git diff: ${path}` : "Git diff";
+          pendingArgs.detail = path || "git diff";
+        } else if (pendingName === "open_path") {
+          const path = (pendingArgs.path || pendingArgs.relative || ".").trim() || ".";
+          pendingArgs.path = path === "." ? "" : path;
+          pendingArgs.title = `Open: ${path}`;
+          pendingArgs.detail = path;
         } else {
           if (!pendingArgs.title) pendingArgs.title = "Proposed action";
           if (!pendingArgs.detail) pendingArgs.detail = "Proceed as discussed.";
@@ -632,6 +805,17 @@ export class GatewayChatRuntime implements AgentRuntime {
           name: pendingName,
           arguments: pendingArgs,
           toolCallId: pendingCallId,
+        };
+        yield {
+          type: "tool_start",
+          name: pendingName,
+          detail:
+            pendingArgs.detail ||
+            pendingArgs.path ||
+            pendingArgs.query ||
+            pendingArgs.command ||
+            pendingArgs.relative ||
+            undefined,
         };
         yield { type: "approval_needed", tool: pendingTool };
         const awaitLabel = CLIENT_EXEC_TOOLS.has(pendingName)
@@ -653,6 +837,17 @@ export class GatewayChatRuntime implements AgentRuntime {
         return;
       }
 
+      yield {
+        type: "tool_start",
+        name: pendingName,
+        detail:
+          pendingArgs.detail ||
+          pendingArgs.path ||
+          pendingArgs.query ||
+          pendingArgs.command ||
+          pendingArgs.relative ||
+          undefined,
+      };
       const result = await runTool(pendingName, pendingArgs, request.tools);
       toolsUsed.push(pendingName);
       yield { type: "tool", name: pendingName, result };

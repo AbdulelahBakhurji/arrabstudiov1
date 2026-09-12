@@ -359,6 +359,13 @@ class PostgresAgentRepository implements EntityRepository<Agent> {
     );
     return entity;
   }
+
+  async delete(id: string): Promise<void> {
+    await this.pool.query(`delete from agents where id = $1 and workspace_id = $2`, [
+      id,
+      this.workspaceId,
+    ]);
+  }
 }
 
 class PostgresTeamRepository implements EntityRepository<Team> {
@@ -1012,7 +1019,7 @@ class PostgresOperatorRepository implements OperatorRepository {
   async upsert(profile: OperatorProfile): Promise<OperatorProfile> {
     await this.pool.query(
       `insert into operator_profiles (workspace_id, display_name, title, seats, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6)
+       values ($1, $2, $3, $4::text[], $5, $6)
        on conflict (workspace_id) do update set
          display_name = excluded.display_name,
          title = excluded.title,
@@ -1021,13 +1028,18 @@ class PostgresOperatorRepository implements OperatorRepository {
       [
         profile.workspaceId,
         profile.displayName,
-        profile.title,
-        profile.seats,
+        // Older schemas had title NOT NULL — empty string maps back to null in mapOperator.
+        profile.title ?? "",
+        profile.seats ?? [],
         profile.createdAt,
         profile.updatedAt,
       ],
     );
-    return profile;
+    return {
+      ...profile,
+      seats: profile.seats ?? [],
+      title: profile.title && profile.title.trim().length > 0 ? profile.title : null,
+    };
   }
 }
 

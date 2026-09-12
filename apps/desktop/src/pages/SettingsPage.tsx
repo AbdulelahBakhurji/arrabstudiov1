@@ -1143,7 +1143,16 @@ export function SettingsPage() {
               {meta ? (
                 <div className="grid gap-2 rounded-2xl border border-white/10 bg-black/30 p-4 text-sm">
                   <MetaRow label={t("apiVersion")} value={meta.version} />
-                  <MetaRow label={t("persistence")} value={meta.persistence} />
+                  <MetaRow
+                    label={t("persistence")}
+                    value={
+                      meta.persistence === "file"
+                        ? t("persistenceFile")
+                        : meta.persistence === "postgres"
+                          ? t("persistencePostgres")
+                          : t("persistenceMemory")
+                    }
+                  />
                   <MetaRow label={t("workspaceId")} value={meta.workspaceId} />
                   <MetaRow
                     label={t("aiGateway")}

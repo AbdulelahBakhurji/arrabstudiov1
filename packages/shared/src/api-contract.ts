@@ -27,7 +27,7 @@ export interface HealthResponse {
   time: string;
 }
 
-export type PersistenceMode = "memory" | "postgres";
+export type PersistenceMode = "memory" | "file" | "postgres";
 
 export interface ApiMetaResponse {
   name: "arrab-api";

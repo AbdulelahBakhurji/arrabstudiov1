@@ -13,20 +13,26 @@ import {
   Bot,
   Brain,
   Code2,
+  Copy,
+  EyeOff,
   FolderOpen,
   Github,
   GraduationCap,
   MessageSquarePlus,
+  MoreHorizontal,
   NotebookPen,
   PanelLeft,
+  Pause,
   Play,
+  Plus,
   Settings2,
+  ShieldCheck,
+  ShieldQuestion,
   SquareTerminal,
   Sparkles,
   Target,
   Trash2,
   UserRound,
-  Wrench,
   X,
 } from "lucide-react";
 import type {
@@ -46,55 +52,100 @@ import type {
   WorkspaceHint,
 } from "@arrab/shared";
 import { Surface } from "@/components/StudioFrame";
+import { AgentSteps, friendlyToolTitle, type AgentStep } from "@/components/AgentSteps";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useStudioPrefs } from "@/hooks/useStudioPrefs";
-import { arrabApi, ApiRequestError } from "@/lib/api";
+import { arrabApi, ApiRequestError, isTransientApiError } from "@/lib/api";
+import {
+  defaultSoloAgentBody,
+  ensureDefaultSoloAgent,
+} from "@/lib/agents-bootstrap";
 import { LAST_CHAT_AGENT_KEY } from "@/lib/prefs";
 import {
   executeLocalAgentTool,
   isAutoClientTool,
   isClientExecTool,
+  isPolicyClientTool,
   parseToolArgsFromApproval,
   parseToolNameFromApproval,
 } from "@/lib/agent-local-tools";
 import { isTauriRuntime, pickFolder, runLocalCommand, type TerminalLine } from "@/lib/terminal";
 import { loadWorkspaceRules } from "@/lib/workspace-rules";
+import {
+  deleteChatHistory,
+  listCachedChats,
+  loadBestMessages,
+  loadChatHistory,
+  mergeRemoteConversations,
+  usePersistedChat,
+} from "@/lib/chat-history";
+import {
+  createIncognitoVault,
+  deleteIncognitoSession,
+  incognitoVaultExists,
+  isIncognitoUnlocked,
+  listIncognitoSessions,
+  loadIncognitoSession,
+  lockIncognitoVault,
+  newIncognitoSessionId,
+  saveIncognitoSession,
+  unlockIncognitoVault,
+  wipeIncognitoVault,
+  rememberIncognitoApiId,
+  forgetIncognitoApiId,
+  listIncognitoApiIds,
+  type IncognitoSession,
+} from "@/lib/incognito-vault";
 import { cn } from "@/lib/utils";
 
 type FocusMode = "chat" | "split" | "terminal";
 type WorkspaceKind = "none" | "folder" | "github";
 type DeskTab = "agent" | "overview" | "project" | "code" | "git" | "notes";
-type ChatMode = "solo" | "team";
-type ToolTrace = { id: string; name: string; result: string };
+type ChatMode = "solo" | "team" | "incognito";
+type SidebarView = "people" | "chats";
+type DeskPolicy = "ask" | "allow";
 
+const DESK_POLICY_KEY = "arrab.chat.deskPolicy";
 const SOLO_PRESETS = [
   {
     id: "coding",
-    specialty: "Full-stack coding",
+    specialty: "Coding",
     role: "Software engineer",
     instructions:
       "Write clean code, propose concrete diffs, run checks before claiming done, and explain tradeoffs briefly.",
+    titleKey: "chatStarterCode" as const,
+    bodyKey: "chatStarterCodeBody" as const,
+    promptKey: "chatStarterCodePrompt" as const,
   },
   {
     id: "research",
-    specialty: "Research & analysis",
+    specialty: "Research",
     role: "Researcher",
     instructions:
       "Dig for primary facts, cite assumptions, prefer concise bullets, and flag uncertainty clearly.",
+    titleKey: "chatStarterResearch" as const,
+    bodyKey: "chatStarterResearchBody" as const,
+    promptKey: "chatStarterResearchPrompt" as const,
   },
   {
     id: "writing",
-    specialty: "Product writing",
+    specialty: "Writing",
     role: "Writer",
     instructions:
       "Match the operator's voice, keep copy crisp, and offer 2–3 variants when useful.",
+    titleKey: "chatStarterWrite" as const,
+    bodyKey: "chatStarterWriteBody" as const,
+    promptKey: "chatStarterWritePrompt" as const,
   },
   {
     id: "ops",
-    specialty: "Ops & automation",
+    specialty: "Ops",
     role: "Operator",
     instructions:
       "Prefer checklists, safe rollbacks, and verifiable commands. Never invent system access.",
+    titleKey: "chatStarterOps" as const,
+    bodyKey: "chatStarterOpsBody" as const,
+    promptKey: "chatStarterOpsPrompt" as const,
   },
 ] as const;
 
@@ -151,6 +202,34 @@ function parseBudgetInput(value: string): number | null {
   return Math.min(Math.floor(n), 2_000_000);
 }
 
+function clampMenuPosition(
+  anchor: { left: number; right: number; top: number; bottom: number },
+  menuWidth: number,
+  menuHeight: number,
+): { x: number; y: number } {
+  const pad = 12;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  let x = Math.min(anchor.right - menuWidth, vw - menuWidth - pad);
+  x = Math.max(pad, x);
+  const below = anchor.bottom + 6;
+  const above = anchor.top - menuHeight - 6;
+  const y =
+    below + menuHeight <= vh - pad
+      ? below
+      : above >= pad
+        ? above
+        : Math.max(pad, Math.min(below, vh - menuHeight - pad));
+  return { x, y };
+}
+
+function agentInitials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "?";
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return `${parts[0]![0] ?? ""}${parts[1]![0] ?? ""}`.toUpperCase();
+}
+
 function readWorkspace(): WorkspaceState {
   try {
     const saved = JSON.parse(localStorage.getItem(WORKSPACE_KEY) ?? "null") as WorkspaceState | null;
@@ -191,8 +270,30 @@ export function ChatPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
   const [chatMode, setChatMode] = useState<ChatMode>("solo");
+  const [incognitoUnlocked, setIncognitoUnlocked] = useState(() => isIncognitoUnlocked());
+  const [incognitoHasVault, setIncognitoHasVault] = useState(false);
+  const [incognitoSessions, setIncognitoSessions] = useState<
+    Array<{ id: string; title: string; updatedAt: string; messageCount: number }>
+  >([]);
+  const [incognitoSessionId, setIncognitoSessionId] = useState<string | null>(null);
+  const [incognitoPassword, setIncognitoPassword] = useState("");
+  const [incognitoPassword2, setIncognitoPassword2] = useState("");
+  const [incognitoBusy, setIncognitoBusy] = useState(false);
+  const [incognitoError, setIncognitoError] = useState<string | null>(null);
+  const [sidebarView, setSidebarView] = useState<SidebarView>("people");
+  const [hireOpen, setHireOpen] = useState(false);
+  const [hireName, setHireName] = useState("");
+  const [hireRole, setHireRole] = useState("");
+  const [hirePreset, setHirePreset] = useState<(typeof SOLO_PRESETS)[number]["id"] | "">("");
+  const [agentMenu, setAgentMenu] = useState<{
+    id: string;
+    x: number;
+    y: number;
+    confirmDelete?: boolean;
+  } | null>(null);
+  const [agentBusy, setAgentBusy] = useState(false);
   const [teamId, setTeamId] = useState("");
-  const [toolTraces, setToolTraces] = useState<ToolTrace[]>([]);
+  const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
   const [pendingApproval, setPendingApproval] = useState<Approval | null>(null);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -221,9 +322,10 @@ export function ChatPage() {
   const [deskOpen, setDeskOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(true);
   const [deskTab, setDeskTab] = useState<DeskTab>("agent");
+  const [profileMoreOpen, setProfileMoreOpen] = useState(false);
   const [focus, setFocus] = useState<FocusMode>("chat");
   const [terminalOpen, setTerminalOpen] = useState(false);
-  const [ecoMode, setEcoMode] = useState(() => readSpendPrefs().tier === "low");
+  const [, setEcoMode] = useState(() => readSpendPrefs().tier === "low");
   const [projectPickId, setProjectPickId] = useState("");
   const [cmdDraft, setCmdDraft] = useState("");
   const [soloDraft, setSoloDraft] = useState("");
@@ -250,6 +352,17 @@ export function ChatPage() {
   ]);
   const [workspace, setWorkspace] = useState<WorkspaceState>(() => readWorkspace());
   const [workspaceRules, setWorkspaceRules] = useState<string | null>(null);
+  const [deskPolicy, setDeskPolicy] = useState<DeskPolicy>(() => {
+    try {
+      const saved = localStorage.getItem(DESK_POLICY_KEY);
+      return saved === "allow" ? "allow" : "ask";
+    } catch {
+      return "ask";
+    }
+  });
+  const deskPolicyRef = useRef(deskPolicy);
+  deskPolicyRef.current = deskPolicy;
+  const handledChatApprovals = useRef(new Set<string>());
   const [gitStatus, setGitStatus] = useState("");
   const [treeSummary, setTreeSummary] = useState("");
   const [commitMessage, setCommitMessage] = useState("");
@@ -312,13 +425,14 @@ export function ChatPage() {
     return Math.min(1, sessionUsage.totalTokens / sessionUsage.budget);
   }, [sessionUsage]);
 
-  const quickPrompts = useMemo(
-    () => [
-      t("chatQuickReview"),
-      t("chatQuickCommit"),
-      t("chatQuickPlan"),
-      t("chatQuickExplain"),
-    ],
+  const reportError = useCallback(
+    (err: unknown) => {
+      const message = err instanceof ApiRequestError ? err.message : t("apiUnavailable");
+      if (isTransientApiError(message)) {
+        return;
+      }
+      setError(message);
+    },
     [t],
   );
 
@@ -362,16 +476,14 @@ export function ChatPage() {
         ]);
 
       let active = agentList.items.filter((agent) => agent.status !== "archived");
-      if (active.length === 0) {
-        const solo = await arrabApi.createAgent({
-          name: t("chatSoloDefaultName"),
-          role: t("chatSoloDefaultRole"),
-          specialty: "general",
-          instructions: t("chatSoloDefaultInstructions"),
-          status: "active",
-        });
-        active = [solo];
-      }
+      active = await ensureDefaultSoloAgent(
+        active,
+        defaultSoloAgentBody(
+          t("chatSoloDefaultName"),
+          t("chatSoloDefaultRole"),
+          t("chatSoloDefaultInstructions"),
+        ),
+      );
 
       setAgents(active);
       setTeams(teamList.items);
@@ -381,9 +493,7 @@ export function ChatPage() {
       setPickerConnectorId((current) => current || connected[0]?.id || "");
       setProviderConfigured(ai.configured);
 
-      const threads = [...conversationList.items].sort(
-        (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-      );
+      const threads = await mergeRemoteConversations(conversationList.items);
       setConversations(threads);
 
       const lastAgent = prefs.coworkAutoResume ? localStorage.getItem(LAST_CHAT_AGENT_KEY) : null;
@@ -449,8 +559,9 @@ export function ChatPage() {
 
       if (target) {
         const detail = await arrabApi.conversation(target.id);
+        const history = await loadBestMessages(target.id, detail.messages);
         setConversation(detail.conversation);
-        setMessages(detail.messages);
+        setMessages(history);
         setSessionUsage(detail.sessionUsage);
         setSpendTier(detail.conversation.spendTier ?? "low");
         setBudgetInput(
@@ -467,11 +578,25 @@ export function ChatPage() {
           setTeamId(detail.conversation.teamId);
         }
         setEcoMode((detail.conversation.spendTier ?? "low") === "low");
-        setToolTraces([]);
+        setAgentSteps([]);
         setPendingApproval(null);
       }
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      const cached = await listCachedChats();
+      if (cached.length > 0) {
+        const threads = cached.map((item) => item.conversation);
+        setConversations(threads);
+        const first = cached[0]!;
+        setConversation(first.conversation);
+        setMessages(first.messages);
+        if (first.conversation.agentId) {
+          setAgentId(first.conversation.agentId);
+        }
+      }
+      const message = err instanceof ApiRequestError ? err.message : t("apiUnavailable");
+      if (!isTransientApiError(message)) {
+        setError(message);
+      }
     } finally {
       setSessionBusy(false);
     }
@@ -479,7 +604,55 @@ export function ChatPage() {
 
   useEffect(() => {
     void boot();
-  }, [boot]);
+    // Boot once per Chat mount. Re-running on `t`/prefs identity churn spawned extra agents.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  usePersistedChat(
+    chatMode === "incognito" ? null : conversation,
+    chatMode === "incognito" ? [] : messages,
+  );
+
+  useEffect(() => {
+    void incognitoVaultExists().then(setIncognitoHasVault);
+  }, []);
+
+  useEffect(() => {
+    if (chatMode !== "incognito" || !incognitoUnlocked || !incognitoSessionId) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const existing = await loadIncognitoSession(incognitoSessionId);
+          const title =
+            messages.find((m) => m.role === "user")?.content.trim().slice(0, 48) ||
+            existing?.title ||
+            t("chatIncognitoBadge");
+          const payload: IncognitoSession = {
+            id: incognitoSessionId,
+            title,
+            agentId: agentId || null,
+            apiConversationId: conversation?.id ?? existing?.apiConversationId ?? null,
+            messages: messages.map((m) => ({
+              id: String(m.id),
+              role: m.role === "assistant" || m.role === "system" ? m.role : "user",
+              content: m.content,
+              createdAt: m.createdAt,
+            })),
+            updatedAt: new Date().toISOString(),
+            createdAt: existing?.createdAt ?? new Date().toISOString(),
+          };
+          await saveIncognitoSession(payload);
+          const listed = await listIncognitoSessions();
+          setIncognitoSessions(listed);
+        } catch {
+          // ignore save errors while typing
+        }
+      })();
+    }, 400);
+    return () => window.clearTimeout(timer);
+  }, [chatMode, incognitoUnlocked, incognitoSessionId, messages, conversation, agentId, t]);
 
   useEffect(() => {
     if (!agentId) {
@@ -529,14 +702,16 @@ export function ChatPage() {
   }, [agentId]);
 
   const visibleConversations = useMemo(() => {
-    if (chatMode === "team") {
-      return conversations.filter((item) => item.teamId);
-    }
-    if (agentId) {
-      return conversations.filter((item) => !item.teamId && item.agentId === agentId);
-    }
-    return conversations.filter((item) => !item.teamId);
+    const hidden = listIncognitoApiIds();
+    const base =
+      chatMode === "team"
+        ? conversations.filter((item) => Boolean(item.teamId))
+        : !agentId
+          ? []
+          : conversations.filter((item) => item.agentId === agentId && !item.teamId);
+    return base.filter((item) => !hidden.has(item.id));
   }, [agentId, chatMode, conversations]);
+
 
   useEffect(() => {
     localStorage.setItem(WORKSPACE_KEY, JSON.stringify(workspace));
@@ -656,8 +831,11 @@ export function ChatPage() {
   }, [composerMenuOpen]);
 
   useEffect(() => {
-    if (!chatMenu) return;
-    const close = () => setChatMenu(null);
+    if (!chatMenu && !agentMenu) return;
+    const close = () => {
+      setChatMenu(null);
+      setAgentMenu(null);
+    };
     const onKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") close();
     };
@@ -667,11 +845,11 @@ export function ChatPage() {
       window.removeEventListener("click", close);
       window.removeEventListener("keydown", onKey);
     };
-  }, [chatMenu]);
+  }, [chatMenu, agentMenu]);
 
   useEffect(() => {
     chatEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages, sending, toolTraces, pendingApproval]);
+  }, [messages, sending, agentSteps, pendingApproval]);
 
   useEffect(() => {
     termEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -692,8 +870,9 @@ export function ChatPage() {
       setError(null);
       try {
         const detail = await arrabApi.conversation(id);
+        const history = await loadBestMessages(id, detail.messages);
         setConversation(detail.conversation);
-        setMessages(detail.messages);
+        setMessages(history);
         setSessionUsage(detail.sessionUsage);
         setSpendTier(detail.conversation.spendTier ?? "low");
         setEcoMode((detail.conversation.spendTier ?? "low") === "low");
@@ -715,10 +894,25 @@ export function ChatPage() {
         if (detail.conversation.projectId) {
           setProjectPickId(detail.conversation.projectId);
         }
-        setToolTraces([]);
+        setAgentSteps([]);
         setPendingApproval(null);
       } catch (err: unknown) {
-        setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+        const cached = await loadChatHistory(id);
+        if (cached) {
+          setConversation(cached.conversation);
+          setMessages(cached.messages);
+          if (cached.conversation.agentId) {
+            setAgentId(cached.conversation.agentId);
+          }
+          if (cached.conversation.teamId) {
+            setChatMode("team");
+            setTeamId(cached.conversation.teamId);
+          } else {
+            setChatMode("solo");
+          }
+          return;
+        }
+        reportError(err);
       } finally {
         setSessionBusy(false);
       }
@@ -726,7 +920,229 @@ export function ChatPage() {
     [t],
   );
 
+
+  const refreshIncognitoSessions = useCallback(async () => {
+    if (!isIncognitoUnlocked()) {
+      setIncognitoSessions([]);
+      return;
+    }
+    try {
+      setIncognitoSessions(await listIncognitoSessions());
+    } catch {
+      setIncognitoSessions([]);
+    }
+  }, []);
+
+  const enterIncognitoMode = useCallback(async () => {
+    setChatMode("incognito");
+    setSidebarView("chats");
+    setHistoryOpen(true);
+    setIncognitoError(null);
+    const exists = await incognitoVaultExists();
+    setIncognitoHasVault(exists);
+    setIncognitoUnlocked(isIncognitoUnlocked());
+    if (isIncognitoUnlocked()) {
+      await refreshIncognitoSessions();
+    } else {
+      setConversation(null);
+      setMessages([]);
+      setIncognitoSessionId(null);
+    }
+  }, [refreshIncognitoSessions]);
+
+  const setupIncognitoVault = useCallback(async () => {
+    setIncognitoError(null);
+    if (incognitoPassword.trim().length < 6) {
+      setIncognitoError(t("chatIncognitoTooShort"));
+      return;
+    }
+    if (incognitoPassword !== incognitoPassword2) {
+      setIncognitoError(t("chatIncognitoMismatch"));
+      return;
+    }
+    setIncognitoBusy(true);
+    try {
+      await createIncognitoVault(incognitoPassword);
+      setIncognitoHasVault(true);
+      setIncognitoUnlocked(true);
+      setIncognitoPassword("");
+      setIncognitoPassword2("");
+      await refreshIncognitoSessions();
+    } catch (err: unknown) {
+      setIncognitoError(err instanceof Error ? err.message : t("chatIncognitoWrongPassword"));
+    } finally {
+      setIncognitoBusy(false);
+    }
+  }, [incognitoPassword, incognitoPassword2, refreshIncognitoSessions, t]);
+
+  const unlockIncognito = useCallback(async () => {
+    setIncognitoError(null);
+    setIncognitoBusy(true);
+    try {
+      await unlockIncognitoVault(incognitoPassword);
+      setIncognitoUnlocked(true);
+      setIncognitoPassword("");
+      await refreshIncognitoSessions();
+    } catch {
+      setIncognitoError(t("chatIncognitoWrongPassword"));
+    } finally {
+      setIncognitoBusy(false);
+    }
+  }, [incognitoPassword, refreshIncognitoSessions, t]);
+
+  const lockIncognito = useCallback(() => {
+    lockIncognitoVault();
+    setIncognitoUnlocked(false);
+    setIncognitoSessions([]);
+    setIncognitoSessionId(null);
+    setConversation(null);
+    setMessages([]);
+    setPendingApproval(null);
+    setAgentSteps([]);
+  }, []);
+
+  const wipeIncognito = useCallback(async () => {
+    if (!window.confirm(t("chatIncognitoWipeConfirm"))) return;
+    setIncognitoBusy(true);
+    try {
+      const apiIds = new Set<string>();
+      if (isIncognitoUnlocked()) {
+        for (const item of await listIncognitoSessions()) {
+          const full = await loadIncognitoSession(item.id);
+          if (full?.apiConversationId) apiIds.add(full.apiConversationId);
+        }
+      }
+      for (const id of apiIds) {
+        try {
+          await arrabApi.deleteConversation(id);
+        } catch {
+          // best-effort
+        }
+      }
+      await wipeIncognitoVault();
+      setIncognitoHasVault(false);
+      setIncognitoUnlocked(false);
+      setIncognitoSessions([]);
+      setIncognitoSessionId(null);
+      setConversation(null);
+      setMessages([]);
+    } finally {
+      setIncognitoBusy(false);
+    }
+  }, [t]);
+
+  const openIncognitoSession = useCallback(async (id: string) => {
+    setSessionBusy(true);
+    setError(null);
+    try {
+      const session = await loadIncognitoSession(id);
+      if (!session) return;
+      setIncognitoSessionId(session.id);
+      setAgentId(session.agentId ?? agentId);
+      setMessages(
+        session.messages.map((m) => ({
+          id: m.id as Message["id"],
+          conversationId: (session.apiConversationId ?? id) as Conversation["id"],
+          role: m.role,
+          content: m.content,
+          createdAt: m.createdAt,
+        })),
+      );
+      if (session.apiConversationId) {
+        try {
+          const detail = await arrabApi.conversation(session.apiConversationId);
+          setConversation(detail.conversation);
+        } catch {
+          setConversation(null);
+        }
+      } else {
+        setConversation(null);
+      }
+    } catch (err: unknown) {
+      reportError(err);
+    } finally {
+      setSessionBusy(false);
+    }
+  }, [agentId]);
+
+  const newIncognitoChat = useCallback(async () => {
+    if (!isIncognitoUnlocked()) return;
+    setSessionBusy(true);
+    setError(null);
+    try {
+      let soloId = agentId || agents[0]?.id || "";
+      if (!soloId) {
+        const ensured = await ensureDefaultSoloAgent(
+          agents,
+          defaultSoloAgentBody(
+            t("chatSoloDefaultName"),
+            t("chatSoloDefaultRole"),
+            t("chatSoloDefaultInstructions"),
+          ),
+        );
+        setAgents(ensured);
+        soloId = ensured[0]?.id || "";
+      }
+      setAgentId(soloId);
+      const created = await arrabApi.createConversation({
+        agentId: soloId,
+        projectId: agents.find((a) => a.id === soloId)?.projectId ?? null,
+        title: t("chatIncognitoBadge"),
+        spend: spendPayload,
+      });
+      const id = newIncognitoSessionId();
+      const session: IncognitoSession = {
+        id,
+        title: t("chatIncognitoBadge"),
+        agentId: soloId,
+        apiConversationId: created.id,
+        messages: [],
+        updatedAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+      };
+      await saveIncognitoSession(session);
+      rememberIncognitoApiId(created.id);
+      setIncognitoSessionId(id);
+      setConversation(created);
+      setMessages([]);
+      setPendingApproval(null);
+      setAgentSteps([]);
+      await refreshIncognitoSessions();
+    } catch (err: unknown) {
+      reportError(err);
+    } finally {
+      setSessionBusy(false);
+    }
+  }, [agentId, agents, refreshIncognitoSessions, spendPayload, t]);
+
+  const deleteIncognitoChat = useCallback(async (id: string) => {
+    try {
+      const session = await loadIncognitoSession(id);
+      if (session?.apiConversationId) {
+        forgetIncognitoApiId(session.apiConversationId);
+        try {
+          await arrabApi.deleteConversation(session.apiConversationId);
+        } catch {
+          // ignore
+        }
+      }
+      await deleteIncognitoSession(id);
+      if (incognitoSessionId === id) {
+        setIncognitoSessionId(null);
+        setConversation(null);
+        setMessages([]);
+      }
+      await refreshIncognitoSessions();
+    } catch (err: unknown) {
+      reportError(err);
+    }
+  }, [incognitoSessionId, refreshIncognitoSessions]);
+
   const newChat = useCallback(async () => {
+    if (chatMode === "incognito") {
+      await newIncognitoChat();
+      return;
+    }
     setSessionBusy(true);
     setError(null);
     try {
@@ -746,19 +1162,24 @@ export function ChatPage() {
       } else {
         let soloId = agentId || agents[0]?.id || "";
         if (!soloId) {
-          const solo = await arrabApi.createAgent({
-            name: soloDraft.trim() || t("chatSoloDefaultName"),
-            role: t("chatSoloDefaultRole"),
-            specialty: "general",
-            instructions: t("chatSoloDefaultInstructions"),
-            status: "active",
-          });
-          setAgents((current) => [solo, ...current]);
-          soloId = solo.id;
+          const ensured = await ensureDefaultSoloAgent(
+            agents,
+            defaultSoloAgentBody(
+              soloDraft.trim() || t("chatSoloDefaultName"),
+              t("chatSoloDefaultRole"),
+              t("chatSoloDefaultInstructions"),
+            ),
+          );
+          setAgents(ensured);
+          soloId = ensured[0]?.id || "";
           setSoloDraft("");
+          if (!soloId) {
+            setError(t("chatNeedSoloFirst"));
+            return;
+          }
           created = await arrabApi.createConversation({
             agentId: soloId,
-            projectId: solo.projectId,
+            projectId: ensured[0]?.projectId ?? null,
             title: t("chatNewChat"),
             spend: spendPayload,
           });
@@ -776,12 +1197,12 @@ export function ChatPage() {
       setConversation(created);
       setMessages([]);
       setSessionUsage(null);
-      setToolTraces([]);
+      setAgentSteps([]);
       setPendingApproval(null);
       if (created.agentId) setAgentId(created.agentId);
       composerRef.current?.focus();
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      reportError(err);
     } finally {
       setSessionBusy(false);
     }
@@ -794,6 +1215,7 @@ export function ChatPage() {
       setError(null);
       try {
         await arrabApi.deleteConversation(id);
+        await deleteChatHistory(id);
         const remaining = conversations.filter((item) => item.id !== id);
         setConversations(remaining);
         if (conversation?.id === id) {
@@ -809,12 +1231,12 @@ export function ChatPage() {
             setConversation(null);
             setMessages([]);
             setSessionUsage(null);
-            setToolTraces([]);
+            setAgentSteps([]);
             setPendingApproval(null);
           }
         }
       } catch (err: unknown) {
-        setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+        reportError(err);
       } finally {
         setSessionBusy(false);
       }
@@ -840,7 +1262,7 @@ export function ChatPage() {
           current.map((agent) => (agent.id === updated.id ? updated : agent)),
         );
       } catch (err: unknown) {
-        setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+        reportError(err);
       } finally {
         setAgentSaving(false);
       }
@@ -884,7 +1306,7 @@ export function ChatPage() {
         setSkillTitle("");
         setSkillInstructions("");
       } catch (err: unknown) {
-        setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+        reportError(err);
       } finally {
         setAgentSaving(false);
       }
@@ -899,7 +1321,7 @@ export function ChatPage() {
         await arrabApi.deleteSkill(id);
         setAgentSkills((current) => current.filter((skill) => skill.id !== id));
       } catch (err: unknown) {
-        setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+        reportError(err);
       } finally {
         setAgentSaving(false);
       }
@@ -921,7 +1343,7 @@ export function ChatPage() {
         setAgentMemories((current) => [memory, ...current]);
         setMemoryDraft("");
       } catch (err: unknown) {
-        setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+        reportError(err);
       } finally {
         setAgentSaving(false);
       }
@@ -936,7 +1358,7 @@ export function ChatPage() {
         await arrabApi.deleteMemory(id);
         setAgentMemories((current) => current.filter((memory) => memory.id !== id));
       } catch (err: unknown) {
-        setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+        reportError(err);
       } finally {
         setAgentSaving(false);
       }
@@ -971,15 +1393,125 @@ export function ChatPage() {
         setConversation(created);
         setMessages([]);
         setSessionUsage(null);
-        setToolTraces([]);
+        setAgentSteps([]);
         setPendingApproval(null);
       } catch (err: unknown) {
-        setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+        reportError(err);
       } finally {
         setSessionBusy(false);
       }
     },
     [agentId, agents, conversations, openConversation, spendPayload, t],
+  );
+
+  const hireAgent = useCallback(
+    async (event?: FormEvent) => {
+      event?.preventDefault();
+      const preset = hirePreset ? SOLO_PRESETS.find((item) => item.id === hirePreset) : null;
+      const name = hireName.trim() || preset?.specialty || t("chatSoloDefaultName");
+      const role = hireRole.trim() || preset?.role || t("chatSoloDefaultRole");
+      setAgentBusy(true);
+      setError(null);
+      try {
+        const created = await arrabApi.createAgent({
+          name,
+          role,
+          specialty: preset?.specialty ?? "general",
+          instructions: preset?.instructions ?? t("chatSoloDefaultInstructions"),
+          status: "active",
+        });
+        setAgents((current) => [created, ...current.filter((item) => item.id !== created.id)]);
+        setHireName("");
+        setHireRole("");
+        setHirePreset("");
+        setHireOpen(false);
+        setSidebarView("people");
+        setChatMode("solo");
+        await switchSoloAgent(created.id);
+        setDeskTab("agent");
+        setDeskOpen(true);
+      } catch (err: unknown) {
+        reportError(err);
+      } finally {
+        setAgentBusy(false);
+      }
+    },
+    [hireName, hirePreset, hireRole, switchSoloAgent, t],
+  );
+
+  const duplicateAgent = useCallback(
+    async (id: string) => {
+      const source = agents.find((agent) => agent.id === id);
+      if (!source) return;
+      setAgentMenu(null);
+      setAgentBusy(true);
+      setError(null);
+      try {
+        const created = await arrabApi.createAgent({
+          name: `${source.name} ${t("chatAgentCopySuffix")}`,
+          role: source.role,
+          specialty: source.specialty,
+          bio: source.bio,
+          instructions: source.instructions,
+          projectId: source.projectId,
+          status: "active",
+        });
+        setAgents((current) => [created, ...current]);
+        await switchSoloAgent(created.id);
+      } catch (err: unknown) {
+        reportError(err);
+      } finally {
+        setAgentBusy(false);
+      }
+    },
+    [agents, switchSoloAgent, t],
+  );
+
+  const setAgentStatus = useCallback(
+    async (id: string, status: "active" | "paused" | "archived") => {
+      setAgentMenu(null);
+      const previous = agents;
+      setAgentBusy(true);
+      setError(null);
+      if (status === "archived") {
+        const remaining = agents.filter((agent) => agent.id !== id);
+        setAgents(remaining);
+        if (agentId === id) {
+          if (remaining[0]) {
+            void switchSoloAgent(remaining[0].id);
+          } else {
+            setAgentId("");
+            setConversation(null);
+            setMessages([]);
+          }
+        }
+      } else {
+        setAgents((current) =>
+          current.map((agent) => (agent.id === id ? { ...agent, status } : agent)),
+        );
+      }
+      try {
+        if (status === "archived") {
+          try {
+            await arrabApi.deleteAgent(id);
+          } catch {
+            await arrabApi.updateAgent(id, { status: "archived" });
+          }
+        } else {
+          const updated = await arrabApi.updateAgent(id, { status });
+          setAgents((current) =>
+            current.map((agent) => (agent.id === updated.id ? updated : agent)),
+          );
+        }
+      } catch (err: unknown) {
+        setAgents(previous);
+        reportError(err);
+        setError(t("chatDeleteFailed"));
+      } finally {
+        setAgentBusy(false);
+      }
+    },
+    [agentId, agents, reportError, switchSoloAgent, t],
   );
 
   useEffect(() => {
@@ -1079,7 +1611,7 @@ export function ChatPage() {
         );
       }
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      reportError(err);
     } finally {
       setGitBusy(false);
     }
@@ -1116,7 +1648,10 @@ export function ChatPage() {
       setFocus("split");
       setDeskOpen(true);
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : t("apiUnavailable"));
+      const message = err instanceof Error ? err.message : t("apiUnavailable");
+      if (!isTransientApiError(message)) {
+        setError(message);
+      }
     }
   }
 
@@ -1136,7 +1671,7 @@ export function ChatPage() {
       const resources = await arrabApi.connectorResources(connectorId, repoQuery || undefined);
       setRepoOptions(resources.items);
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      reportError(err);
     }
   }
 
@@ -1148,7 +1683,7 @@ export function ChatPage() {
       const resources = await arrabApi.connectorResources(pickerConnectorId, repoQuery || undefined);
       setRepoOptions(resources.items);
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      reportError(err);
     }
   }
 
@@ -1190,7 +1725,7 @@ export function ChatPage() {
       setDeskOpen(true);
       setDeskTab("project");
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      reportError(err);
     } finally {
       setBindingBusy(false);
     }
@@ -1214,7 +1749,7 @@ export function ChatPage() {
         });
       }
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      reportError(err);
     } finally {
       setBindingBusy(false);
     }
@@ -1272,7 +1807,7 @@ export function ChatPage() {
         await refreshGitStatus();
       }
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      reportError(err);
     } finally {
       setGitBusy(false);
     }
@@ -1300,7 +1835,7 @@ export function ChatPage() {
       }
       setError(t("githubPushViaCommit"));
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      reportError(err);
     } finally {
       setGitBusy(false);
     }
@@ -1340,7 +1875,7 @@ export function ChatPage() {
         window.open(result.url, "_blank", "noreferrer");
       }
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      reportError(err);
     } finally {
       setGitBusy(false);
     }
@@ -1386,6 +1921,10 @@ export function ChatPage() {
 
   async function onSend(event?: FormEvent) {
     event?.preventDefault();
+    if (chatMode === "incognito" && (!incognitoUnlocked || !incognitoSessionId)) {
+      setError(t("chatIncognitoLockedTitle"));
+      return;
+    }
     if (!conversation || draft.trim() === "" || sending || budgetExhausted) {
       return;
     }
@@ -1406,7 +1945,7 @@ export function ChatPage() {
     ]);
     let streamed = "";
     const assistantLocalId = `local-asst-${crypto.randomUUID()}`;
-    setToolTraces([]);
+    setAgentSteps([{ id: "thinking", title: "thinking", status: "running" }]);
     setPendingApproval(null);
     try {
       await arrabApi.sendMessageStream(
@@ -1419,6 +1958,13 @@ export function ChatPage() {
         {
           onToken: (text) => {
             streamed += text;
+            setAgentSteps((current) =>
+              current.map((step) =>
+                step.id === "thinking" && step.status === "running"
+                  ? { ...step, status: "done" as const }
+                  : step,
+              ),
+            );
             setMessages((current) => {
               const without = current.filter((message) => message.id !== assistantLocalId);
               return [
@@ -1433,57 +1979,42 @@ export function ChatPage() {
               ];
             });
           },
-          onTool: (name, result) => {
-            setToolTraces((current) => [
-              ...current,
-              { id: `tool-${crypto.randomUUID()}`, name, result },
+          onToolStart: (name, detail) => {
+            setAgentSteps((current) => [
+              ...current.map((step) =>
+                step.id === "thinking" && step.status === "running"
+                  ? { ...step, status: "done" as const }
+                  : step,
+              ),
+              {
+                id: `tool-run-${name}-${crypto.randomUUID()}`,
+                title: friendlyToolTitle(name, detail),
+                detail,
+                status: "running",
+              },
             ]);
           },
+          onTool: (name, result) => {
+            const detail = result.slice(0, 2000);
+            setAgentSteps((current) => {
+              const runningIdx = [...current]
+                .map((step, index) => ({ step, index }))
+                .reverse()
+                .find(({ step }) => step.status === "running")?.index;
+              const done: AgentStep = {
+                id: `tool-${crypto.randomUUID()}`,
+                title: friendlyToolTitle(name, detail),
+                detail,
+                status: detail.toLowerCase().includes("fail") ? "failed" : "done",
+              };
+              if (runningIdx == null) return [...current, done];
+              const copy = [...current];
+              copy[runningIdx] = { ...copy[runningIdx]!, ...done, id: copy[runningIdx]!.id };
+              return copy;
+            });
+          },
           onApproval: (approval) => {
-            const toolName = parseToolNameFromApproval(approval.detail, approval.title);
-            if (toolName && isAutoClientTool(toolName)) {
-              setPendingApproval(approval);
-              void (async () => {
-                // Reuse resolver by temporarily setting pending then approving.
-                setPendingApproval(approval);
-                // Direct local resolve path for auto tools:
-                try {
-                  const cwd = workspace.kind === "folder" ? workspace.folderPath : null;
-                  if (!cwd || !isTauriRuntime()) {
-                    setPendingApproval(approval);
-                    return;
-                  }
-                  const args = parseToolArgsFromApproval(approval.detail);
-                  const executed = await executeLocalAgentTool(toolName, args, cwd);
-                  setToolTraces((current) => [
-                    ...current,
-                    {
-                      id: `tool-${crypto.randomUUID()}`,
-                      name: toolName,
-                      result: `${executed.ok ? "OK" : "FAILED"} — ${executed.summary}\n${executed.toolResult}`.slice(
-                        0,
-                        2500,
-                      ),
-                    },
-                  ]);
-                  const result = await arrabApi.resolveApproval(approval.id, {
-                    status: "approved",
-                    toolResult: executed.toolResult,
-                  });
-                  setPendingApproval(null);
-                  if (result.continued?.assistantMessage) {
-                    setMessages((current) => [...current, result.continued!.assistantMessage!]);
-                    if (result.continued.sessionUsage) {
-                      setSessionUsage(result.continued.sessionUsage);
-                    }
-                  }
-                } catch {
-                  setPendingApproval(approval);
-                }
-              })();
-              return;
-            }
-            setPendingApproval(approval);
+            void handleChatIncomingApproval(approval);
           },
           onDone: (result) => {
             setMessages((current) => {
@@ -1500,7 +2031,7 @@ export function ChatPage() {
             setProviderConfigured(result.providerConfigured);
             setSessionUsage(result.sessionUsage);
             if (result.approval) {
-              setPendingApproval(result.approval);
+              void handleChatIncomingApproval(result.approval);
             }
             setConversation((current) =>
               current
@@ -1547,13 +2078,7 @@ export function ChatPage() {
         setProviderConfigured(result.providerConfigured);
         setSessionUsage(result.sessionUsage);
       } catch (fallbackErr: unknown) {
-        setError(
-          fallbackErr instanceof ApiRequestError
-            ? fallbackErr.message
-            : err instanceof ApiRequestError
-              ? err.message
-              : t("apiUnavailable"),
-        );
+        reportError(fallbackErr instanceof ApiRequestError ? fallbackErr : err);
       }
     } finally {
       setSending(false);
@@ -1657,6 +2182,111 @@ export function ChatPage() {
     return agentName ? `${agentName}` : t("chatNewChat");
   }
 
+  function applyDeskPolicy(next: DeskPolicy) {
+    setDeskPolicy(next);
+    try {
+      localStorage.setItem(DESK_POLICY_KEY, next);
+    } catch {
+      // ignore
+    }
+  }
+
+  async function handleChatIncomingApproval(approval: Approval) {
+    if (handledChatApprovals.current.has(approval.id)) return;
+    handledChatApprovals.current.add(approval.id);
+    const toolName = parseToolNameFromApproval(approval.detail, approval.title);
+    const auto =
+      (toolName && isAutoClientTool(toolName)) ||
+      (toolName && isPolicyClientTool(toolName) && deskPolicyRef.current === "allow");
+    if (auto && toolName && isClientExecTool(toolName)) {
+      const cwd = workspace.kind === "folder" ? workspace.folderPath : null;
+      if (!cwd || !isTauriRuntime()) {
+        setPendingApproval(approval);
+        return;
+      }
+      setAgentSteps((current) => [
+        ...current.map((step) =>
+          step.id === "thinking" && step.status === "running"
+            ? { ...step, status: "done" as const }
+            : step,
+        ),
+        {
+          id: `tool-${crypto.randomUUID()}`,
+          title: friendlyToolTitle(toolName, approval.detail ?? undefined),
+          detail: approval.detail ?? undefined,
+          status: "running",
+        },
+      ]);
+      try {
+        if (toolName === "run_terminal") setTerminalOpen(true);
+        const args = parseToolArgsFromApproval(approval.detail);
+        const executed = await executeLocalAgentTool(toolName, args, cwd, {
+          onTerminal: (kind, text) => {
+            if (kind === "input") {
+              setLines((current) => [
+                ...current,
+                { id: crypto.randomUUID(), kind: "input", text: `$ ${text}` },
+              ]);
+            } else {
+              setLines((current) => [...current, { id: crypto.randomUUID(), kind, text }]);
+            }
+          },
+        });
+        const detail = `${executed.ok ? "OK" : "FAILED"} — ${executed.summary}\n${executed.toolResult}`.slice(
+          0,
+          2500,
+        );
+        setAgentSteps((current) => {
+          const runningIdx = [...current]
+            .map((step, index) => ({ step, index }))
+            .reverse()
+            .find(({ step }) => step.status === "running")?.index;
+          const done = {
+            id: `tool-${crypto.randomUUID()}`,
+            title: friendlyToolTitle(toolName, detail),
+            detail,
+            status: (executed.ok ? "done" : "failed") as "done" | "failed",
+          };
+          if (runningIdx == null) return [...current, done];
+          const copy = [...current];
+          copy[runningIdx] = { ...copy[runningIdx]!, ...done, id: copy[runningIdx]!.id };
+          return copy;
+        });
+        const result = await arrabApi.resolveApproval(approval.id, {
+          status: "approved",
+          toolResult: executed.toolResult,
+        });
+        setPendingApproval(null);
+        if (result.continued?.assistantMessage) {
+          setMessages((current) => [...current, result.continued!.assistantMessage!]);
+          if (result.continued.sessionUsage) {
+            setSessionUsage(result.continued.sessionUsage);
+          }
+        }
+        if (result.continued?.approval) {
+          void handleChatIncomingApproval(result.continued.approval);
+        }
+      } catch {
+        setPendingApproval(approval);
+      }
+      return;
+    }
+    setAgentSteps((current) => [
+      ...current.map((step) =>
+        step.id === "thinking" && step.status === "running"
+          ? { ...step, status: "done" as const }
+          : step,
+      ),
+      {
+        id: `approval-${approval.id}`,
+        title: friendlyToolTitle(toolName || "tool", approval.detail ?? undefined),
+        detail: approval.detail ?? approval.title,
+        status: "pending",
+      },
+    ]);
+    setPendingApproval(approval);
+  }
+
   async function resolveChatApproval(status: "approved" | "rejected") {
     if (!pendingApproval) return;
     setApprovalBusy(true);
@@ -1692,15 +2322,17 @@ export function ChatPage() {
           },
         });
         toolResult = executed.toolResult;
-        setToolTraces((current) => [
+        const detail = `${executed.ok ? "OK" : "FAILED"} — ${executed.summary}\n${executed.toolResult}`.slice(
+          0,
+          2500,
+        );
+        setAgentSteps((current) => [
           ...current,
           {
             id: `tool-${crypto.randomUUID()}`,
-            name: toolName,
-            result: `${executed.ok ? "OK" : "FAILED"} — ${executed.summary}\n${executed.toolResult}`.slice(
-              0,
-              2500,
-            ),
+            title: friendlyToolTitle(toolName, detail),
+            detail,
+            status: executed.ok ? "done" : "failed",
           },
         ]);
       }
@@ -1715,22 +2347,26 @@ export function ChatPage() {
           setSessionUsage(result.continued.sessionUsage);
         }
         if (result.continued.toolsUsed?.length) {
-          setToolTraces((current) => [
+          setAgentSteps((current) => [
             ...current,
             ...result.continued!.toolsUsed!
               .filter((name) => !isClientExecTool(name))
               .map((name) => ({
                 id: `tool-${crypto.randomUUID()}`,
-                name,
-                result: t("approvalGranted"),
+                title: friendlyToolTitle(name),
+                detail: t("approvalGranted"),
+                status: "done" as const,
               })),
           ]);
+        }
+        if (result.continued.approval) {
+          void handleChatIncomingApproval(result.continued.approval);
         }
       } else if (status === "rejected") {
         setError(t("chatApprovalRejected"));
       }
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      reportError(err);
     } finally {
       setApprovalBusy(false);
     }
@@ -1830,53 +2466,92 @@ export function ChatPage() {
     setTreeSummary("");
   }
 
-  function useQuickPrompt(prompt: string) {
-    setDraft(prompt);
-    composerRef.current?.focus();
+  function useStarter(presetId: (typeof SOLO_PRESETS)[number]["id"]) {
+    const preset = SOLO_PRESETS.find((item) => item.id === presetId);
+    if (!preset) return;
+    applySoloPreset(presetId);
+    setDraft(t(preset.promptKey));
+    requestAnimationFrame(() => composerRef.current?.focus());
   }
 
 
 
 
   return (
-    <Surface className="cowork-shell chat-comfy chat-pro flex h-full flex-col overflow-hidden">
+    <Surface className="cowork-shell chat-comfy chat-pro chat-friendly flex h-full flex-col overflow-hidden">
       <div className="cowork-atmosphere pointer-events-none absolute inset-0" />
 
       <div className="relative z-10 flex min-h-0 flex-1">
         {showHistory ? (
-          <aside className="cowork-rise flex w-[240px] shrink-0 flex-col border-e border-white/[0.06] bg-[#050505] xl:w-[260px]">
-            <div className="space-y-2 border-b border-white/[0.06] p-3">
-              <div className="grid grid-cols-2 gap-1 rounded-xl border border-white/[0.08] bg-black/40 p-1">
+          <aside className="cowork-rise flex h-full min-h-0 w-[260px] shrink-0 flex-col border-e border-white/[0.05] xl:w-[280px]">
+            <div className="shrink-0 space-y-2.5 border-b border-white/[0.05] p-3.5">
+              <div className="chat-soft-toggle grid grid-cols-3 gap-1 rounded-[14px] p-1">
                 <button
                   type="button"
-                  onClick={() => setChatMode("solo")}
+                  onClick={() => {
+                    setChatMode("solo");
+                    setSidebarView("people");
+                  }}
                   className={cn(
-                    "h-8 rounded-lg text-[11px] transition-colors",
-                    chatMode === "solo"
-                      ? "bg-white text-black"
-                      : "text-neutral-400 hover:text-white",
+                    "chat-soft-toggle-btn h-9 rounded-xl text-[11px] font-medium transition-colors",
+                    chatMode === "solo" && "is-on",
                   )}
                 >
                   {t("chatSoloMode")}
                 </button>
                 <button
                   type="button"
-                  onClick={() => setChatMode("team")}
+                  onClick={() => {
+                    setChatMode("team");
+                    setSidebarView("chats");
+                  }}
                   className={cn(
-                    "h-8 rounded-lg text-[11px] transition-colors",
-                    chatMode === "team"
-                      ? "bg-white text-black"
-                      : "text-neutral-400 hover:text-white",
+                    "chat-soft-toggle-btn h-9 rounded-xl text-[11px] font-medium transition-colors",
+                    chatMode === "team" && "is-on",
                   )}
                 >
                   {t("chatTeamMode")}
                 </button>
+                <button
+                  type="button"
+                  onClick={() => void enterIncognitoMode()}
+                  className={cn(
+                    "chat-soft-toggle-btn h-9 rounded-xl text-[11px] font-medium transition-colors",
+                    chatMode === "incognito" && "is-on",
+                  )}
+                >
+                  {t("chatIncognitoMode")}
+                </button>
               </div>
-              {chatMode === "team" ? (
+
+              {chatMode === "solo" ? (
+                <div className="chat-soft-toggle grid grid-cols-2 gap-1 rounded-[14px] p-1">
+                  <button
+                    type="button"
+                    onClick={() => setSidebarView("people")}
+                    className={cn(
+                      "chat-soft-toggle-btn h-8 rounded-xl text-[11px] font-medium transition-colors",
+                      sidebarView === "people" && "is-on",
+                    )}
+                  >
+                    {t("chatPeopleTab")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSidebarView("chats")}
+                    className={cn(
+                      "chat-soft-toggle-btn h-8 rounded-xl text-[11px] font-medium transition-colors",
+                      sidebarView === "chats" && "is-on",
+                    )}
+                  >
+                    {t("chatHistory")}
+                  </button>
+                </div>
+              ) : chatMode === "team" ? (
                 <select
                   value={teamId}
                   onChange={(event) => setTeamId(event.target.value)}
-                  className="h-9 w-full rounded-xl border border-white/[0.1] bg-black/50 px-2.5 text-[12px] text-neutral-200 outline-none"
+                  className="h-10 w-full rounded-2xl border border-white/[0.08] bg-white/[0.03] px-3 text-[13px] text-neutral-200 outline-none"
                 >
                   <option value="">{t("chatPickTeam")}</option>
                   {teams.map((team) => (
@@ -1886,81 +2561,362 @@ export function ChatPage() {
                   ))}
                 </select>
               ) : (
-                <div className="space-y-2">
-                  <select
-                    value={agentId}
-                    onChange={(event) => void switchSoloAgent(event.target.value)}
-                    className="h-9 w-full rounded-xl border border-white/[0.1] bg-black/50 px-2.5 text-[12px] text-neutral-200 outline-none"
-                  >
-                    {agents.map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name}
-                        {agent.specialty ? ` · ${agent.specialty}` : ""}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDeskTab("agent");
-                      setDeskOpen(true);
-                    }}
-                    className="flex h-8 w-full items-center justify-center gap-1.5 rounded-xl border border-white/[0.08] text-[11px] text-neutral-400 hover:bg-white/[0.04] hover:text-white"
-                  >
-                    <UserRound className="size-3.5" strokeWidth={1.7} />
-                    {t("chatConfigureAgent")}
-                  </button>
-                </div>
+                <p className="px-1 text-[11px] leading-relaxed text-neutral-500">
+                  {t("chatIncognitoHint")}
+                </p>
               )}
-              <button
-                type="button"
-                disabled={sessionBusy}
-                onClick={() => void newChat()}
-                className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-white text-[13px] font-medium text-black hover:bg-neutral-200 disabled:opacity-40"
-              >
-                <MessageSquarePlus className="size-4" strokeWidth={1.7} />
-                {t("chatNewChat")}
-              </button>
+
+              {chatMode === "solo" && sidebarView === "people" ? (
+                <button
+                  type="button"
+                  disabled={agentBusy}
+                  onClick={() => setHireOpen((open) => !open)}
+                  className="chat-soft-cta flex h-11 w-full items-center justify-center gap-2 rounded-[980px] text-[13px] font-medium transition-colors disabled:opacity-40"
+                >
+                  <Plus className="size-4" strokeWidth={1.8} />
+                  {t("chatHireAgent")}
+                </button>
+              ) : chatMode === "incognito" ? (
+                <button
+                  type="button"
+                  disabled={sessionBusy || !incognitoUnlocked}
+                  onClick={() => void newIncognitoChat()}
+                  className="chat-soft-cta flex h-11 w-full items-center justify-center gap-2 rounded-[980px] text-[13px] font-medium transition-colors disabled:opacity-40"
+                >
+                  <EyeOff className="size-4" strokeWidth={1.7} />
+                  {t("chatIncognitoNew")}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={sessionBusy}
+                  onClick={() => void newChat()}
+                  className="chat-soft-cta flex h-11 w-full items-center justify-center gap-2 rounded-[980px] text-[13px] font-medium transition-colors disabled:opacity-40"
+                >
+                  <MessageSquarePlus className="size-4" strokeWidth={1.7} />
+                  {t("chatNewChat")}
+                </button>
+              )}
             </div>
 
-            <div className="px-3 pt-3">
-              <p className="chat-pro-kicker">{t("chatHistory")}</p>
-            </div>
-            <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-2 py-2">
-              {visibleConversations.map((item) => {
-                const active = item.id === conversation?.id;
-                return (
-                  <li key={item.id}>
+            {chatMode === "incognito" ? (
+              <div className="flex min-h-0 flex-1 flex-col">
+                {!incognitoHasVault ? (
+                  <div className="space-y-3 p-4">
+                    <p className="text-[13px] leading-relaxed text-neutral-400">
+                      {t("chatIncognitoSetupBody")}
+                    </p>
+                    <input
+                      type="password"
+                      value={incognitoPassword}
+                      onChange={(e) => setIncognitoPassword(e.target.value)}
+                      placeholder={t("chatIncognitoPassword")}
+                      className="h-10 w-full rounded-2xl border border-white/[0.08] bg-black/40 px-3 text-[13px] text-white outline-none focus:border-white/25"
+                    />
+                    <input
+                      type="password"
+                      value={incognitoPassword2}
+                      onChange={(e) => setIncognitoPassword2(e.target.value)}
+                      placeholder={t("chatIncognitoPasswordConfirm")}
+                      className="h-10 w-full rounded-2xl border border-white/[0.08] bg-black/40 px-3 text-[13px] text-white outline-none focus:border-white/25"
+                    />
+                    {incognitoError ? (
+                      <p className="text-[12px] text-red-300/90">{incognitoError}</p>
+                    ) : null}
                     <button
                       type="button"
-                      onClick={() => void openConversation(item.id)}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        setChatMenu({ id: item.id, x: event.clientX, y: event.clientY });
-                      }}
-                      className={cn(
-                        "flex w-full flex-col gap-0.5 rounded-xl px-2.5 py-2 text-start transition-colors",
-                        active
-                          ? "bg-white/[0.08] text-white"
-                          : "text-neutral-500 hover:bg-white/[0.03] hover:text-neutral-300",
-                      )}
+                      disabled={incognitoBusy}
+                      onClick={() => void setupIncognitoVault()}
+                      className="home-btn-primary h-10 w-full text-[12px] disabled:opacity-40"
                     >
-                      <span className="truncate text-[12px]">{threadLabel(item)}</span>
-                      <span className="truncate text-[10px] text-neutral-600">
-                        {item.teamId
-                          ? teams.find((team) => team.id === item.teamId)?.name ??
-                            t("chatTeamBadge")
-                          : agents.find((agent) => agent.id === item.agentId)?.name ??
-                            t("chatSoloDefaultName")}
-                      </span>
+                      {t("chatIncognitoSetup")}
                     </button>
-                  </li>
-                );
-              })}
-              {visibleConversations.length === 0 ? (
-                <li className="px-2 py-8 text-center text-[12px] text-neutral-600">{t("chatNoChats")}</li>
-              ) : null}
-            </ul>
+                  </div>
+                ) : !incognitoUnlocked ? (
+                  <div className="space-y-3 p-4">
+                    <p className="text-[13px] font-medium text-white">
+                      {t("chatIncognitoLockedTitle")}
+                    </p>
+                    <p className="text-[12px] leading-relaxed text-neutral-500">
+                      {t("chatIncognitoUnlockBody")}
+                    </p>
+                    <input
+                      type="password"
+                      value={incognitoPassword}
+                      onChange={(e) => setIncognitoPassword(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") void unlockIncognito();
+                      }}
+                      placeholder={t("chatIncognitoPassword")}
+                      className="h-10 w-full rounded-2xl border border-white/[0.08] bg-black/40 px-3 text-[13px] text-white outline-none focus:border-white/25"
+                    />
+                    {incognitoError ? (
+                      <p className="text-[12px] text-red-300/90">{incognitoError}</p>
+                    ) : null}
+                    <button
+                      type="button"
+                      disabled={incognitoBusy}
+                      onClick={() => void unlockIncognito()}
+                      className="home-btn-primary h-10 w-full text-[12px] disabled:opacity-40"
+                    >
+                      {t("chatIncognitoUnlock")}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={incognitoBusy}
+                      onClick={() => void wipeIncognito()}
+                      className="h-9 w-full rounded-full border border-white/10 text-[11px] text-neutral-500 hover:text-red-300"
+                    >
+                      {t("chatIncognitoWipe")}
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex shrink-0 items-center justify-between gap-2 px-4 pb-1 pt-4">
+                      <p className="text-[12px] text-neutral-500">{t("chatIncognitoBadge")}</p>
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          onClick={lockIncognito}
+                          className="rounded-full px-2 py-1 text-[10px] text-neutral-400 hover:bg-white/5 hover:text-white"
+                        >
+                          {t("chatIncognitoLock")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void wipeIncognito()}
+                          className="rounded-full px-2 py-1 text-[10px] text-neutral-500 hover:bg-white/5 hover:text-red-300"
+                        >
+                          {t("chatIncognitoWipe")}
+                        </button>
+                      </div>
+                    </div>
+                    <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain px-2 pb-6 pt-1">
+                      {incognitoSessions.map((item) => {
+                        const active = item.id === incognitoSessionId;
+                        return (
+                          <li key={item.id} className="group relative">
+                            <button
+                              type="button"
+                              onClick={() => void openIncognitoSession(item.id)}
+                              className={cn(
+                                "flex w-full flex-col gap-0.5 rounded-2xl px-3 py-2.5 pe-8 text-start transition-colors",
+                                active
+                                  ? "bg-white/[0.08] text-white"
+                                  : "text-neutral-500 hover:bg-white/[0.03] hover:text-neutral-300",
+                              )}
+                            >
+                              <span className="truncate text-[13px]">{item.title}</span>
+                              <span className="truncate text-[11px] text-neutral-600">
+                                {item.messageCount} · {t("chatIncognitoBadge")}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              title={t("chatIncognitoDelete")}
+                              onClick={() => void deleteIncognitoChat(item.id)}
+                              className="absolute end-2 top-1/2 -translate-y-1/2 rounded-lg p-1 text-neutral-600 opacity-0 hover:text-red-300 group-hover:opacity-100"
+                            >
+                              <Trash2 className="size-3.5" strokeWidth={1.7} />
+                            </button>
+                          </li>
+                        );
+                      })}
+                      {incognitoSessions.length === 0 ? (
+                        <li className="px-3 py-10 text-center text-[13px] text-neutral-600">
+                          {t("chatIncognitoEmpty")}
+                        </li>
+                      ) : null}
+                    </ul>
+                  </>
+                )}
+              </div>
+            ) : chatMode === "solo" && sidebarView === "people" ? (
+              <div className="flex min-h-0 flex-1 flex-col">
+                {hireOpen ? (
+                  <form
+                    onSubmit={(event) => void hireAgent(event)}
+                    className="shrink-0 space-y-2.5 border-b border-white/[0.06] px-3.5 py-3"
+                  >
+                    <p className="text-[12px] text-neutral-500">{t("chatHireHint")}</p>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {SOLO_PRESETS.map((preset) => (
+                        <button
+                          key={preset.id}
+                          type="button"
+                          onClick={() => {
+                            setHirePreset(preset.id);
+                            if (!hireName.trim()) setHireName(t(preset.titleKey));
+                            if (!hireRole.trim()) setHireRole(preset.role);
+                          }}
+                          className={cn(
+                            "rounded-xl border px-2 py-2 text-start transition-colors",
+                            hirePreset === preset.id
+                              ? "border-white/25 bg-white/[0.08]"
+                              : "border-white/[0.08] hover:bg-white/[0.04]",
+                          )}
+                        >
+                          <span className="block text-[11px] font-medium text-white">
+                            {t(preset.titleKey)}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                    <input
+                      value={hireName}
+                      onChange={(event) => setHireName(event.target.value)}
+                      placeholder={t("chatSoloNamePlaceholder")}
+                      className="h-10 w-full rounded-2xl border border-white/[0.08] bg-black/40 px-3 text-[13px] text-white outline-none focus:border-white/25"
+                    />
+                    <input
+                      value={hireRole}
+                      onChange={(event) => setHireRole(event.target.value)}
+                      placeholder={t("employeeRole")}
+                      className="h-10 w-full rounded-2xl border border-white/[0.08] bg-black/40 px-3 text-[13px] text-white outline-none focus:border-white/25"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        type="submit"
+                        disabled={agentBusy}
+                        className="home-btn-primary h-9 flex-1 text-[12px] disabled:opacity-40"
+                      >
+                        {agentBusy ? t("saving") : t("chatHireCta")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setHireOpen(false)}
+                        className="home-btn-secondary h-9 px-3 text-[12px]"
+                      >
+                        {t("cancel")}
+                      </button>
+                    </div>
+                  </form>
+                ) : null}
+
+                <div className="shrink-0 px-4 pt-3 pb-1">
+                  <p className="text-[12px] text-neutral-500">
+                    {t("chatPeopleCount").replace("{count}", String(agents.length))}
+                  </p>
+                </div>
+                <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain px-2 pb-6 pt-1">
+                  {agents.map((agent) => {
+                    const active = agent.id === agentId;
+                    const paused = agent.status === "paused";
+                    return (
+                      <li key={agent.id}>
+                        <div
+                          className={cn(
+                            "group flex w-full items-center gap-2 rounded-2xl px-2 py-2 transition-colors",
+                            active
+                              ? "bg-white/[0.08]"
+                              : "hover:bg-white/[0.03]",
+                          )}
+                        >
+                          <button
+                            type="button"
+                            disabled={agentBusy || sessionBusy}
+                            onClick={() => void switchSoloAgent(agent.id)}
+                            className="flex min-w-0 flex-1 items-center gap-2.5 text-start"
+                          >
+                            <span className="home-avatar flex size-9 shrink-0 items-center justify-center text-[11px] font-medium">
+                              {agentInitials(agent.name)}
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate text-[13px] text-white">
+                                {agent.name}
+                              </span>
+                              <span className="mt-0.5 block truncate text-[11px] text-neutral-500">
+                                {paused ? t("chatAgentPaused") : agent.role}
+                              </span>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="flex size-8 shrink-0 items-center justify-center rounded-full text-neutral-600 opacity-70 transition hover:bg-white/[0.06] hover:text-white group-hover:opacity-100"
+                            aria-label={t("chatAgentManage")}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              const pos = clampMenuPosition(
+                                event.currentTarget.getBoundingClientRect(),
+                                200,
+                                268,
+                              );
+                              setAgentMenu({
+                                id: agent.id,
+                                x: pos.x,
+                                y: pos.y,
+                              });
+                              setChatMenu(null);
+                            }}
+                          >
+                            <MoreHorizontal className="size-4" strokeWidth={1.7} />
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })}
+                  {agents.length === 0 ? (
+                    <li className="px-3 py-10 text-center text-[13px] text-neutral-600">
+                      {t("chatNoPeople")}
+                    </li>
+                  ) : null}
+                </ul>
+              </div>
+            ) : (
+              <div className="flex min-h-0 flex-1 flex-col">
+                <div className="shrink-0 px-4 pb-1 pt-4">
+                  <p className="text-[12px] text-neutral-500">{t("chatHistory")}</p>
+                </div>
+                <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain px-2 pb-6 pt-1">
+                  {visibleConversations.map((item) => {
+                    const active = item.id === conversation?.id;
+                    return (
+                      <li key={item.id}>
+                        <button
+                          type="button"
+                          onClick={() => void openConversation(item.id)}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            const pos = clampMenuPosition(
+                              {
+                                left: event.clientX,
+                                right: event.clientX,
+                                top: event.clientY,
+                                bottom: event.clientY,
+                              },
+                              170,
+                              96,
+                            );
+                            setChatMenu({ id: item.id, x: pos.x, y: pos.y });
+                            setAgentMenu(null);
+                          }}
+                          className={cn(
+                            "flex w-full flex-col gap-0.5 rounded-2xl px-3 py-2.5 text-start transition-colors",
+                            active
+                              ? "bg-white/[0.08] text-white"
+                              : "text-neutral-500 hover:bg-white/[0.03] hover:text-neutral-300",
+                          )}
+                        >
+                          <span className="truncate text-[13px]">{threadLabel(item)}</span>
+                          <span className="truncate text-[11px] text-neutral-600">
+                            {item.teamId
+                              ? teams.find((team) => team.id === item.teamId)?.name ??
+                                t("chatTeamBadge")
+                              : agents.find((agent) => agent.id === item.agentId)?.name ??
+                                t("chatSoloDefaultName")}
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                  {visibleConversations.length === 0 ? (
+                    <li className="px-3 py-10 text-center text-[13px] text-neutral-600">
+                      {t("chatNoChats")}
+                    </li>
+                  ) : null}
+                </ul>
+              </div>
+            )}
           </aside>
         ) : null}
 
@@ -1977,16 +2933,23 @@ export function ChatPage() {
               </button>
               <div className="min-w-0">
                 <h1 className="truncate text-[15px] font-medium tracking-[-0.02em] text-white">
-                  {conversationTitle}
+                  {chatMode === "incognito" ? (
+                    <span className="inline-flex items-center gap-2">
+                      <EyeOff className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                      {incognitoUnlocked ? conversationTitle : t("chatIncognitoLockedTitle")}
+                      <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-normal text-neutral-500">
+                        {t("chatIncognitoBadge")}
+                      </span>
+                    </span>
+                  ) : (
+                    conversationTitle
+                  )}
                 </h1>
-                <p className="truncate text-[11px] text-neutral-500">
+                <p className="truncate text-[12px] text-neutral-500">
                   {[
                     conversation?.teamId
                       ? `${t("chatTeamBadge")}: ${selectedTeam?.name ?? teams.find((team) => team.id === conversation.teamId)?.name ?? "—"}`
-                      : null,
-                    selectedAgent?.name ?? t("chatSoloDefaultName"),
-                    selectedAgent?.specialty || null,
-                    ecoMode ? t("chatEcoOn") : null,
+                      : selectedAgent?.name ?? t("chatSoloDefaultName"),
                     workspace.kind !== "none" ? workspaceLabel : null,
                   ]
                     .filter(Boolean)
@@ -2024,7 +2987,7 @@ export function ChatPage() {
             </div>
           </header>
 
-          {error || budgetExhausted ? (
+          {budgetExhausted || (error && !isTransientApiError(error)) ? (
             <div className="border-b border-white/[0.06] bg-white/[0.02] px-4 py-2.5 text-xs text-neutral-400 lg:px-6">
               {budgetExhausted ? t("spendBudgetExhausted") : error}
             </div>
@@ -2047,74 +3010,68 @@ export function ChatPage() {
                   ) : null}
 
                   {conversation && messages.length === 0 && !sending ? (
-                    <div className="mx-auto flex max-w-xl flex-col items-center px-4 py-16 text-center">
-                      <div className="mb-4 flex size-12 items-center justify-center rounded-2xl border border-white/[0.08] bg-white/[0.03]">
-                        <Bot className="size-5 text-neutral-400" strokeWidth={1.6} />
+                    <div className="mx-auto flex w-full max-w-lg flex-col items-center px-2 py-12 text-center sm:py-16">
+                      <div className="mb-5 flex size-14 items-center justify-center rounded-full border border-white/[0.06] bg-white/[0.035]">
+                        <Bot className="size-6 text-neutral-300" strokeWidth={1.5} />
                       </div>
-                      <h2 className="text-[22px] font-medium tracking-[-0.03em] text-white">
+                      <h2 className="text-[26px] font-semibold tracking-[-0.035em] text-white">
                         {selectedAgent?.name ?? t("chatSoloDefaultName")}
                       </h2>
-                      <p className="mt-1 text-[12px] text-neutral-500">
-                        {[
-                          selectedAgent?.specialty || selectedAgent?.role,
-                          agentSkills.length
-                            ? `${agentSkills.length} ${t("chatSkillsLabel")}`
-                            : null,
-                          agentMemories.length
-                            ? `${agentMemories.length} ${t("chatMemoriesLabel")}`
-                            : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
+                      <p className="mt-2 max-w-sm text-[15px] leading-relaxed text-neutral-500">
+                        {t("chatGptTips")}
                       </p>
-                      <p className="mt-3 max-w-md text-[13px] leading-relaxed text-neutral-500">
-                        {selectedAgent?.bio?.trim() || t("chatGptTips")}
-                      </p>
-                      <div className="mt-5 flex flex-wrap justify-center gap-2">
+
+                      <div className="mt-8 grid w-full gap-2.5 sm:grid-cols-2">
                         {SOLO_PRESETS.map((preset) => (
                           <button
                             key={preset.id}
                             type="button"
-                            onClick={() => {
-                              applySoloPreset(preset.id);
-                              setDeskTab("agent");
-                              setDeskOpen(true);
-                            }}
-                            className="rounded-full border border-white/10 px-3 py-1.5 text-[11px] text-neutral-400 hover:border-white/25 hover:text-white"
+                            onClick={() => useStarter(preset.id)}
+                            className="chat-starter text-start"
                           >
-                            {preset.specialty}
+                            <span className="block text-[14px] font-medium text-white">
+                              {t(preset.titleKey)}
+                            </span>
+                            <span className="mt-1 block text-[12px] leading-snug text-neutral-500">
+                              {t(preset.bodyKey)}
+                            </span>
                           </button>
                         ))}
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setDeskTab("agent");
-                          setDeskOpen(true);
-                        }}
-                        className="mt-4 text-[12px] text-neutral-400 underline-offset-2 hover:text-white hover:underline"
-                      >
-                        {t("chatConfigureAgent")}
-                      </button>
-                      <div className="mt-7 flex flex-wrap justify-center gap-2">
-                        {quickPrompts.map((prompt) => (
-                          <button key={prompt} type="button" onClick={() => useQuickPrompt(prompt)} className="chat-pro-suggestion">
-                            {prompt}
-                          </button>
-                        ))}
-                      </div>
-                      <div className="mt-4 flex flex-wrap justify-center gap-2">
-                        {codingPresets.slice(0, 3).map((preset) => (
-                          <button
-                            key={preset.id}
-                            type="button"
-                            onClick={() => askAboutCommand(preset.prompt)}
-                            className="inline-flex items-center gap-1.5 rounded-full border border-white/10 px-3 py-1.5 text-[11px] text-neutral-500 hover:text-white"
-                          >
-                            <Play className="size-3" />
-                            {t(preset.labelKey)}
-                          </button>
-                        ))}
+
+                      <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-[12px] text-neutral-500">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDeskTab("project");
+                            setDeskOpen(true);
+                          }}
+                          className="hover:text-white"
+                        >
+                          {t("chatAttachFolder")}
+                        </button>
+                        <span className="text-neutral-700">·</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setGoalDraft("");
+                            setGoalEditorOpen(true);
+                          }}
+                          className="hover:text-white"
+                        >
+                          {t("setGoal")}
+                        </button>
+                        <span className="text-neutral-700">·</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setDeskTab("agent");
+                            setDeskOpen(true);
+                          }}
+                          className="hover:text-white"
+                        >
+                          {t("chatConfigureAgent")}
+                        </button>
                       </div>
                     </div>
                   ) : null}
@@ -2128,23 +3085,8 @@ export function ChatPage() {
                         coworkerLabel={selectedAgent?.name ?? t("coworker")}
                       />
                     ))}
-                    {toolTraces.length > 0 ? (
-                      <ul className="space-y-2">
-                        {toolTraces.map((trace) => (
-                          <li
-                            key={trace.id}
-                            className="rounded-xl border border-white/[0.08] bg-white/[0.03] px-3 py-2.5"
-                          >
-                            <p className="flex items-center gap-1.5 text-[11px] text-neutral-400">
-                              <Wrench className="size-3" strokeWidth={1.7} />
-                              {t("chatToolUsed").replace("{name}", trace.name)}
-                            </p>
-                            <p className="mt-1 max-h-24 overflow-y-auto whitespace-pre-wrap text-[12px] leading-relaxed text-neutral-500">
-                              {trace.result}
-                            </p>
-                          </li>
-                        ))}
-                      </ul>
+                    {agentSteps.length > 0 ? (
+                      <AgentSteps steps={agentSteps} thinkingLabel={`${t("thinking")}…`} />
                     ) : null}
                     {pendingApproval ? (
                       <div className="rounded-2xl border border-white/[0.12] bg-[#0c0c0c] p-4">
@@ -2193,15 +3135,11 @@ export function ChatPage() {
                         </div>
                       </div>
                     ) : null}
-                    {sending ? (
-                      <div className="flex items-center gap-2 text-xs text-neutral-500">
-                        <span className="cowork-thinking inline-flex gap-1">
-                          <i />
-                          <i />
-                          <i />
-                        </span>
-                        {t("thinking")}
-                      </div>
+                    {sending && agentSteps.length === 0 ? (
+                      <AgentSteps
+                        steps={[{ id: "thinking", title: "thinking", status: "running" }]}
+                        thinkingLabel={`${t("thinking")}…`}
+                      />
                     ) : null}
                     <div ref={chatEnd} />
                   </div>
@@ -2401,15 +3339,47 @@ export function ChatPage() {
                           ) : null}
                         </div>
 
-                        <button
-                          type="submit"
-                          disabled={!conversation || sending || draft.trim() === "" || budgetExhausted}
-                          className="inline-flex size-8 items-center justify-center rounded-full bg-white text-black transition hover:bg-neutral-200 disabled:opacity-25"
-                          aria-label={t("send")}
-                          title={prefs.coworkEnterSend ? t("pressEnter") : t("shiftEnterSend")}
-                        >
-                          <ArrowUp className="size-3.5" strokeWidth={2.2} />
-                        </button>
+                        <div className="flex items-center gap-1.5">
+                          <div className="flex items-center rounded-full bg-white/[0.04] p-0.5">
+                            <button
+                              type="button"
+                              onClick={() => applyDeskPolicy("ask")}
+                              className={cn(
+                                "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] font-medium transition",
+                                deskPolicy === "ask"
+                                  ? "bg-white text-black"
+                                  : "text-neutral-500 hover:text-neutral-300",
+                              )}
+                              title={t("coworkAskApproval")}
+                            >
+                              <ShieldQuestion className="size-3.5" strokeWidth={1.8} />
+                              {t("coworkAskApproval")}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => applyDeskPolicy("allow")}
+                              className={cn(
+                                "inline-flex h-8 items-center gap-1.5 rounded-full px-3 text-[11px] font-medium transition",
+                                deskPolicy === "allow"
+                                  ? "bg-white text-black"
+                                  : "text-neutral-500 hover:text-neutral-300",
+                              )}
+                              title={t("coworkAllowEverything")}
+                            >
+                              <ShieldCheck className="size-3.5" strokeWidth={1.8} />
+                              {t("coworkAllowEverything")}
+                            </button>
+                          </div>
+                          <button
+                            type="submit"
+                            disabled={!conversation || sending || draft.trim() === "" || budgetExhausted}
+                            className="inline-flex size-8 items-center justify-center rounded-full bg-white/90 text-black transition hover:bg-white disabled:opacity-25"
+                            aria-label={t("send")}
+                            title={prefs.coworkEnterSend ? t("pressEnter") : t("shiftEnterSend")}
+                          >
+                            <ArrowUp className="size-3.5" strokeWidth={2.2} />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -2418,16 +3388,36 @@ export function ChatPage() {
             ) : null}
 
             {showDesk ? (
-              <aside className="cowork-rise cowork-rise-delay flex w-[300px] shrink-0 flex-col border-s border-white/[0.06] bg-[#060606] xl:w-[320px]">
-                <div className="border-b border-white/[0.06] px-4 py-4">
+              <aside className="cowork-rise cowork-rise-delay desk-panel flex w-[310px] shrink-0 flex-col border-s border-white/[0.05] bg-[#0c0c0c]/95 xl:w-[340px]">
+                <div className="border-b border-white/[0.06] px-4 pb-4 pt-4">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="chat-pro-kicker">{t("chatAdvanced")}</p>
-                    <button type="button" onClick={() => setDeskOpen(false)} className="text-neutral-600 hover:text-white" aria-label={t("close")}>
+                    <div>
+                      <p className="text-[15px] font-medium tracking-tight text-white">{t("chatAdvanced")}</p>
+                      <p className="mt-0.5 text-[12px] text-neutral-500">{t("deskPanelHint")}</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDeskOpen(false)}
+                      className="flex size-8 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-white"
+                      aria-label={t("close")}
+                    >
                       <X className="size-3.5" />
                     </button>
                   </div>
-                  <div className="mt-3 flex items-center gap-2">
-                    <div className="flex flex-1 rounded-lg border border-white/[0.08] bg-black/40 p-0.5">
+
+                  <div className="desk-card mt-4 space-y-3 p-3.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[13px] font-medium text-white">{t("deskSpendTitle")}</p>
+                      <span className="text-[11px] text-neutral-500">
+                        {sessionUsage
+                          ? sessionUsage.budget === null
+                            ? `${sessionUsage.totalTokens.toLocaleString()} · ∞`
+                            : `${sessionUsage.totalTokens.toLocaleString()} / ${sessionUsage.budget.toLocaleString()}`
+                          : t("deskSpendIdle")}
+                      </span>
+                    </div>
+                    <p className="text-[11px] leading-snug text-neutral-500">{t("deskSpendHint")}</p>
+                    <div className="grid grid-cols-3 gap-1 rounded-2xl bg-white/[0.04] p-1">
                       {(
                         [
                           ["low", t("chatSpendEco")],
@@ -2444,180 +3434,212 @@ export function ChatPage() {
                             setBudgetInput(id === "low" ? "2500" : String(DEFAULT_SESSION_BUDGETS[id]));
                           }}
                           className={cn(
-                            "flex-1 rounded-md py-1.5 text-[11px] transition-colors",
-                            spendTier === id ? "bg-white text-black" : "text-neutral-500 hover:text-neutral-300",
+                            "h-9 rounded-xl text-[12px] font-medium transition-colors",
+                            spendTier === id
+                              ? "bg-white text-black"
+                              : "text-neutral-500 hover:text-neutral-200",
                           )}
                         >
                           {label}
                         </button>
                       ))}
                     </div>
-                    <input
-                      type="number"
-                      min={0}
-                      step={500}
-                      value={budgetInput}
-                      onChange={(event) => setBudgetInput(event.target.value)}
-                      placeholder="∞"
-                      title={t("spendBudgetHint")}
-                      className="h-8 w-[72px] rounded-lg border border-white/[0.08] bg-black/40 px-2 text-center text-[11px] tabular-nums text-neutral-300 outline-none focus:border-white/20"
-                    />
-                  </div>
-                  {sessionUsage ? (
-                    <div className="mt-2.5">
-                      <div className="mb-1 flex justify-between text-[10px] text-neutral-600">
-                        <span>{sessionUsage.totalTokens.toLocaleString()}</span>
-                        <span>
-                          {sessionUsage.budget === null ? "∞" : sessionUsage.budget.toLocaleString()}
-                        </span>
-                      </div>
-                      <div className="h-[2px] overflow-hidden rounded-full bg-white/[0.08]">
+                    <label className="flex items-center justify-between gap-3">
+                      <span className="text-[12px] text-neutral-500">{t("spendBudget")}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={500}
+                        value={budgetInput}
+                        onChange={(event) => setBudgetInput(event.target.value)}
+                        placeholder="∞"
+                        title={t("spendBudgetHint")}
+                        className="h-9 w-[96px] rounded-xl border border-white/[0.08] bg-black/35 px-2.5 text-center text-[12px] tabular-nums text-neutral-200 outline-none focus:border-white/25"
+                      />
+                    </label>
+                    {sessionUsage ? (
+                      <div className="h-1 overflow-hidden rounded-full bg-white/[0.08]">
                         <div
-                          className="h-full rounded-full bg-white/55"
+                          className="h-full rounded-full bg-white/60 transition-[width] duration-300"
                           style={{ width: `${Math.round((spendUsedRatio ?? 0) * 100)}%` }}
                         />
                       </div>
-                    </div>
-                  ) : null}
+                    ) : null}
+                  </div>
                 </div>
 
-                <nav className="flex gap-0 overflow-x-auto border-b border-white/[0.06] px-1">
+                <nav className="desk-tabs mx-3 mt-3 grid grid-cols-3 gap-1 rounded-2xl bg-white/[0.04] p-1">
                   {(
                     [
-                      ["agent", t("chatTabAgent")],
-                      ["overview", t("chatTabOverview")],
-                      ["project", t("chatTabProject")],
-                      ["code", t("chatTabCode")],
-                      ["git", t("chatTabGit")],
-                      ["notes", t("chatTabNotes")],
+                      ["agent", t("chatTabAgent"), UserRound],
+                      ["overview", t("chatTabOverview"), Sparkles],
+                      ["project", t("chatTabProject"), FolderOpen],
+                      ["code", t("chatTabCode"), Code2],
+                      ["git", t("chatTabGit"), Github],
+                      ["notes", t("chatTabNotes"), NotebookPen],
                     ] as const
-                  ).map(([id, label]) => (
+                  ).map(([id, label, Icon]) => (
                     <button
                       key={id}
                       type="button"
                       onClick={() => setDeskTab(id)}
                       className={cn(
-                        "relative shrink-0 px-2 py-3 text-[11px] transition-colors",
-                        deskTab === id ? "text-white" : "text-neutral-600 hover:text-neutral-300",
+                        "flex h-9 items-center justify-center gap-1.5 rounded-xl text-[11px] transition-colors",
+                        deskTab === id
+                          ? "bg-white text-black"
+                          : "text-neutral-500 hover:text-neutral-200",
                       )}
+                      title={label}
                     >
-                      {label}
-                      {deskTab === id ? <span className="absolute inset-x-2 bottom-0 h-px bg-white" /> : null}
+                      <Icon className="size-3.5 shrink-0" strokeWidth={1.7} />
+                      <span className="truncate">{label}</span>
                     </button>
                   ))}
                 </nav>
 
                 <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
                   {deskTab === "agent" ? (
-                    <div className="space-y-5">
-                      <form onSubmit={(event) => void saveAgentProfile(event)} className="space-y-3">
-                        <p className="chat-pro-kicker">{t("editProfile")}</p>
-                        <p className="text-[12px] leading-relaxed text-neutral-500">{t("editProfileBody")}</p>
-                        <div className="flex flex-wrap gap-1.5">
+                    <div className="space-y-4">
+                      <div className="desk-card flex items-center gap-3 p-3.5">
+                        <span className="home-avatar flex size-12 shrink-0 items-center justify-center text-[13px] font-medium">
+                          {(profileName || selectedAgent?.name || "?").slice(0, 2).toUpperCase()}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate text-[15px] font-medium text-white">
+                            {profileName || selectedAgent?.name || t("chatSoloDefaultName")}
+                          </p>
+                          <p className="mt-0.5 truncate text-[12px] text-neutral-500">
+                            {profileRole || selectedAgent?.role || t("chatSoloDefaultRole")}
+                          </p>
+                        </div>
+                      </div>
+
+                      <form onSubmit={(event) => void saveAgentProfile(event)} className="space-y-3.5">
+                        <div>
+                          <p className="text-[13px] font-medium text-white">{t("editProfile")}</p>
+                          <p className="mt-1 text-[12px] leading-relaxed text-neutral-500">
+                            {t("editProfileBody")}
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
                           {SOLO_PRESETS.map((preset) => (
                             <button
                               key={preset.id}
                               type="button"
                               onClick={() => applySoloPreset(preset.id)}
                               className={cn(
-                                "rounded-full border px-2.5 py-1 text-[10px] transition-colors",
-                                profileSpecialty === preset.specialty
-                                  ? "border-white/30 bg-white/10 text-white"
-                                  : "border-white/10 text-neutral-500 hover:text-neutral-300",
+                                "desk-preset text-start",
+                                profileSpecialty === preset.specialty && "is-on",
                               )}
                             >
-                              {preset.specialty}
+                              <span className="block text-[12px] font-medium text-white">
+                                {t(preset.titleKey)}
+                              </span>
+                              <span className="mt-0.5 block text-[10px] leading-snug text-neutral-500">
+                                {t(preset.bodyKey)}
+                              </span>
                             </button>
                           ))}
                         </div>
-                        <label className="grid gap-1">
-                          <span className="text-[10px] uppercase tracking-[0.12em] text-neutral-600">{t("chatSoloNamePlaceholder")}</span>
+
+                        <label className="desk-field">
+                          <span>{t("chatSoloNamePlaceholder")}</span>
                           <input
                             value={profileName}
                             onChange={(event) => setProfileName(event.target.value)}
-                            className="h-9 rounded-lg border border-white/[0.08] bg-black/40 px-2.5 text-[12px] text-white outline-none focus:border-white/20"
                           />
                         </label>
-                        <label className="grid gap-1">
-                          <span className="text-[10px] uppercase tracking-[0.12em] text-neutral-600">{t("employeeRole")}</span>
+                        <label className="desk-field">
+                          <span>{t("employeeRole")}</span>
                           <input
                             value={profileRole}
                             onChange={(event) => setProfileRole(event.target.value)}
                             placeholder={t("hireRolePlaceholder")}
-                            className="h-9 rounded-lg border border-white/[0.08] bg-black/40 px-2.5 text-[12px] text-white outline-none focus:border-white/20"
                           />
                         </label>
-                        <label className="grid gap-1">
-                          <span className="text-[10px] uppercase tracking-[0.12em] text-neutral-600">{t("employeeSpecialty")}</span>
-                          <input
-                            value={profileSpecialty}
-                            onChange={(event) => setProfileSpecialty(event.target.value)}
-                            placeholder={t("hireSpecialtyPlaceholder")}
-                            className="h-9 rounded-lg border border-white/[0.08] bg-black/40 px-2.5 text-[12px] text-white outline-none focus:border-white/20"
-                          />
-                        </label>
-                        <label className="grid gap-1">
-                          <span className="text-[10px] uppercase tracking-[0.12em] text-neutral-600">{t("employeeBio")}</span>
-                          <textarea
-                            value={profileBio}
-                            onChange={(event) => setProfileBio(event.target.value)}
-                            rows={2}
-                            placeholder={t("hireBioPlaceholder")}
-                            className="resize-none rounded-lg border border-white/[0.08] bg-black/40 px-2.5 py-2 text-[12px] text-white outline-none focus:border-white/20"
-                          />
-                        </label>
-                        <label className="grid gap-1">
-                          <span className="text-[10px] uppercase tracking-[0.12em] text-neutral-600">{t("employeeInstructions")}</span>
+                        <label className="desk-field">
+                          <span>{t("employeeInstructions")}</span>
                           <textarea
                             value={profileInstructions}
                             onChange={(event) => setProfileInstructions(event.target.value)}
                             rows={3}
                             placeholder={t("hireInstructionsPlaceholder")}
-                            className="resize-none rounded-lg border border-white/[0.08] bg-black/40 px-2.5 py-2 text-[12px] text-white outline-none focus:border-white/20"
                           />
                         </label>
+
+                        <button
+                          type="button"
+                          onClick={() => setProfileMoreOpen((open) => !open)}
+                          className="text-[12px] text-neutral-500 hover:text-neutral-200"
+                        >
+                          {profileMoreOpen ? t("deskHideDetails") : t("deskMoreDetails")}
+                        </button>
+
+                        {profileMoreOpen ? (
+                          <div className="space-y-3 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3">
+                            <label className="desk-field">
+                              <span>{t("employeeSpecialty")}</span>
+                              <input
+                                value={profileSpecialty}
+                                onChange={(event) => setProfileSpecialty(event.target.value)}
+                                placeholder={t("hireSpecialtyPlaceholder")}
+                              />
+                            </label>
+                            <label className="desk-field">
+                              <span>{t("employeeBio")}</span>
+                              <textarea
+                                value={profileBio}
+                                onChange={(event) => setProfileBio(event.target.value)}
+                                rows={2}
+                                placeholder={t("hireBioPlaceholder")}
+                              />
+                            </label>
+                          </div>
+                        ) : null}
+
                         <button
                           type="submit"
                           disabled={agentSaving || !agentId || !profileName.trim()}
-                          className="h-9 w-full rounded-lg bg-white text-[12px] font-medium text-black disabled:opacity-40"
+                          className="home-btn-primary h-11 w-full text-[13px] font-medium disabled:opacity-40"
                         >
                           {agentSaving ? t("connecting") : t("saveProfile")}
                         </button>
                       </form>
 
-                      <section className="border-t border-white/[0.06] pt-4">
+                      <section className="desk-card space-y-3 p-3.5">
                         <div className="flex items-center gap-2">
-                          <GraduationCap className="size-3.5 text-neutral-500" strokeWidth={1.7} />
-                          <p className="chat-pro-kicker">{t("chatSkillsLabel")}</p>
+                          <GraduationCap className="size-3.5 text-neutral-400" strokeWidth={1.7} />
+                          <div>
+                            <p className="text-[13px] font-medium text-white">{t("chatSkillsLabel")}</p>
+                            <p className="text-[11px] text-neutral-500">{t("deskSkillsHint")}</p>
+                          </div>
                         </div>
-                        <form onSubmit={(event) => void teachSkill(event)} className="mt-3 space-y-2">
+                        <form onSubmit={(event) => void teachSkill(event)} className="space-y-2">
                           <input
                             value={skillTitle}
                             onChange={(event) => setSkillTitle(event.target.value)}
                             placeholder={t("skillTitle")}
-                            className="h-8 w-full rounded-lg border border-white/[0.08] bg-black/40 px-2.5 text-[12px] text-white outline-none focus:border-white/20"
+                            className="desk-input"
                           />
                           <textarea
                             value={skillInstructions}
                             onChange={(event) => setSkillInstructions(event.target.value)}
                             rows={2}
                             placeholder={t("teachTaskPlaceholder")}
-                            className="w-full resize-none rounded-lg border border-white/[0.08] bg-black/40 px-2.5 py-2 text-[12px] text-white outline-none focus:border-white/20"
+                            className="desk-textarea"
                           />
                           <button
                             type="submit"
                             disabled={agentSaving || !agentId || !skillTitle.trim()}
-                            className="h-8 rounded-lg border border-white/15 px-3 text-[11px] text-neutral-200 disabled:opacity-40"
+                            className="home-btn-secondary h-9 px-4 text-[12px] disabled:opacity-40"
                           >
                             {t("saveTaughtSkill")}
                           </button>
                         </form>
-                        <ul className="mt-3 max-h-36 space-y-2 overflow-y-auto">
+                        <ul className="max-h-32 space-y-2 overflow-y-auto">
                           {agentSkills.map((skill) => (
-                            <li
-                              key={skill.id}
-                              className="rounded-xl border border-white/[0.06] bg-black/30 px-2.5 py-2"
-                            >
+                            <li key={skill.id} className="rounded-xl bg-white/[0.03] px-3 py-2">
                               <div className="flex items-start justify-between gap-2">
                                 <p className="text-[12px] text-white">{skill.title}</p>
                                 <button
@@ -2640,33 +3662,33 @@ export function ChatPage() {
                         </ul>
                       </section>
 
-                      <section className="border-t border-white/[0.06] pt-4">
+                      <section className="desk-card space-y-3 p-3.5">
                         <div className="flex items-center gap-2">
-                          <Brain className="size-3.5 text-neutral-500" strokeWidth={1.7} />
-                          <p className="chat-pro-kicker">{t("chatMemoriesLabel")}</p>
+                          <Brain className="size-3.5 text-neutral-400" strokeWidth={1.7} />
+                          <div>
+                            <p className="text-[13px] font-medium text-white">{t("chatMemoriesLabel")}</p>
+                            <p className="text-[11px] text-neutral-500">{t("deskMemoriesHint")}</p>
+                          </div>
                         </div>
-                        <form onSubmit={(event) => void saveMemory(event)} className="mt-3 space-y-2">
+                        <form onSubmit={(event) => void saveMemory(event)} className="space-y-2">
                           <textarea
                             value={memoryDraft}
                             onChange={(event) => setMemoryDraft(event.target.value)}
                             rows={2}
                             placeholder={t("tellAgentPlaceholder")}
-                            className="w-full resize-none rounded-lg border border-white/[0.08] bg-black/40 px-2.5 py-2 text-[12px] text-white outline-none focus:border-white/20"
+                            className="desk-textarea"
                           />
                           <button
                             type="submit"
                             disabled={agentSaving || !agentId || !memoryDraft.trim()}
-                            className="h-8 rounded-lg border border-white/15 px-3 text-[11px] text-neutral-200 disabled:opacity-40"
+                            className="home-btn-secondary h-9 px-4 text-[12px] disabled:opacity-40"
                           >
                             {t("saveToMemory")}
                           </button>
                         </form>
-                        <ul className="mt-3 max-h-36 space-y-2 overflow-y-auto">
+                        <ul className="max-h-32 space-y-2 overflow-y-auto">
                           {agentMemories.map((memory) => (
-                            <li
-                              key={memory.id}
-                              className="rounded-xl border border-white/[0.06] bg-black/30 px-2.5 py-2"
-                            >
+                            <li key={memory.id} className="rounded-xl bg-white/[0.03] px-3 py-2">
                               <div className="flex items-start justify-between gap-2">
                                 <p className="text-[11px] leading-relaxed text-neutral-300">
                                   {memory.content}
@@ -2691,74 +3713,110 @@ export function ChatPage() {
                   ) : null}
 
                   {deskTab === "overview" ? (
-                    <>
-                      <section>
-                        <p className="chat-pro-kicker">{t("activeGoal")}</p>
-                        <p className="mt-2 text-[13px] leading-relaxed text-neutral-300">{activeGoal || t("goalHint")}</p>
+                    <div className="space-y-3">
+                      <section className="desk-card p-3.5">
+                        <p className="text-[13px] font-medium text-white">{t("activeGoal")}</p>
+                        <p className="mt-2 text-[13px] leading-relaxed text-neutral-300">
+                          {activeGoal || t("goalHint")}
+                        </p>
                         <button
                           type="button"
                           disabled={!conversation}
-                          onClick={() => { setGoalDraft(activeGoal); setGoalEditorOpen(true); }}
-                          className="mt-3 text-[12px] text-neutral-400 underline-offset-2 hover:text-white hover:underline disabled:opacity-40"
+                          onClick={() => {
+                            setGoalDraft(activeGoal);
+                            setGoalEditorOpen(true);
+                          }}
+                          className="home-btn-secondary mt-3 h-9 px-4 text-[12px] disabled:opacity-40"
                         >
                           {activeGoal ? t("editGoal") : t("setGoal")}
                         </button>
                       </section>
-                      <section className="border-t border-white/[0.06] pt-4">
-                        <p className="chat-pro-kicker">{t("chatSessionMeta")}</p>
+                      <section className="desk-card p-3.5">
+                        <p className="text-[13px] font-medium text-white">{t("chatSessionMeta")}</p>
                         <dl className="mt-3 space-y-2.5 text-[12px]">
-                          <div className="flex justify-between gap-3"><dt className="text-neutral-600">{t("messages")}</dt><dd className="tabular-nums text-neutral-300">{messages.length}</dd></div>
-                          <div className="flex justify-between gap-3"><dt className="text-neutral-600">{t("chatSoloDefaultName")}</dt><dd className="truncate text-neutral-300">{selectedAgent?.name ?? "—"}</dd></div>
-                          <div className="flex justify-between gap-3"><dt className="text-neutral-600">{t("employeeSpecialty")}</dt><dd className="truncate text-neutral-300">{selectedAgent?.specialty || selectedAgent?.role || "—"}</dd></div>
-                          <div className="flex justify-between gap-3"><dt className="text-neutral-600">{t("chatSkillsLabel")}</dt><dd className="tabular-nums text-neutral-300">{agentSkills.length}</dd></div>
-                          <div className="flex justify-between gap-3"><dt className="text-neutral-600">{t("chatMemoriesLabel")}</dt><dd className="tabular-nums text-neutral-300">{agentMemories.length}</dd></div>
-                          <div className="flex justify-between gap-3"><dt className="text-neutral-600">{t("providerStatus")}</dt><dd className="text-neutral-300">{providerConfigured === null ? "…" : providerConfigured ? t("providerLive") : t("providerOffline")}</dd></div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-neutral-500">{t("messages")}</dt>
+                            <dd className="tabular-nums text-neutral-200">{messages.length}</dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-neutral-500">{t("chatSoloDefaultName")}</dt>
+                            <dd className="truncate text-neutral-200">{selectedAgent?.name ?? "—"}</dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-neutral-500">{t("chatSkillsLabel")}</dt>
+                            <dd className="tabular-nums text-neutral-200">{agentSkills.length}</dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-neutral-500">{t("chatMemoriesLabel")}</dt>
+                            <dd className="tabular-nums text-neutral-200">{agentMemories.length}</dd>
+                          </div>
+                          <div className="flex justify-between gap-3">
+                            <dt className="text-neutral-500">{t("providerStatus")}</dt>
+                            <dd className="text-neutral-200">
+                              {providerConfigured === null
+                                ? "…"
+                                : providerConfigured
+                                  ? t("providerLive")
+                                  : t("providerQueue")}
+                            </dd>
+                          </div>
                         </dl>
-                        <button
-                          type="button"
-                          onClick={() => setDeskTab("agent")}
-                          className="mt-3 text-[12px] text-neutral-400 underline-offset-2 hover:text-white hover:underline"
-                        >
-                          {t("chatConfigureAgent")}
-                        </button>
                       </section>
-                    </>
+                    </div>
                   ) : null}
 
                   {deskTab === "project" ? (
-                    <div className="space-y-4">
-                      <section>
-                        <p className="chat-pro-kicker">{t("chatPickProject")}</p>
+                    <div className="space-y-3">
+                      <section className="desk-card space-y-3 p-3.5">
+                        <div>
+                          <p className="text-[13px] font-medium text-white">{t("chatPickProject")}</p>
+                          <p className="mt-1 text-[11px] text-neutral-500">{t("chatProjectHint")}</p>
+                        </div>
                         <select
                           value={projectPickId}
                           onChange={(event) => selectProject(event.target.value)}
-                          className="mt-2 h-9 w-full rounded-lg border border-white/[0.08] bg-black/40 px-2.5 text-[12px] text-neutral-200 outline-none focus:border-white/20"
+                          className="desk-input"
                         >
                           <option value="">{t("none")}</option>
                           {projects.map((project) => (
-                            <option key={project.id} value={project.id}>{project.name}</option>
+                            <option key={project.id} value={project.id}>
+                              {project.name}
+                            </option>
                           ))}
                         </select>
                       </section>
-                      <section className="border-t border-white/[0.06] pt-4">
-                        <p className="chat-pro-kicker">{t("workspace")}</p>
-                        <p className="mt-2 truncate text-[13px] text-white">{workspaceLabel}</p>
-                        <div className="mt-3 flex gap-2">
-                          <button type="button" onClick={() => void chooseFolder()} className="chat-pro-ghost-wide">
+                      <section className="desk-card space-y-3 p-3.5">
+                        <div>
+                          <p className="text-[13px] font-medium text-white">{t("workspace")}</p>
+                          <p className="mt-1 truncate text-[12px] text-neutral-400">{workspaceLabel}</p>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button type="button" onClick={() => void chooseFolder()} className="desk-action">
                             <FolderOpen className="size-3.5" />
                             {t("chooseFolder")}
                           </button>
-                          <button type="button" onClick={() => void openRepoPicker()} className="chat-pro-ghost-wide">
+                          <button type="button" onClick={() => void openRepoPicker()} className="desk-action">
                             <Github className="size-3.5" />
                             GitHub
                           </button>
                         </div>
                         {workspace.kind !== "none" ? (
-                          <button type="button" onClick={clearWorkspace} className="mt-2 text-[11px] text-neutral-600 hover:text-white">{t("clear")}</button>
+                          <button
+                            type="button"
+                            onClick={clearWorkspace}
+                            className="text-[12px] text-neutral-500 hover:text-white"
+                          >
+                            {t("clear")}
+                          </button>
                         ) : null}
                       </section>
                       {linkedProject && repoBinding ? (
-                        <button type="button" disabled={bindingBusy} onClick={() => void unbindRepo()} className="text-[11px] text-neutral-600 hover:text-white disabled:opacity-40">
+                        <button
+                          type="button"
+                          disabled={bindingBusy}
+                          onClick={() => void unbindRepo()}
+                          className="text-[12px] text-neutral-500 hover:text-white disabled:opacity-40"
+                        >
                           {t("clear")} · {t("linkedRepo")}
                         </button>
                       ) : null}
@@ -2766,16 +3824,36 @@ export function ChatPage() {
                   ) : null}
 
                   {deskTab === "code" ? (
-                    <div className="space-y-4">
-                      <section>
-                        <p className="chat-pro-kicker">{t("chatCodeActions")}</p>
-                        <p className="mt-1.5 text-[11px] leading-relaxed text-neutral-600">{t("chatCodeActionsBody")}</p>
-                        <ul className="mt-3 divide-y divide-white/[0.05] overflow-hidden rounded-xl border border-white/[0.07]">
+                    <div className="space-y-3">
+                      <section className="desk-card space-y-3 p-3.5">
+                        <div>
+                          <p className="text-[13px] font-medium text-white">{t("chatCodeActions")}</p>
+                          <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">
+                            {t("chatCodeActionsBody")}
+                          </p>
+                        </div>
+                        <ul className="space-y-2">
                           {codingPresets.map((preset) => (
-                            <li key={preset.id} className="flex items-center gap-2 bg-white/[0.015] px-3 py-2.5">
-                              <span className="min-w-0 flex-1 truncate text-[12px] text-neutral-300">{t(preset.labelKey)}</span>
-                              <button type="button" onClick={() => askAboutCommand(preset.prompt)} className="text-[11px] text-neutral-500 hover:text-white">{t("chatAsk")}</button>
-                              <button type="button" disabled={terminalBusy} onClick={() => void runCodingCommand(preset.command)} className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[10px] font-medium text-black disabled:opacity-40">
+                            <li
+                              key={preset.id}
+                              className="flex items-center gap-2 rounded-xl bg-white/[0.03] px-3 py-2.5"
+                            >
+                              <span className="min-w-0 flex-1 truncate text-[12px] text-neutral-200">
+                                {t(preset.labelKey)}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => askAboutCommand(preset.prompt)}
+                                className="text-[11px] text-neutral-500 hover:text-white"
+                              >
+                                {t("chatAsk")}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={terminalBusy}
+                                onClick={() => void runCodingCommand(preset.command)}
+                                className="inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-1 text-[10px] font-medium text-black disabled:opacity-40"
+                              >
                                 <Play className="size-2.5" />
                                 {t("run")}
                               </button>
@@ -2783,15 +3861,23 @@ export function ChatPage() {
                           ))}
                         </ul>
                       </section>
-                      <section className="border-t border-white/[0.06] pt-4">
-                        <p className="chat-pro-kicker">{t("chatRunCustom")}</p>
-                        <div className="mt-2 flex gap-2">
-                          <input value={cmdDraft} onChange={(event) => setCmdDraft(event.target.value)} placeholder="npm run typecheck" className="h-9 min-w-0 flex-1 rounded-lg border border-white/[0.08] bg-black/40 px-2.5 font-mono text-[11px] text-neutral-200 outline-none focus:border-white/20" />
+                      <section className="desk-card space-y-2 p-3.5">
+                        <p className="text-[13px] font-medium text-white">{t("chatRunCustom")}</p>
+                        <div className="flex gap-2">
+                          <input
+                            value={cmdDraft}
+                            onChange={(event) => setCmdDraft(event.target.value)}
+                            placeholder="npm run typecheck"
+                            className="desk-input min-w-0 flex-1 !font-mono"
+                          />
                           <button
                             type="button"
                             disabled={!cmdDraft.trim() || terminalBusy}
-                            onClick={() => { void runCodingCommand(cmdDraft.trim()); setCmdDraft(""); }}
-                            className="inline-flex h-9 items-center gap-1 rounded-lg bg-white px-3 text-[11px] font-medium text-black disabled:opacity-40"
+                            onClick={() => {
+                              void runCodingCommand(cmdDraft.trim());
+                              setCmdDraft("");
+                            }}
+                            className="home-btn-primary inline-flex h-10 items-center gap-1 px-3 text-[11px] disabled:opacity-40"
                           >
                             <Play className="size-3" />
                             {t("run")}
@@ -2802,49 +3888,111 @@ export function ChatPage() {
                   ) : null}
 
                   {deskTab === "git" ? (
-                    <div className="space-y-4">
-                      <section>
+                    <div className="space-y-3">
+                      <section className="desk-card space-y-2 p-3.5">
                         <div className="flex items-center justify-between">
-                          <p className="chat-pro-kicker">{t("gitStatus")}</p>
-                          <button type="button" disabled={gitBusy || workspace.kind === "none"} onClick={() => void refreshGitStatus()} className="text-[11px] text-neutral-500 hover:text-white disabled:opacity-40">{t("refresh")}</button>
+                          <p className="text-[13px] font-medium text-white">{t("gitStatus")}</p>
+                          <button
+                            type="button"
+                            disabled={gitBusy || workspace.kind === "none"}
+                            onClick={() => void refreshGitStatus()}
+                            className="text-[12px] text-neutral-500 hover:text-white disabled:opacity-40"
+                          >
+                            {t("refresh")}
+                          </button>
                         </div>
-                        <pre className="mt-2 max-h-36 overflow-y-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-neutral-500">{gitStatus || t("noWorkspaceYet")}</pre>
+                        <pre className="max-h-36 overflow-y-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-neutral-500">
+                          {gitStatus || t("noWorkspaceYet")}
+                        </pre>
                       </section>
-                      <section className="border-t border-white/[0.06] pt-4">
-                        <p className="chat-pro-kicker">{t("commitPush")}</p>
-                        <input value={commitMessage} onChange={(event) => setCommitMessage(event.target.value)} placeholder={t("commitMessagePlaceholder")} className="mt-2 h-9 w-full rounded-lg border border-white/[0.08] bg-black/40 px-2.5 text-[12px] outline-none focus:border-white/20" />
+                      <section className="desk-card space-y-2 p-3.5">
+                        <p className="text-[13px] font-medium text-white">{t("commitPush")}</p>
+                        <input
+                          value={commitMessage}
+                          onChange={(event) => setCommitMessage(event.target.value)}
+                          placeholder={t("commitMessagePlaceholder")}
+                          className="desk-input"
+                        />
                         {workspace.kind === "github" ? (
                           <>
-                            <input value={commitPath} onChange={(event) => setCommitPath(event.target.value)} placeholder="NOTES.md" className="mt-2 h-9 w-full rounded-lg border border-white/[0.08] bg-black/40 px-2.5 text-[12px] outline-none focus:border-white/20" />
-                            <textarea value={commitContent} onChange={(event) => setCommitContent(event.target.value)} rows={3} placeholder={t("commitContentPlaceholder")} className="mt-2 w-full resize-none rounded-lg border border-white/[0.08] bg-black/40 px-2.5 py-2 text-[12px] outline-none focus:border-white/20" />
+                            <input
+                              value={commitPath}
+                              onChange={(event) => setCommitPath(event.target.value)}
+                              placeholder="NOTES.md"
+                              className="desk-input"
+                            />
+                            <textarea
+                              value={commitContent}
+                              onChange={(event) => setCommitContent(event.target.value)}
+                              rows={3}
+                              placeholder={t("commitContentPlaceholder")}
+                              className="desk-textarea"
+                            />
                           </>
                         ) : null}
-                        <div className="mt-3 flex gap-2">
-                          <button type="button" disabled={gitBusy || workspace.kind === "none"} onClick={() => void commitWorkspace()} className="chat-pro-cta !h-8 !px-3 !text-[11px] disabled:opacity-40">{t("commit")}</button>
-                          <button type="button" disabled={gitBusy || workspace.kind !== "folder"} onClick={() => void pushWorkspace()} className="h-8 rounded-lg border border-white/[0.1] px-3 text-[11px] text-neutral-300 disabled:opacity-40">{t("push")}</button>
+                        <div className="flex gap-2 pt-1">
+                          <button
+                            type="button"
+                            disabled={gitBusy || workspace.kind === "none"}
+                            onClick={() => void commitWorkspace()}
+                            className="home-btn-primary h-9 px-4 text-[12px] disabled:opacity-40"
+                          >
+                            {t("commit")}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={gitBusy || workspace.kind !== "folder"}
+                            onClick={() => void pushWorkspace()}
+                            className="home-btn-secondary h-9 px-4 text-[12px] disabled:opacity-40"
+                          >
+                            {t("push")}
+                          </button>
                         </div>
                       </section>
                       {workspace.kind === "github" ? (
-                        <section className="border-t border-white/[0.06] pt-4">
-                          <p className="chat-pro-kicker">{t("openPullRequest")}</p>
-                          <input value={prTitle} onChange={(event) => setPrTitle(event.target.value)} placeholder={t("prTitle")} className="mt-2 h-9 w-full rounded-lg border border-white/[0.08] bg-black/40 px-2.5 text-[12px] outline-none focus:border-white/20" />
-                          <input value={prHead} onChange={(event) => setPrHead(event.target.value)} placeholder={t("prHead")} className="mt-2 h-9 w-full rounded-lg border border-white/[0.08] bg-black/40 px-2.5 text-[12px] outline-none focus:border-white/20" />
-                          <textarea value={prBody} onChange={(event) => setPrBody(event.target.value)} rows={3} placeholder={t("prBody")} className="mt-2 w-full resize-none rounded-lg border border-white/[0.08] bg-black/40 px-2.5 py-2 text-[12px] outline-none focus:border-white/20" />
-                          <button type="button" disabled={gitBusy} onClick={() => void openPullRequest()} className="mt-3 h-8 rounded-lg border border-white/[0.1] px-3 text-[11px] text-neutral-300 disabled:opacity-40">{t("createPr")}</button>
+                        <section className="desk-card space-y-2 p-3.5">
+                          <p className="text-[13px] font-medium text-white">{t("openPullRequest")}</p>
+                          <input
+                            value={prTitle}
+                            onChange={(event) => setPrTitle(event.target.value)}
+                            placeholder={t("prTitle")}
+                            className="desk-input"
+                          />
+                          <input
+                            value={prHead}
+                            onChange={(event) => setPrHead(event.target.value)}
+                            placeholder={t("prHead")}
+                            className="desk-input"
+                          />
+                          <textarea
+                            value={prBody}
+                            onChange={(event) => setPrBody(event.target.value)}
+                            rows={3}
+                            placeholder={t("prBody")}
+                            className="desk-textarea"
+                          />
+                          <button
+                            type="button"
+                            disabled={gitBusy}
+                            onClick={() => void openPullRequest()}
+                            className="home-btn-secondary mt-1 h-9 px-4 text-[12px] disabled:opacity-40"
+                          >
+                            {t("createPr")}
+                          </button>
                         </section>
                       ) : null}
                     </div>
                   ) : null}
 
                   {deskTab === "notes" ? (
-                    <label className="grid gap-2">
-                      <span className="chat-pro-kicker">{t("sessionNotes")}</span>
+                    <label className="desk-card grid gap-2 p-3.5">
+                      <span className="text-[13px] font-medium text-white">{t("sessionNotes")}</span>
                       <textarea
                         value={notes}
                         onChange={(event) => setNotes(event.target.value)}
                         rows={16}
                         placeholder={t("chatNotesPlaceholder")}
-                        className="min-h-[280px] w-full resize-none rounded-xl border border-white/[0.07] bg-black/30 px-3 py-3 text-[13px] leading-relaxed text-neutral-200 outline-none focus:border-white/18"
+                        className="min-h-[280px] w-full resize-none rounded-2xl border border-white/[0.07] bg-black/25 px-3 py-3 text-[13px] leading-relaxed text-neutral-200 outline-none focus:border-white/18"
                       />
                     </label>
                   ) : null}
@@ -2904,9 +4052,113 @@ export function ChatPage() {
         </div>
       </div>
 
+      {agentMenu ? (
+        <div
+          className="fixed z-[60] max-h-[min(320px,calc(100vh-24px))] min-w-[190px] overflow-y-auto overflow-x-hidden rounded-2xl border border-white/10 bg-[#111] py-1 shadow-2xl"
+          style={{ left: agentMenu.x, top: agentMenu.y }}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          {(() => {
+            const target = agents.find((agent) => agent.id === agentMenu.id);
+            const paused = target?.status === "paused";
+            if (agentMenu.confirmDelete) {
+              return (
+                <>
+                  <p className="px-3 py-2 text-[11px] leading-relaxed text-neutral-400">
+                    {t("chatDeleteAgentConfirm")}
+                  </p>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-red-300 hover:bg-white/[0.06]"
+                    onClick={() => void setAgentStatus(agentMenu.id, "archived")}
+                  >
+                    <Trash2 className="size-3.5" strokeWidth={1.7} />
+                    {t("chatDeleteForever")}
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-neutral-300 hover:bg-white/[0.06]"
+                    onClick={() => setAgentMenu(null)}
+                  >
+                    {t("cancel")}
+                  </button>
+                </>
+              );
+            }
+            return (
+              <>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-neutral-200 hover:bg-white/[0.06]"
+                  onClick={() => {
+                    const id = agentMenu.id;
+                    setAgentMenu(null);
+                    void switchSoloAgent(id);
+                    setSidebarView("chats");
+                  }}
+                >
+                  <MessageSquarePlus className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  {t("chatOpenChat")}
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-neutral-200 hover:bg-white/[0.06]"
+                  onClick={() => {
+                    const id = agentMenu.id;
+                    setAgentMenu(null);
+                    void switchSoloAgent(id);
+                    setDeskTab("agent");
+                    setDeskOpen(true);
+                  }}
+                >
+                  <UserRound className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  {t("chatConfigureAgent")}
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-neutral-200 hover:bg-white/[0.06]"
+                  onClick={() => void duplicateAgent(agentMenu.id)}
+                >
+                  <Copy className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  {t("chatDuplicateAgent")}
+                </button>
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-neutral-200 hover:bg-white/[0.06]"
+                  onClick={() =>
+                    void setAgentStatus(agentMenu.id, paused ? "active" : "paused")
+                  }
+                >
+                  {paused ? (
+                    <Play className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  ) : (
+                    <Pause className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  )}
+                  {paused ? t("chatResumeAgent") : t("chatPauseAgent")}
+                </button>
+                <div className="my-1 h-px bg-white/[0.06]" />
+                <button
+                  type="button"
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-red-300 hover:bg-white/[0.06]"
+                  onClick={() =>
+                    setAgentMenu((current) =>
+                      current ? { ...current, confirmDelete: true } : current,
+                    )
+                  }
+                >
+                  <Trash2 className="size-3.5" strokeWidth={1.7} />
+                  {t("chatDeleteAgent")}
+                </button>
+              </>
+            );
+          })()}
+        </div>
+      ) : null}
+
       {chatMenu ? (
         <div
-          className="fixed z-[60] min-w-[160px] overflow-hidden rounded-xl border border-white/10 bg-[#111] py-1 shadow-2xl"
+          className="fixed z-[60] max-h-[min(200px,calc(100vh-24px))] min-w-[160px] overflow-y-auto overflow-x-hidden rounded-xl border border-white/10 bg-[#111] py-1 shadow-2xl"
           style={{ left: chatMenu.x, top: chatMenu.y }}
           onClick={(event) => event.stopPropagation()}
           onContextMenu={(event) => event.preventDefault()}

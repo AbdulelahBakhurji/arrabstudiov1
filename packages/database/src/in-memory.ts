@@ -292,32 +292,32 @@ class MemoryTaskRepository implements TaskRepository {
 }
 
 class MemoryOperatorRepository implements OperatorRepository {
-  private profile: OperatorProfile | null = null;
+  constructor(private readonly holder: { operator: OperatorProfile | null }) {}
 
   async get(): Promise<OperatorProfile | null> {
-    return this.profile;
+    return this.holder.operator;
   }
 
   async upsert(profile: OperatorProfile): Promise<OperatorProfile> {
-    this.profile = profile;
+    this.holder.operator = profile;
     return profile;
   }
 }
 
 class MemoryAccountRepository implements AccountRepository {
-  private account: StudioAccountRecord | null = null;
+  constructor(private readonly holder: { account: StudioAccountRecord | null }) {}
 
   async get(): Promise<StudioAccountRecord | null> {
-    return this.account;
+    return this.holder.account;
   }
 
   async upsert(account: StudioAccountRecord): Promise<StudioAccountRecord> {
-    this.account = account;
+    this.holder.account = account;
     return account;
   }
 
   async delete(): Promise<void> {
-    this.account = null;
+    this.holder.account = null;
   }
 }
 
@@ -506,30 +506,197 @@ function seedLocalWorkspace(now: string): WorkspaceContext {
   return { organization, workspace };
 }
 
-export function createInMemoryPersistence(now = new Date().toISOString()): Persistence {
-  const context = seedLocalWorkspace(now);
+export type MemorySnapshot = {
+  version: 1;
+  context: WorkspaceContext;
+  projects: Project[];
+  agents: Agent[];
+  teams: Team[];
+  conversations: Conversation[];
+  messages: Message[];
+  activity: Activity[];
+  memberships: TeamMembership[];
+  connectors: ConnectorSecretRecord[];
+  bindings: ProjectRepoBinding[];
+  usage: UsageEvent[];
+  tasks: Task[];
+  operator: OperatorProfile | null;
+  account: StudioAccountRecord | null;
+  knowledge: Knowledge[];
+  memories: Memory[];
+  taskRuns: TaskRun[];
+  skills: Skill[];
+  approvals: Approval[];
+  goals: Goal[];
+};
+
+export type MemoryPersistenceOptions = {
+  kind?: "memory" | "file";
+  snapshot?: Partial<MemorySnapshot>;
+  onChange?: () => void;
+};
+
+const READ_METHODS = new Set([
+  "list",
+  "get",
+  "getById",
+  "listByAgent",
+  "listByTeam",
+  "listByConversation",
+  "listByProject",
+  "listByTask",
+  "listPending",
+  "listRecent",
+  "listAll",
+  "listByWorkspace",
+  "listActiveByAgent",
+]);
+
+function withChangeNotifications<T extends object>(repo: T, onChange?: () => void): T {
+  if (!onChange) {
+    return repo;
+  }
+  return new Proxy(repo, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver) as unknown;
+      if (typeof value !== "function") {
+        return value;
+      }
+      const method = String(prop);
+      return (...args: unknown[]) => {
+        const result = (value as (...inner: unknown[]) => unknown).apply(target, args);
+        if (READ_METHODS.has(method)) {
+          return result;
+        }
+        if (result && typeof (result as Promise<unknown>).then === "function") {
+          return (result as Promise<unknown>).then((resolved) => {
+            onChange();
+            return resolved;
+          });
+        }
+        onChange();
+        return result;
+      };
+    },
+  });
+}
+
+export function emptyMemorySnapshot(now = new Date().toISOString()): MemorySnapshot {
   return {
-    kind: "memory",
+    version: 1,
+    context: seedLocalWorkspace(now),
+    projects: [],
+    agents: [],
+    teams: [],
+    conversations: [],
+    messages: [],
+    activity: [],
+    memberships: [],
+    connectors: [],
+    bindings: [],
+    usage: [],
+    tasks: [],
+    operator: null,
+    account: null,
+    knowledge: [],
+    memories: [],
+    taskRuns: [],
+    skills: [],
+    approvals: [],
+    goals: [],
+  };
+}
+
+export function normalizeMemorySnapshot(
+  raw: Partial<MemorySnapshot> | null | undefined,
+  now = new Date().toISOString(),
+): MemorySnapshot {
+  const base = emptyMemorySnapshot(now);
+  if (!raw || typeof raw !== "object") {
+    return base;
+  }
+  const complete =
+    raw.version === 1 &&
+    Boolean(raw.context) &&
+    Array.isArray(raw.projects) &&
+    Array.isArray(raw.agents) &&
+    Array.isArray(raw.teams) &&
+    Array.isArray(raw.conversations) &&
+    Array.isArray(raw.messages) &&
+    Array.isArray(raw.activity) &&
+    Array.isArray(raw.memberships) &&
+    Array.isArray(raw.connectors) &&
+    Array.isArray(raw.bindings) &&
+    Array.isArray(raw.usage) &&
+    Array.isArray(raw.tasks) &&
+    Array.isArray(raw.knowledge) &&
+    Array.isArray(raw.memories) &&
+    Array.isArray(raw.taskRuns) &&
+    Array.isArray(raw.skills) &&
+    Array.isArray(raw.approvals) &&
+    Array.isArray(raw.goals);
+  if (complete) {
+    const snapshot = raw as MemorySnapshot;
+    snapshot.operator = snapshot.operator ?? null;
+    snapshot.account = snapshot.account ?? null;
+    return snapshot;
+  }
+  return {
+    version: 1,
+    context: raw.context ?? base.context,
+    projects: Array.isArray(raw.projects) ? raw.projects : [],
+    agents: Array.isArray(raw.agents) ? raw.agents : [],
+    teams: Array.isArray(raw.teams) ? raw.teams : [],
+    conversations: Array.isArray(raw.conversations) ? raw.conversations : [],
+    messages: Array.isArray(raw.messages) ? raw.messages : [],
+    activity: Array.isArray(raw.activity) ? raw.activity : [],
+    memberships: Array.isArray(raw.memberships) ? raw.memberships : [],
+    connectors: Array.isArray(raw.connectors) ? raw.connectors : [],
+    bindings: Array.isArray(raw.bindings) ? raw.bindings : [],
+    usage: Array.isArray(raw.usage) ? raw.usage : [],
+    tasks: Array.isArray(raw.tasks) ? raw.tasks : [],
+    operator: raw.operator ?? null,
+    account: raw.account ?? null,
+    knowledge: Array.isArray(raw.knowledge) ? raw.knowledge : [],
+    memories: Array.isArray(raw.memories) ? raw.memories : [],
+    taskRuns: Array.isArray(raw.taskRuns) ? raw.taskRuns : [],
+    skills: Array.isArray(raw.skills) ? raw.skills : [],
+    approvals: Array.isArray(raw.approvals) ? raw.approvals : [],
+    goals: Array.isArray(raw.goals) ? raw.goals : [],
+  };
+}
+
+export function createInMemoryPersistence(
+  now = new Date().toISOString(),
+  options?: MemoryPersistenceOptions,
+): Persistence {
+  const snapshot = normalizeMemorySnapshot(options?.snapshot, now);
+  const touch = options?.onChange;
+  const wrap = <T extends object>(repo: T): T => withChangeNotifications(repo, touch);
+  const context = snapshot.context;
+
+  return {
+    kind: options?.kind ?? "memory",
     workspaceId: context.workspace.id,
     getWorkspace: async () => context,
-    projects: new MemoryEntityRepository<Project>([]),
-    agents: new MemoryEntityRepository<Agent>([]),
-    teams: new MemoryEntityRepository<Team>([]),
-    conversations: new MemoryConversationRepository([]),
-    messages: new MemoryMessageRepository([]),
-    activity: new MemoryActivityRepository([]),
-    memberships: new MemoryMembershipRepository([]),
-    connectors: new MemoryConnectorRepository([]),
-    bindings: new MemoryBindingRepository([]),
-    usage: new MemoryUsageRepository([]),
-    tasks: new MemoryTaskRepository([]),
-    operator: new MemoryOperatorRepository(),
-    accounts: new MemoryAccountRepository(),
-    knowledge: new MemoryKnowledgeRepository([]),
-    memories: new MemoryMemoryNotesRepository([]),
-    taskRuns: new MemoryTaskRunRepository([]),
-    skills: new MemorySkillRepository([]),
-    approvals: new MemoryApprovalRepository([]),
-    goals: new MemoryGoalRepository([]),
+    projects: wrap(new MemoryEntityRepository<Project>(snapshot.projects)),
+    agents: wrap(new MemoryEntityRepository<Agent>(snapshot.agents)),
+    teams: wrap(new MemoryEntityRepository<Team>(snapshot.teams)),
+    conversations: wrap(new MemoryConversationRepository(snapshot.conversations)),
+    messages: wrap(new MemoryMessageRepository(snapshot.messages)),
+    activity: wrap(new MemoryActivityRepository(snapshot.activity)),
+    memberships: wrap(new MemoryMembershipRepository(snapshot.memberships)),
+    connectors: wrap(new MemoryConnectorRepository(snapshot.connectors)),
+    bindings: wrap(new MemoryBindingRepository(snapshot.bindings)),
+    usage: wrap(new MemoryUsageRepository(snapshot.usage)),
+    tasks: wrap(new MemoryTaskRepository(snapshot.tasks)),
+    operator: wrap(new MemoryOperatorRepository(snapshot)),
+    accounts: wrap(new MemoryAccountRepository(snapshot)),
+    knowledge: wrap(new MemoryKnowledgeRepository(snapshot.knowledge)),
+    memories: wrap(new MemoryMemoryNotesRepository(snapshot.memories)),
+    taskRuns: wrap(new MemoryTaskRunRepository(snapshot.taskRuns)),
+    skills: wrap(new MemorySkillRepository(snapshot.skills)),
+    approvals: wrap(new MemoryApprovalRepository(snapshot.approvals)),
+    goals: wrap(new MemoryGoalRepository(snapshot.goals)),
   };
 }

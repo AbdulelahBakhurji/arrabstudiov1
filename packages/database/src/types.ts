@@ -41,6 +41,10 @@ export interface EntityRepository<T> {
   update(entity: T): Promise<T>;
 }
 
+export interface AgentRepository extends EntityRepository<Agent> {
+  delete(id: string): Promise<void>;
+}
+
 export interface ActivityRepository {
   list(): Promise<Activity[]>;
   append(entry: Activity): Promise<Activity>;
@@ -141,12 +145,14 @@ export interface WorkspaceContext {
   workspace: Workspace;
 }
 
+export type PersistenceKind = "memory" | "file" | "postgres";
+
 export interface Persistence {
-  readonly kind: "memory" | "postgres";
+  readonly kind: PersistenceKind;
   readonly workspaceId: WorkspaceId;
   getWorkspace(): Promise<WorkspaceContext>;
   projects: EntityRepository<Project>;
-  agents: EntityRepository<Agent>;
+  agents: AgentRepository;
   teams: EntityRepository<Team>;
   conversations: ConversationRepository;
   messages: MessageRepository;

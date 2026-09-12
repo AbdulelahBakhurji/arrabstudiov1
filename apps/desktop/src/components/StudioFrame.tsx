@@ -199,12 +199,12 @@ export function StudioFrame() {
     accountUser?.email ?? (accountUser ? t("accountSignedInStatus") : t("userSettings"));
 
   return (
-    <div className="flex h-full max-h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-background text-foreground" dir={dir}>
+    <div className="app-shell flex h-full max-h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-background text-foreground" dir={dir}>
       {/* Chrome stays LTR so traffic lights + controls stay on physical left/right */}
       <header
         data-tauri-drag-region
         dir="ltr"
-        className="relative z-40 flex h-12 shrink-0 items-center border-b border-white/8 bg-[#050505] px-3"
+        className="app-toolbar relative z-40 flex h-11 shrink-0 items-center border-b border-white/[0.08] bg-[#0a0a0a] px-3"
       >
         <div className="w-[76px] shrink-0" aria-hidden="true" />
         <div className="no-drag ml-auto flex items-center gap-2">
@@ -358,7 +358,7 @@ export function StudioFrame() {
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <nav
           aria-label={t("brand")}
-          className="no-drag absolute top-1/2 z-30 flex -translate-y-1/2 flex-col items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/60 p-2 backdrop-blur-md"
+          className="no-drag absolute top-1/2 z-30 flex -translate-y-1/2 flex-col items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/60 p-2 shadow-2xl backdrop-blur-md"
           style={{ insetInlineStart: "20px" }}
         >
           {modes.map((mode) => {
@@ -395,7 +395,7 @@ export function StudioFrame() {
           })}
         </nav>
 
-        <main className="h-full min-h-0 min-w-0 overflow-hidden ps-[96px] pe-3">
+        <main className="h-full min-h-0 min-w-0 overflow-hidden ps-[96px] pe-3 pb-3">
           <Outlet />
         </main>
       </div>
