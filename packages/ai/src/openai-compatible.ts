@@ -165,7 +165,7 @@ function buildChatBody(
   if (request.maxOutputTokens !== undefined) {
     if (gpt5) {
       body.max_completion_tokens = request.maxOutputTokens;
-      // Experiential keys off max_tokens for reasoning headroom.
+      // Some OpenAI-compatible gateways key off max_tokens for reasoning headroom.
       body.max_tokens = request.maxOutputTokens;
     } else {
       body.max_tokens = request.maxOutputTokens;

@@ -27,12 +27,6 @@ export {
 } from "./bedrock.js";
 export { BedrockConverseAdapter, type BedrockConverseConfig } from "./bedrock-converse.js";
 export {
-  EXPLABS_BASE_URL,
-  EXPLABS_LUNA_MODEL,
-  EXPLABS_PROVIDER_ID,
-  isExplabsLunaModel,
-} from "./explabs.js";
-export {
   XAI_BASE_URL,
   XAI_DEFAULT_MODEL,
   XAI_PROVIDER_ID,

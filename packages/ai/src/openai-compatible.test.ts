@@ -47,11 +47,11 @@ describe("OpenAiCompatibleAdapter", () => {
     }
   });
 
-  it("turns off GPT-5.6 Luna reasoning and uses max_completion_tokens", async () => {
+  it("turns off GPT-5 reasoning and uses max_output_tokens on Responses", async () => {
     const fetch = captureFetch(async () =>
       new Response(
         JSON.stringify({
-          id: "resp_luna",
+          id: "resp_gpt5",
           output_text: "Hi",
           output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Hi" }] }],
         }),
@@ -61,19 +61,19 @@ describe("OpenAiCompatibleAdapter", () => {
 
     try {
       const adapter = new OpenAiCompatibleAdapter({
-        id: "experiential",
-        apiKey: "explabs",
-        baseUrl: "https://api.experientiallabs.ai/v1",
+        id: "openai",
+        apiKey: "test-key",
+        baseUrl: "https://api.openai.com/v1",
       });
       await adapter.complete({
-        model: { providerId: "experiential", model: "gpt-5.6-luna" },
+        model: { providerId: "openai", model: "gpt-5" },
         messages: [{ role: "user", content: "Hi" }],
         maxOutputTokens: 280,
         temperature: 0.4,
         tools: [{ name: "web_search", description: "Search" }],
       });
       const body = fetch.calls[0]?.body;
-      expect(body?.model).toBe("gpt-5.6-luna");
+      expect(body?.model).toBe("gpt-5");
       expect((body?.reasoning as { effort?: string } | undefined)?.effort).toBe("none");
       expect(body?.max_output_tokens).toBe(280);
       expect(body?.store).toBe(false);
@@ -102,7 +102,7 @@ describe("OpenAiCompatibleAdapter", () => {
       const tokens: string[] = [];
       let doneModel = "";
       for await (const chunk of adapter.streamComplete({
-        model: { providerId: "experiential", model: "gpt-5.6-luna" },
+        model: { providerId: "openai", model: "gpt-5" },
         messages: [{ role: "user", content: "Hi" }],
         tools: [{ name: "web_search", description: "Search" }],
       })) {
@@ -110,7 +110,7 @@ describe("OpenAiCompatibleAdapter", () => {
         else doneModel = chunk.completion.model.model;
       }
       expect(tokens.join("")).toBe("Hello");
-      expect(doneModel).toBe("gpt-5.6-luna");
+      expect(doneModel).toBe("gpt-5");
       expect(fetch.calls[0]?.body.stream).toBe(true);
       expect(fetch.calls[0]?.url).toContain("/responses");
       expect((fetch.calls[0]?.body.reasoning as { effort?: string } | undefined)?.effort).toBe("none");

@@ -5,9 +5,6 @@ import { defaultStudioDataDir } from "@arrab/database";
 import {
   BEDROCK_DEFAULT_MODEL,
   BEDROCK_DEFAULT_REGION,
-  EXPLABS_BASE_URL,
-  EXPLABS_LUNA_MODEL,
-  isBedrockModel,
   parseBedrockModels,
 } from "@arrab/ai";
 
@@ -19,20 +16,12 @@ export interface ApiEnv {
   databaseUrl: string | undefined;
   /** Local on-device data directory when Postgres is not configured. */
   dataDir: string | undefined;
-  openaiApiKey: string | undefined;
-  openaiBaseUrl: string;
-  /** Experiential Labs key — kept so production keeps working until Bedrock is set. */
-  explabsApiKey: string | undefined;
-  explabsBaseUrl: string;
   /** Amazon Bedrock long-term API key (AWS_BEARER_TOKEN_BEDROCK). */
   bedrockApiKey: string | undefined;
   bedrockRegion: string;
   /** Up to N Bedrock model IDs available in Arrab. */
   bedrockModels: string[];
   defaultModel: string;
-  anthropicApiKey: string | undefined;
-  googleApiKey: string | undefined;
-  xaiApiKey: string | undefined;
   /** Public base URL used to build web auth links (defaults to http://host:port). */
   publicBaseUrl: string;
   /** Optional external web sign-in URL. Use {state} placeholder. */
@@ -84,27 +73,10 @@ export function loadApiEnv(): ApiEnv {
   const publicBaseUrl =
     readOptionalEnv("ARRAB_PUBLIC_BASE_URL") ?? `http://${host}:${port}`;
 
-  const bedrockApiKey =
-    readOptionalEnv("AWS_BEARER_TOKEN_BEDROCK") ?? readOptionalEnv("BEDROCK_API_KEY");
-  const explabsApiKey = readOptionalEnv("EXPLABS_API_KEY");
   const bedrockModels = parseBedrockModels(readOptionalEnv("BEDROCK_MODELS"));
-
-  let defaultModel =
-    readOptionalEnv("ARRAB_DEFAULT_MODEL") ??
-    (bedrockApiKey?.trim()
-      ? bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL
-      : explabsApiKey?.trim()
-        ? EXPLABS_LUNA_MODEL
-        : bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL);
-
-  // Never boot onto a Bedrock model id without a Bedrock key — keep Luna alive.
-  if (isBedrockModel(defaultModel, bedrockModels) && !bedrockApiKey?.trim()) {
-    if (explabsApiKey?.trim()) {
-      defaultModel = EXPLABS_LUNA_MODEL;
-    } else if (readOptionalEnv("OPENAI_API_KEY")?.trim()) {
-      defaultModel = "gpt-4o-mini";
-    }
-  }
+  const defaultModel =
+    readOptionalEnv("ARRAB_DEFAULT_MODEL", bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL) ??
+    BEDROCK_DEFAULT_MODEL;
 
   return {
     host,
@@ -118,36 +90,20 @@ export function loadApiEnv(): ApiEnv {
     ),
     databaseUrl: readOptionalEnv("DATABASE_URL"),
     dataDir: readOptionalEnv("ARRAB_DATA_DIR") ?? defaultStudioDataDir(),
-    openaiApiKey: readOptionalEnv("OPENAI_API_KEY"),
-    openaiBaseUrl:
-      readOptionalEnv("OPENAI_BASE_URL", "https://api.openai.com/v1") ??
-      "https://api.openai.com/v1",
-    explabsApiKey,
-    explabsBaseUrl:
-      readOptionalEnv("EXPLABS_BASE_URL", EXPLABS_BASE_URL) ?? EXPLABS_BASE_URL,
-    bedrockApiKey,
+    bedrockApiKey:
+      readOptionalEnv("AWS_BEARER_TOKEN_BEDROCK") ?? readOptionalEnv("BEDROCK_API_KEY"),
     bedrockRegion:
       readOptionalEnv("AWS_REGION", BEDROCK_DEFAULT_REGION) ?? BEDROCK_DEFAULT_REGION,
     bedrockModels,
     defaultModel,
-    anthropicApiKey: readOptionalEnv("ANTHROPIC_API_KEY"),
-    googleApiKey: readOptionalEnv("GOOGLE_API_KEY"),
-    xaiApiKey: readOptionalEnv("XAI_API_KEY"),
     publicBaseUrl: publicBaseUrl.replace(/\/$/, ""),
     authWebUrl: readOptionalEnv("ARRAB_AUTH_WEB_URL"),
   };
 }
 
-/** Fail fast only when Bedrock is required and no fallback provider can keep AI alive. */
+/** Bedrock is required — Arrab AI uses only Amazon Bedrock. */
 export function assertBedrockConfigured(env: ApiEnv): void {
-  const selectedIsBedrock = isBedrockModel(env.defaultModel, env.bedrockModels);
-  if (!selectedIsBedrock) {
-    return;
-  }
   if (env.bedrockApiKey?.trim()) {
-    return;
-  }
-  if (env.explabsApiKey?.trim() || env.openaiApiKey?.trim() || env.anthropicApiKey?.trim() || env.xaiApiKey?.trim()) {
     return;
   }
   throw new Error(

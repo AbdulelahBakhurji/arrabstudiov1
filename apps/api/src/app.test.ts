@@ -9,11 +9,7 @@ const testEnv: ApiEnv = {
   corsOrigins: ["http://localhost:1420"],
   databaseUrl: undefined,
   dataDir: undefined,
-  openaiApiKey: undefined,
-  openaiBaseUrl: "https://api.openai.com/v1",
-  explabsApiKey: undefined,
-  explabsBaseUrl: "https://api.experientiallabs.ai/v1",
-  bedrockApiKey: undefined,
+  bedrockApiKey: "test-bedrock-key",
   bedrockRegion: "eu-north-1",
   bedrockModels: [
     "google.gemma-3-12b-it",
@@ -21,10 +17,7 @@ const testEnv: ApiEnv = {
     "amazon.nova-pro-v1:0",
     "openai.gpt-oss-120b",
   ],
-  defaultModel: "gpt-4o-mini",
-  anthropicApiKey: undefined,
-  googleApiKey: undefined,
-  xaiApiKey: undefined,
+  defaultModel: "google.gemma-3-12b-it",
   publicBaseUrl: "http://127.0.0.1:8787",
   authWebUrl: undefined,
 };
@@ -77,50 +70,65 @@ describe("arrab api", () => {
     await app.close();
   });
 
-  it("creates a conversation and stores a user message without a provider", async () => {
-    const context = await createApiContext(testEnv);
-    const app = await buildApp(context);
+  it("creates a conversation and stores a user message with Bedrock", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          output: { message: { role: "assistant", content: [{ text: "Roadmap summary." }] } },
+          stopReason: "end_turn",
+          usage: { inputTokens: 3, outputTokens: 5 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as typeof fetch;
 
-    const agent = await app.inject({
-      method: "POST",
-      url: "/v1/agents",
-      payload: { name: "Analyst", role: "analysis", status: "active" },
-    });
-    const agentBody = agent.json() as { id: string };
+    try {
+      const context = await createApiContext(testEnv);
+      const app = await buildApp(context);
 
-    const conversation = await app.inject({
-      method: "POST",
-      url: "/v1/conversations",
-      payload: { agentId: agentBody.id },
-    });
-    expect(conversation.statusCode).toBe(200);
-    const conversationBody = conversation.json() as { id: string; title: string };
-    expect(conversationBody.title).toContain("Analyst");
+      const agent = await app.inject({
+        method: "POST",
+        url: "/v1/agents",
+        payload: { name: "Analyst", role: "analysis", status: "active" },
+      });
+      const agentBody = agent.json() as { id: string };
 
-    const message = await app.inject({
-      method: "POST",
-      url: `/v1/conversations/${conversationBody.id}/messages`,
-      payload: { content: "Summarize our roadmap." },
-    });
-    expect(message.statusCode).toBe(200);
-    const messageBody = message.json() as {
-      userMessage: { content: string };
-      assistantMessage: null;
-      providerConfigured: boolean;
-    };
-    expect(messageBody.providerConfigured).toBe(false);
-    expect(messageBody.assistantMessage).toBeNull();
-    expect(messageBody.userMessage.content).toBe("Summarize our roadmap.");
+      const conversation = await app.inject({
+        method: "POST",
+        url: "/v1/conversations",
+        payload: { agentId: agentBody.id },
+      });
+      expect(conversation.statusCode).toBe(200);
+      const conversationBody = conversation.json() as { id: string; title: string };
+      expect(conversationBody.title).toContain("Analyst");
 
-    const detail = await app.inject({
-      method: "GET",
-      url: `/v1/conversations/${conversationBody.id}`,
-    });
-    expect(detail.statusCode).toBe(200);
-    const detailBody = detail.json() as { messages: Array<{ role: string }> };
-    expect(detailBody.messages).toHaveLength(1);
+      const message = await app.inject({
+        method: "POST",
+        url: `/v1/conversations/${conversationBody.id}/messages`,
+        payload: { content: "Summarize our roadmap." },
+      });
+      expect(message.statusCode).toBe(200);
+      const messageBody = message.json() as {
+        userMessage: { content: string };
+        assistantMessage: { content: string } | null;
+        providerConfigured: boolean;
+      };
+      expect(messageBody.providerConfigured).toBe(true);
+      expect(messageBody.assistantMessage?.content).toContain("Roadmap");
+      expect(messageBody.userMessage.content).toBe("Summarize our roadmap.");
 
-    await app.close();
+      const detail = await app.inject({
+        method: "GET",
+        url: `/v1/conversations/${conversationBody.id}`,
+      });
+      expect(detail.statusCode).toBe(200);
+      const detailBody = detail.json() as { messages: Array<{ role: string }> };
+      expect(detailBody.messages.length).toBeGreaterThanOrEqual(2);
+
+      await app.close();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("tracks memberships, bindings, and empty usage", async () => {
@@ -237,162 +245,192 @@ describe("arrab api", () => {
     await app.close();
   });
 
-  it("stores knowledge and runs a task without a provider", async () => {
-    const context = await createApiContext(testEnv);
-    const app = await buildApp(context);
+  it("stores knowledge and runs a task with Bedrock", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          output: { message: { role: "assistant", content: [{ text: "Draft ready." }] } },
+          stopReason: "end_turn",
+          usage: { inputTokens: 2, outputTokens: 4 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as typeof fetch;
 
-    const agent = await app.inject({
-      method: "POST",
-      url: "/v1/agents",
-      payload: { name: "Runner", role: "engineer", status: "active" },
-    });
-    const agentBody = agent.json() as { id: string };
+    try {
+      const context = await createApiContext(testEnv);
+      const app = await buildApp(context);
 
-    const knowledge = await app.inject({
-      method: "POST",
-      url: "/v1/knowledge",
-      payload: {
-        title: "Playbook",
-        content: "Keep answers short and shippable.",
-      },
-    });
-    expect(knowledge.statusCode).toBe(200);
+      const agent = await app.inject({
+        method: "POST",
+        url: "/v1/agents",
+        payload: { name: "Runner", role: "engineer", status: "active" },
+      });
+      const agentBody = agent.json() as { id: string };
 
-    const task = await app.inject({
-      method: "POST",
-      url: "/v1/tasks",
-      payload: {
-        title: "Draft plan",
-        assigneeAgentId: agentBody.id,
-      },
-    });
-    const taskBody = task.json() as { id: string };
+      const knowledge = await app.inject({
+        method: "POST",
+        url: "/v1/knowledge",
+        payload: {
+          title: "Playbook",
+          content: "Keep answers short and shippable.",
+        },
+      });
+      expect(knowledge.statusCode).toBe(200);
 
-    const run = await app.inject({
-      method: "POST",
-      url: `/v1/tasks/${taskBody.id}/run`,
-    });
-    expect(run.statusCode).toBe(200);
-    const runBody = run.json() as {
-      providerConfigured: boolean;
-      run: { status: string };
-      task: { status: string };
-    };
-    expect(runBody.providerConfigured).toBe(false);
-    expect(runBody.run.status).toBe("needs_provider");
-    expect(runBody.task.status).toBe("in_progress");
+      const task = await app.inject({
+        method: "POST",
+        url: "/v1/tasks",
+        payload: {
+          title: "Draft plan",
+          assigneeAgentId: agentBody.id,
+        },
+      });
+      const taskBody = task.json() as { id: string };
 
-    const report = await app.inject({ method: "GET", url: "/v1/reports/summary" });
-    const reportBody = report.json() as {
-      knowledgeCount: number;
-      skillCount: number;
-      pendingApprovals: number;
-      recentTaskRuns: unknown[];
-    };
-    expect(reportBody.knowledgeCount).toBe(1);
-    expect(reportBody.skillCount).toBe(0);
-    expect(reportBody.pendingApprovals).toBe(0);
-    expect(reportBody.recentTaskRuns.length).toBe(1);
+      const run = await app.inject({
+        method: "POST",
+        url: `/v1/tasks/${taskBody.id}/run`,
+      });
+      expect(run.statusCode).toBe(200);
+      const runBody = run.json() as {
+        providerConfigured: boolean;
+        run: { status: string };
+        task: { status: string };
+      };
+      expect(runBody.providerConfigured).toBe(true);
+      expect(runBody.run.status).toBe("completed");
+      expect(["in_progress", "done"]).toContain(runBody.task.status);
 
-    const meta = await app.inject({ method: "GET", url: "/v1/meta" });
-    expect((meta.json() as { version: string }).version).toBe("0.12.0");
+      const report = await app.inject({ method: "GET", url: "/v1/reports/summary" });
+      const reportBody = report.json() as {
+        knowledgeCount: number;
+        skillCount: number;
+        pendingApprovals: number;
+        recentTaskRuns: unknown[];
+      };
+      expect(reportBody.knowledgeCount).toBe(1);
+      expect(reportBody.skillCount).toBe(0);
+      expect(reportBody.pendingApprovals).toBe(0);
+      expect(reportBody.recentTaskRuns.length).toBe(1);
 
-    await app.close();
+      const meta = await app.inject({ method: "GET", url: "/v1/meta" });
+      expect((meta.json() as { version: string }).version).toBe("0.12.0");
+
+      await app.close();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("teaches skills and gates high-risk runs behind approvals", async () => {
-    const context = await createApiContext(testEnv);
-    const app = await buildApp(context);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(
+        JSON.stringify({
+          output: { message: { role: "assistant", content: [{ text: "Ship report done." }] } },
+          stopReason: "end_turn",
+          usage: { inputTokens: 2, outputTokens: 4 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as typeof fetch;
 
-    const agent = await app.inject({
-      method: "POST",
-      url: "/v1/agents",
-      payload: { name: "Operator", role: "ops", status: "draft" },
-    });
-    const agentBody = agent.json() as { id: string; name: string };
+    try {
+      const context = await createApiContext(testEnv);
+      const app = await buildApp(context);
 
-    const skill = await app.inject({
-      method: "POST",
-      url: "/v1/skills",
-      payload: {
-        agentId: agentBody.id,
-        title: "Triage inbox",
-        instructions: "Summarize urgent mail and propose replies.",
-      },
-    });
-    expect(skill.statusCode).toBe(200);
-    const skillBody = skill.json() as { skill: { title: string }; task: { id: string } | null };
-    expect(skillBody.skill.title).toBe("Triage inbox");
-    expect(skillBody.task).not.toBeNull();
+      const agent = await app.inject({
+        method: "POST",
+        url: "/v1/agents",
+        payload: { name: "Operator", role: "ops", status: "draft" },
+      });
+      const agentBody = agent.json() as { id: string; name: string };
 
-    const listed = await app.inject({
-      method: "GET",
-      url: `/v1/skills?agentId=${agentBody.id}`,
-    });
-    expect((listed.json() as { items: unknown[] }).items).toHaveLength(1);
+      const skill = await app.inject({
+        method: "POST",
+        url: "/v1/skills",
+        payload: {
+          agentId: agentBody.id,
+          title: "Triage inbox",
+          instructions: "Summarize urgent mail and propose replies.",
+        },
+      });
+      expect(skill.statusCode).toBe(200);
+      const skillBody = skill.json() as { skill: { title: string }; task: { id: string } | null };
+      expect(skillBody.skill.title).toBe("Triage inbox");
+      expect(skillBody.task).not.toBeNull();
 
-    const activation = await app.inject({
-      method: "POST",
-      url: "/v1/approvals",
-      payload: {
-        kind: "activate_agent",
-        title: `Activate ${agentBody.name}`,
-        agentId: agentBody.id,
-      },
-    });
-    expect(activation.statusCode).toBe(200);
-    const activationBody = activation.json() as { id: string };
+      const listed = await app.inject({
+        method: "GET",
+        url: `/v1/skills?agentId=${agentBody.id}`,
+      });
+      expect((listed.json() as { items: unknown[] }).items).toHaveLength(1);
 
-    const resolved = await app.inject({
-      method: "POST",
-      url: `/v1/approvals/${activationBody.id}/resolve`,
-      payload: { status: "approved" },
-    });
-    expect(resolved.statusCode).toBe(200);
-    expect((resolved.json() as { agent?: { status: string } }).agent?.status).toBe("active");
+      const activation = await app.inject({
+        method: "POST",
+        url: "/v1/approvals",
+        payload: {
+          kind: "activate_agent",
+          title: `Activate ${agentBody.name}`,
+          agentId: agentBody.id,
+        },
+      });
+      expect(activation.statusCode).toBe(200);
+      const activationBody = activation.json() as { id: string };
 
-    const task = await app.inject({
-      method: "POST",
-      url: "/v1/tasks",
-      payload: {
-        title: "Ship report",
-        assigneeAgentId: agentBody.id,
-        priority: "urgent",
-      },
-    });
-    const taskBody = task.json() as { id: string };
+      const resolved = await app.inject({
+        method: "POST",
+        url: `/v1/approvals/${activationBody.id}/resolve`,
+        payload: { status: "approved" },
+      });
+      expect(resolved.statusCode).toBe(200);
+      expect((resolved.json() as { agent?: { status: string } }).agent?.status).toBe("active");
 
-    const gated = await app.inject({
-      method: "POST",
-      url: `/v1/tasks/${taskBody.id}/run`,
-      payload: { requireApproval: true },
-    });
-    expect(gated.statusCode).toBe(200);
-    const gatedBody = gated.json() as {
-      run: { status: string };
-      approval: { id: string; kind: string } | null;
-    };
-    expect(gatedBody.run.status).toBe("awaiting_approval");
-    expect(gatedBody.approval?.kind).toBe("run_task");
+      const task = await app.inject({
+        method: "POST",
+        url: "/v1/tasks",
+        payload: {
+          title: "Ship report",
+          assigneeAgentId: agentBody.id,
+          priority: "urgent",
+        },
+      });
+      const taskBody = task.json() as { id: string };
 
-    const pending = await app.inject({ method: "GET", url: "/v1/approvals/pending" });
-    expect((pending.json() as { items: unknown[] }).items.length).toBeGreaterThanOrEqual(1);
+      const gated = await app.inject({
+        method: "POST",
+        url: `/v1/tasks/${taskBody.id}/run`,
+        payload: { requireApproval: true },
+      });
+      expect(gated.statusCode).toBe(200);
+      const gatedBody = gated.json() as {
+        run: { status: string };
+        approval: { id: string; kind: string } | null;
+      };
+      expect(gatedBody.run.status).toBe("awaiting_approval");
+      expect(gatedBody.approval?.kind).toBe("run_task");
 
-    const continueRun = await app.inject({
-      method: "POST",
-      url: `/v1/approvals/${gatedBody.approval!.id}/resolve`,
-      payload: { status: "approved" },
-    });
-    expect(continueRun.statusCode).toBe(200);
-    expect((continueRun.json() as { run?: { run: { status: string } } }).run?.run.status).toBe(
-      "needs_provider",
-    );
+      const pending = await app.inject({ method: "GET", url: "/v1/approvals/pending" });
+      expect((pending.json() as { items: unknown[] }).items.length).toBeGreaterThanOrEqual(1);
 
-    const report = await app.inject({ method: "GET", url: "/v1/reports/summary" });
-    const reportBody = report.json() as { skillCount: number };
-    expect(reportBody.skillCount).toBe(1);
+      const continueRun = await app.inject({
+        method: "POST",
+        url: `/v1/approvals/${gatedBody.approval!.id}/resolve`,
+        payload: { status: "approved" },
+      });
+      expect(continueRun.statusCode).toBe(200);
+      expect((continueRun.json() as { run?: { run: { status: string } } }).run?.run.status).toBe(
+        "completed",
+      );
 
-    await app.close();
+      const report = await app.inject({ method: "GET", url: "/v1/reports/summary" });
+      const reportBody = report.json() as { skillCount: number };
+      expect(reportBody.skillCount).toBe(1);
+
+      await app.close();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("validates github commit payloads and creates git_push approvals", async () => {

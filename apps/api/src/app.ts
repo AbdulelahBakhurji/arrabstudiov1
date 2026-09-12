@@ -1,19 +1,10 @@
 import cors from "@fastify/cors";
 import {
-  AnthropicMessagesAdapter,
   BedrockConverseAdapter,
   BEDROCK_DEFAULT_MODEL,
   BEDROCK_PROVIDER_ID,
-  EXPLABS_LUNA_MODEL,
-  EXPLABS_PROVIDER_ID,
   isBedrockModel,
-  isExplabsLunaModel,
-  OpenAiCompatibleAdapter,
   RegistryAiGateway,
-  XAI_BASE_URL,
-  XAI_DEFAULT_MODEL,
-  XAI_PROVIDER_ID,
-  isXaiGrokModel,
 } from "@arrab/ai";
 import { GatewayChatRuntime } from "@arrab/agents";
 import {
@@ -76,92 +67,18 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
   assertBedrockConfigured(env);
 
   const aiGateway = new RegistryAiGateway();
-  if (env.bedrockApiKey) {
-    aiGateway.register(
-      new BedrockConverseAdapter({
-        id: BEDROCK_PROVIDER_ID,
-        apiKey: env.bedrockApiKey,
-        region: env.bedrockRegion,
-      }),
-    );
-  }
-  if (env.explabsApiKey) {
-    aiGateway.register(
-      new OpenAiCompatibleAdapter({
-        id: EXPLABS_PROVIDER_ID,
-        apiKey: env.explabsApiKey,
-        baseUrl: env.explabsBaseUrl,
-      }),
-    );
-  }
-  if (env.openaiApiKey) {
-    aiGateway.register(
-      new OpenAiCompatibleAdapter({
-        id: "openai",
-        apiKey: env.openaiApiKey,
-        baseUrl: env.openaiBaseUrl,
-      }),
-    );
-  }
-  if (env.anthropicApiKey) {
-    aiGateway.register(
-      new AnthropicMessagesAdapter({
-        id: "anthropic",
-        apiKey: env.anthropicApiKey,
-      }),
-    );
-  }
-  if (env.xaiApiKey) {
-    aiGateway.register(
-      new OpenAiCompatibleAdapter({
-        id: XAI_PROVIDER_ID,
-        apiKey: env.xaiApiKey,
-        baseUrl: XAI_BASE_URL,
-      }),
-    );
-  }
+  aiGateway.register(
+    new BedrockConverseAdapter({
+      id: BEDROCK_PROVIDER_ID,
+      apiKey: env.bedrockApiKey!,
+      region: env.bedrockRegion,
+    }),
+  );
 
-  const bedrockDefault =
-    Boolean(env.bedrockApiKey) && isBedrockModel(env.defaultModel, env.bedrockModels);
-  const lunaDefault =
-    Boolean(env.explabsApiKey) &&
-    (isExplabsLunaModel(env.defaultModel) || env.defaultModel === EXPLABS_LUNA_MODEL);
-  const grokDefault = isXaiGrokModel(env.defaultModel);
-  const defaultProviderId = bedrockDefault
-    ? BEDROCK_PROVIDER_ID
-    : lunaDefault
-      ? EXPLABS_PROVIDER_ID
-      : grokDefault
-        ? XAI_PROVIDER_ID
-        : env.bedrockApiKey
-          ? BEDROCK_PROVIDER_ID
-          : env.explabsApiKey
-            ? EXPLABS_PROVIDER_ID
-            : env.openaiApiKey
-              ? "openai"
-              : env.anthropicApiKey
-                ? "anthropic"
-                : env.xaiApiKey
-                  ? XAI_PROVIDER_ID
-                  : "openai";
-  const resolvedDefaultModel = bedrockDefault
+  const resolvedDefaultModel = isBedrockModel(env.defaultModel, env.bedrockModels)
     ? env.defaultModel
-    : lunaDefault
-      ? EXPLABS_LUNA_MODEL
-      : grokDefault
-        ? env.defaultModel || XAI_DEFAULT_MODEL
-        : env.bedrockApiKey
-          ? env.bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL
-          : env.explabsApiKey
-            ? EXPLABS_LUNA_MODEL
-            : env.openaiApiKey
-              ? env.defaultModel
-              : env.anthropicApiKey
-                ? "claude-3-5-haiku-latest"
-                : env.xaiApiKey
-                  ? XAI_DEFAULT_MODEL
-                  : env.defaultModel;
-  const chatRuntime = new GatewayChatRuntime(defaultProviderId);
+    : env.bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL;
+  const chatRuntime = new GatewayChatRuntime(BEDROCK_PROVIDER_ID);
   const commands = new WorkspaceCommandService(persistence);
   const queries = new WorkspaceQueryService(persistence, commands);
   const connectors = new ConnectorService(persistence, commands);
@@ -233,9 +150,6 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     time: new Date().toISOString(),
   }));
 
-  const defaultModel =
-    context.aiGateway.listProviders().length > 0 ? context.defaultModel : null;
-
   registerV1Routes(app, {
     queries: context.queries,
     commands: context.commands,
@@ -247,7 +161,7 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     gateway: context.aiGateway,
     persistence: context.persistence.kind,
     workspaceId: context.persistence.workspaceId,
-    defaultModel,
+    defaultModel: context.defaultModel,
     bedrockModels: context.env.bedrockModels,
     bedrockRegion: context.env.bedrockRegion,
   });
