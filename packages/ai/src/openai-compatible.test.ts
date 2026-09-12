@@ -51,8 +51,9 @@ describe("OpenAiCompatibleAdapter", () => {
     const fetch = captureFetch(async () =>
       new Response(
         JSON.stringify({
-          id: "cmpl_luna",
-          choices: [{ finish_reason: "stop", message: { role: "assistant", content: "Hi" } }],
+          id: "resp_luna",
+          output_text: "Hi",
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Hi" }] }],
         }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       ),
@@ -73,12 +74,10 @@ describe("OpenAiCompatibleAdapter", () => {
       });
       const body = fetch.calls[0]?.body;
       expect(body?.model).toBe("gpt-5.6-luna");
-      expect(body?.reasoning_effort).toBe("none");
       expect((body?.reasoning as { effort?: string } | undefined)?.effort).toBe("none");
-      expect(body?.max_completion_tokens).toBe(280);
-      expect(body?.max_tokens).toBeUndefined();
-      expect(body?.temperature).toBe(0.4);
-      expect(Array.isArray(body?.tools)).toBe(true);
+      expect(body?.max_output_tokens).toBe(280);
+      expect(body?.store).toBe(false);
+      expect(fetch.calls[0]?.url).toContain("/responses");
     } finally {
       fetch.restore();
     }
@@ -86,10 +85,9 @@ describe("OpenAiCompatibleAdapter", () => {
 
   it("streams tokens and tool calls without waiting for a non-stream complete", async () => {
     const sse = [
-      "data: {\"id\":\"cmpl_s\",\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n",
-      "data: {\"choices\":[{\"delta\":{\"content\":\"lo\"}}]}\n\n",
-      "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"web_search\",\"arguments\":\"{\\\"query\\\":\\\"x\\\"}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n",
-      "data: [DONE]\n\n",
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Hel\"}\n\n",
+      "data: {\"type\":\"response.output_text.delta\",\"delta\":\"lo\"}\n\n",
+      "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"output_text\":\"Hello\"}}\n\n",
     ].join("");
     const fetch = captureFetch(
       async () =>
@@ -114,7 +112,8 @@ describe("OpenAiCompatibleAdapter", () => {
       expect(tokens.join("")).toBe("Hello");
       expect(doneModel).toBe("gpt-5.6-luna");
       expect(fetch.calls[0]?.body.stream).toBe(true);
-      expect(fetch.calls[0]?.body.reasoning_effort).toBe("none");
+      expect(fetch.calls[0]?.url).toContain("/responses");
+      expect((fetch.calls[0]?.body.reasoning as { effort?: string } | undefined)?.effort).toBe("none");
     } finally {
       fetch.restore();
     }

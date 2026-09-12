@@ -427,6 +427,7 @@ export function registerV1Routes(
     providers: deps.gateway.listProviders().map((provider) => provider.id),
     defaultModel: deps.defaultModel,
     reasoningEffort: "none" as const,
+    replyPath: "responses" as const,
   }));
 
   app.get("/v1/connectors/catalog", async () => ({ items: deps.connectors.catalog() }));
