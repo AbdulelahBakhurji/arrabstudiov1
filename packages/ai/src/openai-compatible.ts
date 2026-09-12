@@ -354,7 +354,7 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
     this.baseUrl = (config.baseUrl ?? "https://api.openai.com/v1").replace(/\/$/, "");
   }
 
-  private headers(): HeadersInit {
+  private headers(): Record<string, string> {
     return {
       Authorization: `Bearer ${this.apiKey}`,
       "Content-Type": "application/json",
