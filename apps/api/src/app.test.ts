@@ -12,12 +12,12 @@ const testEnv: ApiEnv = {
   bedrockApiKey: "test-bedrock-key",
   bedrockRegion: "eu-north-1",
   bedrockModels: [
-    "eu.amazon.nova-lite-v1:0",
-    "eu.amazon.nova-pro-v1:0",
+    "amazon.nova-lite-v1:0",
+    "amazon.nova-pro-v1:0",
     "google.gemma-3-12b-it",
     "openai.gpt-oss-120b-1:0",
   ],
-  defaultModel: "eu.amazon.nova-lite-v1:0",
+  defaultModel: "amazon.nova-lite-v1:0",
   publicBaseUrl: "http://127.0.0.1:8787",
   authWebUrl: undefined,
 };

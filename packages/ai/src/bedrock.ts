@@ -2,14 +2,10 @@
 export const BEDROCK_PROVIDER_ID = "bedrock";
 export const BEDROCK_DEFAULT_REGION = "eu-north-1";
 
-/**
- * Default Arrab desk models for eu-north-1.
- * Nova uses EU geo inference profiles; gpt-oss uses the runtime model id.
- * Override with BEDROCK_MODELS on Railway.
- */
+/** Default Arrab desk models for eu-north-1 (in-region IDs). */
 export const BEDROCK_DEFAULT_MODELS = [
-  "eu.amazon.nova-lite-v1:0",
-  "eu.amazon.nova-pro-v1:0",
+  "amazon.nova-lite-v1:0",
+  "amazon.nova-pro-v1:0",
   "google.gemma-3-12b-it",
   "openai.gpt-oss-120b-1:0",
 ] as const;
@@ -32,24 +28,28 @@ export function isBedrockOpenAiModel(model: string | null | undefined): boolean 
 }
 
 /**
- * Map friendly / bare IDs to ones that work from eu-north-1 (and other EU regions).
- * Railway may still have older aliases — normalize before every request.
+ * Map friendly / bare IDs to ones Bedrock accepts.
+ * Prefer in-region model IDs over geo profiles — bearer API keys often reject eu.* profiles.
  */
 export function normalizeBedrockModelId(
   model: string | null | undefined,
-  region: string = BEDROCK_DEFAULT_REGION,
+  _region: string = BEDROCK_DEFAULT_REGION,
 ): string {
   const value = (model ?? "").trim();
   if (!value) return BEDROCK_DEFAULT_MODEL;
-  const eu = (region || BEDROCK_DEFAULT_REGION).toLowerCase().startsWith("eu");
 
   if (value === "openai.gpt-oss-120b") return "openai.gpt-oss-120b-1:0";
   if (value === "openai.gpt-oss-20b") return "openai.gpt-oss-20b-1:0";
 
-  if (eu) {
-    if (value === "amazon.nova-lite-v1:0") return "eu.amazon.nova-lite-v1:0";
-    if (value === "amazon.nova-pro-v1:0") return "eu.amazon.nova-pro-v1:0";
-    if (value === "amazon.nova-micro-v1:0") return "eu.amazon.nova-micro-v1:0";
+  // Unwrap geo profiles to in-region IDs when possible (API keys + Converse).
+  if (value === "eu.amazon.nova-lite-v1:0" || value === "us.amazon.nova-lite-v1:0") {
+    return "amazon.nova-lite-v1:0";
+  }
+  if (value === "eu.amazon.nova-pro-v1:0" || value === "us.amazon.nova-pro-v1:0") {
+    return "amazon.nova-pro-v1:0";
+  }
+  if (value === "eu.amazon.nova-micro-v1:0" || value === "us.amazon.nova-micro-v1:0") {
+    return "amazon.nova-micro-v1:0";
   }
 
   return value;
