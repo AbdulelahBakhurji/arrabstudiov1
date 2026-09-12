@@ -1,0 +1,35 @@
+{
+  "name": "arrab-studio",
+  "private": true,
+  "type": "module",
+  "version": "0.12.0",  "description": "Arrab Studio — build your AI workforce.",
+  "packageManager": "pnpm@10.15.1",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:api": "pnpm --filter @arrab/api dev",
+    "dev:desktop": "pnpm --filter @arrab/desktop tauri:dev",
+    "build": "pnpm --filter \"@arrab/*\" -r --sort build",
+    "typecheck": "pnpm --filter \"@arrab/*\" -r --sort typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.35.0",
+    "@types/node": "^24.3.1",
+    "eslint": "^9.35.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.43.0",
+    "vitest": "^3.2.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["esbuild"]
+  }
+}
