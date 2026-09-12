@@ -5,6 +5,7 @@ import { defaultStudioDataDir } from "@arrab/database";
 import {
   BEDROCK_DEFAULT_MODEL,
   BEDROCK_DEFAULT_REGION,
+  normalizeBedrockModelId,
   parseBedrockModels,
 } from "@arrab/ai";
 
@@ -73,10 +74,16 @@ export function loadApiEnv(): ApiEnv {
   const publicBaseUrl =
     readOptionalEnv("ARRAB_PUBLIC_BASE_URL") ?? `http://${host}:${port}`;
 
-  const bedrockModels = parseBedrockModels(readOptionalEnv("BEDROCK_MODELS"));
-  const defaultModel =
+  const bedrockRegion =
+    readOptionalEnv("AWS_REGION", BEDROCK_DEFAULT_REGION) ?? BEDROCK_DEFAULT_REGION;
+  const bedrockModels = parseBedrockModels(readOptionalEnv("BEDROCK_MODELS")).map((id) =>
+    normalizeBedrockModelId(id, bedrockRegion),
+  );
+  const defaultModel = normalizeBedrockModelId(
     readOptionalEnv("ARRAB_DEFAULT_MODEL", bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL) ??
-    BEDROCK_DEFAULT_MODEL;
+      BEDROCK_DEFAULT_MODEL,
+    bedrockRegion,
+  );
 
   return {
     host,
@@ -92,8 +99,7 @@ export function loadApiEnv(): ApiEnv {
     dataDir: readOptionalEnv("ARRAB_DATA_DIR") ?? defaultStudioDataDir(),
     bedrockApiKey:
       readOptionalEnv("AWS_BEARER_TOKEN_BEDROCK") ?? readOptionalEnv("BEDROCK_API_KEY"),
-    bedrockRegion:
-      readOptionalEnv("AWS_REGION", BEDROCK_DEFAULT_REGION) ?? BEDROCK_DEFAULT_REGION,
+    bedrockRegion,
     bedrockModels,
     defaultModel,
     publicBaseUrl: publicBaseUrl.replace(/\/$/, ""),

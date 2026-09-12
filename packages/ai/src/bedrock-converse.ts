@@ -8,11 +8,13 @@ import {
   type ModelProviderAdapter,
 } from "./types.js";
 import {
+  BEDROCK_DEFAULT_MODEL,
   BEDROCK_DEFAULT_REGION,
   BEDROCK_PROVIDER_ID,
   bedrockOpenAiBaseUrl,
   bedrockRuntimeBaseUrl,
   isBedrockOpenAiModel,
+  normalizeBedrockModelId,
 } from "./bedrock.js";
 import { OpenAiCompatibleAdapter } from "./openai-compatible.js";
 
@@ -220,11 +222,24 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
     return body;
   }
 
-  async complete(request: AiCompletionRequest): Promise<AiCompletion> {
-    if (isBedrockOpenAiModel(request.model.model)) {
-      return this.openAiCompat.complete(request);
+  private withNormalizedModel(request: AiCompletionRequest): AiCompletionRequest {
+    const model = normalizeBedrockModelId(request.model.model, this.region);
+    if (model === request.model.model) return request;
+    return { ...request, model: { ...request.model, model } };
+  }
+
+  private isInvalidModelError(message: string): boolean {
+    return /model identifier is invalid|ValidationException|does not exist|not found|access denied|not authorized/i.test(
+      message,
+    );
+  }
+
+  private async completeOnce(request: AiCompletionRequest): Promise<AiCompletion> {
+    const normalized = this.withNormalizedModel(request);
+    if (isBedrockOpenAiModel(normalized.model.model)) {
+      return this.openAiCompat.complete(normalized);
     }
-    const modelId = encodeURIComponent(request.model.model);
+    const modelId = encodeURIComponent(normalized.model.model);
     const response = await fetch(`${this.baseUrl}/model/${modelId}/converse`, {
       method: "POST",
       headers: {
@@ -232,7 +247,7 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
         "Content-Type": "application/json",
         Accept: "application/json",
       },
-      body: JSON.stringify(this.buildBody(request)),
+      body: JSON.stringify(this.buildBody(normalized)),
     });
 
     const payload = (await response.json()) as BedrockConverseResponse;
@@ -245,17 +260,67 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
         response.status >= 400 && response.status < 500 ? response.status : 502,
       );
     }
-    return extractCompletion(payload, request);
+    return extractCompletion(payload, normalized);
+  }
+
+  async complete(request: AiCompletionRequest): Promise<AiCompletion> {
+    try {
+      return await this.completeOnce(request);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const fallback = normalizeBedrockModelId("amazon.nova-lite-v1:0", this.region);
+      const current = normalizeBedrockModelId(request.model.model, this.region);
+      if (
+        this.isInvalidModelError(message) &&
+        current !== fallback &&
+        !isBedrockOpenAiModel(current)
+      ) {
+        return this.completeOnce({
+          ...request,
+          model: { ...request.model, model: fallback },
+        });
+      }
+      // Gemma / openai short ids may fail on Converse path aliases — try Nova.
+      if (this.isInvalidModelError(message) && current !== fallback) {
+        return this.completeOnce({
+          ...request,
+          model: { ...request.model, model: fallback },
+        });
+      }
+      throw error;
+    }
   }
 
   async *streamComplete(request: AiCompletionRequest): AsyncIterable<AiStreamChunk> {
-    if (isBedrockOpenAiModel(request.model.model)) {
-      yield* this.openAiCompat.streamComplete!(request);
-      return;
+    const normalized = this.withNormalizedModel(request);
+    if (isBedrockOpenAiModel(normalized.model.model)) {
+      try {
+        yield* this.openAiCompat.streamComplete!(normalized);
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const fallback = normalizeBedrockModelId("amazon.nova-lite-v1:0", this.region);
+        if (!this.isInvalidModelError(message) || normalized.model.model === fallback) {
+          throw error;
+        }
+        // Fall through to Converse Nova for a working reply.
+        const completion = await this.completeOnce({
+          ...normalized,
+          model: { ...normalized.model, model: fallback },
+        });
+        if (completion.message.content && !completion.toolCalls?.length) {
+          const text = completion.message.content;
+          const step = Math.max(12, Math.ceil(text.length / 24));
+          for (let i = 0; i < text.length; i += step) {
+            yield { type: "token", text: text.slice(i, i + step) };
+          }
+        }
+        yield { type: "done", completion };
+        return;
+      }
     }
-    // Converse-stream uses AWS eventstream framing; for reliability we complete
-    // then emit the reply (tool rounds already prefer complete semantics).
-    const completion = await this.complete(request);
+    // Prefer a real completion (with Nova fallback) then emit tokens quickly.
+    const completion = await this.complete(normalized);
     if (completion.message.content && !completion.toolCalls?.length) {
       const text = completion.message.content;
       const step = Math.max(12, Math.ceil(text.length / 24));

@@ -23,6 +23,7 @@ export {
   bedrockRuntimeBaseUrl,
   isBedrockModel,
   isBedrockOpenAiModel,
+  normalizeBedrockModelId,
   parseBedrockModels,
 } from "./bedrock.js";
 export { BedrockConverseAdapter, type BedrockConverseConfig } from "./bedrock-converse.js";
