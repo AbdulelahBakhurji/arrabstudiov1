@@ -522,11 +522,14 @@ export class ConversationService {
             ? [
                 "You can propose concrete file edits, commits, and PRs.",
                 hint.kind === "folder"
-                  ? "A local folder is attached — use search_code/list_files/read_file/apply_patch/write_file/run_terminal/web_search. Workflow: search → read → edit → verify. Prefer apply_patch for surgical edits."
+                  ? [
+                      "A local folder is attached on the operator's PC.",
+                      "You have real desk tools: search_code, list_files, read_file, apply_patch, write_file,",
+                      "delete_file, rename_file, create_dir, run_terminal, git_status, git_diff, open_path, web_search.",
+                      "Workflow: search → read → edit → verify with run_terminal. Prefer apply_patch for surgical edits.",
+                      "Do not claim you lack shell or file access. Be precise and reproducible; skip fluff.",
+                    ].join(" ")
                   : "The operator runs Commit / Push / Open PR from the workspace panel.",
-                hint.kind === "folder"
-                  ? "Do not claim you lack shell or file access when a folder is open. Be precise and reproducible; skip fluff."
-                  : null,
               ]
                 .filter(Boolean)
                 .join(" ")
@@ -540,7 +543,8 @@ export class ConversationService {
       const workspaceSummary = hint
         ? [
             `mode=${hint.kind}`,
-            hint.folderPath,
+            hint.kind === "folder" ? "desk=local" : null,
+            hint.folderPath ? `Local folder: ${hint.folderPath}` : null,
             hint.repoFullName,
             hint.branch,
             hint.gitStatus?.slice(0, 1200),
@@ -803,6 +807,16 @@ export class ConversationService {
 
     const localFloor =
       profile.tier === "high" ? 900 : profile.tier === "medium" ? 520 : 360;
+    const deskSystemExtra = isLocal
+      ? [
+          "Local desk TOOL_RESULT received. You still have full PC tools for this folder:",
+          "list_files, search_code, read_file, apply_patch, write_file, delete_file, rename_file, create_dir,",
+          "run_terminal, git_status, git_diff, open_path, web_search.",
+          "Continue the coding loop until the operator's ask is done. Verify edits with run_terminal.",
+          "Be brief and precise — prefer exact paths and commands.",
+        ].join(" ")
+      : "You just received an approved tool result. Do not call propose_action again for the same action.";
+
     const result = await this.runtime.run(
       {
         agent,
@@ -815,10 +829,21 @@ export class ConversationService {
           isLocal ? localFloor : profile.maxOutputTokens,
         ),
         temperature: isLocal ? 0.2 : undefined,
-        systemExtra: isLocal
-          ? "TOOL_RESULT received. Continue with local tools if needed. Be brief and precise."
-          : "You just received an approved tool result. Do not call propose_action again for the same action.",
-        tools: null,
+        systemExtra: deskSystemExtra,
+        // Critical: keep native desk tools attached after the first local tool.
+        // Without this, multi-step file/terminal work dies after one approval.
+        tools: isLocal
+          ? {
+              workspaceSummary: [
+                "mode=folder",
+                "desk=local",
+                "Local folder: attached (desktop-executed tools)",
+                "Continue using search_code / list_files / read_file / apply_patch / write_file / run_terminal.",
+              ].join("\n"),
+              activeGoal: null,
+              teamRoster: null,
+            }
+          : null,
       },
       this.gateway,
     );

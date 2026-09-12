@@ -194,6 +194,40 @@ describe("GatewayChatRuntime", () => {
     expect(result.output).toBe("Team has 2 people");
   });
 
+  it("keeps native tools when workspaceSummary marks a local desk resume", async () => {
+    const gateway = new RegistryAiGateway();
+    let sawTools = false;
+    gateway.register({
+      id: "openai",
+      kind: "openai_compatible",
+      supportsTools: true,
+      async complete(request: AiCompletionRequest): Promise<AiCompletion> {
+        if (request.tools?.length) sawTools = true;
+        return {
+          id: "cmpl_desk",
+          model: { providerId: "openai", model: "gpt-4o-mini" },
+          message: { role: "assistant", content: "Continuing on the desk" },
+          finishReason: "stop",
+          usage: null,
+        };
+      },
+    });
+    const result = await new GatewayChatRuntime().run(
+      {
+        agent,
+        conversationId: null,
+        input: "TOOL_RESULT read_file:\nhello",
+        tools: {
+          workspaceSummary: "mode=folder\ndesk=local\nLocal folder: attached",
+        },
+      },
+      gateway,
+    );
+    expect(sawTools).toBe(true);
+    expect(result.status).toBe("completed");
+    expect(result.output).toBe("Continuing on the desk");
+  });
+
   it("streams tokens live from streamComplete", async () => {
     const gateway = new RegistryAiGateway();
     gateway.register({

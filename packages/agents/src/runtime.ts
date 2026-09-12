@@ -316,6 +316,12 @@ const TOOL_HINT = [
   'CALL_TOOL read_file {"path":"package.json"}',
   'CALL_TOOL apply_patch {"path":"src/a.ts","old_string":"...","new_string":"..."}',
   'CALL_TOOL write_file {"path":"src/a.ts","content":"..."}',
+  'CALL_TOOL delete_file {"path":"tmp.txt"}',
+  'CALL_TOOL rename_file {"from":"a.ts","to":"b.ts"}',
+  'CALL_TOOL create_dir {"path":"src/new"}',
+  "CALL_TOOL git_status",
+  'CALL_TOOL git_diff {"path":"src"}',
+  'CALL_TOOL open_path {"path":"."}',
   'CALL_TOOL run_terminal {"command":"npm test"}',
   'CALL_TOOL web_search {"query":"React 19 useEffectEvent"}',
   'CALL_TOOL propose_action {"title":"...","detail":"..."}',
@@ -386,7 +392,7 @@ function runSafeTool(
       return `Operator approved: ${title}${detail ? `\n${detail}` : ""}`;
     }
     default:
-      return `Unknown tool '${name}'. Available: summarize_workspace, recall_goal, list_team, list_files, search_code, read_file, write_file, apply_patch, run_terminal, web_search, propose_action.`;
+      return `Unknown tool '${name}'. Available: summarize_workspace, recall_goal, list_team, list_files, search_code, read_file, write_file, apply_patch, delete_file, rename_file, create_dir, git_status, git_diff, open_path, run_terminal, web_search, propose_action.`;
   }
 }
 
@@ -541,7 +547,11 @@ export class GatewayChatRuntime implements AgentRuntime {
   ): AsyncGenerator<AgentStreamEvent, void, undefined> {
     const { provider, modelName } = this.pickProvider(request, gateway);
     const workspaceSummary = request.tools?.workspaceSummary ?? "";
-    const hasDesk = /(^|\n)mode=(folder|github)\b/.test(workspaceSummary);
+    // Keep desk tools whenever a local folder / GitHub desk (or resume after a local tool) is active.
+    const hasDesk =
+      /(^|\n)mode=(folder|github)\b/.test(workspaceSummary) ||
+      /(^|\n)desk=local\b/.test(workspaceSummary) ||
+      /Local folder:/i.test(workspaceSummary);
     // Don't attach the full tool catalog on a plain chat — that stalls Luna on "thinking".
     const useNativeTools = provider.supportsTools === true && hasDesk;
     const system = this.buildSystem(request, useNativeTools);
