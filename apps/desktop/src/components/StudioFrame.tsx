@@ -1,27 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import {
-  Building2,
-  Languages,
-  LogOut,
-  Moon,
-  Settings2,
-  Sun,
-  User,
-  UserRound,
-} from "lucide-react";
+import { Building2, Languages, Moon, Sun, User, UserRound } from "lucide-react";
 import { ToastHost } from "@/components/ToastHost";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useTheme } from "@/theme/ThemeProvider";
 import { arrabApi } from "@/lib/api";
-import {
-  clearAccountSession,
-  initialsFromName,
-  subscribeAccountSession,
-} from "@/lib/account-session";
+import { initialsFromName, subscribeAccountSession } from "@/lib/account-session";
 import { setAlwaysOnTop } from "@/lib/desktop";
-import { notifyStudio, pushToast } from "@/lib/notify";
+import { notifyStudio } from "@/lib/notify";
 import { ROLE_PATH, navForRole } from "@/roles/catalog";
 import { useRole } from "@/roles/RoleProvider";
 import { readPrefs } from "@/lib/prefs";
@@ -35,13 +22,9 @@ export function StudioFrame() {
   const { role, href, isIndividual, isOrganization } = useRole();
   const navigate = useNavigate();
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [userOpen, setUserOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [operatorName, setOperatorName] = useState(t("localUser"));
   const [accountUser, setAccountUser] = useState<AccountPublic | null>(null);
-  const [accountBusy, setAccountBusy] = useState(false);
   const [pendingCount, setPendingCount] = useState(0);
-  const userMenuRef = useRef<HTMLDivElement | null>(null);
   const lastPendingRef = useRef<number | null>(null);
 
   const modes = useMemo(
@@ -58,15 +41,14 @@ export function StudioFrame() {
   const paletteItems = useMemo(
     () => [
       ...modes,
+      { to: href("/account"), key: "amTitle" as const, icon: User, end: false },
       { to: ROLE_PATH.individual, key: "plansIndividuals" as const, icon: UserRound, end: false },
       {
         to: ROLE_PATH.organization,
-        key: "plansOrganizations" as const,
-        icon: Building2,
-        end: false,
+        key: "plansOrganizations" as const, icon: Building2, end: false,
       },
     ],
-    [modes],
+    [modes, href],
   );
 
   const refreshAccount = () => {
@@ -74,25 +56,16 @@ export function StudioFrame() {
       .account()
       .then((status) => {
         setAccountUser(status.account);
-        if (status.account) {
-          setOperatorName(status.account.displayName);
-          return;
-        }
-        return arrabApi.operator().then((op) => {
-          setOperatorName(op.displayName || t("localUser"));
-        });
       })
       .catch(() => {
         setAccountUser(null);
-        setOperatorName(t("localUser"));
       });
   };
 
   useEffect(() => {
     refreshAccount();
     return subscribeAccountSession(() => refreshAccount());
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- refresh on mount + session events
-  }, [t]);
+  }, []);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -100,13 +73,11 @@ export function StudioFrame() {
       if (meta && event.key.toLowerCase() === "k") {
         event.preventDefault();
         setPaletteOpen((open) => !open);
-        setUserOpen(false);
       }
       if (meta && event.key === ",") {
         event.preventDefault();
         navigate(href("/settings"));
         setPaletteOpen(false);
-        setUserOpen(false);
       }
       if (meta && event.shiftKey && event.key.toLowerCase() === "t") {
         event.preventDefault();
@@ -115,6 +86,11 @@ export function StudioFrame() {
       if (meta && event.shiftKey && event.key.toLowerCase() === "l") {
         event.preventDefault();
         toggleLocale();
+      }
+      if (meta && !event.shiftKey && event.key.toLowerCase() === "u") {
+        event.preventDefault();
+        navigate(href("/account"));
+        setPaletteOpen(false);
       }
       if (meta && !event.shiftKey && event.key >= "1" && event.key <= "7") {
         event.preventDefault();
@@ -126,7 +102,6 @@ export function StudioFrame() {
       }
       if (event.key === "Escape") {
         setPaletteOpen(false);
-        setUserOpen(false);
       }
     };
     window.addEventListener("keydown", onKey);
@@ -171,19 +146,6 @@ export function StudioFrame() {
     };
   }, [href, t]);
 
-  useEffect(() => {
-    if (!userOpen) {
-      return;
-    }
-    const onPointer = (event: MouseEvent) => {
-      if (!userMenuRef.current?.contains(event.target as Node)) {
-        setUserOpen(false);
-      }
-    };
-    window.addEventListener("mousedown", onPointer);
-    return () => window.removeEventListener("mousedown", onPointer);
-  }, [userOpen]);
-
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) {
@@ -193,26 +155,6 @@ export function StudioFrame() {
       (mode) => t(mode.key).toLowerCase().includes(q) || mode.to.includes(q),
     );
   }, [paletteItems, query, t]);
-
-  async function logoutFromMenu() {
-    setAccountBusy(true);
-    try {
-      await arrabApi.logoutAccount();
-      clearAccountSession();
-      setAccountUser(null);
-      setOperatorName(t("localUser"));
-      pushToast({ title: t("accountLoggedOut"), tone: "info" });
-      setUserOpen(false);
-    } catch {
-      pushToast({ title: t("apiUnavailable"), tone: "warn" });
-    } finally {
-      setAccountBusy(false);
-    }
-  }
-
-  const displayLabel = accountUser?.displayName || operatorName;
-  const displaySub =
-    accountUser?.email ?? (accountUser ? t("accountSignedInStatus") : t("userSettings"));
 
   return (
     <div className="app-shell flex h-full max-h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-background text-foreground" dir={dir}>
@@ -284,136 +226,33 @@ export function StudioFrame() {
             </TooltipContent>
           </Tooltip>
 
-          <div className="relative" ref={userMenuRef}>
-            <Tooltip delayDuration={120}>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  onClick={() => setUserOpen((open) => !open)}
-                  aria-label={t("userMenu")}
-                  aria-expanded={userOpen}
-                  className={cn(
-                    "inline-flex size-8 items-center justify-center rounded-md border border-white/10 text-white hover:bg-white/5",
-                    userOpen && "bg-white/10",
-                    accountUser && "border-emerald-400/30",
-                  )}
-                >
-                  {accountUser ? (
-                    <span className="text-[10px] font-semibold tracking-wide">
-                      {initialsFromName(accountUser.displayName, accountUser.email)}
-                    </span>
-                  ) : (
-                    <User className="size-4" strokeWidth={1.7} />
-                  )}
-                </button>
-              </TooltipTrigger>
-              {!userOpen ? (
-                <TooltipContent side="bottom" sideOffset={8}>
-                  {t("userMenu")}
-                </TooltipContent>
-              ) : null}
-            </Tooltip>
-
-            {userOpen ? (
-              <div
-                dir={dir}
-                className="absolute right-0 top-[calc(100%+10px)] z-50 w-72 overflow-hidden rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-2xl"
+          <Tooltip delayDuration={120}>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => {
+                  setPaletteOpen(false);
+                  navigate(href("/account"));
+                }}
+                aria-label={t("amTitle")}
+                className={cn(
+                  "inline-flex size-8 items-center justify-center rounded-md border border-white/10 text-white hover:bg-white/5",
+                  accountUser && "border-emerald-400/30",
+                )}
               >
-                <div className="border-b border-white/8 px-4 py-4">
-                  <div className="flex items-center gap-3">
-                    <div className="flex size-10 items-center justify-center rounded-full border border-white/15 bg-white/5 text-xs font-semibold text-white">
-                      {accountUser ? (
-                        initialsFromName(accountUser.displayName, accountUser.email)
-                      ) : (
-                        <User className="size-4 text-white" strokeWidth={1.7} />
-                      )}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="truncate text-sm text-white">{displayLabel}</p>
-                      <p className="mt-0.5 truncate text-[11px] text-neutral-500">{displaySub}</p>
-                    </div>
-                  </div>
-                  <p className="mt-3 text-xs leading-relaxed text-neutral-500">
-                    {isIndividual ? t("roleLivingIndividual") : t("roleLivingOrganization")}
-                  </p>
-                  {accountUser ? (
-                    <p className="mt-2 text-[11px] uppercase tracking-[0.12em] text-neutral-400">
-                      {accountUser.planName} · {t("accountSignedInStatus")}
-                    </p>
-                  ) : null}
-                  {pendingCount > 0 ? (
-                    <button
-                      type="button"
-                      className="mt-3 w-full rounded-xl border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-start text-xs text-amber-100"
-                      onClick={() => {
-                        setUserOpen(false);
-                        navigate(href("/workforce"));
-                      }}
-                    >
-                      {t("pendingApprovals")}: {pendingCount}
-                    </button>
-                  ) : null}
-                </div>
-                <div className="space-y-1 p-2">
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-start text-sm text-neutral-300 hover:bg-white/5 hover:text-white"
-                    onClick={() => {
-                      setUserOpen(false);
-                      navigate(ROLE_PATH.individual);
-                    }}
-                  >
-                    <UserRound className="size-4" strokeWidth={1.7} />
-                    {t("plansIndividuals")}
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-start text-sm text-neutral-300 hover:bg-white/5 hover:text-white"
-                    onClick={() => {
-                      setUserOpen(false);
-                      navigate(ROLE_PATH.organization);
-                    }}
-                  >
-                    <Building2 className="size-4" strokeWidth={1.7} />
-                    {t("plansOrganizations")}
-                  </button>
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-start text-sm text-neutral-300 hover:bg-white/5 hover:text-white"
-                    onClick={() => {
-                      setUserOpen(false);
-                      navigate(href("/settings?tab=account"));
-                    }}
-                  >
-                    <Settings2 className="size-4" strokeWidth={1.7} />
-                    {accountUser ? t("userAccountSettings") : t("signInWithBrowser")}
-                  </button>
-                  {accountUser ? (
-                    <button
-                      type="button"
-                      disabled={accountBusy}
-                      className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-start text-sm text-neutral-300 hover:bg-white/5 hover:text-white disabled:opacity-50"
-                      onClick={() => void logoutFromMenu()}
-                    >
-                      <LogOut className="size-4" strokeWidth={1.7} />
-                      {t("logOut")}
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-start text-sm text-neutral-300 hover:bg-white/5 hover:text-white"
-                    onClick={() => {
-                      setUserOpen(false);
-                      navigate(href("/settings"));
-                    }}
-                  >
-                    <Settings2 className="size-4" strokeWidth={1.7} />
-                    {t("openSettings")}
-                  </button>
-                </div>
-              </div>
-            ) : null}
-          </div>
+                {accountUser ? (
+                  <span className="text-[10px] font-semibold tracking-wide">
+                    {initialsFromName(accountUser.displayName, accountUser.email)}
+                  </span>
+                ) : (
+                  <User className="size-4" strokeWidth={1.7} />
+                )}
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" sideOffset={8}>
+              {t("amTitle")}
+            </TooltipContent>
+          </Tooltip>
         </div>
       </header>
 

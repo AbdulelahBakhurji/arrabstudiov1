@@ -1,8 +1,10 @@
 import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AuthGate } from "@/components/AuthGate";
 import { StudioFrame } from "@/components/StudioFrame";
 import { LanguageProvider } from "@/i18n/LanguageProvider";
 import { ThemeProvider } from "@/theme/ThemeProvider";
+import { AccountManagementPage } from "@/pages/AccountManagementPage";
 import { ActivityPage } from "@/pages/ActivityPage";
 import { ChatPage } from "@/pages/ChatPage";
 import { CompanionsPage } from "@/pages/CompanionsPage";
@@ -26,6 +28,7 @@ function individualChildRoutes() {
       <Route index element={<IndividualHomePage />} />
       <Route path="companions" element={<CompanionsPage />} />
       <Route path="connectors" element={<ConnectorsPage />} />
+      <Route path="account" element={<AccountManagementPage />} />
       <Route path="settings" element={<SettingsPage />} />
       <Route path="chat" element={<Navigate to="../companions" relative="path" replace />} />
       <Route path="cowork" element={<Navigate to="../companions" relative="path" replace />} />
@@ -46,6 +49,7 @@ function organizationChildRoutes() {
       <Route path="desk/:agentId" element={<EmployeeDeskPage />} />
       <Route path="connectors" element={<ConnectorsPage />} />
       <Route path="activity" element={<ActivityPage />} />
+      <Route path="account" element={<AccountManagementPage />} />
       <Route path="settings" element={<SettingsPage />} />
     </>
   );
@@ -63,45 +67,51 @@ export function App() {
           <HashRouter>
             <Routes>
               <Route element={<RoleFromPath />}>
-                <Route element={<StudioFrame />}>
-                  <Route index element={<Navigate to={defaultHome} replace />} />
+                <Route element={<AuthGate />}>
+                  <Route element={<StudioFrame />}>
+                    <Route index element={<Navigate to={defaultHome} replace />} />
 
-                  <Route path="individuals">{individualChildRoutes()}</Route>
-                  <Route path="organizations">{organizationChildRoutes()}</Route>
+                    <Route path="individuals">{individualChildRoutes()}</Route>
+                    <Route path="organizations">{organizationChildRoutes()}</Route>
 
-                  <Route path="plans" element={<Navigate to={ROLE_PATH.individual} replace />} />
-                  <Route
-                    path="plans/individuals"
-                    element={<Navigate to={ROLE_PATH.individual} replace />}
-                  />
-                  <Route
-                    path="plans/organizations"
-                    element={<Navigate to={ROLE_PATH.organization} replace />}
-                  />
+                    <Route path="plans" element={<Navigate to={ROLE_PATH.individual} replace />} />
+                    <Route
+                      path="plans/individuals"
+                      element={<Navigate to={ROLE_PATH.individual} replace />}
+                    />
+                    <Route
+                      path="plans/organizations"
+                      element={<Navigate to={ROLE_PATH.organization} replace />}
+                    />
 
-                  <Route
-                    path="companions"
-                    element={<Navigate to={`${ROLE_PATH.individual}/companions`} replace />}
-                  />
-                  <Route path="chat" element={<Navigate to={`${defaultHome}/chat`} replace />} />
-                  <Route path="cowork" element={<Navigate to={`${defaultHome}/cowork`} replace />} />
-                  <Route
-                    path="workforce"
-                    element={<Navigate to={`${defaultHome}/workforce`} replace />}
-                  />
-                  <Route
-                    path="connectors"
-                    element={<Navigate to={`${defaultHome}/connectors`} replace />}
-                  />
-                  <Route
-                    path="activity"
-                    element={<Navigate to={`${defaultHome}/activity`} replace />}
-                  />
-                  <Route
-                    path="settings"
-                    element={<Navigate to={`${defaultHome}/settings`} replace />}
-                  />
-                  <Route path="*" element={<Navigate to={defaultHome} replace />} />
+                    <Route
+                      path="companions"
+                      element={<Navigate to={`${ROLE_PATH.individual}/companions`} replace />}
+                    />
+                    <Route path="chat" element={<Navigate to={`${defaultHome}/chat`} replace />} />
+                    <Route path="cowork" element={<Navigate to={`${defaultHome}/cowork`} replace />} />
+                    <Route
+                      path="workforce"
+                      element={<Navigate to={`${defaultHome}/workforce`} replace />}
+                    />
+                    <Route
+                      path="connectors"
+                      element={<Navigate to={`${defaultHome}/connectors`} replace />}
+                    />
+                    <Route
+                      path="activity"
+                      element={<Navigate to={`${defaultHome}/activity`} replace />}
+                    />
+                    <Route
+                      path="account"
+                      element={<Navigate to={`${defaultHome}/account`} replace />}
+                    />
+                    <Route
+                      path="settings"
+                      element={<Navigate to={`${defaultHome}/settings`} replace />}
+                    />
+                    <Route path="*" element={<Navigate to={defaultHome} replace />} />
+                  </Route>
                 </Route>
               </Route>
             </Routes>

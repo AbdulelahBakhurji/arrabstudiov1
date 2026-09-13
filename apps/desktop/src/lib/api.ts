@@ -39,11 +39,14 @@ import type {
   OperatorProfile,
   AccountStatusResponse,
   ActivateSubscriptionRequest,
+  BillingCheckoutRequest,
+  BillingCheckoutResponse,
   SignInAccountRequest,
   StartWebAuthRequest,
   StartWebAuthResponse,
   PollWebAuthResponse,
   UpdateAccountProfileRequest,
+  VerifyAccountSessionRequest,
   Project,
   ProjectRepoBinding,
   ReportSummaryResponse,
@@ -222,6 +225,14 @@ export const arrabApi = {
     request<AccountStatusResponse>("/v1/account/subscribe", { method: "POST", body }),
   updateAccountProfile: (body: UpdateAccountProfileRequest) =>
     request<AccountStatusResponse>("/v1/account", { method: "PATCH", body }),
+  verifyAccountSession: (body: VerifyAccountSessionRequest) =>
+    request<AccountStatusResponse>("/v1/account/session", { method: "POST", body }),
+  billingCheckout: (body: BillingCheckoutRequest) =>
+    request<BillingCheckoutResponse>("/v1/billing/checkout", { method: "POST", body }),
+  billingConfirm: (invoiceId: string) =>
+    request<AccountStatusResponse>(
+      `/v1/billing/confirm?invoice=${encodeURIComponent(invoiceId)}`,
+    ),
   dashboard: () => request<DashboardResponse>("/v1/dashboard"),
   projects: () => request<CollectionResponse<Project>>("/v1/projects"),
   createProject: (body: CreateProjectRequest) =>

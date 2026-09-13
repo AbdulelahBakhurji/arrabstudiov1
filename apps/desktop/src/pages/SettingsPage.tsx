@@ -100,6 +100,12 @@ export function SettingsPage() {
     setTab(readSettingsTab(searchParams.get("tab")));
   }, [searchParams]);
 
+  useEffect(() => {
+    if (tab === "account") {
+      navigate(href("/account"), { replace: true });
+    }
+  }, [tab, href, navigate]);
+
   const [prefs, setPrefs] = useState<StudioPrefs>(() => readPrefs());
   const [savedFlash, setSavedFlash] = useState(false);
   const [online, setOnline] = useState<boolean | null>(null);

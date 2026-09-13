@@ -67,7 +67,7 @@ export function PlansCatalog({
       onNeedSignIn();
       return;
     }
-    navigate(href("/settings?tab=account"));
+    navigate(href("/account"));
   }
 
   async function choosePlan(plan: SubscriptionPlan) {
