@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <title>Arrab · Sign in</title>
+  <link rel="icon" href="/assets/symbol-white.png?v=5" type="image/png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css?v=7" />
+</head>
+<body>
+  <div class="glow" aria-hidden="true"></div>
+
+  <main class="stage">
+    <section class="intro" aria-hidden="true">
+      <img class="logo" src="/assets/logotall-white.png?v=5" width="200" height="52" alt="" />
+      <p class="kicker">Testing workspace</p>
+      <h2 class="manifesto">Your AI workforce, behind a locked door.</h2>
+      <ul class="points">
+        <li>Email + password on every visit</li>
+        <li>Plans billed in SAR via Moyasar</li>
+        <li>macOS .dmg after each Studio update</li>
+      </ul>
+    </section>
+
+    <section class="panel" aria-label="Account">
+      <header class="brand mobile-brand">
+        <img class="logo" src="/assets/logotall-white.png?v=5" width="200" height="52" alt="Arrab" />
+      </header>
+      <h1 class="headline" id="headline">Sign in</h1>
+      <p class="subhead">Email and password are required every time you open Arrab.</p>
+
+      <div class="segment" role="tablist" aria-label="Account mode">
+        <button type="button" class="seg is-active" role="tab" aria-selected="true" data-mode="signin">Sign in</button>
+        <button type="button" class="seg" role="tab" aria-selected="false" data-mode="create">Create account</button>
+      </div>
+
+      <form id="auth-form" class="form" autocomplete="on">
+        <input type="hidden" id="state" name="state" value="" />
+
+        <label class="field create-only">
+          <span>Name</span>
+          <input id="displayName" name="displayName" type="text" placeholder="Your name" maxlength="80" />
+        </label>
+
+        <label class="field">
+          <span>Email</span>
+          <input id="email" name="email" type="email" required placeholder="name@example.com" autocomplete="email" />
+        </label>
+
+        <label class="field">
+          <span>Password</span>
+          <input id="password" name="password" type="password" required minlength="8" placeholder="At least 8 characters" autocomplete="current-password" />
+        </label>
+
+        <p class="fine create-only">You’ll start on the Free plan. Billing options come next.</p>
+        <p class="fine desktop-only" id="desktop-hint" hidden>Opened from Arrab Studio — return to the app when you’re done.</p>
+
+        <button type="submit" class="cta" id="submit">Continue</button>
+        <p class="status" id="status" role="status" aria-live="polite"></p>
+      </form>
+
+      <div class="success" id="success" hidden>
+        <h2 class="headline success-title" id="success-title">You’re in</h2>
+        <p class="subhead" id="success-body"></p>
+        <div class="token-box" id="token-box" hidden>
+          <span class="token-label">Session token</span>
+          <code id="session-token"></code>
+          <button type="button" class="linkish" id="copy-token">Copy token</button>
+        </div>
+        <p class="fine">You can close this window and open Arrab Studio.</p>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js?v=6" defer></script>
+</body>
+</html>

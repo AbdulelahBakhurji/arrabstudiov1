@@ -3,6 +3,7 @@ export {
   ForbiddenError,
   NotFoundError,
   QuotaExceededError,
+  ServiceUnavailableError,
   SessionBudgetExceededError,
   UnauthorizedError,
   ValidationError,

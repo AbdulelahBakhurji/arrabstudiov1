@@ -3757,7 +3757,7 @@ export function ChatPage() {
                                 ? "…"
                                 : providerConfigured
                                   ? t("providerLive")
-                                  : t("providerQueue")}
+                                  : t("providerOffline")}
                             </dd>
                           </div>
                         </dl>

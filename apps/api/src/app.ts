@@ -4,6 +4,10 @@ import {
   BEDROCK_DEFAULT_MODEL,
   BEDROCK_PROVIDER_ID,
   isBedrockModel,
+  OpenAiCompatibleAdapter,
+  OPENROUTER_BASE_URL,
+  OPENROUTER_DEFAULT_MODEL,
+  OPENROUTER_PROVIDER_ID,
   RegistryAiGateway,
 } from "@arrab/ai";
 import { GatewayChatRuntime } from "@arrab/agents";
@@ -17,13 +21,15 @@ import {
   type Persistence,
 } from "@arrab/database";
 import Fastify, { type FastifyInstance } from "fastify";
-import { assertBedrockConfigured, type ApiEnv } from "./config/env.js";
+import type { ApiEnv } from "./config/env.js";
 import { registerErrorHandler } from "./plugins/error-handler.js";
 import { registerSecurity } from "./plugins/security.js";
 import { registerV1Routes } from "./routes/v1.js";
 import { ConversationService } from "./services/conversation-service.js";
 import { ConnectorService } from "./services/connector-service.js";
 import { AccountService } from "./services/account-service.js";
+import { BillingService } from "./services/billing-service.js";
+import { createMoyasarClient } from "./services/moyasar.js";
 import { GoalService } from "./services/goal-service.js";
 import { TaskExecutionService } from "./services/task-execution-service.js";
 import { WorkspaceCommandService } from "./services/workspace-commands.js";
@@ -42,6 +48,7 @@ export interface ApiContext {
   conversations: ConversationService;
   connectors: ConnectorService;
   accounts: AccountService;
+  billing: BillingService;
   goals: GoalService;
   taskExecution: TaskExecutionService;
 }
@@ -64,21 +71,47 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     persistence = createInMemoryPersistence();
   }
 
-  assertBedrockConfigured(env);
-
   const aiGateway = new RegistryAiGateway();
-  aiGateway.register(
-    new BedrockConverseAdapter({
-      id: BEDROCK_PROVIDER_ID,
-      apiKey: env.bedrockApiKey!,
-      region: env.bedrockRegion,
-    }),
-  );
+  // Register providers that have secrets. OpenRouter is preferred when configured
+  // (Bedrock accounts are often blocked until AWS verification completes).
+  if (env.openRouterApiKey?.trim()) {
+    aiGateway.register(
+      new OpenAiCompatibleAdapter({
+        id: OPENROUTER_PROVIDER_ID,
+        apiKey: env.openRouterApiKey,
+        baseUrl: OPENROUTER_BASE_URL,
+      }),
+    );
+  }
+  if (env.bedrockApiKey?.trim()) {
+    aiGateway.register(
+      new BedrockConverseAdapter({
+        id: BEDROCK_PROVIDER_ID,
+        apiKey: env.bedrockApiKey,
+        region: env.bedrockRegion,
+      }),
+    );
+  }
 
-  const resolvedDefaultModel = isBedrockModel(env.defaultModel, env.bedrockModels)
-    ? env.defaultModel
-    : env.bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL;
-  const chatRuntime = new GatewayChatRuntime(BEDROCK_PROVIDER_ID);
+  const primaryProviderId =
+    env.primaryProviderId === "openrouter" && env.openRouterApiKey?.trim()
+      ? OPENROUTER_PROVIDER_ID
+      : env.bedrockApiKey?.trim()
+        ? BEDROCK_PROVIDER_ID
+        : env.openRouterApiKey?.trim()
+          ? OPENROUTER_PROVIDER_ID
+          : BEDROCK_PROVIDER_ID;
+
+  const resolvedDefaultModel =
+    primaryProviderId === OPENROUTER_PROVIDER_ID
+      ? env.defaultModel.includes("/")
+        ? env.defaultModel
+        : env.openRouterModels[0] ?? OPENROUTER_DEFAULT_MODEL
+      : isBedrockModel(env.defaultModel, env.bedrockModels)
+        ? env.defaultModel
+        : env.bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL;
+
+  const chatRuntime = new GatewayChatRuntime(primaryProviderId);
   const commands = new WorkspaceCommandService(persistence);
   const queries = new WorkspaceQueryService(persistence, commands);
   const connectors = new ConnectorService(persistence, commands);
@@ -86,6 +119,11 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     persistence,
     env.publicBaseUrl,
     env.authWebUrl,
+  );
+  const billing = new BillingService(
+    accounts,
+    createMoyasarClient(env.moyasarSecretKey),
+    env.siteUrl,
   );
   const conversations = new ConversationService(
     persistence,
@@ -115,6 +153,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     conversations,
     connectors,
     accounts,
+    billing,
     goals,
     taskExecution,
   };
@@ -156,6 +195,7 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     conversations: context.conversations,
     connectors: context.connectors,
     accounts: context.accounts,
+    billing: context.billing,
     goals: context.goals,
     taskExecution: context.taskExecution,
     gateway: context.aiGateway,
@@ -163,7 +203,11 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     workspaceId: context.persistence.workspaceId,
     defaultModel: context.defaultModel,
     bedrockModels: context.env.bedrockModels,
+    openRouterModels: context.env.openRouterModels,
+    primaryProviderId: context.env.primaryProviderId,
     bedrockRegion: context.env.bedrockRegion,
+    releasesDir: context.env.releasesDir,
+    publicBaseUrl: context.env.siteUrl,
   });
 
   return app;

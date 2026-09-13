@@ -46,7 +46,7 @@ import { MentionComposer } from "@/components/MentionComposer";
 import { Surface } from "@/components/StudioFrame";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useStudioPrefs } from "@/hooks/useStudioPrefs";
-import { LAST_COWORK_AGENT_KEY, readPrefs } from "@/lib/prefs";
+import { LAST_COWORK_AGENT_KEY } from "@/lib/prefs";
 import { notifyStudio } from "@/lib/notify";
 import { arrabApi, ApiRequestError, isTransientApiError } from "@/lib/api";
 import {
@@ -165,7 +165,7 @@ export function CoworkPage() {
   const [sending, setSending] = useState(false);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null);
+  const [, setProviderConfigured] = useState<boolean | null>(null);
   const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
   const [pendingApproval, setPendingApproval] = useState<Approval | null>(null);
   const [approvalBusy, setApprovalBusy] = useState(false);
@@ -263,11 +263,6 @@ export function CoworkPage() {
     sessionUsage?.budget !== null &&
     sessionUsage?.budget !== undefined &&
     (sessionUsage.remaining ?? 0) <= 0;
-
-  const spendUsedRatio = useMemo(() => {
-    if (!sessionUsage?.budget || sessionUsage.budget <= 0) return 0;
-    return Math.min(1, sessionUsage.totalTokens / sessionUsage.budget);
-  }, [sessionUsage]);
 
   const activeAgentTab = useMemo(
     () => agentTabs.find((tab) => tab.key === activeTabKey) ?? null,
@@ -652,19 +647,6 @@ export function CoworkPage() {
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : t("apiUnavailable"));
     }
-  }
-
-  async function clearFolder() {
-    setFolderPath(null);
-    setDirRel("");
-    setEntries([]);
-    setOpenFile(null);
-    setFileContent("");
-    setFileDirty(false);
-    setGitStatus("");
-    setGitDiff("");
-    setGitLog("");
-    setBranch(null);
   }
 
   async function openEntry(entry: FsEntry) {

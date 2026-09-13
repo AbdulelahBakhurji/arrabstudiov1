@@ -33,3 +33,11 @@ export {
   XAI_PROVIDER_ID,
   isXaiGrokModel,
 } from "./xai.js";
+export {
+  OPENROUTER_BASE_URL,
+  OPENROUTER_DEFAULT_MODEL,
+  OPENROUTER_DEFAULT_MODELS,
+  OPENROUTER_PROVIDER_ID,
+  isOpenRouterModel,
+  parseOpenRouterModels,
+} from "./openrouter.js";

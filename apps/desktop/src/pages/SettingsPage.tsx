@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import {
   Bell,
   ChartColumn,
   CircleUserRound,
+  CreditCard,
   Cable,
   ExternalLink,
   Keyboard,
@@ -17,7 +18,10 @@ import {
   Sun,
   Workflow,
 } from "lucide-react";
+import { PlansCatalog } from "@/components/PlansCatalog";
 import { Surface } from "@/components/StudioFrame";
+import { ROLE_PATH } from "@/roles/catalog";
+import { useRole } from "@/roles/RoleProvider";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useTheme } from "@/theme/ThemeProvider";
 import { arrabApi, getApiBaseUrl, ApiRequestError } from "@/lib/api";
@@ -48,11 +52,12 @@ import {
 import { pickFolder, isTauriRuntime } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import type { MessageKey } from "@/i18n/messages";
-import type { AccountStatusResponse } from "@arrab/shared";
+import type { AccountStatusResponse, PlanAudience, SubscriptionPlanId } from "@arrab/shared";
 
 type SettingsTab =
   | "usage"
   | "account"
+  | "plans"
   | "general"
   | "appearance"
   | "connection"
@@ -64,52 +69,36 @@ type SettingsTab =
   | "about";
 
 const FOLDER_KEY = "arrab.cowork.folder";
+const SETTINGS_TABS: SettingsTab[] = [
+  "usage",
+  "account",
+  "plans",
+  "general",
+  "appearance",
+  "connection",
+  "notifications",
+  "privacy",
+  "cowork",
+  "desktop",
+  "shortcuts",
+  "about",
+];
+
+function readSettingsTab(value: string | null): SettingsTab {
+  return value && SETTINGS_TABS.includes(value as SettingsTab) ? (value as SettingsTab) : "usage";
+}
 
 export function SettingsPage() {
   const { t, locale, setLocale } = useLanguage();
   const { theme, setTheme } = useTheme();
+  const { role: studioRole, href } = useRole();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
-  const initialTab = (searchParams.get("tab") as SettingsTab | null) ?? "usage";
-  const [tab, setTab] = useState<SettingsTab>(
-    [
-      "usage",
-      "account",
-      "general",
-      "appearance",
-      "connection",
-      "notifications",
-      "privacy",
-      "cowork",
-      "desktop",
-      "shortcuts",
-      "about",
-    ].includes(initialTab)
-      ? initialTab
-      : "usage",
-  );
+  const [tab, setTab] = useState<SettingsTab>(() => readSettingsTab(searchParams.get("tab")));
 
   useEffect(() => {
-    const fromUrl = searchParams.get("tab") as SettingsTab | null;
-    if (
-      fromUrl &&
-      fromUrl !== tab &&
-      [
-        "usage",
-        "account",
-        "general",
-        "appearance",
-        "connection",
-        "notifications",
-        "privacy",
-        "cowork",
-        "desktop",
-        "shortcuts",
-        "about",
-      ].includes(fromUrl)
-    ) {
-      setTab(fromUrl);
-    }
-  }, [searchParams, tab]);
+    setTab(readSettingsTab(searchParams.get("tab")));
+  }, [searchParams]);
 
   const [prefs, setPrefs] = useState<StudioPrefs>(() => readPrefs());
   const [savedFlash, setSavedFlash] = useState(false);
@@ -139,6 +128,7 @@ export function SettingsPage() {
   const [webAuthWaiting, setWebAuthWaiting] = useState(false);
   const [showLocalAuth, setShowLocalAuth] = useState(false);
   const [showAdvancedAccount, setShowAdvancedAccount] = useState(false);
+  const [planAudience, setPlanAudience] = useState<PlanAudience>(studioRole);
   const webAuthAbortRef = useRef<{ cancelled: boolean; timer?: number }>({ cancelled: false });
   const [displayName, setDisplayName] = useState("Studio operator");
   const [role, setRole] = useState("Founder");
@@ -268,6 +258,7 @@ export function SettingsPage() {
       [
         ["usage", t("settingsUsage"), ChartColumn],
         ["account", t("settingsAccount"), KeyRound],
+        ["plans", t("settingsPlans"), CreditCard],
         ["general", t("settingsGeneral"), CircleUserRound],
         ["appearance", t("settingsAppearance"), theme === "dark" ? Moon : Sun],
         ["connection", t("settingsConnection"), Cable],
@@ -295,6 +286,10 @@ export function SettingsPage() {
   const studioPercent = Math.min(100, Math.round((studioUsed / STUDIO_OPS_SOFT_CAP) * 100));
   const planId = accountStatus?.account?.planId ?? entitlements?.planId ?? null;
   const planLabel = entitlements?.planName ?? t("accountNotConnected");
+
+  useEffect(() => {
+    setPlanAudience(studioRole);
+  }, [studioRole]);
   const showUpgradeCard = !planId || planId === "free" || planId === "pro";
   const upgradeTitle =
     !planId || planId === "free" ? t("upgradeToPro") : t("upgradeToTeam");
@@ -490,7 +485,15 @@ export function SettingsPage() {
 
   function selectTab(next: SettingsTab) {
     setTab(next);
-    setSearchParams(next === "usage" ? {} : { tab: next }, { replace: true });
+    if (next === "usage") {
+      setSearchParams({}, { replace: true });
+      return;
+    }
+    if (next === "plans") {
+      setSearchParams({ tab: "plans" }, { replace: true });
+      return;
+    }
+    setSearchParams({ tab: next }, { replace: true });
   }
 
   async function activateSubscription() {
@@ -624,7 +627,7 @@ export function SettingsPage() {
       kind: "approvals",
       title: t("testNotifyTitle"),
       body: t("testNotifyBody"),
-      href: "/settings",
+      href: href("/settings"),
     });
     // Force show even if approvals disabled — user asked for test
     if (!prefs.notifyApprovals) {
@@ -706,7 +709,7 @@ export function SettingsPage() {
                     </div>
                     <button
                       type="button"
-                      onClick={() => selectTab("account")}
+                      onClick={() => selectTab("plans")}
                       className="h-10 rounded-full bg-[#7eb6ff] px-5 text-sm font-medium text-[#0a1220] hover:bg-[#9bc5ff]"
                     >
                       {t("upgrade")}
@@ -777,6 +780,45 @@ export function SettingsPage() {
                 <UsageMetric label={t("usageInputTokens")} value={tokenUsage.inputTokens} />
                 <UsageMetric label={t("usageOutputTokens")} value={tokenUsage.outputTokens} />
                 <UsageMetric label={t("usageCompletions")} value={tokenUsage.events} />
+              </div>
+            </section>
+          ) : null}
+
+          {tab === "plans" ? (
+            <section className="settings-rise space-y-4">
+              <div className="flex flex-wrap gap-2 px-1">
+                <button
+                  type="button"
+                  onClick={() => navigate(ROLE_PATH.individual)}
+                  className="h-9 rounded-full border border-white/15 px-4 text-sm text-white hover:bg-white/5"
+                >
+                  {t("plansIndividuals")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => navigate(ROLE_PATH.organization)}
+                  className="h-9 rounded-full border border-white/15 px-4 text-sm text-white hover:bg-white/5"
+                >
+                  {t("plansOrganizations")}
+                </button>
+              </div>
+              <div className="rounded-[28px] border border-white/10 bg-[#080808] p-5 lg:p-6">
+              <PlansCatalog
+                audience={planAudience}
+                onAudienceChange={(next: PlanAudience) => {
+                  navigate(
+                    `${next === "organization" ? ROLE_PATH.organization : ROLE_PATH.individual}/settings?tab=plans`,
+                  );
+                }}
+                currentPlanId={(planId as SubscriptionPlanId | null) ?? null}
+                signedIn={Boolean(accountStatus?.connected && accountStatus.account)}
+                onAccountChanged={(status) => {
+                  setAccountStatus(status);
+                  setEntitlements(status.entitlements);
+                }}
+                onNeedSignIn={() => selectTab("account")}
+                variant="settings"
+              />
               </div>
             </section>
           ) : null}
@@ -910,21 +952,13 @@ export function SettingsPage() {
                         </div>
                       </div>
 
-                      {accountStatus.plans.length > 0 ? (
-                        <div className="grid gap-2 sm:grid-cols-2">
-                          {accountStatus.plans.map((plan) => (
-                            <div key={plan.id} className="rounded-xl border border-white/10 px-3 py-3">
-                              <p className="text-sm text-white">{plan.name}</p>
-                              <p className="mt-1 text-xs text-neutral-500">{plan.description}</p>
-                              <p className="mt-2 tabular-nums text-xs text-neutral-300">
-                                {plan.monthlyTokenLimit === null
-                                  ? t("unlimitedTokens")
-                                  : `${plan.monthlyTokenLimit.toLocaleString()} ${t("tokensPerMonth")}`}
-                              </p>
-                            </div>
-                          ))}
-                        </div>
-                      ) : null}
+                      <button
+                        type="button"
+                        onClick={() => selectTab("plans")}
+                        className="h-9 rounded-full border border-white/15 px-4 text-sm text-white hover:bg-white/5"
+                      >
+                        {t("settingsPlans")}
+                      </button>
                     </div>
                   ) : null}
                 </div>

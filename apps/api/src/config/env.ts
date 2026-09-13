@@ -6,7 +6,9 @@ import {
   BEDROCK_DEFAULT_MODEL,
   BEDROCK_DEFAULT_REGION,
   normalizeBedrockModelId,
+  OPENROUTER_DEFAULT_MODEL,
   parseBedrockModels,
+  parseOpenRouterModels,
 } from "@arrab/ai";
 
 export interface ApiEnv {
@@ -22,11 +24,25 @@ export interface ApiEnv {
   bedrockRegion: string;
   /** Up to N Bedrock model IDs available in Arrab. */
   bedrockModels: string[];
+  /** OpenRouter API key — preferred while Bedrock invoke is blocked. */
+  openRouterApiKey: string | undefined;
+  openRouterModels: string[];
+  /** Active chat model id (Bedrock or OpenRouter). */
   defaultModel: string;
+  /** Which gateway adapter is primary for chat. */
+  primaryProviderId: "openrouter" | "bedrock";
   /** Public base URL used to build web auth links (defaults to http://host:port). */
   publicBaseUrl: string;
   /** Optional external web sign-in URL. Use {state} placeholder. */
   authWebUrl: string | undefined;
+  /** Public website (testing workspace) — login, plans, downloads. */
+  siteUrl: string;
+  /** Moyasar secret key (sk_test_… / sk_live_…). Empty = billing checkout disabled. */
+  moyasarSecretKey: string | undefined;
+  /** Moyasar publishable key for hosted forms (optional). */
+  moyasarPublishableKey: string | undefined;
+  /** Directory of published Studio installers (.dmg, .deb, .AppImage). */
+  releasesDir: string;
 }
 
 const LOG_LEVELS = new Set(["fatal", "error", "warn", "info", "debug", "trace"]);
@@ -73,20 +89,60 @@ export function loadApiEnv(): ApiEnv {
   const port = parsePort(readOptionalEnv("ARRAB_API_PORT", "8787") ?? "8787", "ARRAB_API_PORT");
   const publicBaseUrl =
     readOptionalEnv("ARRAB_PUBLIC_BASE_URL") ?? `http://${host}:${port}`;
+  const authWebUrl = readOptionalEnv("ARRAB_AUTH_WEB_URL");
+  let siteUrl = readOptionalEnv("ARRAB_SITE_URL");
+  if (!siteUrl && authWebUrl) {
+    try {
+      siteUrl = new URL(authWebUrl.replaceAll("{state}", "x").replaceAll("{callback}", "x")).origin;
+    } catch {
+      siteUrl = undefined;
+    }
+  }
 
   const bedrockRegion =
     readOptionalEnv("AWS_REGION", BEDROCK_DEFAULT_REGION) ?? BEDROCK_DEFAULT_REGION;
   const bedrockModels = parseBedrockModels(readOptionalEnv("BEDROCK_MODELS")).map((id) =>
     normalizeBedrockModelId(id, bedrockRegion),
   );
-  let defaultModel = normalizeBedrockModelId(
-    readOptionalEnv("ARRAB_DEFAULT_MODEL", bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL) ??
-      BEDROCK_DEFAULT_MODEL,
-    bedrockRegion,
-  );
-  // Gemma often lacks account access in EU; default chat to fast Nova Lite instead.
-  if (defaultModel.toLowerCase().startsWith("google.gemma")) {
-    defaultModel = normalizeBedrockModelId("amazon.nova-lite-v1:0", bedrockRegion);
+  const bedrockApiKey =
+    readOptionalEnv("AWS_BEARER_TOKEN_BEDROCK") ?? readOptionalEnv("BEDROCK_API_KEY");
+  const openRouterApiKey = readOptionalEnv("OPENROUTER_API_KEY");
+  const openRouterModels = parseOpenRouterModels(readOptionalEnv("OPENROUTER_MODELS"));
+
+  // Prefer OpenRouter when its key is set (Bedrock account may be blocked).
+  // Override with ARRAB_AI_PROVIDER=bedrock|openrouter.
+  const providerOverride = (readOptionalEnv("ARRAB_AI_PROVIDER") ?? "").trim().toLowerCase();
+  let primaryProviderId: "openrouter" | "bedrock" = "bedrock";
+  if (providerOverride === "openrouter" && openRouterApiKey?.trim()) {
+    primaryProviderId = "openrouter";
+  } else if (providerOverride === "bedrock" && bedrockApiKey?.trim()) {
+    primaryProviderId = "bedrock";
+  } else if (openRouterApiKey?.trim()) {
+    primaryProviderId = "openrouter";
+  } else if (bedrockApiKey?.trim()) {
+    primaryProviderId = "bedrock";
+  } else if (providerOverride === "openrouter") {
+    primaryProviderId = "openrouter"; // key missing — status will show unconfigured
+  }
+
+  let defaultModel: string;
+  if (primaryProviderId === "openrouter") {
+    defaultModel =
+      readOptionalEnv("ARRAB_DEFAULT_MODEL", openRouterModels[0] ?? OPENROUTER_DEFAULT_MODEL) ??
+      OPENROUTER_DEFAULT_MODEL;
+    // If someone left a Bedrock id in ARRAB_DEFAULT_MODEL, fall back to OpenRouter default.
+    if (!defaultModel.includes("/")) {
+      defaultModel = openRouterModels[0] ?? OPENROUTER_DEFAULT_MODEL;
+    }
+  } else {
+    defaultModel = normalizeBedrockModelId(
+      readOptionalEnv("ARRAB_DEFAULT_MODEL", bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL) ??
+        BEDROCK_DEFAULT_MODEL,
+      bedrockRegion,
+    );
+    if (defaultModel.toLowerCase().startsWith("google.gemma")) {
+      defaultModel = normalizeBedrockModelId("amazon.nova-lite-v1:0", bedrockRegion);
+    }
   }
 
   return {
@@ -101,13 +157,20 @@ export function loadApiEnv(): ApiEnv {
     ),
     databaseUrl: readOptionalEnv("DATABASE_URL"),
     dataDir: readOptionalEnv("ARRAB_DATA_DIR") ?? defaultStudioDataDir(),
-    bedrockApiKey:
-      readOptionalEnv("AWS_BEARER_TOKEN_BEDROCK") ?? readOptionalEnv("BEDROCK_API_KEY"),
+    bedrockApiKey,
     bedrockRegion,
     bedrockModels,
+    openRouterApiKey,
+    openRouterModels,
     defaultModel,
+    primaryProviderId,
     publicBaseUrl: publicBaseUrl.replace(/\/$/, ""),
-    authWebUrl: readOptionalEnv("ARRAB_AUTH_WEB_URL"),
+    authWebUrl,
+    siteUrl: (siteUrl ?? publicBaseUrl).replace(/\/$/, ""),
+    moyasarSecretKey: readOptionalEnv("MOYASAR_SECRET_KEY"),
+    moyasarPublishableKey: readOptionalEnv("MOYASAR_PUBLISHABLE_KEY"),
+    releasesDir:
+      readOptionalEnv("ARRAB_RELEASES_DIR") ?? "/var/www/testingworkspace/releases",
   };
 }
 

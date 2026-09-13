@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#000000" />
+  <title>Arrab · Workspace</title>
+  <link rel="icon" href="/assets/symbol-white.png?v=5" type="image/png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/dashboard.css?v=6" />
+  <script>
+    (function () {
+      try {
+        var raw = sessionStorage.getItem("arrab.session") || localStorage.getItem("arrab.session");
+        var parsed = raw ? JSON.parse(raw) : null;
+        if (!parsed || !parsed.token) {
+          location.replace("/");
+        }
+      } catch (e) {
+        location.replace("/");
+      }
+    })();
+  </script>
+</head>
+<body class="booting">
+  <div class="boot" id="boot">
+    <img src="/assets/symbol-white.png?v=5" width="48" height="48" alt="" />
+    <span>Opening workspace…</span>
+  </div>
+
+  <div class="layout" id="layout" hidden>
+    <aside class="sidebar">
+      <a class="side-brand" href="/app">
+        <img src="/assets/logotall-white.png?v=5" width="120" height="32" alt="Arrab" />
+      </a>
+
+      <nav class="nav" id="nav">
+        <button type="button" class="nav-item is-active" data-view="overview">
+          <span class="ic">◎</span> Overview
+        </button>
+        <button type="button" class="nav-item" data-view="chat">
+          <span class="ic">✦</span> AI Chat
+        </button>
+        <button type="button" class="nav-item" data-view="employees">
+          <span class="ic">☰</span> Employees
+        </button>
+        <button type="button" class="nav-item" data-view="projects">
+          <span class="ic">▣</span> Projects
+        </button>
+        <button type="button" class="nav-item" data-view="tasks">
+          <span class="ic">✓</span> Tasks
+        </button>
+        <button type="button" class="nav-item" data-view="goals">
+          <span class="ic">◈</span> Goals
+        </button>
+        <button type="button" class="nav-item" data-view="plans">
+          <span class="ic">✧</span> Plans
+        </button>
+        <button type="button" class="nav-item" data-view="download">
+          <span class="ic">↓</span> Download
+        </button>
+        <button type="button" class="nav-item" data-view="settings">
+          <span class="ic">⚙</span> Settings
+        </button>
+      </nav>
+
+      <div class="side-foot">
+        <div class="who">
+          <div class="avatar" id="side-avatar">A</div>
+          <div class="who-text">
+            <strong id="side-name">—</strong>
+            <span id="side-plan">—</span>
+          </div>
+        </div>
+        <button type="button" class="quiet" id="sign-out">Sign out</button>
+      </div>
+    </aside>
+
+    <main class="main" id="main">
+      <!-- OVERVIEW -->
+      <section class="view is-active" data-view="overview">
+        <header class="view-head">
+          <h1 id="greeting">Welcome</h1>
+          <p class="sub">Your AI workforce at a glance.</p>
+        </header>
+
+        <div class="cards">
+          <article class="card plan-card">
+            <span class="card-label">Plan</span>
+            <strong class="card-value" id="ov-plan">—</strong>
+            <div class="meter"><span id="ov-meter"></span></div>
+            <span class="card-foot" id="ov-tokens">—</span>
+            <button type="button" class="mini" data-goto="plans">Manage plan</button>
+          </article>
+
+          <article class="card">
+            <span class="card-label">Employees</span>
+            <strong class="card-value" id="ov-agents">0</strong>
+            <span class="card-foot">AI teammates</span>
+            <button type="button" class="mini" data-goto="employees">Hire</button>
+          </article>
+
+          <article class="card">
+            <span class="card-label">Conversations</span>
+            <strong class="card-value" id="ov-convos">0</strong>
+            <span class="card-foot">Chat sessions</span>
+            <button type="button" class="mini" data-goto="chat">Open chat</button>
+          </article>
+
+          <article class="card">
+            <span class="card-label">Open tasks</span>
+            <strong class="card-value" id="ov-tasks">0</strong>
+            <span class="card-foot">In progress</span>
+            <button type="button" class="mini" data-goto="tasks">View</button>
+          </article>
+        </div>
+
+        <div class="split">
+          <section class="block">
+            <h2>AI engine</h2>
+            <dl class="rows" id="ov-ai"></dl>
+          </section>
+
+          <section class="block">
+            <h2>Recent activity</h2>
+            <ul class="feed" id="ov-activity">
+              <li class="empty">Nothing yet.</li>
+            </ul>
+          </section>
+        </div>
+      </section>
+
+      <!-- CHAT -->
+      <section class="view chat-view" data-view="chat">
+        <div class="chat-wrap">
+          <aside class="chat-side">
+            <div class="chat-side-head">
+              <select id="chat-agent" class="select" aria-label="Employee"></select>
+              <button type="button" class="mini solid" id="new-chat">New</button>
+            </div>
+            <ul class="convo-list" id="convo-list"></ul>
+          </aside>
+
+          <div class="chat-main">
+            <header class="chat-head">
+              <div>
+                <strong id="chat-title">New conversation</strong>
+                <span class="chat-meta" id="chat-meta">Pick an employee and say hello</span>
+              </div>
+              <button type="button" class="quiet danger" id="delete-chat" hidden>Delete</button>
+            </header>
+
+            <div class="thread" id="thread">
+              <div class="thread-empty" id="thread-empty">
+                <img src="/assets/symbol-white.png?v=5" width="40" height="40" alt="" />
+                <p>Ask anything. Your employee answers with full workspace context.</p>
+                <div class="chips">
+                  <button type="button" class="chip">Summarize my workspace</button>
+                  <button type="button" class="chip">Draft a launch plan</button>
+                  <button type="button" class="chip">What should I do next?</button>
+                </div>
+              </div>
+            </div>
+
+            <form class="composer" id="composer">
+              <textarea id="msg" rows="1" placeholder="Message your AI employee…"></textarea>
+              <button type="submit" class="send" id="send" aria-label="Send">↑</button>
+            </form>
+            <p class="chat-status" id="chat-status"></p>
+          </div>
+        </div>
+      </section>
+
+      <!-- EMPLOYEES -->
+      <section class="view" data-view="employees">
+        <header class="view-head">
+          <h1>Employees</h1>
+          <p class="sub">Create specialized AI teammates.</p>
+        </header>
+
+        <form class="panel-form" id="agent-form">
+          <div class="grid2">
+            <label class="field"><span>Name</span>
+              <input id="agent-name" placeholder="Layla" required />
+            </label>
+            <label class="field"><span>Role</span>
+              <input id="agent-role" placeholder="Growth marketer" required />
+            </label>
+          </div>
+          <label class="field"><span>How they work (optional)</span>
+            <textarea id="agent-instructions" rows="2" placeholder="Always answer with short, concrete steps."></textarea>
+          </label>
+          <button type="submit" class="cta slim">Hire employee</button>
+          <p class="form-status" id="agent-status"></p>
+        </form>
+
+        <div class="tiles" id="agent-list"></div>
+      </section>
+
+      <!-- PROJECTS -->
+      <section class="view" data-view="projects">
+        <header class="view-head">
+          <h1>Projects</h1>
+          <p class="sub">Group work and give agents context.</p>
+        </header>
+
+        <form class="panel-form" id="project-form">
+          <div class="grid2">
+            <label class="field"><span>Name</span>
+              <input id="project-name" placeholder="Arrab launch" required />
+            </label>
+            <label class="field"><span>Description</span>
+              <input id="project-desc" placeholder="Public release work" />
+            </label>
+          </div>
+          <button type="submit" class="cta slim">Create project</button>
+          <p class="form-status" id="project-status"></p>
+        </form>
+
+        <div class="tiles" id="project-list"></div>
+      </section>
+
+      <!-- TASKS -->
+      <section class="view" data-view="tasks">
+        <header class="view-head">
+          <h1>Tasks</h1>
+          <p class="sub">Assign work and track it.</p>
+        </header>
+
+        <form class="panel-form" id="task-form">
+          <div class="grid2">
+            <label class="field"><span>Title</span>
+              <input id="task-title" placeholder="Write launch email" required />
+            </label>
+            <label class="field"><span>Assign to</span>
+              <select id="task-agent" class="select"></select>
+            </label>
+          </div>
+          <label class="field"><span>Brief</span>
+            <textarea id="task-brief" rows="2" placeholder="Audience, tone, deadline…"></textarea>
+          </label>
+          <button type="submit" class="cta slim">Add task</button>
+          <p class="form-status" id="task-status"></p>
+        </form>
+
+        <ul class="list" id="task-list"></ul>
+      </section>
+
+      <!-- GOALS -->
+      <section class="view" data-view="goals">
+        <header class="view-head">
+          <h1>Goals</h1>
+          <p class="sub">Standing objectives injected into every reply.</p>
+        </header>
+
+        <form class="panel-form" id="goal-form">
+          <label class="field"><span>Goal</span>
+            <input id="goal-title" placeholder="Launch Arrab Studio publicly" required />
+          </label>
+          <label class="field"><span>Detail</span>
+            <textarea id="goal-detail" rows="2" placeholder="What does done look like?"></textarea>
+          </label>
+          <button type="submit" class="cta slim">Set goal</button>
+          <p class="form-status" id="goal-status"></p>
+        </form>
+
+        <ul class="list" id="goal-list"></ul>
+      </section>
+
+      <!-- PLANS -->
+      <section class="view" data-view="plans">
+        <header class="view-head plans-hero">
+          <p class="eyebrow">Membership</p>
+          <h1>Choose the studio that matches your pace</h1>
+          <p class="sub">Billed monthly in SAR through Moyasar. Mada, Visa, Mastercard, Apple Pay, and STC Pay.</p>
+        </header>
+
+        <article class="current-plan" id="plan-current"></article>
+        <div class="plans-grid" id="plan-list"></div>
+
+        <section class="pay-trust">
+          <div>
+            <strong>Checkout is Moyasar</strong>
+            <p>Cards stay on Moyasar. Arrab never stores PAN, CVV, or Apple Pay tokens.</p>
+          </div>
+          <ul class="pay-marks">
+            <li>Mada</li>
+            <li>Visa</li>
+            <li>Mastercard</li>
+            <li>Apple Pay</li>
+            <li>STC Pay</li>
+          </ul>
+        </section>
+        <p class="form-status" id="redeem-status"></p>
+      </section>
+
+      <!-- DOWNLOAD -->
+      <section class="view" data-view="download">
+        <header class="view-head plans-hero">
+          <p class="eyebrow">Studio</p>
+          <h1>Download Arrab after every update</h1>
+          <p class="sub">macOS .dmg lands here as soon as a build is published. Linux installers stay listed alongside.</p>
+        </header>
+
+        <article class="dmg-hero" id="dmg-hero"></article>
+        <div class="release-list" id="release-list"></div>
+      </section>
+
+      <!-- SETTINGS -->
+      <section class="view" data-view="settings">
+        <header class="view-head">
+          <h1>Settings</h1>
+          <p class="sub">Profile, account, and workspace details.</p>
+        </header>
+
+        <form class="panel-form" id="profile-form">
+          <h2 class="form-title">Profile</h2>
+          <div class="grid2">
+            <label class="field"><span>Display name</span>
+              <input id="profile-name" placeholder="Your name" />
+            </label>
+            <label class="field"><span>Email</span>
+              <input id="profile-email" disabled />
+            </label>
+          </div>
+          <button type="submit" class="cta slim">Save profile</button>
+          <p class="form-status" id="profile-status"></p>
+        </form>
+
+        <section class="block">
+          <h2>Account</h2>
+          <dl class="rows" id="settings-account"></dl>
+        </section>
+
+        <section class="block">
+          <h2>Workspace</h2>
+          <dl class="rows" id="settings-workspace"></dl>
+        </section>
+
+        <section class="block danger-zone">
+          <h2>Session</h2>
+          <p class="sub">Sign out of this browser, or disconnect the account from the workspace.</p>
+          <div class="row-actions">
+            <button type="button" class="quiet" id="sign-out-2">Sign out</button>
+            <button type="button" class="quiet danger" id="disconnect">Disconnect account</button>
+          </div>
+          <p class="form-status" id="danger-status"></p>
+        </section>
+      </section>
+    </main>
+
+    <nav class="tabbar" id="tabbar">
+      <button type="button" class="tab-item is-active" data-view="overview"><span>◎</span>Home</button>
+      <button type="button" class="tab-item" data-view="chat"><span>✦</span>Chat</button>
+      <button type="button" class="tab-item" data-view="employees"><span>☰</span>Team</button>
+      <button type="button" class="tab-item" data-view="plans"><span>✧</span>Plans</button>
+      <button type="button" class="tab-item" data-view="download"><span>↓</span>Get</button>
+      <button type="button" class="tab-item" data-view="settings"><span>⚙</span>You</button>
+    </nav>
+  </div>
+
+  <div class="toast" id="toast" hidden></div>
+
+  <script src="/dashboard.js?v=6" defer></script>
+</body>
+</html>

@@ -455,9 +455,48 @@ export interface PollWebAuthResponse {
 export interface CompleteWebAuthRequest {
   state: string;
   email: string;
+  /** Required — website and desktop linking always collect a password. */
+  password: string;
   displayName?: string;
   /** Optional plan redeem code applied on first web sign-in. */
   planCode?: string | null;
+}
+
+export interface VerifyAccountSessionRequest {
+  sessionToken: string;
+}
+
+export interface BillingCheckoutRequest {
+  planId: import("./account.js").SubscriptionPlanId;
+}
+
+export interface BillingCheckoutResponse {
+  planId: import("./account.js").SubscriptionPlanId;
+  invoiceId: string;
+  checkoutUrl: string;
+  amountHalalas: number;
+  currency: "SAR";
+  amountLabel: string;
+}
+
+export interface BillingConfirmRequest {
+  invoiceId: string;
+}
+
+export interface StudioRelease {
+  id: string;
+  filename: string;
+  url: string;
+  platform: "macos" | "linux" | "windows" | "other";
+  kind: string;
+  version: string | null;
+  sizeBytes: number;
+  updatedAt: string;
+}
+
+export interface StudioReleasesResponse {
+  items: StudioRelease[];
+  latestMacDmg: StudioRelease | null;
 }
 
 export interface UpdateOperatorRequest {

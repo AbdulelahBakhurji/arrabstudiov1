@@ -1,18 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 import {
-  Activity,
-  Boxes,
-  Cable,
+  Building2,
   Languages,
   LogOut,
-  MessageSquare,
   Moon,
   Settings2,
-  Sparkles,
   Sun,
   User,
-  UsersRound,
+  UserRound,
 } from "lucide-react";
 import { ToastHost } from "@/components/ToastHost";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -26,24 +22,17 @@ import {
 } from "@/lib/account-session";
 import { setAlwaysOnTop } from "@/lib/desktop";
 import { notifyStudio, pushToast } from "@/lib/notify";
+import { ROLE_PATH, navForRole } from "@/roles/catalog";
+import { useRole } from "@/roles/RoleProvider";
 import { readPrefs } from "@/lib/prefs";
 import { isTauriRuntime } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import type { AccountPublic } from "@arrab/shared";
 
-const modes = [
-  { to: "/", key: "studio" as const, icon: Sparkles, end: true },
-  { to: "/chat", key: "chat" as const, icon: MessageSquare, end: false },
-  { to: "/cowork", key: "cowork" as const, icon: Boxes, end: false },
-  { to: "/workforce", key: "workforce" as const, icon: UsersRound, end: false },
-  { to: "/connectors", key: "connectors" as const, icon: Cable, end: false },
-  { to: "/activity", key: "activity" as const, icon: Activity, end: false },
-  { to: "/settings", key: "settings" as const, icon: Settings2, end: false },
-];
-
 export function StudioFrame() {
   const { t, toggleLocale, locale, dir } = useLanguage();
   const { theme, toggleTheme } = useTheme();
+  const { role, href, isIndividual, isOrganization } = useRole();
   const navigate = useNavigate();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [userOpen, setUserOpen] = useState(false);
@@ -54,6 +43,31 @@ export function StudioFrame() {
   const [pendingCount, setPendingCount] = useState(0);
   const userMenuRef = useRef<HTMLDivElement | null>(null);
   const lastPendingRef = useRef<number | null>(null);
+
+  const modes = useMemo(
+    () =>
+      navForRole(role).map((item) => ({
+        to: href(item.path || "/"),
+        key: item.key,
+        icon: item.icon,
+        end: Boolean(item.end),
+      })),
+    [href, role],
+  );
+
+  const paletteItems = useMemo(
+    () => [
+      ...modes,
+      { to: ROLE_PATH.individual, key: "plansIndividuals" as const, icon: UserRound, end: false },
+      {
+        to: ROLE_PATH.organization,
+        key: "plansOrganizations" as const,
+        icon: Building2,
+        end: false,
+      },
+    ],
+    [modes],
+  );
 
   const refreshAccount = () => {
     void arrabApi
@@ -90,7 +104,7 @@ export function StudioFrame() {
       }
       if (meta && event.key === ",") {
         event.preventDefault();
-        navigate("/settings");
+        navigate(href("/settings"));
         setPaletteOpen(false);
         setUserOpen(false);
       }
@@ -117,7 +131,7 @@ export function StudioFrame() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [navigate, toggleLocale, toggleTheme]);
+  }, [href, modes, navigate, toggleLocale, toggleTheme]);
 
   useEffect(() => {
     if (!isTauriRuntime()) {
@@ -141,7 +155,7 @@ export function StudioFrame() {
             kind: "approvals",
             title: t("pendingApprovals"),
             body: t("approvalNotifyBody").replace("{count}", String(count)),
-            href: "/workforce",
+            href: href("/workforce"),
           });
         }
         lastPendingRef.current = count;
@@ -155,7 +169,7 @@ export function StudioFrame() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [t]);
+  }, [href, t]);
 
   useEffect(() => {
     if (!userOpen) {
@@ -173,10 +187,12 @@ export function StudioFrame() {
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) {
-      return modes;
+      return paletteItems;
     }
-    return modes.filter((mode) => t(mode.key).toLowerCase().includes(q) || mode.to.includes(q));
-  }, [query, t]);
+    return paletteItems.filter(
+      (mode) => t(mode.key).toLowerCase().includes(q) || mode.to.includes(q),
+    );
+  }, [paletteItems, query, t]);
 
   async function logoutFromMenu() {
     setAccountBusy(true);
@@ -200,7 +216,6 @@ export function StudioFrame() {
 
   return (
     <div className="app-shell flex h-full max-h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-background text-foreground" dir={dir}>
-      {/* Chrome stays LTR so traffic lights + controls stay on physical left/right */}
       <header
         data-tauri-drag-region
         dir="ltr"
@@ -208,6 +223,31 @@ export function StudioFrame() {
       >
         <div className="w-[76px] shrink-0" aria-hidden="true" />
         <div className="no-drag ml-auto flex items-center gap-2">
+          <div className="me-1 hidden items-center rounded-full border border-white/10 p-0.5 sm:inline-flex">
+            <button
+              type="button"
+              onClick={() => navigate(ROLE_PATH.individual)}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px]",
+                isIndividual ? "bg-white text-black" : "text-neutral-400 hover:text-white",
+              )}
+            >
+              <UserRound className="size-3" strokeWidth={1.8} />
+              {t("plansIndividuals")}
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate(ROLE_PATH.organization)}
+              className={cn(
+                "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px]",
+                isOrganization ? "bg-white text-black" : "text-neutral-400 hover:text-white",
+              )}
+            >
+              <Building2 className="size-3" strokeWidth={1.8} />
+              {t("plansOrganizations")}
+            </button>
+          </div>
+
           <Tooltip delayDuration={120}>
             <TooltipTrigger asChild>
               <button
@@ -294,7 +334,7 @@ export function StudioFrame() {
                     </div>
                   </div>
                   <p className="mt-3 text-xs leading-relaxed text-neutral-500">
-                    {accountUser ? t("signedInUserBody") : t("userSettingsBody")}
+                    {isIndividual ? t("roleLivingIndividual") : t("roleLivingOrganization")}
                   </p>
                   {accountUser ? (
                     <p className="mt-2 text-[11px] uppercase tracking-[0.12em] text-neutral-400">
@@ -307,7 +347,7 @@ export function StudioFrame() {
                       className="mt-3 w-full rounded-xl border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-start text-xs text-amber-100"
                       onClick={() => {
                         setUserOpen(false);
-                        navigate("/workforce");
+                        navigate(href("/workforce"));
                       }}
                     >
                       {t("pendingApprovals")}: {pendingCount}
@@ -320,7 +360,29 @@ export function StudioFrame() {
                     className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-start text-sm text-neutral-300 hover:bg-white/5 hover:text-white"
                     onClick={() => {
                       setUserOpen(false);
-                      navigate("/settings?tab=account");
+                      navigate(ROLE_PATH.individual);
+                    }}
+                  >
+                    <UserRound className="size-4" strokeWidth={1.7} />
+                    {t("plansIndividuals")}
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-start text-sm text-neutral-300 hover:bg-white/5 hover:text-white"
+                    onClick={() => {
+                      setUserOpen(false);
+                      navigate(ROLE_PATH.organization);
+                    }}
+                  >
+                    <Building2 className="size-4" strokeWidth={1.7} />
+                    {t("plansOrganizations")}
+                  </button>
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-start text-sm text-neutral-300 hover:bg-white/5 hover:text-white"
+                    onClick={() => {
+                      setUserOpen(false);
+                      navigate(href("/settings?tab=account"));
                     }}
                   >
                     <Settings2 className="size-4" strokeWidth={1.7} />
@@ -342,7 +404,7 @@ export function StudioFrame() {
                     className="flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-start text-sm text-neutral-300 hover:bg-white/5 hover:text-white"
                     onClick={() => {
                       setUserOpen(false);
-                      navigate("/settings");
+                      navigate(href("/settings"));
                     }}
                   >
                     <Settings2 className="size-4" strokeWidth={1.7} />
@@ -422,7 +484,7 @@ export function StudioFrame() {
               {filtered.map((mode) => {
                 const Icon = mode.icon;
                 return (
-                  <li key={mode.to}>
+                  <li key={`${mode.to}-${mode.key}`}>
                     <button
                       type="button"
                       className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-neutral-300 hover:bg-white/5 hover:text-white"

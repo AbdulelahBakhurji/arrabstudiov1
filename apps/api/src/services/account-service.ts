@@ -274,6 +274,42 @@ export class AccountService {
     };
   }
 
+  async requireConnectedAccount(): Promise<StudioAccountRecord> {
+    const account = await this.persistence.accounts.get();
+    if (!account) {
+      throw new UnauthorizedError("Sign in with email and password first");
+    }
+    return this.ensurePeriod(account);
+  }
+
+  async verifySession(token: string): Promise<AccountStatusResponse> {
+    const trimmed = token.trim();
+    if (!trimmed) {
+      throw new UnauthorizedError("Sign in with email and password");
+    }
+    const account = await this.persistence.accounts.get();
+    if (!account?.sessionTokenHash || account.sessionTokenHash !== hashSessionToken(trimmed)) {
+      throw new UnauthorizedError("Session expired. Sign in with email and password");
+    }
+    return this.status();
+  }
+
+  async applyPlan(planId: SubscriptionPlanId): Promise<AccountStatusResponse> {
+    const account = await this.requireConnectedAccount();
+    const now = this.clock.isoNow();
+    const period = billingPeriod(new Date(now));
+    const updated: StudioAccountRecord = {
+      ...account,
+      planId,
+      subscriptionStatus: "active",
+      periodStart: period.start,
+      periodEnd: period.end,
+      updatedAt: now,
+    };
+    await this.persistence.accounts.upsert(updated);
+    return this.status();
+  }
+
   async disconnect(): Promise<AccountStatusResponse> {
     await this.persistence.accounts.delete();
     return this.status();
@@ -359,10 +395,7 @@ export class AccountService {
       return pending.result;
     }
 
-    const email = normalizeEmail(input.email ?? "");
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      throw new ValidationError("Enter a valid email address");
-    }
+    const email = this.validateCredentials(input.email ?? "", input.password ?? "");
     const displayName = input.displayName?.trim() || email.split("@")[0] || "Arrab operator";
     const period = billingPeriod(new Date(now));
     const sessionToken = randomBytes(32).toString("hex");
@@ -379,9 +412,12 @@ export class AccountService {
     const existing = await this.persistence.accounts.get();
     let account: StudioAccountRecord;
     if (existing && existing.email === email) {
+      if (!verifyPassword(input.password, existing.passwordHash)) {
+        throw new UnauthorizedError("Invalid email or password");
+      }
       account = {
         ...existing,
-        displayName,
+        displayName: displayName || existing.displayName,
         planId: existing.planId === "free" ? planId : existing.planId,
         subscriptionStatus: "active",
         sessionTokenHash: hashSessionToken(sessionToken),
@@ -390,7 +426,7 @@ export class AccountService {
       };
     } else if (existing) {
       throw new ValidationError(
-        "Another account is already connected on this studio. Log out first, then sign in on the web.",
+        "Another account is already connected on this studio. Sign in with that email and password.",
       );
     } else {
       account = {
@@ -398,7 +434,7 @@ export class AccountService {
         workspaceId: this.persistence.workspaceId,
         email,
         displayName,
-        passwordHash: hashPassword(randomBytes(24).toString("hex")),
+        passwordHash: hashPassword(input.password),
         planId,
         subscriptionStatus: "active",
         periodStart: period.start,
@@ -448,23 +484,7 @@ export class AccountService {
         "Unknown subscription code. Use FREE-ARRAB, PRO-ARRAB, TEAM-ARRAB, or UNLIMITED-ARRAB.",
       );
     }
-    const account = await this.persistence.accounts.get();
-    if (!account) {
-      throw new ValidationError("Connect an account before activating a subscription");
-    }
-
-    const now = this.clock.isoNow();
-    const period = billingPeriod(new Date(now));
-    const updated: StudioAccountRecord = {
-      ...account,
-      planId,
-      subscriptionStatus: "active",
-      periodStart: period.start,
-      periodEnd: period.end,
-      updatedAt: now,
-    };
-    await this.persistence.accounts.upsert(updated);
-    return this.status();
+    return this.applyPlan(planId);
   }
 
   async updateProfile(input: UpdateAccountProfileRequest): Promise<AccountStatusResponse> {

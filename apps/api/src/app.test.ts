@@ -17,9 +17,16 @@ const testEnv: ApiEnv = {
     "google.gemma-3-12b-it",
     "openai.gpt-oss-120b-1:0",
   ],
+  openRouterApiKey: undefined,
+  openRouterModels: ["openai/gpt-4o-mini"],
   defaultModel: "amazon.nova-lite-v1:0",
+  primaryProviderId: "bedrock",
   publicBaseUrl: "http://127.0.0.1:8787",
   authWebUrl: undefined,
+  siteUrl: "http://127.0.0.1:8787",
+  moyasarSecretKey: undefined,
+  moyasarPublishableKey: undefined,
+  releasesDir: "/tmp/arrab-releases-test",
 };
 
 describe("arrab api", () => {
@@ -172,7 +179,7 @@ describe("arrab api", () => {
     expect((usage.json() as { totals: { events: number } }).totals.events).toBe(0);
 
     const meta = await app.inject({ method: "GET", url: "/v1/meta" });
-    expect((meta.json() as { version: string }).version).toBe("0.12.0");
+    expect((meta.json() as { version: string }).version).toBe("0.13.0");
 
     await app.close();
   });
@@ -315,7 +322,7 @@ describe("arrab api", () => {
       expect(reportBody.recentTaskRuns.length).toBe(1);
 
       const meta = await app.inject({ method: "GET", url: "/v1/meta" });
-      expect((meta.json() as { version: string }).version).toBe("0.12.0");
+      expect((meta.json() as { version: string }).version).toBe("0.13.0");
 
       await app.close();
     } finally {
@@ -461,7 +468,7 @@ describe("arrab api", () => {
     expect((approval.json() as { kind: string }).kind).toBe("git_push");
 
     const meta = await app.inject({ method: "GET", url: "/v1/meta" });
-    expect((meta.json() as { version: string }).version).toBe("0.12.0");
+    expect((meta.json() as { version: string }).version).toBe("0.13.0");
 
     await app.close();
   });
@@ -606,6 +613,7 @@ describe("arrab api", () => {
       payload: {
         state: startBody.state,
         email: "web@arrab.studio",
+        password: "securepass",
         displayName: "Web Operator",
         planCode: "PRO-ARRAB",
       },
@@ -640,6 +648,86 @@ describe("arrab api", () => {
     expect(logout.statusCode).toBe(200);
     expect((logout.json() as { connected: boolean }).connected).toBe(false);
 
+    await app.close();
+  });
+
+  it("rejects web auth without a password", async () => {
+    const context = await createApiContext(testEnv);
+    const app = await buildApp(context);
+    const started = await app.inject({
+      method: "POST",
+      url: "/v1/account/auth/web/start",
+      payload: {},
+    });
+    const state = (started.json() as { state: string }).state;
+    const completed = await app.inject({
+      method: "POST",
+      url: "/v1/account/auth/web/complete",
+      payload: { state, email: "nopass@arrab.studio", displayName: "No Pass" },
+    });
+    expect(completed.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("verifies a session token after sign-in", async () => {
+    const context = await createApiContext(testEnv);
+    const app = await buildApp(context);
+    const connected = await app.inject({
+      method: "POST",
+      url: "/v1/account/connect",
+      payload: { email: "session@arrab.studio", password: "securepass", displayName: "Sess" },
+    });
+    const token = (connected.json() as { sessionToken: string }).sessionToken;
+    const ok = await app.inject({
+      method: "POST",
+      url: "/v1/account/session",
+      payload: { sessionToken: token },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect((ok.json() as { connected: boolean }).connected).toBe(true);
+    const bad = await app.inject({
+      method: "POST",
+      url: "/v1/account/session",
+      payload: { sessionToken: "not-a-real-token" },
+    });
+    expect(bad.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("lists paid plans and refuses checkout without Moyasar", async () => {
+    const context = await createApiContext(testEnv);
+    const app = await buildApp(context);
+    const catalog = await app.inject({ method: "GET", url: "/v1/billing/plans" });
+    expect(catalog.statusCode).toBe(200);
+    const body = catalog.json() as {
+      provider: string;
+      configured: boolean;
+      plans: Array<{ id: string; monthlyPriceHalalas: number }>;
+    };
+    expect(body.provider).toBe("moyasar");
+    expect(body.configured).toBe(false);
+    expect(body.plans.some((plan) => plan.id === "pro" && plan.monthlyPriceHalalas === 4900)).toBe(
+      true,
+    );
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/account/connect",
+      payload: { email: "bill@arrab.studio", password: "securepass" },
+    });
+    const checkout = await app.inject({
+      method: "POST",
+      url: "/v1/billing/checkout",
+      payload: { planId: "pro" },
+    });
+    expect(checkout.statusCode).toBe(503);
+
+    const fake = await app.inject({
+      method: "POST",
+      url: "/v1/billing/checkout",
+      payload: { planId: "pro" },
+    });
+    expect(fake.statusCode).toBe(503);
     await app.close();
   });
 

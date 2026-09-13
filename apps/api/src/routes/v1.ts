@@ -25,6 +25,8 @@ import type {
   SignInAccountRequest,
   StartWebAuthRequest,
   CompleteWebAuthRequest,
+  VerifyAccountSessionRequest,
+  BillingCheckoutRequest,
   UpdateAccountProfileRequest,
   UpdateAgentRequest,
   UpdateGoalRequest,
@@ -38,6 +40,8 @@ import type { FastifyInstance } from "fastify";
 import type { ConnectorService } from "../services/connector-service.js";
 import type { ConversationService } from "../services/conversation-service.js";
 import type { AccountService } from "../services/account-service.js";
+import type { BillingService } from "../services/billing-service.js";
+import { listStudioReleases } from "../services/releases.js";
 import type { GoalService } from "../services/goal-service.js";
 import type { TaskExecutionService } from "../services/task-execution-service.js";
 import type { WorkspaceCommandService } from "../services/workspace-commands.js";
@@ -51,6 +55,7 @@ export function registerV1Routes(
     conversations: ConversationService;
     connectors: ConnectorService;
     accounts: AccountService;
+    billing: BillingService;
     goals: GoalService;
     taskExecution: TaskExecutionService;
     gateway: AiGateway;
@@ -58,14 +63,18 @@ export function registerV1Routes(
     workspaceId: string;
     defaultModel: string | null;
     bedrockModels?: string[];
+    openRouterModels?: string[];
+    primaryProviderId?: string;
     bedrockRegion?: string;
+    releasesDir: string;
+    publicBaseUrl: string;
   },
 ): void {
   app.get("/v1/meta", async () => {
     const status = await deps.accounts.status();
     return {
       name: "arrab-api" as const,
-      version: "0.12.0",
+      version: "0.13.0",
       phase: "12",
       persistence: deps.persistence,
       workspaceId: deps.workspaceId,
@@ -92,6 +101,9 @@ export function registerV1Routes(
   app.post<{ Body: SignInAccountRequest }>("/v1/account/sign-in", async (request) =>
     deps.accounts.signIn(request.body ?? { email: "", password: "" }),
   );
+  app.post<{ Body: VerifyAccountSessionRequest }>("/v1/account/session", async (request) =>
+    deps.accounts.verifySession(request.body?.sessionToken ?? ""),
+  );
   app.post("/v1/account/disconnect", async () => deps.accounts.disconnect());
   app.post("/v1/account/logout", async () => deps.accounts.logout());
   app.post<{ Body: ActivateSubscriptionRequest }>("/v1/account/subscribe", async (request) =>
@@ -109,9 +121,26 @@ export function registerV1Routes(
   );
   app.post<{ Body: CompleteWebAuthRequest }>("/v1/account/auth/web/complete", async (request) =>
     deps.accounts.completeWebAuth(
-      request.body ?? { state: "", email: "" },
+      request.body ?? { state: "", email: "", password: "" },
     ),
   );
+
+  app.get("/v1/billing/plans", async () => deps.billing.catalog());
+  app.post<{ Body: BillingCheckoutRequest }>("/v1/billing/checkout", async (request) =>
+    deps.billing.checkout(request.body?.planId ?? ""),
+  );
+  app.get<{ Querystring: { id?: string; invoice?: string } }>(
+    "/v1/billing/confirm",
+    async (request) =>
+      deps.billing.confirmInvoice(request.query.id ?? request.query.invoice ?? ""),
+  );
+  app.post("/v1/billing/moyasar/callback", async (request) =>
+    deps.billing.handleCallback(request.body),
+  );
+  app.get("/v1/releases", async () =>
+    listStudioReleases(deps.releasesDir, deps.publicBaseUrl.replace(/\/v1\/?$/, "")),
+  );
+
   app.get<{ Querystring: { state?: string } }>("/v1/account/auth/web", async (request, reply) => {
     const state = request.query.state ?? "";
     const html = `<!doctype html>
@@ -139,6 +168,7 @@ export function registerV1Routes(
     <input type="hidden" name="state" value="${state.replace(/"/g, "&quot;")}" />
     <label>Display name<input name="displayName" placeholder="Your name" /></label>
     <label>Email<input name="email" type="email" required placeholder="you@company.com" /></label>
+    <label>Password<input name="password" type="password" required minlength="8" placeholder="At least 8 characters" /></label>
     <label>Plan code (optional)<input name="planCode" placeholder="PRO-ARRAB" /></label>
     <button type="submit">Sign in</button>
     <p id="msg"></p>
@@ -428,9 +458,16 @@ export function registerV1Routes(
     configured: deps.gateway.listProviders().length > 0,
     providers: deps.gateway.listProviders().map((provider) => provider.id),
     defaultModel: deps.defaultModel,
-    models: deps.bedrockModels ?? [],
+    models:
+      deps.primaryProviderId === "openrouter"
+        ? (deps.openRouterModels ?? [])
+        : (deps.bedrockModels ?? []),
     region: deps.bedrockRegion ?? null,
-    replyPath: "bedrock-converse" as const,
+    primaryProvider: deps.primaryProviderId ?? "bedrock",
+    replyPath:
+      deps.primaryProviderId === "openrouter"
+        ? ("openrouter-chat" as const)
+        : ("bedrock-converse" as const),
   }));
 
   app.get("/v1/connectors/catalog", async () => ({ items: deps.connectors.catalog() }));

@@ -4,7 +4,10 @@ import {
   BEDROCK_DEFAULT_MODEL,
   BEDROCK_PROVIDER_ID,
   isBedrockModel,
+  isOpenRouterModel,
   isXaiGrokModel,
+  OPENROUTER_DEFAULT_MODEL,
+  OPENROUTER_PROVIDER_ID,
   XAI_DEFAULT_MODEL,
   XAI_PROVIDER_ID,
 } from "@arrab/ai";
@@ -476,6 +479,24 @@ export class GatewayChatRuntime implements AgentRuntime {
 
     const requestedModel = request.model ?? null;
     if (
+      isOpenRouterModel(requestedModel) ||
+      (!requestedModel && this.defaultProviderId === OPENROUTER_PROVIDER_ID)
+    ) {
+      const openrouter = gateway.getProvider(OPENROUTER_PROVIDER_ID);
+      if (!openrouter) {
+        throw new AgentRuntimeError(
+          "NO_PROVIDER",
+          "OpenRouter models require OPENROUTER_API_KEY. Add the key on the Arrab API server, then restart.",
+          503,
+        );
+      }
+      return {
+        provider: openrouter,
+        modelName: requestedModel?.trim() || OPENROUTER_DEFAULT_MODEL,
+      };
+    }
+
+    if (
       isBedrockModel(requestedModel) ||
       (!requestedModel && this.defaultProviderId === BEDROCK_PROVIDER_ID)
     ) {
@@ -518,6 +539,8 @@ export class GatewayChatRuntime implements AgentRuntime {
         ? "claude-3-5-haiku-latest"
         : provider.id === BEDROCK_PROVIDER_ID
           ? BEDROCK_DEFAULT_MODEL
+          : provider.id === OPENROUTER_PROVIDER_ID
+            ? OPENROUTER_DEFAULT_MODEL
           : provider.id === XAI_PROVIDER_ID
             ? XAI_DEFAULT_MODEL
             : "gpt-4o-mini";

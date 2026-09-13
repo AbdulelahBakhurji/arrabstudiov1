@@ -7,6 +7,7 @@ import symbol from "@/assets/symbol.png";
 import { Surface } from "@/components/StudioFrame";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError, isTransientApiError } from "@/lib/api";
+import { useRole } from "@/roles/RoleProvider";
 import { cn } from "@/lib/utils";
 
 type ComposeMode = "team" | "employee" | "project";
@@ -31,6 +32,7 @@ function initials(name: string): string {
 
 export function HomePage() {
   const { t, locale } = useLanguage();
+  const { href } = useRole();
   const navigate = useNavigate();
   const [data, setData] = useState<DashboardResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -118,7 +120,7 @@ export function HomePage() {
 
   function openChatWith(agentId: string) {
     sessionStorage.setItem("arrab.chatAgent", agentId);
-    navigate("/chat");
+    navigate(href("/chat"));
   }
 
   function applyStudioGoal(next: string) {
@@ -141,6 +143,9 @@ export function HomePage() {
 
           <div className="relative mx-auto flex max-w-[980px] flex-col px-6 pb-12 pt-12 sm:px-8 sm:pb-14 sm:pt-14 lg:px-10">
             <div className="arrab-rise max-w-xl">
+              <p className="mb-3 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
+                {t("roleLivingOrganization")}
+              </p>
               <img
                 src={logoTall}
                 alt={t("brand")}
@@ -154,7 +159,7 @@ export function HomePage() {
                     : "text-[clamp(2.15rem,4.2vw,3.15rem)] leading-[1.08] tracking-[-0.045em]",
                 )}
               >
-                {t("heroTitle")}
+                {t("heroTitleOrganization")}
               </h1>
               <p
                 className={cn(
@@ -162,11 +167,11 @@ export function HomePage() {
                   isAr ? "leading-7" : "leading-relaxed",
                 )}
               >
-                {t("heroBody")}
+                {t("heroBodyOrganization")}
               </p>
               <div className="mt-8 flex flex-wrap items-center gap-3">
                 <Link
-                  to={hasPeople ? "/chat" : "#hire"}
+                  to={hasPeople ? href("/chat") : "#hire"}
                   onClick={(event) => {
                     if (!hasPeople) {
                       event.preventDefault();
@@ -179,7 +184,7 @@ export function HomePage() {
                   <ArrowRight className={cn("size-4 opacity-70", isAr && "rotate-180")} strokeWidth={1.8} />
                 </Link>
                 <Link
-                  to="/cowork"
+                  to={href("/cowork")}
                   className="home-btn-secondary inline-flex h-11 items-center px-5 text-[14px]"
                 >
                   {t("openCowork")}
@@ -274,7 +279,7 @@ export function HomePage() {
                   </h2>
                   <p className="mt-1 text-[13px] text-neutral-500">{t("homeRosterHint")}</p>
                 </div>
-                <Link to="/workforce" className="text-[13px] text-neutral-500 transition-colors hover:text-white">
+                <Link to={href("/workforce")} className="text-[13px] text-neutral-500 transition-colors hover:text-white">
                   {t("homeViewAll")}
                 </Link>
               </div>
@@ -333,7 +338,7 @@ export function HomePage() {
                 <div className="mt-7 border-t border-white/8 pt-5">
                   <div className="flex items-center justify-between gap-3">
                     <h3 className="text-[14px] font-medium text-white">{t("homeTeamsTitle")}</h3>
-                    <Link to="/workforce" className="text-[12px] text-neutral-500 hover:text-white">
+                    <Link to={href("/workforce")} className="text-[12px] text-neutral-500 hover:text-white">
                       {t("open")}
                     </Link>
                   </div>
@@ -473,7 +478,7 @@ export function HomePage() {
             <section className="arrab-rise arrab-rise-delay-3 home-panel p-5 sm:p-6">
               <div className="flex items-center justify-between gap-3">
                 <h2 className="text-[15px] font-medium text-white">{t("recentActivity")}</h2>
-                <Link to="/activity" className="text-[12px] text-neutral-500 hover:text-white">
+                <Link to={href("/activity")} className="text-[12px] text-neutral-500 hover:text-white">
                   {t("open")}
                 </Link>
               </div>

@@ -31,7 +31,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data: asset: blob:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:8787 http://localhost:8787 https://arrabapi-production.up.railway.app https://*.up.railway.app; style-src 'self' 'unsafe-inline'; script-src 'self'"
+      "csp": "default-src 'self'; img-src 'self' data: asset: blob:; connect-src 'self' http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:8787 http://localhost:8787 http://185.197.250.43 http://185.197.250.43:* https://185.197.250.43 https://api.arrabai.com https://testingworkspace.arrabai.com https://arrabapi-production.up.railway.app https://*.up.railway.app; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "bundle": {

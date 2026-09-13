@@ -45,6 +45,13 @@ export class ForbiddenError extends AppError {
   }
 }
 
+export class ServiceUnavailableError extends AppError {
+  constructor(message = "This service is not configured yet") {
+    super("SERVICE_UNAVAILABLE", message, 503, true);
+    this.name = "ServiceUnavailableError";
+  }
+}
+
 export class QuotaExceededError extends AppError {
   constructor(message = "Subscription token limit reached for this billing period") {
     super("QUOTA_EXCEEDED", message, 402, true);
