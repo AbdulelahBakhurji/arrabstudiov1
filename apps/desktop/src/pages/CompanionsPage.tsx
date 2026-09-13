@@ -11,6 +11,9 @@ import { Surface } from "@/components/StudioFrame";
 import { CompanionDot, CompanionFace } from "@/components/companions/CompanionFace";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { arrabApi } from "@/lib/api";
+import { useSignedInAccount } from "@/lib/use-signed-in-account";
+import { useRole } from "@/roles/RoleProvider";
+import { Link } from "react-router-dom";
 import {
   CALL_OUT_TOPICS,
   COMPANION_DRAFT_KEY,
@@ -102,6 +105,9 @@ function lastQuestion(text: string): string | null {
 
 export function CompanionsPage() {
   const { t, locale, dir } = useLanguage();
+  const { href } = useRole();
+  const { signedIn, account, loading: accountLoading } = useSignedInAccount();
+  const canManageList = signedIn;
   const state = useCompanionState();
   const [space, setSpace] = useState<CompanionSpace>("personal");
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -355,6 +361,11 @@ export function CompanionsPage() {
   }, [active, askCompanion, busy, draft, mode, people, t]);
 
   function createCompanion(domain: string, tone: CompanionToneName, name?: string) {
+    if (!canManageList) {
+      setAdding(false);
+      setError(t("compAdminOnly"));
+      return;
+    }
     const person = addCompanion({
       name: (name || "").trim() || domain.charAt(0).toUpperCase() + domain.slice(1),
       domain,
@@ -365,7 +376,7 @@ export function CompanionsPage() {
     addFact({
       companionId: person.id,
       text: `Watches ${domain}`,
-      source: t("compBornBody"),
+      source: account?.displayName ? `${account.displayName}` : t("compBornBody"),
       kind: "inferred",
       space,
     });
@@ -373,6 +384,7 @@ export function CompanionsPage() {
     setAdding(false);
     setNewName("");
     setNewDomain("");
+    setError(null);
     return person;
   }
 
@@ -393,17 +405,42 @@ export function CompanionsPage() {
         <aside className="companion-panel companion-rise hidden w-[264px] shrink-0 flex-col overflow-hidden lg:flex">
           <div className="border-b border-white/8 px-3 py-3">
             <p className="text-[10px] uppercase tracking-[0.18em] text-neutral-500">
-              {space === "personal" ? t("compSpacePersonal") : t("compSpaceWork")}
+              {t("compListTitle")}
             </p>
-            <p className="mt-1.5 text-[10.5px] leading-relaxed text-neutral-600">
-              {space === "personal" ? t("compSpaceHintPersonal") : t("compSpaceHintWork")}
+            <div className="mt-2 flex gap-1 rounded-2xl bg-white/[0.04] p-1">
+              {(["personal", "work"] as const).map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => {
+                    setSpace(key);
+                    setActiveId(null);
+                  }}
+                  className={cn(
+                    "flex-1 rounded-xl px-2 py-1.5 text-[11.5px] transition-colors",
+                    space === key
+                      ? "bg-white text-black"
+                      : "text-neutral-400 hover:text-neutral-200",
+                  )}
+                >
+                  {key === "personal" ? t("compSpacePersonal") : t("compSpaceWork")}
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-[10.5px] leading-relaxed text-neutral-600">
+              {t("compListAdminHint")}
             </p>
+            {signedIn && account ? (
+              <p className="mt-1 truncate text-[10.5px] text-neutral-500">
+                {account.displayName}
+              </p>
+            ) : null}
           </div>
 
           <div className="min-h-0 flex-1 overflow-y-auto p-2">
             {people.length === 0 ? (
-              <p className="px-2 py-6 text-center text-[12.5px] text-neutral-600">
-                {t("compNoCompanions")}
+              <p className="px-2 py-6 text-center text-[12.5px] leading-relaxed text-neutral-600">
+                {canManageList ? t("compEmptyAdmin") : t("compEmptyGuest")}
               </p>
             ) : null}
             <ul className="space-y-1">
@@ -444,7 +481,21 @@ export function CompanionsPage() {
           </div>
 
           <div className="border-t border-white/8 p-2">
-            {!adding ? (
+            {!canManageList ? (
+              <div className="space-y-2 px-1 py-1">
+                <p className="text-[11.5px] leading-relaxed text-neutral-500">
+                  {accountLoading ? t("loading") : t("compSignInToManage")}
+                </p>
+                {!accountLoading ? (
+                  <Link
+                    to={href("/settings?tab=account")}
+                    className="home-btn-primary flex h-9 w-full items-center justify-center text-[12.5px]"
+                  >
+                    {t("compSignInCta")}
+                  </Link>
+                ) : null}
+              </div>
+            ) : !adding ? (
               <button
                 type="button"
                 onClick={() => setAdding(true)}
@@ -532,14 +583,16 @@ export function CompanionsPage() {
                     ) : null}
                   </button>
                 ))}
-                <button
-                  type="button"
-                  onClick={() => setAdding(true)}
-                  className="flex size-[56px] shrink-0 items-center justify-center rounded-full border border-dashed border-white/15 text-neutral-500 hover:border-white/30 hover:text-white"
-                  aria-label={t("compAddCompanion")}
-                >
-                  <Plus className="size-4" strokeWidth={1.8} />
-                </button>
+                {canManageList ? (
+                  <button
+                    type="button"
+                    onClick={() => setAdding(true)}
+                    className="flex size-[56px] shrink-0 items-center justify-center rounded-full border border-dashed border-white/15 text-neutral-500 hover:border-white/30 hover:text-white"
+                    aria-label={t("compAddCompanion")}
+                  >
+                    <Plus className="size-4" strokeWidth={1.8} />
+                  </button>
+                ) : null}
               </div>
 
               <div className="flex shrink-0 flex-col items-end gap-2">
@@ -594,17 +647,29 @@ export function CompanionsPage() {
 
           {!active ? (
             <div className="flex flex-1 flex-col items-center justify-center px-8 text-center">
-              <h2 className="text-[20px] font-medium text-white">{t("compDayOneTitle")}</h2>
+              <h2 className="text-[20px] font-medium text-white">{t("compListTitle")}</h2>
               <p className="mt-2 max-w-sm text-[13.5px] leading-relaxed text-neutral-500">
-                {t("compDayOneBody")}
+                {canManageList ? t("compEmptyAdmin") : t("compEmptyGuest")}
               </p>
-              <button
-                type="button"
-                onClick={() => createCompanion(t("compGeneral").toLowerCase(), "measured", t("compGeneral"))}
-                className="home-btn-primary mt-6 h-10 px-5 text-[13px]"
-              >
-                {t("compAddCompanion")}
-              </button>
+              {canManageList ? (
+                <button
+                  type="button"
+                  onClick={() => setAdding(true)}
+                  className="home-btn-primary mt-6 h-10 px-5 text-[13px]"
+                >
+                  {t("compAddCompanion")}
+                </button>
+              ) : (
+                <Link
+                  to={href("/settings?tab=account")}
+                  className="home-btn-primary mt-6 inline-flex h-10 items-center px-5 text-[13px]"
+                >
+                  {t("compSignInCta")}
+                </Link>
+              )}
+              <p className="mt-4 max-w-xs text-[11.5px] leading-relaxed text-neutral-600">
+                {t("compAdminOnly")}
+              </p>
             </div>
           ) : (
             <>
@@ -729,8 +794,8 @@ export function CompanionsPage() {
                 ) : null}
               </div>
 
-              {/* A companion is born — offered where the repetition happened. */}
-              {birth ? (
+              {/* A companion is born — only a signed-in admin may add them. */}
+              {birth && canManageList ? (
                 <div className="companion-rise mx-5 mb-2 rounded-[22px] border border-white/10 bg-white/[0.03] p-4">
                   <p className="text-[13.5px] leading-relaxed text-neutral-100">
                     {t("compBornTitle").replace("{topic}", birth.domain)}
@@ -1200,16 +1265,18 @@ export function CompanionsPage() {
                   >
                     {active.space === "personal" ? t("compSpaceWork") : t("compSpacePersonal")}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      removeCompanion(active.id);
-                      setActiveId(null);
-                    }}
-                    className="companion-chip"
-                  >
-                    {t("compRemove")}
-                  </button>
+                  {canManageList ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        removeCompanion(active.id);
+                        setActiveId(null);
+                      }}
+                      className="companion-chip"
+                    >
+                      {t("compRemove")}
+                    </button>
+                  ) : null}
                 </div>
 
                 <p className="text-[10.5px] leading-relaxed text-neutral-600">

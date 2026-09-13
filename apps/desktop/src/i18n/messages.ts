@@ -1086,6 +1086,13 @@ export const messages = {
     compNotConnected: "Not connected",
     compDismiss: "Not now",
     compDone: "Done",
+    compListTitle: "Companion list",
+    compListAdminHint: "Created and managed by a signed-in admin.",
+    compAdminOnly: "Only a signed-in admin can create or remove companions.",
+    compSignInToManage: "Sign in to manage the companion list.",
+    compSignInCta: "Sign in to continue",
+    compEmptyAdmin: "No companions yet. Add the first one to this list.",
+    compEmptyGuest: "No companions yet. An admin must sign in and create the list.",
   },
   ar: {
     brand: "Arrab Studio",
@@ -2171,6 +2178,13 @@ export const messages = {
     compNotConnected: "غير متصل",
     compDismiss: "ليس الآن",
     compDone: "تم",
+    compListTitle: "قائمة الرفاق",
+    compListAdminHint: "يُنشئها ويديرها مسؤول مسجّل الدخول.",
+    compAdminOnly: "المسؤول المسجّل فقط يمكنه إنشاء الرفاق أو إزالتهم.",
+    compSignInToManage: "سجّل الدخول لإدارة قائمة الرفاق.",
+    compSignInCta: "سجّل الدخول للمتابعة",
+    compEmptyAdmin: "لا رفاق بعد. أضف أول رفيق إلى هذه القائمة.",
+    compEmptyGuest: "لا رفاق بعد. يجب أن يسجّل المسؤول الدخول وينشئ القائمة.",
   },
 } as const;
 

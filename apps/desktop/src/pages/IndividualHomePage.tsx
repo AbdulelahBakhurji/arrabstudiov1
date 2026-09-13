@@ -8,11 +8,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowUp, Check, Clock, Plus } from "lucide-react";
+import logoTall from "@/assets/logotall.png";
 import symbol from "@/assets/symbol.png";
 import { Surface } from "@/components/StudioFrame";
 import { CompanionFace } from "@/components/companions/CompanionFace";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useRole } from "@/roles/RoleProvider";
+import { useSignedInAccount } from "@/lib/use-signed-in-account";
 import {
   COMPANION_DRAFT_KEY,
   COMPANION_FOCUS_KEY,
@@ -42,6 +44,7 @@ import { cn } from "@/lib/utils";
 export function IndividualHomePage() {
   const { t, locale } = useLanguage();
   const { href } = useRole();
+  const { signedIn } = useSignedInAccount();
   const navigate = useNavigate();
   const state = useCompanionState();
   const [space, setSpace] = useState<CompanionSpace>("personal");
@@ -81,8 +84,12 @@ export function IndividualHomePage() {
     navigate(href("/companions"));
   }
 
-  /** Day one: the first thing you say creates the first face. */
+  /** Day one: only a signed-in admin may create the first companion. */
   function startFirst(carry: string) {
+    if (!signedIn) {
+      navigate(href("/settings?tab=account"));
+      return;
+    }
     const person =
       allPeople[0] ??
       addCompanion({ name: t("compGeneral"), domain: "general", space, toneName: "measured" });
@@ -93,64 +100,96 @@ export function IndividualHomePage() {
     return (
       <Surface className="companion-shell">
         <div className="companion-atmosphere absolute inset-0 -z-10 rounded-[28px]" />
-        <div className="mx-auto flex h-full max-w-[720px] flex-col justify-center px-8">
+        <img
+          src={symbol}
+          alt=""
+          className="brand-mark pointer-events-none absolute end-[-6%] top-[-10%] h-[90%] max-w-[48%] object-contain opacity-[0.08]"
+        />
+        <div className="relative mx-auto flex h-full max-w-[720px] flex-col justify-center px-8">
           <div className="companion-rise">
             <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">{today}</p>
-            <h1 className="mt-5 text-[clamp(2rem,4vw,2.9rem)] font-semibold leading-[1.1] tracking-[-0.04em] text-white">
-              {t("compDayOneTitle")}
+            <img
+              src={logoTall}
+              alt={t("brand")}
+              className="brand-mark mt-5 h-10 w-auto max-w-[220px] sm:h-12 sm:max-w-[260px]"
+            />
+            <h1 className="mt-6 text-[clamp(2rem,4vw,2.9rem)] font-semibold leading-[1.1] tracking-[-0.04em] text-white">
+              {signedIn ? t("compDayOneTitle") : t("compListTitle")}
             </h1>
             <p className="mt-4 max-w-md text-[15px] leading-relaxed text-neutral-400">
-              {t("compDayOneBody")}
+              {signedIn ? t("compEmptyAdmin") : t("compEmptyGuest")}
+            </p>
+            <p className="mt-2 max-w-md text-[12.5px] leading-relaxed text-neutral-600">
+              {t("compAdminOnly")}
             </p>
           </div>
 
-          <div className="companion-rise companion-rise-1 mt-9">
-            <div className="companion-composer flex items-end gap-2 p-2">
-              <span className="flex size-9 shrink-0 items-center justify-center rounded-full border border-white/10 text-[11px] text-neutral-500">
-                {t("compGeneral").slice(0, 1)}
-              </span>
-              <textarea
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    startFirst(draft);
-                  }
-                }}
-                rows={1}
-                placeholder={t("compAskPlaceholder")}
-                className="max-h-28 min-h-[38px] flex-1 resize-none bg-transparent px-2 py-2 text-[14.5px] text-white outline-none placeholder:text-neutral-600"
-              />
-              <button
-                type="button"
-                onClick={() => startFirst(draft)}
-                disabled={!draft.trim()}
-                className="home-btn-primary inline-flex size-9 shrink-0 items-center justify-center !rounded-full disabled:opacity-35"
-                aria-label={t("compSend")}
+          {!signedIn ? (
+            <div className="companion-rise companion-rise-1 mt-9">
+              <Link
+                to={href("/settings?tab=account")}
+                className="home-btn-primary inline-flex h-11 items-center px-6 text-[14px]"
               >
-                <ArrowUp className="size-4" strokeWidth={2} />
-              </button>
+                {t("compSignInCta")}
+              </Link>
+              <p className="mt-6 text-[11px] text-neutral-600">{t("compQuietHint")}</p>
             </div>
-
-            {/* Examples, not onboarding — they vanish the moment you type. */}
-            {!draft.trim() ? (
-              <div className="mt-3 flex flex-wrap gap-2">
-                {[t("compExampleSummarise"), t("compExampleLongDay")].map((example) => (
-                  <button
-                    key={example}
-                    type="button"
-                    onClick={() => setDraft(example)}
-                    className="companion-chip"
-                  >
-                    {example}
-                  </button>
-                ))}
+          ) : (
+            <div className="companion-rise companion-rise-1 mt-9">
+              <div className="companion-composer flex items-end gap-2 p-2">
+                <span className="flex size-9 shrink-0 items-center justify-center rounded-full border border-white/10 text-[11px] text-neutral-500">
+                  {t("compGeneral").slice(0, 1)}
+                </span>
+                <textarea
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && !event.shiftKey) {
+                      event.preventDefault();
+                      startFirst(draft);
+                    }
+                  }}
+                  rows={1}
+                  placeholder={t("compAskPlaceholder")}
+                  className="max-h-28 min-h-[38px] flex-1 resize-none bg-transparent px-2 py-2 text-[14.5px] text-white outline-none placeholder:text-neutral-600"
+                />
+                <button
+                  type="button"
+                  onClick={() => startFirst(draft)}
+                  disabled={!draft.trim()}
+                  className="home-btn-primary inline-flex size-9 shrink-0 items-center justify-center !rounded-full disabled:opacity-35"
+                  aria-label={t("compSend")}
+                >
+                  <ArrowUp className="size-4" strokeWidth={2} />
+                </button>
               </div>
-            ) : null}
 
-            <p className="mt-6 text-[11px] text-neutral-600">{t("compQuietHint")}</p>
-          </div>
+              {!draft.trim() ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {[t("compExampleSummarise"), t("compExampleLongDay")].map((example) => (
+                    <button
+                      key={example}
+                      type="button"
+                      onClick={() => setDraft(example)}
+                      className="companion-chip"
+                    >
+                      {example}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+
+              <div className="mt-5 flex flex-wrap gap-3">
+                <Link
+                  to={href("/companions")}
+                  className="home-btn-secondary inline-flex h-10 items-center px-4 text-[13px]"
+                >
+                  {t("compAddCompanion")}
+                </Link>
+              </div>
+              <p className="mt-6 text-[11px] text-neutral-600">{t("compQuietHint")}</p>
+            </div>
+          )}
         </div>
       </Surface>
     );
@@ -169,7 +208,12 @@ export function IndividualHomePage() {
         <header className="companion-rise flex flex-wrap items-end justify-between gap-4">
           <div>
             <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">{today}</p>
-            <h1 className="mt-2 text-[clamp(1.6rem,3vw,2.2rem)] font-semibold leading-tight tracking-[-0.035em] text-white">
+            <img
+              src={logoTall}
+              alt={t("brand")}
+              className="brand-mark mt-4 h-9 w-auto max-w-[200px] sm:h-10 sm:max-w-[240px]"
+            />
+            <h1 className="mt-5 text-[clamp(1.6rem,3vw,2.2rem)] font-semibold leading-tight tracking-[-0.035em] text-white">
               {t("compHomeTitle")}
             </h1>
             <p className="mt-2 max-w-lg text-[13.5px] leading-relaxed text-neutral-500">
@@ -218,13 +262,15 @@ export function IndividualHomePage() {
               </span>
             </button>
           ))}
-          <Link
-            to={href("/companions")}
-            className="flex size-[76px] items-center justify-center rounded-full border border-dashed border-white/15 text-neutral-500 hover:border-white/30 hover:text-white"
-            aria-label={t("compAddCompanion")}
-          >
-            <Plus className="size-5" strokeWidth={1.7} />
-          </Link>
+          {signedIn ? (
+            <Link
+              to={href("/companions")}
+              className="flex size-[76px] items-center justify-center rounded-full border border-dashed border-white/15 text-neutral-500 hover:border-white/30 hover:text-white"
+              aria-label={t("compAddCompanion")}
+            >
+              <Plus className="size-5" strokeWidth={1.7} />
+            </Link>
+          ) : null}
         </section>
 
         <div className="mt-9 grid gap-6 lg:grid-cols-[1.35fr_0.65fr]">
