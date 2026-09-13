@@ -24,7 +24,7 @@ import { ROLE_PATH } from "@/roles/catalog";
 import { useRole } from "@/roles/RoleProvider";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useTheme } from "@/theme/ThemeProvider";
-import { arrabApi, getApiBaseUrl, ApiRequestError } from "@/lib/api";
+import { arrabApi, ApiRequestError } from "@/lib/api";
 import {
   clearAccountSession,
   initialsFromName,
@@ -41,7 +41,6 @@ import {
   clearCrashLog,
   clearLocalStudioData,
   defaultPrefs,
-  readApiBaseOverride,
   readCrashLog,
   readPrefs,
   recordCrash,
@@ -141,7 +140,6 @@ export function SettingsPage() {
   const [seats, setSeats] = useState<string[]>([]);
   const [profileBusy, setProfileBusy] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
-  const [apiUrlDraft, setApiUrlDraft] = useState(() => readApiBaseOverride() ?? getApiBaseUrl());
   const [meta, setMeta] = useState<{
     version: string;
     persistence: string;
@@ -149,6 +147,7 @@ export function SettingsPage() {
     aiProviders: string[];
   } | null>(null);
   const [connectionMsg, setConnectionMsg] = useState<string | null>(null);
+  const [connectionChecking, setConnectionChecking] = useState(false);
   const [coworkFolder, setCoworkFolder] = useState<string | null>(() => {
     try {
       return localStorage.getItem(FOLDER_KEY);
@@ -236,10 +235,33 @@ export function SettingsPage() {
   }, [t]);
 
   useEffect(() => {
+    // Desktop talks only to the managed public API — never keep a local URL override.
+    writeApiBaseOverride(null);
     loadUsage();
     loadOperator();
     loadAccount();
   }, [loadAccount, loadOperator, loadUsage]);
+
+  useEffect(() => {
+    if (tab !== "usage") return;
+
+    const refresh = () => loadUsage();
+    const interval = window.setInterval(refresh, 15_000);
+
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    const onFocus = () => refresh();
+
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", onFocus);
+
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [tab, loadUsage]);
 
   useEffect(() => {
     return () => {
@@ -545,52 +567,32 @@ export function SettingsPage() {
 
   async function testConnection() {
     setConnectionMsg(null);
+    setConnectionChecking(true);
     try {
-      const [health, apiMeta] = await Promise.all([arrabApi.health(), arrabApi.meta()]);
+      const [apiMeta, ai] = await Promise.all([
+        arrabApi.meta(),
+        arrabApi.aiStatus().catch(() => null),
+      ]);
+      await arrabApi.health();
       setOnline(true);
+      if (ai) setAiReady(ai.configured);
       setMeta({
         version: apiMeta.version,
         persistence: apiMeta.persistence,
         workspaceId: apiMeta.workspaceId,
         aiProviders: apiMeta.aiProviders,
       });
-      setConnectionMsg(
-        `${t("connectionOk")} · ${health.status} · v${apiMeta.version} · ${apiMeta.persistence}`,
-      );
-      pushToast({ title: t("connectionOk"), tone: "success" });
+      setConnectionMsg(t("connectionOk"));
+      pushToast({ title: t("connectionOk"), body: `v${apiMeta.version}`, tone: "success" });
     } catch (err: unknown) {
       setOnline(false);
+      setAiReady(false);
       const message = err instanceof ApiRequestError ? err.message : t("apiUnavailable");
       setConnectionMsg(message);
       recordCrash(message, "settings.connection");
+    } finally {
+      setConnectionChecking(false);
     }
-  }
-
-  function applyApiUrl() {
-    const next = apiUrlDraft.trim().replace(/\/$/, "");
-    if (!next) {
-      setConnectionMsg(t("apiUrlRequired"));
-      return;
-    }
-    try {
-      // Validate URL shape
-      // eslint-disable-next-line no-new
-      new URL(next);
-    } catch {
-      setConnectionMsg(t("apiUrlInvalid"));
-      return;
-    }
-    writeApiBaseOverride(next);
-    setConnectionMsg(t("apiUrlApplied"));
-    pushToast({ title: t("apiUrlApplied"), body: next, tone: "success" });
-    void testConnection();
-  }
-
-  function resetApiUrl() {
-    writeApiBaseOverride(null);
-    setApiUrlDraft(getApiBaseUrl());
-    setConnectionMsg(t("apiUrlReset"));
-    void testConnection();
   }
 
   async function chooseDefaultFolder() {
@@ -646,10 +648,10 @@ export function SettingsPage() {
       return;
     }
     clearLocalStudioData();
+    writeApiBaseOverride(null);
     setPrefs(defaultPrefs());
     setCoworkFolder(null);
     setCrashLog([]);
-    setApiUrlDraft(getApiBaseUrl());
     pushToast({ title: t("clearLocalDone"), tone: "success" });
   }
 
@@ -657,22 +659,28 @@ export function SettingsPage() {
     <Surface className="settings-shell">
       <div className="settings-atmosphere pointer-events-none absolute inset-0" />
       <div className="relative mx-auto flex max-w-[1180px] flex-col gap-6 px-6 py-8 lg:flex-row lg:px-10">
-        <aside className="w-full shrink-0 lg:w-56">
-          <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">{t("settings")}</p>
-          <h1 className="mt-1 text-2xl font-medium tracking-[-0.03em] text-white">{t("settingsTitle")}</h1>
-          <p className="mt-2 text-sm text-neutral-500">{t("settingsBody")}</p>
-          <nav className="mt-6 max-h-[70vh] space-y-1 overflow-auto pe-1">
+        <aside className="w-full shrink-0 lg:w-[220px]">
+          <p className="px-1 text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-500">
+            {t("settings")}
+          </p>
+          <h1 className="mt-1 px-1 text-[22px] font-semibold tracking-[-0.03em] text-white">
+            {t("settingsTitle")}
+          </h1>
+          <p className="mt-1.5 px-1 text-[13px] leading-snug text-neutral-500">{t("settingsBody")}</p>
+          <nav className="mt-5 max-h-[70vh] space-y-0.5 overflow-auto pe-1">
             {tabs.map(([id, label, Icon]) => (
               <button
                 key={id}
                 type="button"
                 onClick={() => selectTab(id)}
                 className={cn(
-                  "flex w-full items-center gap-2 rounded-xl px-3 py-2.5 text-start text-sm transition-colors",
-                  tab === id ? "bg-white text-black" : "text-neutral-400 hover:bg-white/5 hover:text-white",
+                  "flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-start text-[13px] transition-colors",
+                  tab === id
+                    ? "bg-white/[0.12] font-medium text-white"
+                    : "text-neutral-400 hover:bg-white/[0.05] hover:text-white",
                 )}
               >
-                <Icon className="size-4" strokeWidth={1.7} />
+                <Icon className="size-[15px] opacity-80" strokeWidth={1.8} />
                 {label}
               </button>
             ))}
@@ -681,42 +689,42 @@ export function SettingsPage() {
 
         <div className="min-w-0 flex-1 space-y-5">
           {tab === "usage" ? (
-            <section className="settings-rise space-y-4">
+            <section className="settings-rise space-y-6">
               <div className="flex flex-wrap items-end justify-between gap-3 px-1">
                 <div>
-                  <p className="text-[10px] uppercase tracking-[0.18em] text-neutral-500">
+                  <h2 className="text-[28px] font-semibold tracking-[-0.03em] text-white">
                     {t("settingsUsage")}
-                  </p>
-                  <h2 className="mt-1 text-lg text-white">{t("usageOverview")}</h2>
+                  </h2>
+                  <p className="mt-1 text-sm text-neutral-500">{t("usageOverview")}</p>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={loadUsage}
-                    className="h-8 rounded-full border border-white/15 px-3 text-xs text-neutral-300 hover:bg-white/5"
-                  >
-                    {t("refreshUsage")}
-                  </button>
+                <div className="flex flex-col items-end gap-1.5">
                   <HealthChip online={online} aiReady={aiReady} t={t} />
+                  <p className="text-[11px] text-neutral-600">{t("usageAutoRefresh")}</p>
                 </div>
               </div>
 
               {showUpgradeCard ? (
-                <div className="overflow-hidden rounded-[22px] border border-[#2a3a55] bg-gradient-to-br from-[#121a28] via-[#0d1420] to-[#0a0e14]">
-                  <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-5">
-                    <div>
-                      <p className="text-[10px] uppercase tracking-[0.18em] text-neutral-400">
+                <div
+                  className="overflow-hidden rounded-[18px] border border-white/[0.08] shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]"
+                  style={{
+                    background:
+                      "linear-gradient(135deg, rgba(126,182,255,0.14), rgba(255,255,255,0.03) 42%, rgba(0,0,0,0.2))",
+                  }}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-4 px-5 py-4">
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-[#9bc5ff]">
                         {t("upgradeAvailable")}
                       </p>
-                      <p className="mt-1 text-2xl font-medium tracking-[-0.03em] text-white">
+                      <p className="mt-1 text-[17px] font-semibold tracking-[-0.02em] text-white">
                         {upgradeTitle}
                       </p>
-                      <p className="mt-1 text-sm text-neutral-400">{t("upgradeUsageBody")}</p>
+                      <p className="mt-0.5 text-[13px] text-neutral-400">{t("upgradeUsageBody")}</p>
                     </div>
                     <button
                       type="button"
                       onClick={() => selectTab("plans")}
-                      className="h-10 rounded-full bg-[#7eb6ff] px-5 text-sm font-medium text-[#0a1220] hover:bg-[#9bc5ff]"
+                      className="h-9 shrink-0 rounded-full bg-white px-4 text-sm font-medium text-black transition hover:bg-white/90"
                     >
                       {t("upgrade")}
                     </button>
@@ -724,68 +732,61 @@ export function SettingsPage() {
                 </div>
               ) : null}
 
-              <div className="rounded-[22px] border border-white/10 bg-[#080808] p-5 lg:p-6">
-                <p className="text-sm text-neutral-300">
+              <div className="space-y-2">
+                <p className="px-1 text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-500">
                   {t("includedInPlan").replace("{plan}", planLabel)}
                 </p>
-
-                <div className="mt-6 space-y-7">
-                  <UsagePercentRow
+                <div className="overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#141414] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                  <UsageQuotaRow
                     label={t("usageAgentPool")}
                     percent={agentPercent}
-                    usedSuffix={t("percentUsed")}
                     usedLabel={
                       entitlements?.tokenLimit === null
                         ? `${(entitlements?.tokensUsed ?? tokenUsage.inputTokens + tokenUsage.outputTokens).toLocaleString()} · ${t("unlimitedTokens")}`
                         : `${(entitlements?.tokensUsed ?? 0).toLocaleString()} / ${(entitlements?.tokenLimit ?? 0).toLocaleString()}`
                     }
-                    hint={t("usageAgentPoolHint")}
+                    hint={
+                      entitlements?.overLimit ? t("quotaExceededHint") : t("usageAgentPoolHint")
+                    }
                     over={Boolean(entitlements?.overLimit)}
+                    usedSuffix={t("percentUsed")}
                   />
-                  <UsagePercentRow
+                  <div className="mx-4 border-t border-white/[0.06]" />
+                  <UsageQuotaRow
                     label={t("usageStudioPool")}
                     percent={studioPercent}
-                    usedSuffix={t("percentUsed")}
                     usedLabel={`${studioUsed} / ${STUDIO_OPS_SOFT_CAP}`}
                     hint={t("usageStudioPoolHint")}
+                    usedSuffix={t("percentUsed")}
                   />
                 </div>
-
-                {entitlements?.overLimit ? (
-                  <p className="mt-5 text-xs text-amber-200/90">{t("quotaExceededHint")}</p>
-                ) : null}
               </div>
 
-              <div className="rounded-[22px] border border-white/10 bg-[#080808] p-5 lg:p-6">
-                <p className="text-sm text-white">{t("onDemandUsage")}</p>
-                <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/10 bg-black/30 px-4 py-3.5">
-                  <div>
-                    <p className="text-sm text-neutral-200">
-                      {prefs.onDemandEnabled
-                        ? t("onDemandEnabledStatus")
-                        : t("onDemandDisabledStatus")}
-                    </p>
-                    <p className="mt-1 text-xs text-neutral-500">{t("onDemandBody")}</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => updatePref("onDemandEnabled", !prefs.onDemandEnabled)}
-                    className={cn(
-                      "rounded-full px-3 py-1.5 text-xs font-medium",
-                      prefs.onDemandEnabled
-                        ? "bg-white text-black"
-                        : "border border-white/15 text-neutral-400",
-                    )}
-                  >
-                    {prefs.onDemandEnabled ? t("enabled") : t("disabled")}
-                  </button>
+              <div className="space-y-2">
+                <p className="px-1 text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-500">
+                  {t("onDemandUsage")}
+                </p>
+                <div className="overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#141414] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                  <Toggle
+                    label={
+                      prefs.onDemandEnabled ? t("onDemandEnabledStatus") : t("onDemandDisabledStatus")
+                    }
+                    description={t("onDemandBody")}
+                    checked={prefs.onDemandEnabled}
+                    onChange={(value) => updatePref("onDemandEnabled", value)}
+                  />
                 </div>
               </div>
 
-              <div className="grid gap-3 sm:grid-cols-3">
-                <UsageMetric label={t("usageInputTokens")} value={tokenUsage.inputTokens} />
-                <UsageMetric label={t("usageOutputTokens")} value={tokenUsage.outputTokens} />
-                <UsageMetric label={t("usageCompletions")} value={tokenUsage.events} />
+              <div className="space-y-2">
+                <p className="px-1 text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-500">
+                  {t("usageBreakdown")}
+                </p>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  <UsageMetric label={t("usageInputTokens")} value={tokenUsage.inputTokens} />
+                  <UsageMetric label={t("usageOutputTokens")} value={tokenUsage.outputTokens} />
+                  <UsageMetric label={t("usageCompletions")} value={tokenUsage.events} />
+                </div>
               </div>
             </section>
           ) : null}
@@ -1142,98 +1143,141 @@ export function SettingsPage() {
           ) : null}
 
           {tab === "connection" ? (
-            <section className="settings-rise space-y-5 rounded-[28px] border border-white/10 bg-[#080808] p-5 lg:p-6">
+            <section className="settings-rise space-y-6">
               <div>
-                <h2 className="text-lg text-white">{t("settingsConnection")}</h2>
-                <p className="mt-1 text-sm text-neutral-500">{t("connectionBody")}</p>
+                <h2 className="text-2xl font-medium tracking-tight text-white">{t("settingsConnection")}</h2>
+                <p className="mt-1.5 text-sm text-neutral-500">{t("connectionBody")}</p>
               </div>
-              <Field label={t("apiBaseUrl")}>
-                <input
-                  value={apiUrlDraft}
-                  onChange={(event) => setApiUrlDraft(event.target.value)}
-                  className="field font-mono text-xs"
-                  placeholder="http://127.0.0.1:8787"
-                />
-              </Field>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={applyApiUrl}
-                  className="h-9 rounded-full bg-white px-4 text-sm font-medium text-black"
-                >
-                  {t("applyApiUrl")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void testConnection()}
-                  className="h-9 rounded-full border border-white/15 px-4 text-sm text-white hover:bg-white/5"
-                >
-                  {t("checkConnection")}
-                </button>
-                <button
-                  type="button"
-                  onClick={resetApiUrl}
-                  className="h-9 rounded-full border border-white/15 px-4 text-sm text-neutral-400 hover:bg-white/5"
-                >
-                  {t("resetApiUrl")}
-                </button>
-              </div>
-              {connectionMsg ? <p className="text-sm text-neutral-300">{connectionMsg}</p> : null}
-              <HealthChip online={online} aiReady={aiReady} t={t} />
-              {meta ? (
-                <div className="grid gap-2 rounded-2xl border border-white/10 bg-black/30 p-4 text-sm">
-                  <MetaRow label={t("apiVersion")} value={meta.version} />
-                  <MetaRow
-                    label={t("persistence")}
-                    value={
-                      meta.persistence === "file"
-                        ? t("persistenceFile")
-                        : meta.persistence === "postgres"
-                          ? t("persistencePostgres")
-                          : t("persistenceMemory")
+
+              <div className="space-y-2">
+                <p className="px-1 text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-500">
+                  {t("connectionStatusSection")}
+                </p>
+                <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#121212]">
+                  <SettingRow
+                    title={t("studioHealth")}
+                    description={t("connectionManagedBody")}
+                    trailing={
+                      <StatusPill
+                        on={online === true}
+                        onLabel={t("healthOnline")}
+                        offLabel={online === null ? "…" : t("healthOffline")}
+                      />
                     }
                   />
-                  <MetaRow label={t("workspaceId")} value={meta.workspaceId} />
-                  <MetaRow
-                    label={t("aiGateway")}
-                    value={meta.aiProviders.length ? meta.aiProviders.join(", ") : t("healthAiWaiting")}
+                  <div className="mx-4 border-t border-white/8" />
+                  <SettingRow
+                    title={t("aiGateway")}
+                    description={t("aiManagedBody")}
+                    trailing={
+                      <StatusPill
+                        on={aiReady}
+                        onLabel={t("healthAiReady")}
+                        offLabel={t("healthAiWaiting")}
+                      />
+                    }
                   />
-                  <MetaRow label={t("activeApiUrl")} value={getApiBaseUrl()} mono />
                 </div>
-              ) : null}
+              </div>
+
+              <div className="space-y-2">
+                <p className="px-1 text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-500">
+                  {t("connectionDetailsSection")}
+                </p>
+                <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#121212]">
+                  <SettingRow
+                    title={t("apiVersion")}
+                    description={t("apiVersionBody")}
+                    trailing={
+                      <span className="text-sm tabular-nums text-neutral-300">
+                        {meta?.version ?? "—"}
+                      </span>
+                    }
+                  />
+                  <div className="mx-4 border-t border-white/8" />
+                  <SettingRow
+                    title={t("persistence")}
+                    description={t("persistenceBody")}
+                    trailing={
+                      <span className="text-sm text-neutral-300">
+                        {meta
+                          ? meta.persistence === "file"
+                            ? t("persistenceFile")
+                            : meta.persistence === "postgres"
+                              ? t("persistencePostgres")
+                              : t("persistenceMemory")
+                          : "—"}
+                      </span>
+                    }
+                  />
+                  <div className="mx-4 border-t border-white/8" />
+                  <SettingRow
+                    title={t("workspaceId")}
+                    description={t("workspaceIdBody")}
+                    trailing={
+                      <span className="max-w-[10rem] truncate text-sm text-neutral-400" title={meta?.workspaceId}>
+                        {meta?.workspaceId ? shortId(meta.workspaceId) : "—"}
+                      </span>
+                    }
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-3">
+                <button
+                  type="button"
+                  disabled={connectionChecking}
+                  onClick={() => void testConnection()}
+                  className="h-9 rounded-full bg-white px-4 text-sm font-medium text-black disabled:opacity-50"
+                >
+                  {connectionChecking ? t("checkingConnection") : t("checkConnection")}
+                </button>
+                {connectionMsg ? (
+                  <p className="text-sm text-neutral-400">{connectionMsg}</p>
+                ) : null}
+              </div>
+
+              <p className="text-xs leading-relaxed text-neutral-600">{t("aboutSecure")}</p>
             </section>
           ) : null}
 
           {tab === "notifications" ? (
-            <section className="settings-rise rounded-[28px] border border-white/10 bg-[#080808] p-5 lg:p-6">
-              <h2 className="text-lg text-white">{t("settingsNotifications")}</h2>
-              <p className="mt-1 text-sm text-neutral-500">{t("notificationsBody")}</p>
-              <div className="mt-5 space-y-3">
+            <section className="settings-rise space-y-6">
+              <div>
+                <h2 className="text-[28px] font-semibold tracking-[-0.03em] text-white">
+                  {t("settingsNotifications")}
+                </h2>
+                <p className="mt-1.5 text-sm text-neutral-500">{t("notificationsBody")}</p>
+              </div>
+              <div className="overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#141414] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
                 <Toggle
                   label={t("notifyApprovals")}
                   checked={prefs.notifyApprovals}
                   onChange={(value) => updatePref("notifyApprovals", value)}
                 />
+                <div className="mx-4 border-t border-white/[0.06]" />
                 <Toggle
                   label={t("notifyTeamLaunch")}
                   checked={prefs.notifyTeamLaunch}
                   onChange={(value) => updatePref("notifyTeamLaunch", value)}
                 />
+                <div className="mx-4 border-t border-white/[0.06]" />
                 <Toggle
                   label={t("notifyConnector")}
                   checked={prefs.notifyConnector}
                   onChange={(value) => updatePref("notifyConnector", value)}
                 />
+                <div className="mx-4 border-t border-white/[0.06]" />
                 <Toggle
                   label={t("notifyCowork")}
                   checked={prefs.notifyCowork}
                   onChange={(value) => updatePref("notifyCowork", value)}
                 />
               </div>
-              <p className="mt-4 text-xs text-neutral-500">
+              <p className="px-1 text-xs text-neutral-500">
                 {t("osNotifyStatus")}: {notifyPermission}
               </p>
-              <div className="mt-4 flex flex-wrap gap-2">
+              <div className="flex flex-wrap gap-2 px-1">
                 <button
                   type="button"
                   onClick={() => void requestOsNotify()}
@@ -1253,32 +1297,43 @@ export function SettingsPage() {
           ) : null}
 
           {tab === "privacy" ? (
-            <section className="settings-rise rounded-[28px] border border-white/10 bg-[#080808] p-5 lg:p-6">
-              <h2 className="text-lg text-white">{t("settingsPrivacy")}</h2>
-              <div className="mt-5 space-y-3">
+            <section className="settings-rise space-y-6">
+              <div>
+                <h2 className="text-[28px] font-semibold tracking-[-0.03em] text-white">
+                  {t("settingsPrivacy")}
+                </h2>
+              </div>
+              <div className="overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#141414] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
                 <Toggle
                   label={t("privacyLocalNotes")}
                   checked={prefs.privacyLocalNotes}
                   onChange={(value) => updatePref("privacyLocalNotes", value)}
                 />
+                <div className="mx-4 border-t border-white/[0.06]" />
                 <Toggle
                   label={t("privacyAnalytics")}
                   checked={prefs.privacyAnalytics}
                   onChange={(value) => updatePref("privacyAnalytics", value)}
                 />
+                <div className="mx-4 border-t border-white/[0.06]" />
                 <Toggle
                   label={t("privacyCrash")}
                   checked={prefs.privacyCrash}
                   onChange={(value) => updatePref("privacyCrash", value)}
                 />
               </div>
-              <div className="mt-6 space-y-2">
-                <p className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">{t("crashLog")}</p>
+              <div className="space-y-2">
+                <p className="px-1 text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-500">
+                  {t("crashLog")}
+                </p>
                 {crashLog.length === 0 ? (
-                  <p className="text-sm text-neutral-500">{t("crashLogEmpty")}</p>
+                  <p className="px-1 text-sm text-neutral-500">{t("crashLogEmpty")}</p>
                 ) : (
                   crashLog.slice(0, 5).map((entry) => (
-                    <div key={`${entry.at}-${entry.message}`} className="rounded-xl border border-white/10 px-3 py-2 text-xs text-neutral-400">
+                    <div
+                      key={`${entry.at}-${entry.message}`}
+                      className="rounded-[14px] border border-white/[0.08] bg-[#141414] px-3 py-2 text-xs text-neutral-400"
+                    >
                       <p className="text-neutral-200">{entry.message}</p>
                       <p className="mt-1 text-neutral-600">
                         {entry.source ?? "app"} · {new Date(entry.at).toLocaleString()}
@@ -1301,43 +1356,55 @@ export function SettingsPage() {
           ) : null}
 
           {tab === "cowork" ? (
-            <section className="settings-rise rounded-[28px] border border-white/10 bg-[#080808] p-5 lg:p-6">
-              <h2 className="text-lg text-white">{t("settingsCowork")}</h2>
-              <p className="mt-1 text-sm text-neutral-500">{t("coworkPrefsBody")}</p>
-              <div className="mt-5 space-y-3">
+            <section className="settings-rise space-y-6">
+              <div>
+                <h2 className="text-[28px] font-semibold tracking-[-0.03em] text-white">
+                  {t("settingsCowork")}
+                </h2>
+                <p className="mt-1.5 text-sm text-neutral-500">{t("coworkPrefsBody")}</p>
+              </div>
+              <div className="overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#141414] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
                 <Toggle
                   label={t("coworkAutoResume")}
                   checked={prefs.coworkAutoResume}
                   onChange={(value) => updatePref("coworkAutoResume", value)}
                 />
+                <div className="mx-4 border-t border-white/[0.06]" />
                 <Toggle
                   label={t("coworkEnterSend")}
                   checked={prefs.coworkEnterSend}
                   onChange={(value) => updatePref("coworkEnterSend", value)}
                 />
+                <div className="mx-4 border-t border-white/[0.06]" />
                 <Toggle
                   label={t("coworkTerminalDock")}
                   checked={prefs.coworkTerminalDock}
                   onChange={(value) => updatePref("coworkTerminalDock", value)}
                 />
               </div>
-              <p className="mt-4 text-xs text-neutral-500">{t("prefsApplyLive")}</p>
+              <p className="px-1 text-xs text-neutral-500">{t("prefsApplyLive")}</p>
             </section>
           ) : null}
 
           {tab === "desktop" ? (
-            <section className="settings-rise space-y-5 rounded-[28px] border border-white/10 bg-[#080808] p-5 lg:p-6">
+            <section className="settings-rise space-y-6">
               <div>
-                <h2 className="text-lg text-white">{t("settingsDesktop")}</h2>
-                <p className="mt-1 text-sm text-neutral-500">{t("desktopBody")}</p>
+                <h2 className="text-[28px] font-semibold tracking-[-0.03em] text-white">
+                  {t("settingsDesktop")}
+                </h2>
+                <p className="mt-1.5 text-sm text-neutral-500">{t("desktopBody")}</p>
               </div>
-              <Toggle
-                label={t("desktopAlwaysOnTop")}
-                checked={prefs.desktopAlwaysOnTop}
-                onChange={(value) => updatePref("desktopAlwaysOnTop", value)}
-              />
-              <div className="rounded-2xl border border-white/10 p-4">
-                <p className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">{t("defaultCoworkFolder")}</p>
+              <div className="overflow-hidden rounded-[18px] border border-white/[0.08] bg-[#141414] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                <Toggle
+                  label={t("desktopAlwaysOnTop")}
+                  checked={prefs.desktopAlwaysOnTop}
+                  onChange={(value) => updatePref("desktopAlwaysOnTop", value)}
+                />
+              </div>
+              <div className="rounded-[18px] border border-white/[0.08] bg-[#141414] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                <p className="text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-500">
+                  {t("defaultCoworkFolder")}
+                </p>
                 <p className="mt-2 break-all text-sm text-neutral-300">
                   {coworkFolder ?? t("noDefaultFolder")}
                 </p>
@@ -1448,6 +1515,55 @@ function MetaRow({ label, value, mono }: { label: string; value: string; mono?: 
   );
 }
 
+function shortId(value: string) {
+  if (value.length <= 12) return value;
+  return `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
+function SettingRow({
+  title,
+  description,
+  trailing,
+}: {
+  title: string;
+  description: string;
+  trailing: ReactNode;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-4 px-4 py-3.5">
+      <div className="min-w-0 flex-1">
+        <p className="text-sm text-white">{title}</p>
+        <p className="mt-0.5 text-[13px] leading-snug text-neutral-500">{description}</p>
+      </div>
+      <div className="shrink-0 pt-0.5">{trailing}</div>
+    </div>
+  );
+}
+
+function StatusPill({
+  on,
+  onLabel,
+  offLabel,
+}: {
+  on: boolean;
+  onLabel: string;
+  offLabel: string;
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
+        on
+          ? "border-emerald-400/30 bg-emerald-400/10 text-emerald-200"
+          : "border-white/10 bg-white/[0.03] text-neutral-400",
+      )}
+    >
+      <span className={cn("size-1.5 rounded-full", on ? "bg-emerald-300" : "bg-neutral-500")} />
+      {on ? onLabel : offLabel}
+    </span>
+  );
+}
+
 function HealthChip({
   online,
   aiReady,
@@ -1458,10 +1574,11 @@ function HealthChip({
   t: (key: MessageKey) => string;
 }) {
   return (
-    <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-[11px] text-neutral-400">
-      <span className={cn("size-1.5 rounded-full", online ? "bg-white" : "border border-white/40")} />
-      {t("studioHealth")} · {online ? t("healthOnline") : t("healthOffline")}
-      <span className="text-neutral-600">·</span>
+    <div className="inline-flex flex-wrap items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.03] px-2.5 py-1 text-[11px] text-neutral-400">
+      <span className={cn("size-1.5 rounded-full", online ? "bg-[#34c759]" : "bg-neutral-500")} />
+      {online ? t("healthOnline") : t("healthOffline")}
+      <span className="text-neutral-700">·</span>
+      <span className={cn("size-1.5 rounded-full", aiReady ? "bg-[#34c759]" : "bg-neutral-500")} />
       {aiReady ? t("healthAiReady") : t("healthAiWaiting")}
     </div>
   );
@@ -1469,14 +1586,16 @@ function HealthChip({
 
 function UsageMetric({ label, value }: { label: string; value: number }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-black/40 px-3 py-3">
-      <p className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">{label}</p>
-      <p className="mt-2 text-2xl font-medium tabular-nums text-white">{value}</p>
+    <div className="rounded-[16px] border border-white/[0.08] bg-[#141414] px-4 py-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+      <p className="text-[11px] font-medium text-neutral-500">{label}</p>
+      <p className="mt-1.5 text-[22px] font-semibold tracking-[-0.03em] tabular-nums text-white">
+        {value.toLocaleString()}
+      </p>
     </div>
   );
 }
 
-function UsagePercentRow({
+function UsageQuotaRow({
   label,
   percent,
   usedLabel,
@@ -1491,27 +1610,65 @@ function UsagePercentRow({
   over?: boolean;
   usedSuffix: string;
 }) {
-  const width = Math.max(percent > 0 ? 4 : 0, Math.min(100, percent));
+  const clamped = Math.max(0, Math.min(100, percent));
+  const size = 44;
+  const stroke = 4;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (clamped / 100) * circumference;
+  const ringColor = over ? "#f5c451" : "#7eb6ff";
+
   return (
-    <div>
-      <div className="mb-2 flex items-baseline justify-between gap-3">
-        <p className="text-sm text-white">{label}</p>
-        <p className="text-sm tabular-nums text-neutral-400">
-          {percent}% {usedSuffix}
+    <div className="flex items-start gap-3.5 px-4 py-3.5">
+      <div className="relative mt-0.5 shrink-0" style={{ width: size, height: size }}>
+        <svg width={size} height={size} className="-rotate-90" aria-hidden>
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke="rgba(255,255,255,0.08)"
+            strokeWidth={stroke}
+          />
+          <circle
+            cx={size / 2}
+            cy={size / 2}
+            r={radius}
+            fill="none"
+            stroke={ringColor}
+            strokeWidth={stroke}
+            strokeLinecap="round"
+            strokeDasharray={circumference}
+            strokeDashoffset={offset}
+            className="transition-[stroke-dashoffset] duration-700 ease-out"
+          />
+        </svg>
+        <span className="absolute inset-0 flex items-center justify-center text-[10px] font-semibold tabular-nums text-neutral-300">
+          {clamped}%
+        </span>
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-baseline justify-between gap-3">
+          <p className="text-[15px] font-medium text-white">{label}</p>
+          <p className="shrink-0 text-[13px] tabular-nums text-neutral-400">
+            {clamped}% {usedSuffix}
+          </p>
+        </div>
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
+          <div
+            className={cn(
+              "h-full rounded-full transition-[width] duration-700 ease-out",
+              over ? "bg-[#f5c451]" : "bg-[#7eb6ff]",
+            )}
+            style={{ width: `${Math.max(clamped > 0 ? 3 : 0, clamped)}%` }}
+          />
+        </div>
+        <p className={cn("mt-2 text-[12px] leading-snug", over ? "text-amber-200/90" : "text-neutral-500")}>
+          {usedLabel}
+          <span className="text-neutral-600"> · </span>
+          {hint}
         </p>
       </div>
-      <div className="h-2 overflow-hidden rounded-full bg-white/[0.06]">
-        <div
-          className={cn(
-            "h-full rounded-full transition-[width] duration-500",
-            over ? "bg-amber-300" : "bg-[#7eb6ff]",
-          )}
-          style={{ width: `${width}%` }}
-        />
-      </div>
-      <p className="mt-2 text-[11px] leading-relaxed text-neutral-500">
-        {usedLabel} · {hint}
-      </p>
     </div>
   );
 }
@@ -1553,30 +1710,39 @@ function Choice({
 
 function Toggle({
   label,
+  description,
   checked,
   onChange,
 }: {
   label: string;
+  description?: string;
   checked: boolean;
   onChange: (checked: boolean) => void;
 }) {
   return (
     <button
       type="button"
+      role="switch"
+      aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className="flex w-full items-center justify-between gap-3 rounded-xl border border-white/10 px-3 py-3 text-start"
+      className="flex w-full items-start justify-between gap-4 px-4 py-3.5 text-start"
     >
-      <span className="text-sm text-neutral-300">{label}</span>
+      <div className="min-w-0 flex-1">
+        <span className="block text-[15px] font-medium text-white">{label}</span>
+        {description ? (
+          <span className="mt-0.5 block text-[13px] leading-snug text-neutral-500">{description}</span>
+        ) : null}
+      </div>
       <span
         className={cn(
-          "relative h-5 w-9 rounded-full border transition-colors",
-          checked ? "border-white bg-white" : "border-white/20 bg-black",
+          "relative mt-0.5 h-[26px] w-[44px] shrink-0 rounded-full transition-colors",
+          checked ? "bg-[#34c759]" : "bg-white/15",
         )}
       >
         <span
           className={cn(
-            "absolute top-0.5 size-3.5 rounded-full transition-all",
-            checked ? "start-4 bg-black" : "start-0.5 bg-white/70",
+            "absolute top-[2px] size-[22px] rounded-full bg-white shadow-sm transition-all",
+            checked ? "start-[20px]" : "start-[2px]",
           )}
         />
       </span>

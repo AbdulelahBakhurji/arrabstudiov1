@@ -78,13 +78,10 @@ const envApiBaseUrl = (import.meta.env.VITE_ARRAB_API_URL ?? "http://127.0.0.1:8
   "",
 );
 
-/** Runtime base URL (Settings override wins over build-time env). */
+/** Managed API base from env. Local URL overrides are cleared by Settings. */
 export function getApiBaseUrl(): string {
   return readApiBaseOverride() ?? envApiBaseUrl;
 }
-
-/** @deprecated Prefer getApiBaseUrl() so Settings overrides apply. */
-export const apiBaseUrl = envApiBaseUrl;
 
 export class ApiRequestError extends Error {
   readonly status: number;

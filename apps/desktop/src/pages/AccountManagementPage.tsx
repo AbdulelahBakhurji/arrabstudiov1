@@ -13,7 +13,7 @@ import type { AccountStatusResponse, PlanAudience, SubscriptionPlanId } from "@a
 import { PlansCatalog } from "@/components/PlansCatalog";
 import { Surface } from "@/components/StudioFrame";
 import { useLanguage } from "@/i18n/LanguageProvider";
-import { arrabApi, ApiRequestError, getApiBaseUrl } from "@/lib/api";
+import { arrabApi, ApiRequestError } from "@/lib/api";
 import {
   clearAccountSession,
   initialsFromName,
@@ -329,7 +329,7 @@ export function AccountManagementPage() {
 
               <Panel title={t("amWorkspace")} subtitle={t("amWorkspaceBody")}>
                 <dl className="grid gap-3 sm:grid-cols-2">
-                  <Row label={t("amApiEndpoint")} value={getApiBaseUrl()} mono />
+                  <Row label={t("amApiEndpoint")} value={t("amConnectionManaged")} />
                   <Row
                     label={t("amSession")}
                     value={hasSession ? t("amSessionActive") : t("amSessionLocal")}
