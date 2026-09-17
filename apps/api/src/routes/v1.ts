@@ -90,7 +90,7 @@ export function registerV1Routes(
     const status = await deps.accounts.status();
     return {
       name: "arrab-api" as const,
-      version: "0.15.0",
+      version: "0.15.1",
       phase: "12",
       persistence: deps.persistence,
       workspaceId: deps.workspaceId,

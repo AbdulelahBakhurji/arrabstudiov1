@@ -51,6 +51,7 @@ import {
   type UpdateTeamRequest,
   type WorkspaceId,
 } from "@arrab/shared";
+import { decryptField, encryptField, sealMaybeJson } from "../lib/field-crypto.js";
 
 function requireName(value: string | undefined, label: string): string {
   const trimmed = value?.trim() ?? "";
@@ -248,7 +249,8 @@ export class WorkspaceCommandService {
   async deleteAgent(id: string): Promise<{ ok: true }> {
     const existing = await this.persistence.agents.getById(id);
     if (!existing) {
-      throw new NotFoundError("Agent", id);
+      // Already gone — treat as success so clients never loop on delete errors.
+      return { ok: true };
     }
 
     const memberships = await this.persistence.memberships.list();
@@ -258,6 +260,7 @@ export class WorkspaceCommandService {
       }
     }
 
+    // Keep every conversation + message row. Only detach the agent pointer.
     const conversations = await this.persistence.conversations.list();
     for (const conversation of conversations) {
       if (conversation.agentId === id) {
@@ -280,8 +283,61 @@ export class WorkspaceCommandService {
       }
     }
 
-    await this.persistence.agents.delete(id);
-    await this.record("updated", "agent", id, `Deleted AI employee "${existing.name}"`);
+    try {
+      const memories = await this.persistence.memories.listByAgent(id);
+      for (const memory of memories) {
+        await this.persistence.memories.delete(memory.id);
+      }
+    } catch {
+      // optional cleanup
+    }
+
+    try {
+      const skills = await this.persistence.skills.listByAgent(id);
+      for (const skill of skills) {
+        await this.persistence.skills.delete(skill.id);
+      }
+    } catch {
+      // optional cleanup
+    }
+
+    try {
+      const goals = await this.persistence.goals.listActiveByAgent(id);
+      for (const goal of goals) {
+        await this.persistence.goals.update({
+          ...goal,
+          agentId: null,
+          updatedAt: this.clock.isoNow(),
+        });
+      }
+    } catch {
+      // optional cleanup
+    }
+
+    try {
+      await this.persistence.agents.delete(id);
+    } catch {
+      // FK still blocking — soft-archive so the agent disappears from the roster.
+      await this.persistence.agents.update({
+        ...existing,
+        status: "archived",
+        updatedAt: this.clock.isoNow(),
+      });
+      await this.record(
+        "updated",
+        "agent",
+        id,
+        `Archived AI employee "${existing.name}" after delete blocked (chats retained)`,
+      );
+      return { ok: true };
+    }
+
+    await this.record(
+      "updated",
+      "agent",
+      id,
+      `Deleted AI employee "${existing.name}" (chats retained in database)`,
+    );
     return { ok: true };
   }
 
@@ -474,6 +530,26 @@ export class WorkspaceCommandService {
     return updated;
   }
 
+  async upsertCompanionState(input: {
+    updatedAt?: string;
+    state?: unknown;
+  }): Promise<{ updatedAt: string; state: unknown }> {
+    if (input.state == null || typeof input.state !== "object") {
+      throw new ValidationError("Companion state payload is required");
+    }
+    const updatedAt =
+      typeof input.updatedAt === "string" && input.updatedAt.trim()
+        ? input.updatedAt.trim()
+        : this.clock.isoNow();
+    return this.persistence.companionState.upsert({
+      updatedAt,
+      state: sealMaybeJson(input.state),
+    }).then((doc) => ({
+      updatedAt: doc.updatedAt,
+      state: input.state,
+    }));
+  }
+
   private async assertAgent(agentId: string | null | undefined): Promise<void> {
     if (!agentId) {
       return;
@@ -501,7 +577,7 @@ export class WorkspaceCommandService {
 
     const now = this.clock.isoNow();
     let status: TaskStatus = input.status ?? "backlog";
-    if (!input.status && input.assigneeAgentId) {
+    if (!input.status && (input.assigneeAgentId || input.assigneeEmployeeId)) {
       status = "assigned";
     }
     const priority: TaskPriority = input.priority ?? "medium";
@@ -516,6 +592,7 @@ export class WorkspaceCommandService {
       assigneeAgentId: input.assigneeAgentId
         ? brandId<AgentId>(input.assigneeAgentId)
         : null,
+      assigneeEmployeeId: input.assigneeEmployeeId?.trim() || null,
       teamId: input.teamId ? brandId<TeamId>(input.teamId) : null,
       projectId: input.projectId ? brandId<ProjectId>(input.projectId) : null,
       dueAt: input.dueAt?.trim() || null,
@@ -549,7 +626,15 @@ export class WorkspaceCommandService {
         : input.assigneeAgentId
           ? brandId<AgentId>(input.assigneeAgentId)
           : null;
-    if (input.status === undefined && input.assigneeAgentId && status === "backlog") {
+    const assigneeEmployeeId =
+      input.assigneeEmployeeId === undefined
+        ? existing.assigneeEmployeeId
+        : input.assigneeEmployeeId?.trim() || null;
+    if (
+      input.status === undefined &&
+      (input.assigneeAgentId || input.assigneeEmployeeId) &&
+      status === "backlog"
+    ) {
       status = "assigned";
     }
 
@@ -560,6 +645,7 @@ export class WorkspaceCommandService {
       status,
       priority: input.priority ?? existing.priority,
       assigneeAgentId,
+      assigneeEmployeeId,
       teamId:
         input.teamId === undefined
           ? existing.teamId
@@ -593,18 +679,19 @@ export class WorkspaceCommandService {
   async createKnowledge(input: CreateKnowledgeRequest): Promise<Knowledge> {
     await this.assertProjectInWorkspace(input.projectId);
     const now = this.clock.isoNow();
+    const content = requireText(input.content, "Knowledge content", 100_000);
     const doc: Knowledge = {
       id: brandId<KnowledgeId>(this.ids.next("know")),
       workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
       projectId: input.projectId ? brandId<ProjectId>(input.projectId) : null,
       title: requireName(input.title, "Knowledge title"),
-      content: requireText(input.content, "Knowledge content", 20_000),
+      content: encryptField(content),
       createdAt: now,
       updatedAt: now,
     };
     await this.persistence.knowledge.create(doc);
     await this.record("created", "knowledge", doc.id, `Added knowledge "${doc.title}"`);
-    return doc;
+    return { ...doc, content };
   }
 
   async updateKnowledge(id: string, input: UpdateKnowledgeRequest): Promise<Knowledge> {
@@ -615,13 +702,14 @@ export class WorkspaceCommandService {
     if (input.projectId !== undefined) {
       await this.assertProjectInWorkspace(input.projectId);
     }
+    const content =
+      input.content === undefined
+        ? decryptField(existing.content)
+        : requireText(input.content, "Knowledge content", 100_000);
     const updated: Knowledge = {
       ...existing,
       title: input.title === undefined ? existing.title : requireName(input.title, "Knowledge title"),
-      content:
-        input.content === undefined
-          ? existing.content
-          : requireText(input.content, "Knowledge content", 20_000),
+      content: encryptField(content),
       projectId:
         input.projectId === undefined
           ? existing.projectId
@@ -632,7 +720,7 @@ export class WorkspaceCommandService {
     };
     await this.persistence.knowledge.update(updated);
     await this.record("updated", "knowledge", updated.id, `Updated knowledge "${updated.title}"`);
-    return updated;
+    return { ...updated, content };
   }
 
   async deleteKnowledge(id: string): Promise<{ ok: true }> {
@@ -649,18 +737,19 @@ export class WorkspaceCommandService {
     await this.assertProjectInWorkspace(input.projectId);
     await this.assertAgent(input.agentId);
     const now = this.clock.isoNow();
+    const content = requireText(input.content, "Memory content", 4000);
     const memory: Memory = {
       id: brandId<MemoryId>(this.ids.next("mem")),
       workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
       agentId: input.agentId ? brandId<AgentId>(input.agentId) : null,
       projectId: input.projectId ? brandId<ProjectId>(input.projectId) : null,
-      content: requireText(input.content, "Memory content", 4000),
+      content: encryptField(content),
       createdAt: now,
       updatedAt: now,
     };
     await this.persistence.memories.create(memory);
     await this.record("created", "memory", memory.id, "Stored agent memory");
-    return memory;
+    return { ...memory, content };
   }
 
   async deleteMemory(id: string): Promise<{ ok: true }> {

@@ -35,8 +35,9 @@ import {
   type UsageEvent,
   type WorkspaceId,
 } from "@arrab/shared";
+import { decryptField, encryptField } from "../lib/field-crypto.js";
 import {
-  ConnectorService,
+  type ConnectorService,
   fetchGithubRepoContext,
 } from "./connector-service.js";
 import type { AccountService } from "./account-service.js";
@@ -97,6 +98,28 @@ export class ConversationService {
     };
   }
 
+  private sealMessage(message: Message): Message {
+    return { ...message, content: encryptField(message.content) };
+  }
+
+  private openMessage(message: Message): Message {
+    try {
+      return { ...message, content: decryptField(message.content) };
+    } catch {
+      return message;
+    }
+  }
+
+  private async persistMessage(message: Message): Promise<void> {
+    await this.persistence.messages.create(this.sealMessage(message));
+  }
+
+  private async loadPlainMessages(conversationId: string): Promise<Message[]> {
+    return (await this.persistence.messages.listByConversation(conversationId)).map((message) =>
+      this.openMessage(message),
+    );
+  }
+
   private parseCallToolDetail(detail: string | null): CallToolApprovalDetail | null {
     if (!detail?.trim()) return null;
     try {
@@ -113,7 +136,14 @@ export class ConversationService {
   }
 
   async listConversations(): Promise<Conversation[]> {
-    return this.persistence.conversations.list();
+    return (await this.persistence.conversations.list()).map((conversation) => ({
+      ...conversation,
+      ownerEmployeeId: conversation.ownerEmployeeId ?? null,
+      visibility: conversation.visibility ?? "workspace",
+      spendTier: conversation.spendTier ?? "low",
+      sessionTokenBudget:
+        conversation.sessionTokenBudget === undefined ? null : conversation.sessionTokenBudget,
+    }));
   }
 
   async deleteConversation(id: string): Promise<{ ok: true }> {
@@ -138,7 +168,7 @@ export class ConversationService {
     if (!conversation) {
       throw new NotFoundError("Conversation", id);
     }
-    const messages = await this.persistence.messages.listByConversation(id);
+    const messages = await this.loadPlainMessages(id);
     const normalized: Conversation = {
       ...conversation,
       spendTier: conversation.spendTier ?? "low",
@@ -146,6 +176,8 @@ export class ConversationService {
         conversation.sessionTokenBudget === undefined
           ? null
           : conversation.sessionTokenBudget,
+      ownerEmployeeId: conversation.ownerEmployeeId ?? null,
+      visibility: conversation.visibility ?? "workspace",
     };
     return {
       conversation: normalized,
@@ -154,7 +186,11 @@ export class ConversationService {
     };
   }
 
-  async createConversation(input: CreateConversationRequest): Promise<Conversation> {
+  async createConversation(
+    input: CreateConversationRequest,
+    actorEmployeeId?: string | null,
+  ): Promise<Conversation> {
+    await this.accounts.assertWithinQuota();
     const teamId = input.teamId?.trim() || null;
     let agentId = input.agentId?.trim() || null;
     let agentName = "Team";
@@ -220,6 +256,10 @@ export class ConversationService {
       title,
       spendTier,
       sessionTokenBudget,
+      ownerEmployeeId: actorEmployeeId?.trim() || null,
+      visibility: actorEmployeeId
+        ? (input.visibility ?? "private")
+        : (input.visibility ?? "workspace"),
       createdAt: now,
       updatedAt: now,
     };
@@ -310,9 +350,9 @@ export class ConversationService {
       content,
       createdAt: now,
     };
-    await this.persistence.messages.create(userMessage);
+    await this.persistMessage(userMessage);
 
-    const history = (await this.persistence.messages.listByConversation(conversationId))
+    const history = (await this.loadPlainMessages(conversationId))
       .filter((message) => message.id !== userMessage.id)
       .filter((message) => message.role === "user" || message.role === "assistant")
       .slice(-profile.historyMessages)
@@ -352,16 +392,26 @@ export class ConversationService {
         }
       }
 
-      const docs = await this.persistence.knowledge.listByProject(projectId ?? null);
-      if (docs.length > 0 && profile.knowledgeDocs > 0) {
-        contextParts.push(
-          [
-            "Project knowledge base:",
-            ...docs.slice(0, profile.knowledgeDocs).map(
-              (doc) => `- ${doc.title}: ${doc.content.slice(0, profile.knowledgeChars)}`,
-            ),
-          ].join("\n"),
-        );
+      const allDocs = await this.persistence.knowledge.list();
+      if (allDocs.length > 0 && profile.knowledgeDocs > 0) {
+        const {
+          selectRelevantKnowledge,
+          buildKnowledgeSystemBlock,
+        } = await import("../lib/knowledge-context.js");
+        const ranked = selectRelevantKnowledge({
+          docs: allDocs,
+          query: content,
+          projectId,
+          limit: profile.knowledgeDocs,
+          decrypt: decryptField,
+        });
+        const queryHadHits = ranked.some((item) => item.score > 0);
+        const block = buildKnowledgeSystemBlock({
+          items: ranked,
+          maxCharsPerDoc: profile.knowledgeChars,
+          queryHadHits,
+        });
+        if (block) contextParts.push(block);
       }
 
       const memberships = await this.persistence.memberships.list();
@@ -385,7 +435,7 @@ export class ConversationService {
             "Your recent memory notes (treat as facts the operator told you):",
             ...memories
               .slice(0, profile.memories)
-              .map((memory) => `- ${memory.content.slice(0, profile.memoryChars)}`),
+              .map((memory) => `- ${decryptField(memory.content).slice(0, profile.memoryChars)}`),
           ].join("\n"),
         );
       }
@@ -404,7 +454,7 @@ export class ConversationService {
       }
 
       const hint = input.workspaceHint;
-      let persistedGoal =
+      const persistedGoal =
         input.usePersistedGoal === false
           ? null
           : (await this.persistence.goals.listActiveByAgent(agent.id))[0] ?? null;
@@ -525,8 +575,10 @@ export class ConversationService {
                   ? [
                       "A local folder is attached on the operator's PC.",
                       "You have real desk tools: search_code, list_files, read_file, apply_patch, write_file,",
-                      "delete_file, rename_file, create_dir, run_terminal, git_status, git_diff, open_path, web_search.",
+                      "delete_file, rename_file, create_dir, run_terminal, git_status, git_diff, open_path,",
+                      "preview_html, generate_pdf, export_csv, web_search, fetch_url.",
                       "Workflow: search → read → edit → verify with run_terminal. Prefer apply_patch for surgical edits.",
+                      "Deliverables: preview_html for live browser preview, generate_pdf for reports/proposals, export_csv for tables.",
                       "Do not claim you lack shell or file access. Be precise and reproducible; skip fluff.",
                     ].join(" ")
                   : "The operator runs Commit / Push / Open PR from the workspace panel.",
@@ -560,12 +612,119 @@ export class ConversationService {
       // Keep desk work capable without blowing the eco budget (old floor was 900).
       const codingFloor =
         profile.tier === "high" ? 900 : profile.tier === "medium" ? 520 : 360;
+      const mailConnector = await this.connectors.findPreferredMailConnector();
+      const emailTools = mailConnector
+        ? {
+            listMessages: async (args: Record<string, string>) => {
+              const mailbox = args.mailbox?.trim() || "INBOX";
+              const limit = Math.min(30, Math.max(1, Number(args.limit) || 20));
+              const listed = await this.connectors.listEmailMessages(
+                mailConnector.id,
+                mailbox,
+                limit,
+              );
+              return JSON.stringify(listed, null, 2);
+            },
+            readMessage: async (args: Record<string, string>) => {
+              const messageId = args.message_id?.trim() || args.id?.trim() || "";
+              if (!messageId) return "FAILED read_email: message_id is required";
+              const detail = await this.connectors.readEmail(
+                mailConnector.id,
+                messageId,
+                args.mailbox?.trim() || "INBOX",
+              );
+              return JSON.stringify(
+                {
+                  id: detail.id,
+                  subject: detail.subject,
+                  from: detail.from,
+                  to: detail.to,
+                  cc: detail.cc,
+                  date: detail.date,
+                  text: detail.text?.slice(0, 12_000) ?? null,
+                  snippet: detail.snippet,
+                },
+                null,
+                2,
+              );
+            },
+            sendMessage: async (args: Record<string, string>) => {
+              const sent = await this.connectors.sendEmail(mailConnector.id, {
+                to: args.to?.trim() || "",
+                subject: args.subject?.trim() || "",
+                text: args.text ?? "",
+                cc: args.cc?.trim() || null,
+              });
+              return JSON.stringify(sent, null, 2);
+            },
+            arrangeMessages: async (args: Record<string, string>) => {
+              const rawIds = args.message_ids?.trim() || args.messageIds?.trim() || "";
+              let messageIds: string[] = [];
+              if (rawIds.startsWith("[")) {
+                try {
+                  const parsed = JSON.parse(rawIds) as unknown;
+                  if (Array.isArray(parsed)) messageIds = parsed.map(String);
+                } catch {
+                  messageIds = [];
+                }
+              } else {
+                messageIds = rawIds
+                  .split(",")
+                  .map((part) => part.trim())
+                  .filter(Boolean);
+              }
+              const action = (args.action?.trim() || "archive") as
+                | "archive"
+                | "trash"
+                | "untrash"
+                | "mark_read"
+                | "mark_unread"
+                | "star"
+                | "unstar"
+                | "label"
+                | "move";
+              const arranged = await this.connectors.arrangeEmail(mailConnector.id, {
+                action,
+                messageIds,
+                mailbox: args.mailbox?.trim() || null,
+                targetMailbox: args.target_mailbox?.trim() || args.targetMailbox?.trim() || null,
+                addLabelIds: (args.add_label_ids || args.addLabelIds || "")
+                  .split(",")
+                  .map((part) => part.trim())
+                  .filter(Boolean),
+                removeLabelIds: (args.remove_label_ids || args.removeLabelIds || "")
+                  .split(",")
+                  .map((part) => part.trim())
+                  .filter(Boolean),
+              });
+              return JSON.stringify(arranged, null, 2);
+            },
+          }
+        : null;
+      const sshConnector = await this.connectors.findPreferredSshConnector();
+      const sshTools = sshConnector
+        ? {
+            execCommand: async (args: Record<string, string>) => {
+              const command = args.command?.trim() || "";
+              if (!command) return "FAILED ssh_exec: command is required";
+              const result = await this.connectors.execSsh(sshConnector.id, { command });
+              return JSON.stringify(result, null, 2);
+            },
+            listHome: async (args: Record<string, string>) => {
+              const listed = await this.connectors.resources(
+                sshConnector.id,
+                args.query?.trim() || undefined,
+              );
+              return JSON.stringify(listed, null, 2);
+            },
+          }
+        : null;
       const runRequest = {
         agent,
         conversationId: conversation.id,
         input: content,
         history,
-        model: this.defaultModel,
+        model: input.model?.trim() || this.defaultModel,
         systemExtra,
         maxOutputTokens: codingFolder
           ? Math.max(profile.maxOutputTokens, codingFloor)
@@ -575,6 +734,10 @@ export class ConversationService {
           workspaceSummary,
           activeGoal: activeGoalText,
           teamRoster,
+          email: emailTools,
+          emailAccountLabel: mailConnector?.accountLabel ?? null,
+          ssh: sshTools,
+          sshAccountLabel: sshConnector?.accountLabel ?? null,
         },
       };
 
@@ -646,7 +809,7 @@ export class ConversationService {
             `Proposed action awaiting your approval: ${approval.title}`,
           createdAt: this.clock.isoNow(),
         };
-        await this.persistence.messages.create(assistantMessage);
+        await this.persistMessage(assistantMessage);
       } else if (result.status !== "completed" || !result.output) {
         throw new ValidationError(result.error ?? "Employee did not return a reply");
       } else {
@@ -657,7 +820,7 @@ export class ConversationService {
           content: result.output,
           createdAt: this.clock.isoNow(),
         };
-        await this.persistence.messages.create(assistantMessage);
+        await this.persistMessage(assistantMessage);
         await this.record(
           "ran",
           "conversation",
@@ -761,7 +924,7 @@ export class ConversationService {
     );
     const profile = resolveSpendProfile(conversation.spendTier ?? "low");
     const historyMessages = (
-      await this.persistence.messages.listByConversation(conversation.id)
+      await this.loadPlainMessages(conversation.id)
     )
       .filter((message) => message.role === "user" || message.role === "assistant")
       .slice(-profile.historyMessages);
@@ -811,11 +974,107 @@ export class ConversationService {
       ? [
           "Local desk TOOL_RESULT received. You still have full PC tools for this folder:",
           "list_files, search_code, read_file, apply_patch, write_file, delete_file, rename_file, create_dir,",
-          "run_terminal, git_status, git_diff, open_path, web_search.",
+          "run_terminal, git_status, git_diff, open_path, preview_html, generate_pdf, export_csv, web_search, fetch_url.",
           "Continue the coding loop until the operator's ask is done. Verify edits with run_terminal.",
+          "For reports/pages: preview_html or generate_pdf. For tables: export_csv.",
           "Be brief and precise — prefer exact paths and commands.",
         ].join(" ")
       : "You just received an approved tool result. Do not call propose_action again for the same action.";
+
+    const mailConnector = await this.connectors.findPreferredMailConnector();
+    const emailTools = mailConnector
+      ? {
+          listMessages: async (args: Record<string, string>) => {
+            const mailbox = args.mailbox?.trim() || "INBOX";
+            const limit = Math.min(30, Math.max(1, Number(args.limit) || 20));
+            const listed = await this.connectors.listEmailMessages(
+              mailConnector.id,
+              mailbox,
+              limit,
+            );
+            return JSON.stringify(listed, null, 2);
+          },
+          readMessage: async (args: Record<string, string>) => {
+            const messageId = args.message_id?.trim() || args.id?.trim() || "";
+            if (!messageId) return "FAILED read_email: message_id is required";
+            const detail = await this.connectors.readEmail(
+              mailConnector.id,
+              messageId,
+              args.mailbox?.trim() || "INBOX",
+            );
+            return JSON.stringify(
+              {
+                id: detail.id,
+                subject: detail.subject,
+                from: detail.from,
+                to: detail.to,
+                date: detail.date,
+                text: detail.text?.slice(0, 12_000) ?? null,
+              },
+              null,
+              2,
+            );
+          },
+          sendMessage: async (args: Record<string, string>) => {
+            const sent = await this.connectors.sendEmail(mailConnector.id, {
+              to: args.to?.trim() || "",
+              subject: args.subject?.trim() || "",
+              text: args.text ?? "",
+              cc: args.cc?.trim() || null,
+            });
+            return JSON.stringify(sent, null, 2);
+          },
+          arrangeMessages: async (args: Record<string, string>) => {
+            const rawIds = args.message_ids?.trim() || "";
+            const messageIds = rawIds.startsWith("[")
+              ? (JSON.parse(rawIds) as string[])
+              : rawIds.split(",").map((part) => part.trim()).filter(Boolean);
+            const arranged = await this.connectors.arrangeEmail(mailConnector.id, {
+              action: (args.action?.trim() || "archive") as
+                | "archive"
+                | "trash"
+                | "untrash"
+                | "mark_read"
+                | "mark_unread"
+                | "star"
+                | "unstar"
+                | "label"
+                | "move",
+              messageIds,
+              mailbox: args.mailbox?.trim() || null,
+              targetMailbox: args.target_mailbox?.trim() || null,
+              addLabelIds: (args.add_label_ids || "")
+                .split(",")
+                .map((part) => part.trim())
+                .filter(Boolean),
+              removeLabelIds: (args.remove_label_ids || "")
+                .split(",")
+                .map((part) => part.trim())
+                .filter(Boolean),
+            });
+            return JSON.stringify(arranged, null, 2);
+          },
+        }
+      : null;
+
+    const sshConnector = await this.connectors.findPreferredSshConnector();
+    const sshTools = sshConnector
+      ? {
+          execCommand: async (args: Record<string, string>) => {
+            const command = args.command?.trim() || "";
+            if (!command) return "FAILED ssh_exec: command is required";
+            const result = await this.connectors.execSsh(sshConnector.id, { command });
+            return JSON.stringify(result, null, 2);
+          },
+          listHome: async (args: Record<string, string>) => {
+            const listed = await this.connectors.resources(
+              sshConnector.id,
+              args.query?.trim() || undefined,
+            );
+            return JSON.stringify(listed, null, 2);
+          },
+        }
+      : null;
 
     const result = await this.runtime.run(
       {
@@ -832,18 +1091,22 @@ export class ConversationService {
         systemExtra: deskSystemExtra,
         // Critical: keep native desk tools attached after the first local tool.
         // Without this, multi-step file/terminal work dies after one approval.
-        tools: isLocal
-          ? {
-              workspaceSummary: [
+        tools: {
+          workspaceSummary: isLocal
+            ? [
                 "mode=folder",
                 "desk=local",
                 "Local folder: attached (desktop-executed tools)",
                 "Continue using search_code / list_files / read_file / apply_patch / write_file / run_terminal.",
-              ].join("\n"),
-              activeGoal: null,
-              teamRoster: null,
-            }
-          : null,
+              ].join("\n")
+            : null,
+          activeGoal: null,
+          teamRoster: null,
+          email: emailTools,
+          emailAccountLabel: mailConnector?.accountLabel ?? null,
+          ssh: sshTools,
+          sshAccountLabel: sshConnector?.accountLabel ?? null,
+        },
       },
       this.gateway,
     );
@@ -885,7 +1148,7 @@ export class ConversationService {
           `Next tool awaiting desktop execution: ${nextApproval.title}`,
         createdAt: this.clock.isoNow(),
       };
-      await this.persistence.messages.create(assistantMessage);
+      await this.persistMessage(assistantMessage);
       await this.persistence.conversations.update({
         ...conversation,
         updatedAt: this.clock.isoNow(),
@@ -940,7 +1203,7 @@ export class ConversationService {
       content: result.output,
       createdAt: this.clock.isoNow(),
     };
-    await this.persistence.messages.create(assistantMessage);
+    await this.persistMessage(assistantMessage);
     await this.record(
       "ran",
       "conversation",

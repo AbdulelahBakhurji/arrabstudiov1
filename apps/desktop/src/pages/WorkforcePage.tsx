@@ -35,6 +35,10 @@ import {
   UsersRound,
   UserRound,
   X,
+  ArrowRight,
+  GripVertical,
+  Upload,
+  FileText,
 } from "lucide-react";
 import type {
   Agent,
@@ -302,11 +306,17 @@ export function WorkforcePage() {
   const [taskFilterAssignee, setTaskFilterAssignee] = useState("");
   const [taskFilterPriority, setTaskFilterPriority] = useState<TaskPriority | "">("");
   const [taskFilterProject, setTaskFilterProject] = useState("");
+  const [taskSearch, setTaskSearch] = useState("");
+  const [taskDragId, setTaskDragId] = useState<string | null>(null);
+  const [taskDropStatus, setTaskDropStatus] = useState<TaskStatus | null>(null);
   const [bindings, setBindings] = useState<ProjectRepoBinding[]>([]);
 
   const [knowTitle, setKnowTitle] = useState("");
   const [knowContent, setKnowContent] = useState("");
   const [knowProject, setKnowProject] = useState("");
+  const [knowSearch, setKnowSearch] = useState("");
+  const [knowExpandedId, setKnowExpandedId] = useState<string | null>(null);
+  const [knowUploading, setKnowUploading] = useState(false);
 
   const load = useCallback(() => {
     setError(null);
@@ -613,22 +623,57 @@ export function WorkforcePage() {
     [openTasks],
   );
 
-  const tasksByStatus = useMemo(() => {
-    const map = new Map<TaskStatus, Task[]>();
-    for (const status of TASK_COLUMNS) map.set(status, []);
-    const filtered = tasks.filter((task) => {
+  const taskBoardAgents = useMemo(
+    () => filterLiveWorkforceAgents(agents).filter((agent) => agent.status !== "archived"),
+    [agents],
+  );
+
+  const filteredBoardTasks = useMemo(() => {
+    const q = taskSearch.trim().toLowerCase();
+    return tasks.filter((task) => {
       if (taskFilterAssignee && task.assigneeAgentId !== taskFilterAssignee) return false;
       if (taskFilterPriority && task.priority !== taskFilterPriority) return false;
       if (taskFilterProject && task.projectId !== taskFilterProject) return false;
-      return true;
+      if (!q) return true;
+      const hay = `${task.title} ${task.brief ?? ""}`.toLowerCase();
+      return hay.includes(q);
     });
-    for (const task of filtered) {
+  }, [taskFilterAssignee, taskFilterPriority, taskFilterProject, taskSearch, tasks]);
+
+  const tasksByStatus = useMemo(() => {
+    const map = new Map<TaskStatus, Task[]>();
+    for (const status of TASK_COLUMNS) map.set(status, []);
+    for (const task of filteredBoardTasks) {
       const list = map.get(task.status) ?? [];
       list.push(task);
       map.set(task.status, list);
     }
     return map;
-  }, [taskFilterAssignee, taskFilterPriority, taskFilterProject, tasks]);
+  }, [filteredBoardTasks]);
+
+  const taskStats = useMemo(() => {
+    const open = tasks.filter((task) => task.status !== "done").length;
+    const inProgress = tasks.filter((task) => task.status === "in_progress").length;
+    const blocked = tasks.filter((task) => task.status === "blocked").length;
+    const done = tasks.filter((task) => task.status === "done").length;
+    return { open, inProgress, blocked, done, total: tasks.length };
+  }, [tasks]);
+
+  useEffect(() => {
+    if (view !== "tasks") return;
+    const refreshTasks = () => {
+      void arrabApi.tasks().then(
+        (res) => setTasks(res.items),
+        () => undefined,
+      );
+    };
+    const id = window.setInterval(refreshTasks, 12_000);
+    window.addEventListener("focus", refreshTasks);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("focus", refreshTasks);
+    };
+  }, [view]);
 
   const projectRepo = useCallback(
     (projectId: string | null) =>
@@ -737,14 +782,15 @@ export function WorkforcePage() {
     setSaving(true);
     setError(null);
     try {
-      await arrabApi.createTask({
-        title: taskTitle,
-        brief: taskBrief || null,
+      const created = await arrabApi.createTask({
+        title: taskTitle.trim(),
+        brief: taskBrief.trim() || null,
         priority: taskPriority,
         assigneeAgentId: taskAssignee || null,
         teamId: taskTeam || null,
         projectId: taskProject || null,
       });
+      setTasks((prev) => [created, ...prev.filter((item) => item.id !== created.id)]);
       setTaskTitle("");
       setTaskBrief("");
       setTaskPriority("medium");
@@ -752,6 +798,7 @@ export function WorkforcePage() {
       setTaskTeam("");
       setTaskProject("");
       setTaskFormOpen(false);
+      pushToast({ title: t("hqTasksCreated"), tone: "success" });
       load();
     } catch (err: unknown) {
       setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
@@ -760,16 +807,64 @@ export function WorkforcePage() {
     }
   }
 
+  async function setTaskStatus(task: Task, status: TaskStatus) {
+    if (task.status === status) return;
+    setTasks((prev) =>
+      prev.map((item) => (item.id === task.id ? { ...item, status, updatedAt: new Date().toISOString() } : item)),
+    );
+    try {
+      const updated = await arrabApi.updateTask(task.id, { status });
+      setTasks((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+    } catch (err: unknown) {
+      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      load();
+    }
+  }
+
   async function advanceTask(task: Task) {
     const order: TaskStatus[] = ["backlog", "assigned", "in_progress", "blocked", "done"];
     const index = order.indexOf(task.status);
     const next = order[Math.min(index + 1, order.length - 1)];
     if (!next || next === task.status) return;
+    await setTaskStatus(task, next);
+  }
+
+  async function removeTask(task: Task) {
+    setTasks((prev) => prev.filter((item) => item.id !== task.id));
     try {
-      await arrabApi.updateTask(task.id, { status: next });
-      load();
+      await arrabApi.deleteTask(task.id);
+      pushToast({ title: t("hqTasksDeleted"), tone: "success" });
     } catch (err: unknown) {
       setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      load();
+    }
+  }
+
+  function taskColumnLabel(status: TaskStatus): string {
+    switch (status) {
+      case "backlog":
+        return t("taskColBacklog");
+      case "assigned":
+        return t("taskColAssigned");
+      case "in_progress":
+        return t("taskColInProgress");
+      case "blocked":
+        return t("taskColBlocked");
+      case "done":
+        return t("taskColDone");
+    }
+  }
+
+  function priorityLabel(priority: TaskPriority): string {
+    switch (priority) {
+      case "urgent":
+        return t("priorityUrgent");
+      case "high":
+        return t("priorityHigh");
+      case "medium":
+        return t("priorityMedium");
+      case "low":
+        return t("priorityLow");
     }
   }
 
@@ -801,20 +896,38 @@ export function WorkforcePage() {
     }
   }
 
+  const filteredKnowledge = useMemo(() => {
+    const q = knowSearch.trim().toLowerCase();
+    if (!q) return knowledge;
+    return knowledge.filter((doc) => {
+      const hay = `${doc.title} ${doc.content}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [knowSearch, knowledge]);
+
+  const knowledgeStats = useMemo(() => {
+    const orgWide = knowledge.filter((doc) => !doc.projectId).length;
+    const projectScoped = knowledge.length - orgWide;
+    const chars = knowledge.reduce((sum, doc) => sum + (doc.content?.length ?? 0), 0);
+    return { total: knowledge.length, orgWide, projectScoped, chars };
+  }, [knowledge]);
+
   async function createKnowledge(event: FormEvent) {
     event.preventDefault();
     setSaving(true);
     setError(null);
     try {
-      await arrabApi.createKnowledge({
-        title: knowTitle,
-        content: knowContent,
+      const created = await arrabApi.createKnowledge({
+        title: knowTitle.trim(),
+        content: knowContent.trim(),
         projectId: knowProject || null,
       });
+      setKnowledge((prev) => [created, ...prev.filter((item) => item.id !== created.id)]);
       setKnowTitle("");
       setKnowContent("");
       setKnowProject("");
       setKnowledgeFormOpen(false);
+      pushToast({ title: t("hqKnowSaved"), tone: "success" });
       load();
     } catch (err: unknown) {
       setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
@@ -824,11 +937,58 @@ export function WorkforcePage() {
   }
 
   async function deleteKnowledge(id: string) {
+    const previous = knowledge;
+    setKnowledge((prev) => prev.filter((item) => item.id !== id));
     try {
       await arrabApi.deleteKnowledge(id);
-      load();
+      pushToast({ title: t("hqKnowDeleted"), tone: "success" });
+    } catch (err: unknown) {
+      setKnowledge(previous);
+      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+    }
+  }
+
+  async function uploadKnowledgeFiles(fileList: FileList | null) {
+    if (!fileList || fileList.length === 0) return;
+    const allowed = /\.(txt|md|markdown|csv|json|html|htm|log)$/i;
+    setKnowUploading(true);
+    setError(null);
+    let saved = 0;
+    try {
+      for (const file of Array.from(fileList)) {
+        if (!allowed.test(file.name)) {
+          pushToast({ title: t("hqKnowUploadType"), tone: "warn" });
+          continue;
+        }
+        if (file.size > 400_000) {
+          pushToast({ title: t("hqKnowUploadSize"), tone: "warn" });
+          continue;
+        }
+        const text = (await file.text()).trim();
+        if (text.length < 8) {
+          pushToast({ title: t("hqKnowUploadEmpty"), tone: "warn" });
+          continue;
+        }
+        const title = file.name.replace(/\.[^.]+$/, "").slice(0, 120) || file.name;
+        const created = await arrabApi.createKnowledge({
+          title,
+          content: text.slice(0, 100_000),
+          projectId: knowProject || null,
+        });
+        setKnowledge((prev) => [created, ...prev.filter((item) => item.id !== created.id)]);
+        saved += 1;
+      }
+      if (saved > 0) {
+        pushToast({
+          title: t("hqKnowUploaded").replace("{n}", String(saved)),
+          tone: "success",
+        });
+        load();
+      }
     } catch (err: unknown) {
       setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+    } finally {
+      setKnowUploading(false);
     }
   }
 
@@ -2277,29 +2437,71 @@ export function WorkforcePage() {
             ) : null}
 
             {view === "tasks" ? (
-              <div className="hq-rise flex h-full min-h-0 flex-col space-y-3">
-                <div className="flex flex-wrap items-end justify-between gap-3">
-                  <div>
-                    <h2 className="text-lg text-white">{t("ccTasks")}</h2>
-                    <p className="mt-0.5 text-sm text-neutral-500">{t("ccTasksBody")}</p>
+              <section className="hq-tasks workforce-rise" aria-label={t("ccTasks")}>
+                <header className="hq-tasks-mast">
+                  <div className="min-w-0">
+                    <p className="hq-tasks-kicker">{t("ccTasks")}</p>
+                    <h2 className="hq-tasks-title">{t("hqTasksHeadline")}</h2>
+                    <p className="hq-tasks-lead">{t("hqTasksHint")}</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => setTaskFormOpen(true)}
-                    className="inline-flex h-9 items-center gap-1.5 rounded-full bg-white px-4 text-sm font-medium text-black"
-                  >
-                    <Plus className="size-3.5" />
-                    {t("assignTask")}
-                  </button>
+                  <div className="hq-tasks-mast-actions">
+                    <button
+                      type="button"
+                      className="hq-tasks-ghost"
+                      onClick={() => load()}
+                      disabled={loading}
+                    >
+                      <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
+                      {t("refresh")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTaskFormOpen((open) => !open)}
+                      className="hq-tasks-primary"
+                    >
+                      <Plus className="size-3.5" />
+                      {t("assignTask")}
+                    </button>
+                  </div>
+                </header>
+
+                <div className="hq-tasks-stats">
+                  <div className="hq-tasks-stat">
+                    <span className="hq-tasks-stat-value">{taskStats.open}</span>
+                    <span className="hq-tasks-stat-label">{t("hqTasksOpen")}</span>
+                  </div>
+                  <div className="hq-tasks-stat">
+                    <span className="hq-tasks-stat-value">{taskStats.inProgress}</span>
+                    <span className="hq-tasks-stat-label">{t("hqTasksProgress")}</span>
+                  </div>
+                  <div className="hq-tasks-stat is-warn">
+                    <span className="hq-tasks-stat-value">{taskStats.blocked}</span>
+                    <span className="hq-tasks-stat-label">{t("hqTasksBlocked")}</span>
+                  </div>
+                  <div className="hq-tasks-stat is-done">
+                    <span className="hq-tasks-stat-value">{taskStats.done}</span>
+                    <span className="hq-tasks-stat-label">{t("hqTasksDone")}</span>
+                  </div>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-3">
+
+                <div className="hq-tasks-toolbar">
+                  <label className="hq-tasks-search">
+                    <Search className="size-3.5 opacity-60" />
+                    <input
+                      value={taskSearch}
+                      onChange={(e) => setTaskSearch(e.target.value)}
+                      placeholder={t("hqTasksSearch")}
+                      aria-label={t("hqTasksSearch")}
+                    />
+                  </label>
                   <select
                     value={taskFilterAssignee}
                     onChange={(e) => setTaskFilterAssignee(e.target.value)}
-                    className="field"
+                    className="hq-tasks-select"
+                    aria-label={t("allAssignees")}
                   >
                     <option value="">{t("allAssignees")}</option>
-                    {agents.map((agent) => (
+                    {taskBoardAgents.map((agent) => (
                       <option key={agent.id} value={agent.id}>
                         {agent.name}
                       </option>
@@ -2308,18 +2510,20 @@ export function WorkforcePage() {
                   <select
                     value={taskFilterPriority}
                     onChange={(e) => setTaskFilterPriority(e.target.value as TaskPriority | "")}
-                    className="field"
+                    className="hq-tasks-select"
+                    aria-label={t("allPriorities")}
                   >
                     <option value="">{t("allPriorities")}</option>
-                    <option value="urgent">urgent</option>
-                    <option value="high">high</option>
-                    <option value="medium">medium</option>
-                    <option value="low">low</option>
+                    <option value="urgent">{t("priorityUrgent")}</option>
+                    <option value="high">{t("priorityHigh")}</option>
+                    <option value="medium">{t("priorityMedium")}</option>
+                    <option value="low">{t("priorityLow")}</option>
                   </select>
                   <select
                     value={taskFilterProject}
                     onChange={(e) => setTaskFilterProject(e.target.value)}
-                    className="field"
+                    className="hq-tasks-select"
+                    aria-label={t("allProjects")}
                   >
                     <option value="">{t("allProjects")}</option>
                     {projects.map((project) => (
@@ -2329,54 +2533,62 @@ export function WorkforcePage() {
                     ))}
                   </select>
                 </div>
+
                 {taskFormOpen ? (
-                  <form
-                    onSubmit={createTask}
-                    className="rounded-[28px] border border-white/10 bg-[var(--color-surface)] p-5"
-                  >
-                    <h2 className="text-lg text-white">{t("assignTask")}</h2>
-                    <p className="mt-1 text-sm text-neutral-500">{t("assignTaskBody")}</p>
-                    <div className="mt-4 grid gap-3 md:grid-cols-2">
-                      <Field label={t("taskTitle")}>
+                  <form onSubmit={createTask} className="hq-tasks-composer">
+                    <div className="hq-tasks-composer-head">
+                      <div>
+                        <h3>{t("assignTask")}</h3>
+                        <p>{t("assignTaskBody")}</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="hq-tasks-icon"
+                        onClick={() => setTaskFormOpen(false)}
+                        aria-label={t("cancel")}
+                      >
+                        <X className="size-4" />
+                      </button>
+                    </div>
+                    <div className="hq-tasks-composer-grid">
+                      <label className="hq-tasks-field">
+                        <span>{t("taskTitle")}</span>
                         <input
                           required
                           value={taskTitle}
                           onChange={(e) => setTaskTitle(e.target.value)}
-                          className="field"
+                          placeholder={t("hqTasksTitlePh")}
                         />
-                      </Field>
-                      <Field label={t("taskPriority")}>
+                      </label>
+                      <label className="hq-tasks-field">
+                        <span>{t("taskPriority")}</span>
                         <select
                           value={taskPriority}
                           onChange={(e) => setTaskPriority(e.target.value as TaskPriority)}
-                          className="field"
                         >
-                          <option value="low">low</option>
-                          <option value="medium">medium</option>
-                          <option value="high">high</option>
-                          <option value="urgent">urgent</option>
+                          <option value="low">{t("priorityLow")}</option>
+                          <option value="medium">{t("priorityMedium")}</option>
+                          <option value="high">{t("priorityHigh")}</option>
+                          <option value="urgent">{t("priorityUrgent")}</option>
                         </select>
-                      </Field>
-                      <Field label={t("taskAssignee")}>
+                      </label>
+                      <label className="hq-tasks-field">
+                        <span>{t("taskAssignee")}</span>
                         <select
                           value={taskAssignee}
                           onChange={(e) => setTaskAssignee(e.target.value)}
-                          className="field"
                         >
                           <option value="">{t("unassigned")}</option>
-                          {agents.map((agent) => (
+                          {taskBoardAgents.map((agent) => (
                             <option key={agent.id} value={agent.id}>
                               {agent.name}
                             </option>
                           ))}
                         </select>
-                      </Field>
-                      <Field label={t("taskTeam")}>
-                        <select
-                          value={taskTeam}
-                          onChange={(e) => setTaskTeam(e.target.value)}
-                          className="field"
-                        >
+                      </label>
+                      <label className="hq-tasks-field">
+                        <span>{t("taskTeam")}</span>
+                        <select value={taskTeam} onChange={(e) => setTaskTeam(e.target.value)}>
                           <option value="">{t("none")}</option>
                           {teams.map((team) => (
                             <option key={team.id} value={team.id}>
@@ -2384,12 +2596,12 @@ export function WorkforcePage() {
                             </option>
                           ))}
                         </select>
-                      </Field>
-                      <Field label={t("colProject")}>
+                      </label>
+                      <label className="hq-tasks-field">
+                        <span>{t("colProject")}</span>
                         <select
                           value={taskProject}
                           onChange={(e) => setTaskProject(e.target.value)}
-                          className="field"
                         >
                           <option value="">{t("none")}</option>
                           {projects.map((project) => (
@@ -2401,163 +2613,299 @@ export function WorkforcePage() {
                             </option>
                           ))}
                         </select>
-                      </Field>
-                      <Field label={t("taskBrief")}>
+                      </label>
+                      <label className="hq-tasks-field hq-tasks-field-wide">
+                        <span>{t("taskBrief")}</span>
                         <textarea
                           value={taskBrief}
                           onChange={(e) => setTaskBrief(e.target.value)}
                           rows={3}
-                          className="field"
+                          placeholder={t("hqTasksBriefPh")}
                         />
-                      </Field>
+                      </label>
                     </div>
                     {taskProject && projectRepo(taskProject) ? (
-                      <p className="mt-3 text-xs text-neutral-500">
+                      <p className="hq-tasks-hint-line">
                         {t("taskUsesConnector")}: {projectRepo(taskProject)}
                       </p>
                     ) : null}
-                    <div className="mt-4 flex gap-2">
+                    <div className="hq-tasks-composer-actions">
                       <button
                         type="submit"
                         disabled={saving || !taskTitle.trim()}
-                        className="h-9 rounded-full bg-white px-4 text-sm font-medium text-black disabled:opacity-40"
+                        className="hq-tasks-primary"
                       >
                         {t("createTask")}
                       </button>
                       <button
                         type="button"
                         onClick={() => setTaskFormOpen(false)}
-                        className="h-9 rounded-full border border-white/15 px-4 text-sm text-neutral-300"
+                        className="hq-tasks-ghost"
                       >
                         {t("cancel")}
                       </button>
                     </div>
                   </form>
                 ) : null}
-                <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto pb-1">
-                  {TASK_COLUMNS.map((status) => (
-                    <div
-                      key={status}
-                      className="min-w-[210px] flex-1 rounded-[22px] border border-white/10 bg-[var(--color-surface)] p-3"
-                    >
-                      <p className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">
-                        {status.replace("_", " ")}
-                      </p>
-                      <div className="mt-3 max-h-[48vh] space-y-2 overflow-y-auto">
-                        {(tasksByStatus.get(status) ?? []).map((task) => (
-                          <div
-                            key={task.id}
-                            className="rounded-xl border border-white/10 bg-black/50 p-3"
-                          >
-                            <p className="text-sm text-white">{task.title}</p>
-                            <p className="mt-1 text-[11px] text-neutral-500">
-                              {task.priority} · {agentName(task.assigneeAgentId)}
+
+                <div className="hq-tasks-board">
+                  {TASK_COLUMNS.map((status) => {
+                    const columnTasks = tasksByStatus.get(status) ?? [];
+                    return (
+                      <div
+                        key={status}
+                        className={cn(
+                          "hq-tasks-column",
+                          `is-${status}`,
+                          taskDropStatus === status && "is-drop",
+                        )}
+                        onDragOver={(event) => {
+                          event.preventDefault();
+                          setTaskDropStatus(status);
+                        }}
+                        onDragLeave={() => {
+                          setTaskDropStatus((current) => (current === status ? null : current));
+                        }}
+                        onDrop={(event) => {
+                          event.preventDefault();
+                          const id = event.dataTransfer.getData("text/task-id") || taskDragId;
+                          setTaskDropStatus(null);
+                          setTaskDragId(null);
+                          const task = tasks.find((item) => item.id === id);
+                          if (task) void setTaskStatus(task, status);
+                        }}
+                      >
+                        <div className="hq-tasks-column-head">
+                          <p>{taskColumnLabel(status)}</p>
+                          <span>{columnTasks.length}</span>
+                        </div>
+                        <div className="hq-tasks-column-body">
+                          {columnTasks.map((task) => (
+                            <article
+                              key={task.id}
+                              className={cn(
+                                "hq-tasks-card",
+                                `prio-${task.priority}`,
+                                taskDragId === task.id && "is-dragging",
+                              )}
+                              draggable
+                              onDragStart={(event) => {
+                                event.dataTransfer.setData("text/task-id", task.id);
+                                event.dataTransfer.effectAllowed = "move";
+                                setTaskDragId(task.id);
+                              }}
+                              onDragEnd={() => {
+                                setTaskDragId(null);
+                                setTaskDropStatus(null);
+                              }}
+                            >
+                              <div className="hq-tasks-card-top">
+                                <span className="hq-tasks-grip" aria-hidden>
+                                  <GripVertical className="size-3.5" />
+                                </span>
+                                <span className={cn("hq-tasks-prio", `is-${task.priority}`)}>
+                                  {priorityLabel(task.priority)}
+                                </span>
+                              </div>
+                              <h4>{task.title}</h4>
+                              {task.brief ? <p className="hq-tasks-brief">{task.brief}</p> : null}
+                              <div className="hq-tasks-meta">
+                                <span className="hq-tasks-assignee">
+                                  <span className="hq-tasks-avatar">
+                                    {agentName(task.assigneeAgentId).slice(0, 1).toUpperCase()}
+                                  </span>
+                                  {agentName(task.assigneeAgentId)}
+                                </span>
+                                {projectRepo(task.projectId) ? (
+                                  <span className="hq-tasks-repo" title={projectRepo(task.projectId) ?? undefined}>
+                                    {projectRepo(task.projectId)}
+                                  </span>
+                                ) : null}
+                              </div>
+                              <div className="hq-tasks-card-actions">
+                                {task.assigneeAgentId && task.status !== "done" ? (
+                                  <button
+                                    type="button"
+                                    disabled={runningTaskId === task.id}
+                                    onClick={() => void runTask(task)}
+                                  >
+                                    <Play className="size-3" />
+                                    {runningTaskId === task.id ? t("runningTask") : t("runTask")}
+                                  </button>
+                                ) : null}
+                                {task.status !== "done" ? (
+                                  <button type="button" onClick={() => void advanceTask(task)}>
+                                    <ArrowRight className="size-3" />
+                                    {t("advance")}
+                                  </button>
+                                ) : null}
+                                {task.assigneeAgentId ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => talkTo(task.assigneeAgentId!, task)}
+                                    >
+                                      {t("openChat")}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => openEmployeeDesk(task.assigneeAgentId!)}
+                                    >
+                                      <Monitor className="size-3" />
+                                      {t("openDesk")}
+                                    </button>
+                                  </>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  className="is-danger"
+                                  onClick={() => void removeTask(task)}
+                                  aria-label={t("hqTasksDelete")}
+                                >
+                                  <Trash2 className="size-3" />
+                                </button>
+                              </div>
+                            </article>
+                          ))}
+                          {columnTasks.length === 0 ? (
+                            <p className="hq-tasks-empty">
+                              {taskSearch || taskFilterAssignee || taskFilterPriority || taskFilterProject
+                                ? t("hqTasksNoMatch")
+                                : t("taskDropHere")}
                             </p>
-                            {projectRepo(task.projectId) ? (
-                              <p className="mt-1 truncate text-[10px] text-neutral-600">
-                                {projectRepo(task.projectId)}
-                              </p>
-                            ) : null}
-                            <div className="mt-2 flex flex-wrap gap-1.5">
-                              {task.assigneeAgentId && task.status !== "done" ? (
-                                <button
-                                  type="button"
-                                  disabled={runningTaskId === task.id}
-                                  onClick={() => void runTask(task)}
-                                  className="inline-flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-[10px] text-black disabled:opacity-40"
-                                >
-                                  <Play className="size-2.5" />
-                                  {runningTaskId === task.id ? t("runningTask") : t("runTask")}
-                                </button>
-                              ) : null}
-                              {task.status !== "done" ? (
-                                <button
-                                  type="button"
-                                  onClick={() => void advanceTask(task)}
-                                  className="rounded-full border border-white/15 px-2 py-0.5 text-[10px] text-neutral-300"
-                                >
-                                  {t("advance")}
-                                </button>
-                              ) : null}
-                              {task.assigneeAgentId ? (
-                                <>
-                                  <button
-                                    type="button"
-                                    onClick={() => talkTo(task.assigneeAgentId!, task)}
-                                    className="rounded-full border border-white/15 px-2 py-0.5 text-[10px] text-neutral-300"
-                                  >
-                                    {t("openChat")}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => openEmployeeDesk(task.assigneeAgentId!)}
-                                    className="inline-flex items-center gap-1 rounded-full border border-white/15 px-2 py-0.5 text-[10px] text-neutral-300"
-                                  >
-                                    <Monitor className="size-2.5" />
-                                    {t("openDesk")}
-                                  </button>
-                                </>
-                              ) : null}
-                            </div>
-                          </div>
-                        ))}
-                        {(tasksByStatus.get(status) ?? []).length === 0 ? (
-                          <p className="text-xs text-neutral-600">{t("noTasksHere")}</p>
-                        ) : null}
+                          ) : null}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
+
                 {runPreview ? (
-                  <div className="rounded-[22px] border border-white/10 bg-[var(--color-surface)] p-4">
-                    <p className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">
-                      {t("lastRunOutput")}
-                    </p>
-                    <p className="mt-2 whitespace-pre-wrap text-sm text-neutral-300">{runPreview}</p>
+                  <div className="hq-tasks-panel">
+                    <p className="hq-tasks-panel-label">{t("lastRunOutput")}</p>
+                    <p className="hq-tasks-panel-body">{runPreview}</p>
                   </div>
                 ) : null}
                 {taskRuns.length > 0 ? (
-                  <div className="rounded-[22px] border border-white/10 bg-[var(--color-surface)] p-4">
-                    <p className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">
-                      {t("runHistory")}
-                    </p>
-                    <ul className="mt-3 space-y-2">
+                  <div className="hq-tasks-panel">
+                    <p className="hq-tasks-panel-label">{t("runHistory")}</p>
+                    <ul className="hq-tasks-runs">
                       {taskRuns.slice(0, 8).map((run) => (
-                        <li key={run.id} className="text-sm text-neutral-300">
-                          <span className="text-neutral-500">{run.status}</span>
-                          {" · "}
+                        <li key={run.id}>
+                          <span>{run.status}</span>
                           {run.summary ?? t("noRunSummary")}
                         </li>
                       ))}
                     </ul>
                   </div>
                 ) : null}
-              </div>
+              </section>
             ) : null}
 
             {view === "knowledge" ? (
-              <div className="hq-rise space-y-4">
+              <section className="hq-know workforce-rise" aria-label={t("ccKnowledge")}>
+                <header className="hq-know-mast">
+                  <div className="min-w-0">
+                    <p className="hq-know-kicker">{t("ccKnowledge")}</p>
+                    <h2 className="hq-know-title">{t("hqKnowHeadline")}</h2>
+                    <p className="hq-know-lead">{t("hqKnowHint")}</p>
+                  </div>
+                  <div className="hq-know-mast-actions">
+                    <label className={cn("hq-know-ghost", knowUploading && "is-busy")}>
+                      <Upload className="size-3.5" />
+                      {knowUploading ? t("hqKnowUploading") : t("hqKnowUpload")}
+                      <input
+                        type="file"
+                        accept=".txt,.md,.markdown,.csv,.json,.html,.htm,.log,text/plain,text/markdown,text/csv,application/json,text/html"
+                        multiple
+                        hidden
+                        disabled={knowUploading}
+                        onChange={(e) => {
+                          void uploadKnowledgeFiles(e.target.files);
+                          e.target.value = "";
+                        }}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="hq-know-primary"
+                      onClick={() => setKnowledgeFormOpen((open) => !open)}
+                    >
+                      <Plus className="size-3.5" />
+                      {t("addKnowledge")}
+                    </button>
+                  </div>
+                </header>
+
+                <div className="hq-know-stats">
+                  <div className="hq-know-stat">
+                    <span className="hq-know-stat-value">{knowledgeStats.total}</span>
+                    <span className="hq-know-stat-label">{t("hqKnowTotal")}</span>
+                  </div>
+                  <div className="hq-know-stat">
+                    <span className="hq-know-stat-value">{knowledgeStats.orgWide}</span>
+                    <span className="hq-know-stat-label">{t("hqKnowOrg")}</span>
+                  </div>
+                  <div className="hq-know-stat">
+                    <span className="hq-know-stat-value">{knowledgeStats.projectScoped}</span>
+                    <span className="hq-know-stat-label">{t("hqKnowProject")}</span>
+                  </div>
+                  <div className="hq-know-stat">
+                    <span className="hq-know-stat-value">
+                      {knowledgeStats.chars > 999
+                        ? `${Math.round(knowledgeStats.chars / 1000)}k`
+                        : knowledgeStats.chars}
+                    </span>
+                    <span className="hq-know-stat-label">{t("hqKnowChars")}</span>
+                  </div>
+                </div>
+
+                <div className="hq-know-pill">
+                  <BookOpen className="size-3.5" />
+                  <p>{t("hqKnowAgentRule")}</p>
+                </div>
+
+                <label className="hq-know-search">
+                  <Search className="size-3.5 opacity-60" />
+                  <input
+                    value={knowSearch}
+                    onChange={(e) => setKnowSearch(e.target.value)}
+                    placeholder={t("hqKnowSearch")}
+                    aria-label={t("hqKnowSearch")}
+                  />
+                </label>
+
                 {knowledgeFormOpen ? (
-                  <form
-                    onSubmit={createKnowledge}
-                    className="rounded-[28px] border border-white/10 bg-[var(--color-surface)] p-5"
-                  >
-                    <h2 className="text-lg text-white">{t("addKnowledge")}</h2>
-                    <p className="mt-1 text-sm text-neutral-500">{t("ccKnowledgeBody")}</p>
-                    <div className="mt-4 grid gap-3 md:grid-cols-2">
-                      <Field label={t("knowledgeTitle")}>
+                  <form onSubmit={createKnowledge} className="hq-know-composer">
+                    <div className="hq-know-composer-head">
+                      <div>
+                        <h3>{t("addKnowledge")}</h3>
+                        <p>{t("ccKnowledgeBody")}</p>
+                      </div>
+                      <button
+                        type="button"
+                        className="hq-know-icon"
+                        onClick={() => setKnowledgeFormOpen(false)}
+                        aria-label={t("cancel")}
+                      >
+                        <X className="size-4" />
+                      </button>
+                    </div>
+                    <div className="hq-know-composer-grid">
+                      <label className="hq-know-field">
+                        <span>{t("knowledgeTitle")}</span>
                         <input
                           required
                           value={knowTitle}
                           onChange={(e) => setKnowTitle(e.target.value)}
-                          className="field"
+                          placeholder={t("hqKnowTitlePh")}
                         />
-                      </Field>
-                      <Field label={t("colProject")}>
+                      </label>
+                      <label className="hq-know-field">
+                        <span>{t("colProject")}</span>
                         <select
                           value={knowProject}
                           onChange={(e) => setKnowProject(e.target.value)}
-                          className="field"
                         >
                           <option value="">{t("workspaceWide")}</option>
                           {projects.map((project) => (
@@ -2566,79 +2914,118 @@ export function WorkforcePage() {
                             </option>
                           ))}
                         </select>
-                      </Field>
-                      <div className="md:col-span-2">
-                        <Field label={t("knowledgeContent")}>
-                          <textarea
-                            required
-                            value={knowContent}
-                            onChange={(e) => setKnowContent(e.target.value)}
-                            rows={5}
-                            className="field"
-                          />
-                        </Field>
-                      </div>
+                      </label>
+                      <label className="hq-know-field hq-know-field-wide">
+                        <span>{t("knowledgeContent")}</span>
+                        <textarea
+                          required
+                          value={knowContent}
+                          onChange={(e) => setKnowContent(e.target.value)}
+                          rows={7}
+                          placeholder={t("hqKnowContentPh")}
+                        />
+                      </label>
                     </div>
-                    <div className="mt-4 flex gap-2">
+                    <div className="hq-know-composer-actions">
                       <button
                         type="submit"
                         disabled={saving || !knowTitle.trim() || !knowContent.trim()}
-                        className="h-9 rounded-full bg-white px-4 text-sm font-medium text-black disabled:opacity-40"
+                        className="hq-know-primary"
                       >
                         {t("saveKnowledge")}
                       </button>
                       <button
                         type="button"
+                        className="hq-know-ghost"
                         onClick={() => setKnowledgeFormOpen(false)}
-                        className="h-9 rounded-full border border-white/15 px-4 text-sm text-neutral-300"
                       >
                         {t("cancel")}
                       </button>
                     </div>
                   </form>
-                ) : (
-                  <div className="flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => setKnowledgeFormOpen(true)}
-                      className="inline-flex h-9 items-center gap-1.5 rounded-full border border-white/15 px-4 text-sm text-neutral-200"
-                    >
-                      <Plus className="size-3.5" />
-                      {t("addKnowledge")}
-                    </button>
-                  </div>
-                )}
-                <div className="grid gap-3 md:grid-cols-2">
-                  {knowledge.map((doc) => (
-                    <article
-                      key={doc.id}
-                      className="rounded-[22px] border border-white/10 bg-[var(--color-surface)] p-4"
-                    >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm text-white">{doc.title}</p>
-                          <p className="mt-1 text-[11px] text-neutral-500">
-                            {doc.projectId
-                              ? projects.find((p) => p.id === doc.projectId)?.name ?? doc.projectId
-                              : t("workspaceWide")}
-                          </p>
+                ) : null}
+
+                <div className="hq-know-grid">
+                  {filteredKnowledge.map((doc) => {
+                    const expanded = knowExpandedId === doc.id;
+                    const projectName = doc.projectId
+                      ? projects.find((p) => p.id === doc.projectId)?.name ?? doc.projectId
+                      : t("workspaceWide");
+                    return (
+                      <article key={doc.id} className={cn("hq-know-card", expanded && "is-open")}>
+                        <div className="hq-know-card-top">
+                          <span className="hq-know-card-icon">
+                            <FileText className="size-4" />
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <h3>{doc.title}</h3>
+                            <p>
+                              {projectName}
+                              {" · "}
+                              {(doc.content?.length ?? 0).toLocaleString()} {t("hqKnowChars").toLowerCase()}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            className="hq-know-icon is-danger"
+                            onClick={() => void deleteKnowledge(doc.id)}
+                            aria-label={t("delete")}
+                          >
+                            <Trash2 className="size-3.5" />
+                          </button>
                         </div>
-                        <button
-                          type="button"
-                          onClick={() => void deleteKnowledge(doc.id)}
-                          className="text-[11px] text-neutral-500 hover:text-neutral-300"
-                        >
-                          {t("delete")}
-                        </button>
-                      </div>
-                      <p className="mt-3 line-clamp-4 text-sm text-neutral-400">{doc.content}</p>
-                    </article>
-                  ))}
-                  {knowledge.length === 0 ? (
-                    <p className="text-sm text-neutral-500 md:col-span-2">{t("noKnowledge")}</p>
+                        <p className={cn("hq-know-excerpt", expanded && "is-full")}>{doc.content}</p>
+                        <div className="hq-know-card-actions">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setKnowExpandedId((current) => (current === doc.id ? null : doc.id))
+                            }
+                          >
+                            {expanded ? t("hqKnowCollapse") : t("hqKnowExpand")}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                  {filteredKnowledge.length === 0 ? (
+                    <div className="hq-know-empty">
+                      <BookOpen className="size-5 opacity-50" />
+                      <p>
+                        {knowSearch.trim()
+                          ? t("hqKnowNoMatch")
+                          : t("noKnowledge")}
+                      </p>
+                      {!knowSearch.trim() ? (
+                        <div className="hq-know-empty-actions">
+                          <button
+                            type="button"
+                            className="hq-know-primary"
+                            onClick={() => setKnowledgeFormOpen(true)}
+                          >
+                            <Plus className="size-3.5" />
+                            {t("addKnowledge")}
+                          </button>
+                          <label className="hq-know-ghost">
+                            <Upload className="size-3.5" />
+                            {t("hqKnowUpload")}
+                            <input
+                              type="file"
+                              accept=".txt,.md,.markdown,.csv,.json,.html,.htm,.log,text/plain"
+                              multiple
+                              hidden
+                              onChange={(e) => {
+                                void uploadKnowledgeFiles(e.target.files);
+                                e.target.value = "";
+                              }}
+                            />
+                          </label>
+                        </div>
+                      ) : null}
+                    </div>
                   ) : null}
                 </div>
-              </div>
+              </section>
             ) : null}
 
             {view === "chat" ? (
