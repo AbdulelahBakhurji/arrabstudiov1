@@ -383,8 +383,8 @@ export function OrgAdministrationPanel({
               <Pill icon={Lock} label={t("orgPillEmployeeView")} />
             </div>
             {usingLocal ? (
-              <p className="mt-3 text-[11px] text-amber-700/90 dark:text-amber-200/80">
-                {t("orgLocalModeHint")}
+              <p className="mt-3 text-[11px] text-emerald-700/90 dark:text-emerald-200/80">
+                {t("orgDeviceModeHint")}
               </p>
             ) : (
               <p className="mt-3 text-[11px] text-emerald-700/90 dark:text-emerald-200/80">
