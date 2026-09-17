@@ -27,10 +27,16 @@ export interface ApiEnv {
   /** OpenRouter API key — preferred while Bedrock invoke is blocked. */
   openRouterApiKey: string | undefined;
   openRouterModels: string[];
+  /** Direct OpenAI (ChatGPT) API key. */
+  openAiApiKey: string | undefined;
+  /** Direct Anthropic (Claude) API key. */
+  anthropicApiKey: string | undefined;
+  /** xAI Grok API key. */
+  xaiApiKey: string | undefined;
   /** Active chat model id (Bedrock or OpenRouter). */
   defaultModel: string;
   /** Which gateway adapter is primary for chat. */
-  primaryProviderId: "openrouter" | "bedrock";
+  primaryProviderId: "openrouter" | "bedrock" | "openai" | "anthropic" | "xai";
   /** Public base URL used to build web auth links (defaults to http://host:port). */
   publicBaseUrl: string;
   /** Optional external web sign-in URL. Use {state} placeholder. */
@@ -41,8 +47,30 @@ export interface ApiEnv {
   moyasarSecretKey: string | undefined;
   /** Moyasar publishable key for hosted forms (optional). */
   moyasarPublishableKey: string | undefined;
+  /**
+   * AES-256 key for field encryption at rest (64 hex chars or 32-byte base64).
+   * Required whenever DATABASE_URL is set (override with ARRAB_ALLOW_INSECURE_DATA_KEY=1).
+   */
+  dataEncryptionKey: string | undefined;
   /** Directory of published Studio installers (.dmg, .deb, .AppImage). */
   releasesDir: string;
+  /** Google OAuth client for Gmail connector (optional until Connect Gmail is used). */
+  googleClientId: string | undefined;
+  googleClientSecret: string | undefined;
+  /** Override Gmail OAuth redirect URI (defaults to publicBaseUrl + /v1/connectors/gmail/oauth/callback). */
+  googleOAuthRedirectUri: string | undefined;
+  /** Microsoft OAuth client for Outlook connector (optional until Connect Outlook is used). */
+  microsoftClientId: string | undefined;
+  microsoftClientSecret: string | undefined;
+  /** Override Outlook OAuth redirect URI. */
+  microsoftOAuthRedirectUri: string | undefined;
+  /** GitHub App OAuth client for GitHub connector (optional until Connect GitHub is used). */
+  githubAppClientId: string | undefined;
+  githubAppClientSecret: string | undefined;
+  /** App slug from https://github.com/apps/{slug} — enables install+login flow. */
+  githubAppSlug: string | undefined;
+  /** Override GitHub OAuth redirect URI. */
+  githubOAuthRedirectUri: string | undefined;
 }
 
 const LOG_LEVELS = new Set(["fatal", "error", "warn", "info", "debug", "trace"]);
@@ -108,21 +136,36 @@ export function loadApiEnv(): ApiEnv {
     readOptionalEnv("AWS_BEARER_TOKEN_BEDROCK") ?? readOptionalEnv("BEDROCK_API_KEY");
   const openRouterApiKey = readOptionalEnv("OPENROUTER_API_KEY");
   const openRouterModels = parseOpenRouterModels(readOptionalEnv("OPENROUTER_MODELS"));
+  const openAiApiKey = readOptionalEnv("OPENAI_API_KEY");
+  const anthropicApiKey = readOptionalEnv("ANTHROPIC_API_KEY");
+  const xaiApiKey = readOptionalEnv("XAI_API_KEY");
 
   // Prefer OpenRouter when its key is set (Bedrock account may be blocked).
-  // Override with ARRAB_AI_PROVIDER=bedrock|openrouter.
+  // Override with ARRAB_AI_PROVIDER=bedrock|openrouter|openai|anthropic|xai.
   const providerOverride = (readOptionalEnv("ARRAB_AI_PROVIDER") ?? "").trim().toLowerCase();
-  let primaryProviderId: "openrouter" | "bedrock" = "bedrock";
+  let primaryProviderId: ApiEnv["primaryProviderId"] = "bedrock";
   if (providerOverride === "openrouter" && openRouterApiKey?.trim()) {
     primaryProviderId = "openrouter";
+  } else if (providerOverride === "openai" && openAiApiKey?.trim()) {
+    primaryProviderId = "openai";
+  } else if (providerOverride === "anthropic" && anthropicApiKey?.trim()) {
+    primaryProviderId = "anthropic";
+  } else if (providerOverride === "xai" && xaiApiKey?.trim()) {
+    primaryProviderId = "xai";
   } else if (providerOverride === "bedrock" && bedrockApiKey?.trim()) {
     primaryProviderId = "bedrock";
   } else if (openRouterApiKey?.trim()) {
     primaryProviderId = "openrouter";
+  } else if (openAiApiKey?.trim()) {
+    primaryProviderId = "openai";
+  } else if (anthropicApiKey?.trim()) {
+    primaryProviderId = "anthropic";
+  } else if (xaiApiKey?.trim()) {
+    primaryProviderId = "xai";
   } else if (bedrockApiKey?.trim()) {
     primaryProviderId = "bedrock";
   } else if (providerOverride === "openrouter") {
-    primaryProviderId = "openrouter"; // key missing — status will show unconfigured
+    primaryProviderId = "openrouter";
   }
 
   let defaultModel: string;
@@ -130,10 +173,16 @@ export function loadApiEnv(): ApiEnv {
     defaultModel =
       readOptionalEnv("ARRAB_DEFAULT_MODEL", openRouterModels[0] ?? OPENROUTER_DEFAULT_MODEL) ??
       OPENROUTER_DEFAULT_MODEL;
-    // If someone left a Bedrock id in ARRAB_DEFAULT_MODEL, fall back to OpenRouter default.
     if (!defaultModel.includes("/")) {
       defaultModel = openRouterModels[0] ?? OPENROUTER_DEFAULT_MODEL;
     }
+  } else if (primaryProviderId === "openai") {
+    defaultModel = readOptionalEnv("ARRAB_DEFAULT_MODEL", "gpt-4o-mini") ?? "gpt-4o-mini";
+  } else if (primaryProviderId === "anthropic") {
+    defaultModel =
+      readOptionalEnv("ARRAB_DEFAULT_MODEL", "claude-3-5-haiku-latest") ?? "claude-3-5-haiku-latest";
+  } else if (primaryProviderId === "xai") {
+    defaultModel = readOptionalEnv("ARRAB_DEFAULT_MODEL", "grok-3-mini") ?? "grok-3-mini";
   } else {
     defaultModel = normalizeBedrockModelId(
       readOptionalEnv("ARRAB_DEFAULT_MODEL", bedrockModels[0] ?? BEDROCK_DEFAULT_MODEL) ??
@@ -162,6 +211,9 @@ export function loadApiEnv(): ApiEnv {
     bedrockModels,
     openRouterApiKey,
     openRouterModels,
+    openAiApiKey,
+    anthropicApiKey,
+    xaiApiKey,
     defaultModel,
     primaryProviderId,
     publicBaseUrl: publicBaseUrl.replace(/\/$/, ""),
@@ -169,8 +221,23 @@ export function loadApiEnv(): ApiEnv {
     siteUrl: (siteUrl ?? publicBaseUrl).replace(/\/$/, ""),
     moyasarSecretKey: readOptionalEnv("MOYASAR_SECRET_KEY"),
     moyasarPublishableKey: readOptionalEnv("MOYASAR_PUBLISHABLE_KEY"),
+    dataEncryptionKey: readOptionalEnv("DATA_ENCRYPTION_KEY"),
     releasesDir:
       readOptionalEnv("ARRAB_RELEASES_DIR") ?? "/var/www/testingworkspace/releases",
+    googleClientId: readOptionalEnv("GOOGLE_CLIENT_ID"),
+    googleClientSecret: readOptionalEnv("GOOGLE_CLIENT_SECRET"),
+    googleOAuthRedirectUri: readOptionalEnv("GOOGLE_OAUTH_REDIRECT_URI"),
+    microsoftClientId:
+      readOptionalEnv("MICROSOFT_CLIENT_ID") ?? readOptionalEnv("OUTLOOK_CLIENT_ID"),
+    microsoftClientSecret:
+      readOptionalEnv("MICROSOFT_CLIENT_SECRET") ?? readOptionalEnv("OUTLOOK_CLIENT_SECRET"),
+    microsoftOAuthRedirectUri: readOptionalEnv("MICROSOFT_OAUTH_REDIRECT_URI"),
+    githubAppClientId:
+      readOptionalEnv("GITHUB_APP_CLIENT_ID") ?? readOptionalEnv("GITHUB_CLIENT_ID"),
+    githubAppClientSecret:
+      readOptionalEnv("GITHUB_APP_CLIENT_SECRET") ?? readOptionalEnv("GITHUB_CLIENT_SECRET"),
+    githubAppSlug: readOptionalEnv("GITHUB_APP_SLUG"),
+    githubOAuthRedirectUri: readOptionalEnv("GITHUB_OAUTH_REDIRECT_URI"),
   };
 }
 

@@ -23,12 +23,16 @@ import {
   type Workspace,
   type WorkspaceId,
   type StudioAccountRecord,
+  type OrgDepartment,
+  type OrgEmployeeRecord,
+  type OrgSecurityEvent,
 } from "@arrab/shared";
 import {
   LOCAL_ORGANIZATION_ID,
   LOCAL_WORKSPACE_ID,
   type ActivityRepository,
   type ApprovalRepository,
+  type CompanionStateRepository,
   type ConnectorRepository,
   type ConversationRepository,
   type EntityRepository,
@@ -304,6 +308,24 @@ class MemoryOperatorRepository implements OperatorRepository {
   }
 }
 
+class MemoryCompanionStateRepository implements CompanionStateRepository {
+  constructor(
+    private readonly holder: { companionState: { updatedAt: string; state: unknown } | null },
+  ) {}
+
+  async get(): Promise<{ updatedAt: string; state: unknown } | null> {
+    return this.holder.companionState;
+  }
+
+  async upsert(doc: {
+    updatedAt: string;
+    state: unknown;
+  }): Promise<{ updatedAt: string; state: unknown }> {
+    this.holder.companionState = doc;
+    return doc;
+  }
+}
+
 class MemoryAccountRepository implements AccountRepository {
   constructor(private readonly holder: { account: StudioAccountRecord | null }) {}
 
@@ -521,6 +543,7 @@ export type MemorySnapshot = {
   usage: UsageEvent[];
   tasks: Task[];
   operator: OperatorProfile | null;
+  companionState: { updatedAt: string; state: unknown } | null;
   account: StudioAccountRecord | null;
   knowledge: Knowledge[];
   memories: Memory[];
@@ -528,6 +551,9 @@ export type MemorySnapshot = {
   skills: Skill[];
   approvals: Approval[];
   goals: Goal[];
+  orgDepartments: OrgDepartment[];
+  orgEmployees: OrgEmployeeRecord[];
+  orgSecurityEvents: OrgSecurityEvent[];
 };
 
 export type MemoryPersistenceOptions = {
@@ -558,9 +584,11 @@ function withChangeNotifications<T extends object>(repo: T, onChange?: () => voi
   }
   return new Proxy(repo, {
     get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver) as unknown;
+      // Read from the raw target so class fields/methods keep a real `this`
+      // (Proxy as receiver breaks private/instance field access).
+      const value = Reflect.get(target, prop) as unknown;
       if (typeof value !== "function") {
-        return value;
+        return Reflect.get(target, prop, receiver);
       }
       const method = String(prop);
       return (...args: unknown[]) => {
@@ -597,6 +625,7 @@ export function emptyMemorySnapshot(now = new Date().toISOString()): MemorySnaps
     usage: [],
     tasks: [],
     operator: null,
+    companionState: null,
     account: null,
     knowledge: [],
     memories: [],
@@ -604,6 +633,9 @@ export function emptyMemorySnapshot(now = new Date().toISOString()): MemorySnaps
     skills: [],
     approvals: [],
     goals: [],
+    orgDepartments: [],
+    orgEmployees: [],
+    orgSecurityEvents: [],
   };
 }
 
@@ -656,6 +688,7 @@ export function normalizeMemorySnapshot(
     usage: Array.isArray(raw.usage) ? raw.usage : [],
     tasks: Array.isArray(raw.tasks) ? raw.tasks : [],
     operator: raw.operator ?? null,
+    companionState: raw.companionState ?? null,
     account: raw.account ?? null,
     knowledge: Array.isArray(raw.knowledge) ? raw.knowledge : [],
     memories: Array.isArray(raw.memories) ? raw.memories : [],
@@ -663,7 +696,87 @@ export function normalizeMemorySnapshot(
     skills: Array.isArray(raw.skills) ? raw.skills : [],
     approvals: Array.isArray(raw.approvals) ? raw.approvals : [],
     goals: Array.isArray(raw.goals) ? raw.goals : [],
+    orgDepartments: Array.isArray(raw.orgDepartments) ? raw.orgDepartments : [],
+    orgEmployees: Array.isArray(raw.orgEmployees) ? raw.orgEmployees : [],
+    orgSecurityEvents: Array.isArray(raw.orgSecurityEvents) ? raw.orgSecurityEvents : [],
   };
+}
+
+
+class MemoryOrgDepartmentRepository {
+  private readonly items: OrgDepartment[];
+  constructor(items: OrgDepartment[] = []) {
+    this.items = Array.isArray(items) ? items : [];
+  }
+  async list(): Promise<OrgDepartment[]> {
+    return [...this.items].sort((a, b) => a.name.localeCompare(b.name));
+  }
+  async getById(id: string): Promise<OrgDepartment | null> {
+    return this.items.find((item) => item.id === id) ?? null;
+  }
+  async create(entity: OrgDepartment): Promise<OrgDepartment> {
+    this.items.push(entity);
+    return entity;
+  }
+  async update(entity: OrgDepartment): Promise<OrgDepartment> {
+    const index = this.items.findIndex((item) => item.id === entity.id);
+    if (index >= 0) this.items[index] = entity;
+    return entity;
+  }
+  async delete(id: string): Promise<void> {
+    const index = this.items.findIndex((item) => item.id === id);
+    if (index >= 0) this.items.splice(index, 1);
+  }
+}
+
+class MemoryOrgEmployeeRepository {
+  private readonly items: OrgEmployeeRecord[];
+  constructor(items: OrgEmployeeRecord[] = []) {
+    this.items = Array.isArray(items) ? items : [];
+  }
+  async list(): Promise<OrgEmployeeRecord[]> {
+    return [...this.items].sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }
+  async getById(id: string): Promise<OrgEmployeeRecord | null> {
+    return this.items.find((item) => item.id === id) ?? null;
+  }
+  async getByEmail(email: string): Promise<OrgEmployeeRecord | null> {
+    const needle = email.trim().toLowerCase();
+    return this.items.find((item) => item.email.toLowerCase() === needle) ?? null;
+  }
+  async getBySessionHash(hash: string): Promise<OrgEmployeeRecord | null> {
+    return this.items.find((item) => item.sessionTokenHash === hash) ?? null;
+  }
+  async create(entity: OrgEmployeeRecord): Promise<OrgEmployeeRecord> {
+    this.items.push(entity);
+    return entity;
+  }
+  async update(entity: OrgEmployeeRecord): Promise<OrgEmployeeRecord> {
+    const index = this.items.findIndex((item) => item.id === entity.id);
+    if (index >= 0) this.items[index] = entity;
+    return entity;
+  }
+  async delete(id: string): Promise<void> {
+    const index = this.items.findIndex((item) => item.id === id);
+    if (index >= 0) this.items.splice(index, 1);
+  }
+}
+
+
+class MemoryOrgSecurityEventRepository {
+  private readonly items: OrgSecurityEvent[];
+  constructor(items: OrgSecurityEvent[] = []) {
+    this.items = Array.isArray(items) ? items : [];
+  }
+  async listRecent(limit = 50): Promise<OrgSecurityEvent[]> {
+    return [...this.items]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, Math.min(200, Math.max(1, limit)));
+  }
+  async append(event: OrgSecurityEvent): Promise<OrgSecurityEvent> {
+    this.items.unshift(event);
+    return event;
+  }
 }
 
 export function createInMemoryPersistence(
@@ -691,6 +804,7 @@ export function createInMemoryPersistence(
     usage: wrap(new MemoryUsageRepository(snapshot.usage)),
     tasks: wrap(new MemoryTaskRepository(snapshot.tasks)),
     operator: wrap(new MemoryOperatorRepository(snapshot)),
+    companionState: wrap(new MemoryCompanionStateRepository(snapshot)),
     accounts: wrap(new MemoryAccountRepository(snapshot)),
     knowledge: wrap(new MemoryKnowledgeRepository(snapshot.knowledge)),
     memories: wrap(new MemoryMemoryNotesRepository(snapshot.memories)),
@@ -698,5 +812,64 @@ export function createInMemoryPersistence(
     skills: wrap(new MemorySkillRepository(snapshot.skills)),
     approvals: wrap(new MemoryApprovalRepository(snapshot.approvals)),
     goals: wrap(new MemoryGoalRepository(snapshot.goals)),
+    // Org repos keep a plain object `this` — Proxy wrappers break instance field access.
+    orgDepartments: (() => {
+      const repo = new MemoryOrgDepartmentRepository(snapshot.orgDepartments);
+      if (!touch) return repo;
+      return {
+        list: () => repo.list(),
+        getById: (id: string) => repo.getById(id),
+        create: async (entity: OrgDepartment) => {
+          const created = await repo.create(entity);
+          touch();
+          return created;
+        },
+        update: async (entity: OrgDepartment) => {
+          const updated = await repo.update(entity);
+          touch();
+          return updated;
+        },
+        delete: async (id: string) => {
+          await repo.delete(id);
+          touch();
+        },
+      };
+    })(),
+    orgEmployees: (() => {
+      const repo = new MemoryOrgEmployeeRepository(snapshot.orgEmployees);
+      if (!touch) return repo;
+      return {
+        list: () => repo.list(),
+        getById: (id: string) => repo.getById(id),
+        getByEmail: (email: string) => repo.getByEmail(email),
+        getBySessionHash: (hash: string) => repo.getBySessionHash(hash),
+        create: async (entity: OrgEmployeeRecord) => {
+          const created = await repo.create(entity);
+          touch();
+          return created;
+        },
+        update: async (entity: OrgEmployeeRecord) => {
+          const updated = await repo.update(entity);
+          touch();
+          return updated;
+        },
+        delete: async (id: string) => {
+          await repo.delete(id);
+          touch();
+        },
+      };
+    })(),
+    orgSecurityEvents: (() => {
+      const repo = new MemoryOrgSecurityEventRepository(snapshot.orgSecurityEvents);
+      if (!touch) return repo;
+      return {
+        listRecent: (limit?: number) => repo.listRecent(limit),
+        append: async (event: OrgSecurityEvent) => {
+          const created = await repo.append(event);
+          touch();
+          return created;
+        },
+      };
+    })(),
   };
 }

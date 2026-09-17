@@ -1,4 +1,9 @@
 import type {
+  AccountEntitlements,
+  AccountPublic,
+  SubscriptionPlanId,
+} from "./account.js";
+import type {
   Activity,
   Agent,
   Approval,
@@ -42,6 +47,7 @@ export interface ApiMetaResponse {
     tokensUsed: number;
     tokensRemaining: number | null;
     overLimit: boolean;
+    pauseMode: "upgrade_required" | "upgrade_or_wait" | null;
   };
 }
 
@@ -62,6 +68,10 @@ export interface AiGatewayStatusResponse {
   configured: boolean;
   providers: string[];
   defaultModel: string | null;
+  models?: string[];
+  region?: string | null;
+  primaryProvider?: string | null;
+  replyPath?: string | null;
 }
 
 export interface ApiErrorBody {
@@ -134,6 +144,8 @@ export interface CreateConversationRequest {
   title?: string | null;
   projectId?: string | null;
   spend?: SessionSpendSettings;
+  /** Defaults to private when an employee session creates the chat. */
+  visibility?: "private" | "department" | "workspace";
 }
 
 export interface SendMessageRequest {
@@ -143,6 +155,8 @@ export interface SendMessageRequest {
   spend?: SessionSpendSettings;
   /** Prefer server-side active goal for this agent when true (default). */
   usePersistedGoal?: boolean;
+  /** Optional model override (OpenRouter/Bedrock/OpenAI/Anthropic id). */
+  model?: string | null;
 }
 
 export interface CreateGoalRequest {
@@ -241,7 +255,10 @@ export type ConnectorProvider =
   | "linear"
   | "slack"
   | "notion"
-  | "email";
+  | "gmail"
+  | "outlook"
+  | "email"
+  | "ssh";
 
 export type ConnectorConnectionStatus = "connected" | "error";
 
@@ -265,16 +282,55 @@ export interface ConnectorResource {
 
 export interface ConnectConnectorRequest {
   provider: ConnectorProvider;
-  /** Access token, PAT, app password, or bot token depending on provider. */
-  token: string;
+  /** Access token, PAT, app password, or bot token depending on provider. Unused for Gmail OAuth. */
+  token?: string;
   label?: string | null;
   /**
    * Provider-specific settings.
    * Email: address, imapHost, imapPort, smtpHost, smtpPort
    * Bitbucket: username
    * GitLab: baseUrl (optional self-hosted)
+   * SSH: host, port, username, authMode (password|key), privateKey, passphrase
    */
   config?: Record<string, string> | null;
+}
+
+/** POST /v1/connectors/gmail/oauth/start  (same shape for Outlook start) */
+export interface StartGmailOAuthResponse {
+  url: string;
+  state: string;
+}
+
+/** Alias — Outlook / GitHub OAuth start returns the same payload. */
+export type StartOutlookOAuthResponse = StartGmailOAuthResponse;
+export type StartGithubOAuthResponse = StartGmailOAuthResponse;
+
+export type ArrangeEmailAction =
+  | "archive"
+  | "trash"
+  | "untrash"
+  | "mark_read"
+  | "mark_unread"
+  | "star"
+  | "unstar"
+  | "label"
+  | "move";
+
+/** POST /v1/connectors/:id/email/arrange */
+export interface ArrangeEmailRequest {
+  action: ArrangeEmailAction;
+  /** Gmail message ids (or IMAP UIDs for legacy email connectors). */
+  messageIds: string[];
+  mailbox?: string | null;
+  addLabelIds?: string[] | null;
+  removeLabelIds?: string[] | null;
+  /** Destination mailbox/label for action=move */
+  targetMailbox?: string | null;
+}
+
+export interface ArrangeEmailResponse {
+  ok: true;
+  modified: number;
 }
 
 export interface ConnectorsCatalogItem {
@@ -315,6 +371,17 @@ export interface SendEmailRequest {
 export interface SendEmailResponse {
   messageId: string | null;
   accepted: string[];
+}
+
+/** POST /v1/connectors/:id/ssh/exec */
+export interface SshExecRequest {
+  command: string;
+}
+
+export interface SshExecResponse {
+  code: number | null;
+  stdout: string;
+  stderr: string;
 }
 
 export interface BindProjectRepoRequest {
@@ -402,7 +469,7 @@ export interface UsageSummaryResponse {
     createdAt: string;
     agentId: string | null;
   }>;
-  entitlements?: import("./account.js").AccountEntitlements;
+  entitlements?: AccountEntitlements;
 }
 
 export interface ConnectAccountRequest {
@@ -426,8 +493,8 @@ export interface UpdateAccountProfileRequest {
 }
 
 export interface ConnectAccountResponse {
-  account: import("./account.js").AccountPublic;
-  entitlements: import("./account.js").AccountEntitlements;
+  account: AccountPublic;
+  entitlements: AccountEntitlements;
   /** Shown once — store on desktop for reconnect/auth */
   sessionToken: string;
 }
@@ -439,6 +506,8 @@ export interface StartWebAuthRequest {
 
 export interface StartWebAuthResponse {
   state: string;
+  /** Required when polling — proves this desktop started the session. */
+  pollSecret?: string;
   authorizationUrl: string;
   expiresAt: string;
   pollIntervalMs: number;
@@ -446,8 +515,8 @@ export interface StartWebAuthResponse {
 
 export interface PollWebAuthResponse {
   status: "pending" | "completed" | "expired";
-  account?: import("./account.js").AccountPublic;
-  entitlements?: import("./account.js").AccountEntitlements;
+  account?: AccountPublic;
+  entitlements?: AccountEntitlements;
   sessionToken?: string;
   message?: string;
 }
@@ -467,11 +536,11 @@ export interface VerifyAccountSessionRequest {
 }
 
 export interface BillingCheckoutRequest {
-  planId: import("./account.js").SubscriptionPlanId;
+  planId: SubscriptionPlanId;
 }
 
 export interface BillingCheckoutResponse {
-  planId: import("./account.js").SubscriptionPlanId;
+  planId: SubscriptionPlanId;
   invoiceId: string;
   checkoutUrl: string;
   amountHalalas: number;
@@ -508,12 +577,25 @@ export interface UpdateOperatorRequest {
   removeSeat?: string;
 }
 
+/** Cloud document for Individuals companions — synced across devices. */
+export interface CompanionStateDocument {
+  updatedAt: string;
+  /** Opaque CompanionState payload from the desktop companion engine. */
+  state: unknown;
+}
+
+export interface UpsertCompanionStateRequest {
+  updatedAt: string;
+  state: unknown;
+}
+
 export interface CreateTaskRequest {
   title: string;
   brief?: string | null;
   status?: TaskStatus;
   priority?: TaskPriority;
   assigneeAgentId?: string | null;
+  assigneeEmployeeId?: string | null;
   teamId?: string | null;
   projectId?: string | null;
   dueAt?: string | null;
@@ -525,6 +607,7 @@ export interface UpdateTaskRequest {
   status?: TaskStatus;
   priority?: TaskPriority;
   assigneeAgentId?: string | null;
+  assigneeEmployeeId?: string | null;
   teamId?: string | null;
   projectId?: string | null;
   dueAt?: string | null;

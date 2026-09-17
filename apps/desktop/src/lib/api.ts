@@ -54,6 +54,9 @@ import type {
   RunTaskResponse,
   SendEmailRequest,
   SendEmailResponse,
+  ArrangeEmailRequest,
+  ArrangeEmailResponse,
+  StartGmailOAuthResponse,
   SendMessageRequest,
   SendMessageResponse,
   Skill,
@@ -71,16 +74,24 @@ import type {
   UsageSummaryResponse,
 } from "@arrab/shared";
 
-import { readApiBaseOverride } from "./prefs";
+import { readAccountSessionToken } from "./account-session";
+import { readApiBaseOverride, writeApiBaseOverride } from "./prefs";
 
 const envApiBaseUrl = (import.meta.env.VITE_ARRAB_API_URL ?? "http://127.0.0.1:8787").replace(
   /\/$/,
   "",
 );
 
+const DEAD_API_HOSTS = /185\.197\.250\.43/i;
+
 /** Managed API base from env. Local URL overrides are cleared by Settings. */
 export function getApiBaseUrl(): string {
-  return readApiBaseOverride() ?? envApiBaseUrl;
+  const override = readApiBaseOverride();
+  if (override && DEAD_API_HOSTS.test(override)) {
+    writeApiBaseOverride(null);
+    return envApiBaseUrl;
+  }
+  return override ?? envApiBaseUrl;
 }
 
 export class ApiRequestError extends Error {
@@ -119,9 +130,34 @@ function unreachableMessage(kind: "timeout" | "network", detail?: string): strin
     : "Can't reach Arrab right now. Check your connection and try again.";
 }
 
+function buildAuthHeaders(): Record<string, string> {
+  const authHeaders: Record<string, string> = {};
+  try {
+    const accountToken = readAccountSessionToken();
+    if (accountToken) {
+      authHeaders.Authorization = `Bearer ${accountToken}`;
+      authHeaders["X-Arrab-Account-Session"] = accountToken;
+    }
+  } catch {
+    // ignore storage failures
+  }
+  try {
+    const raw = localStorage.getItem("arrab.org.employee.session");
+    if (raw) {
+      const parsed = JSON.parse(raw) as { sessionToken?: string };
+      if (parsed.sessionToken) {
+        authHeaders["X-Arrab-Employee-Session"] = parsed.sessionToken;
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return authHeaders;
+}
+
 async function request<T>(
   path: string,
-  init?: { method?: string; body?: unknown; timeoutMs?: number },
+  init?: { method?: string; body?: unknown; timeoutMs?: number; signal?: AbortSignal },
 ): Promise<T> {
   const base = getApiBaseUrl();
   const timeoutMs = init?.timeoutMs ?? (isLocalApiBase(base) ? 15_000 : 25_000);
@@ -129,7 +165,10 @@ async function request<T>(
   let lastError: unknown = null;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    init?.signal?.throwIfAborted();
     const controller = new AbortController();
+    const abort = () => controller.abort(init?.signal?.reason);
+    init?.signal?.addEventListener("abort", abort, { once: true });
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(url, {
@@ -138,6 +177,7 @@ async function request<T>(
         headers: {
           Accept: "application/json",
           ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
+          ...buildAuthHeaders(),
         },
         body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
       });
@@ -155,6 +195,8 @@ async function request<T>(
       }
       return (await response.json()) as T;
     } catch (error) {
+      // A caller cancellation is intentional: never turn it into a timeout or retry it.
+      init?.signal?.throwIfAborted();
       if (error instanceof ApiRequestError) {
         throw error;
       }
@@ -173,14 +215,12 @@ async function request<T>(
       throw new ApiRequestError(unreachableMessage("network"), 0);
     } finally {
       window.clearTimeout(timer);
+      init?.signal?.removeEventListener("abort", abort);
     }
   }
 
   throw new ApiRequestError(
-    unreachableMessage(
-      "network",
-      lastError instanceof Error ? lastError.message : undefined,
-    ),
+    unreachableMessage("network", lastError instanceof Error ? lastError.message : undefined),
     0,
   );
 }
@@ -201,6 +241,7 @@ export const arrabApi = {
         tokensUsed: number;
         tokensRemaining: number | null;
         overLimit: boolean;
+        pauseMode: "upgrade_required" | "upgrade_or_wait" | null;
       };
     }>("/v1/meta"),
   account: () => request<AccountStatusResponse>("/v1/account"),
@@ -210,13 +251,12 @@ export const arrabApi = {
     request<ConnectAccountResponse>("/v1/account/sign-in", { method: "POST", body }),
   disconnectAccount: () =>
     request<AccountStatusResponse>("/v1/account/disconnect", { method: "POST" }),
-  logoutAccount: () =>
-    request<AccountStatusResponse>("/v1/account/logout", { method: "POST" }),
+  logoutAccount: () => request<AccountStatusResponse>("/v1/account/logout", { method: "POST" }),
   startWebAuth: (body: StartWebAuthRequest = {}) =>
     request<StartWebAuthResponse>("/v1/account/auth/web/start", { method: "POST", body }),
-  pollWebAuth: (state: string) =>
+  pollWebAuth: (state: string, pollSecret: string) =>
     request<PollWebAuthResponse>(
-      `/v1/account/auth/web/poll?state=${encodeURIComponent(state)}`,
+      `/v1/account/auth/web/poll?state=${encodeURIComponent(state)}&pollSecret=${encodeURIComponent(pollSecret)}`,
     ),
   activateSubscription: (body: ActivateSubscriptionRequest) =>
     request<AccountStatusResponse>("/v1/account/subscribe", { method: "POST", body }),
@@ -227,9 +267,7 @@ export const arrabApi = {
   billingCheckout: (body: BillingCheckoutRequest) =>
     request<BillingCheckoutResponse>("/v1/billing/checkout", { method: "POST", body }),
   billingConfirm: (invoiceId: string) =>
-    request<AccountStatusResponse>(
-      `/v1/billing/confirm?invoice=${encodeURIComponent(invoiceId)}`,
-    ),
+    request<AccountStatusResponse>(`/v1/billing/confirm?invoice=${encodeURIComponent(invoiceId)}`),
   dashboard: () => request<DashboardResponse>("/v1/dashboard"),
   projects: () => request<CollectionResponse<Project>>("/v1/projects"),
   createProject: (body: CreateProjectRequest) =>
@@ -237,15 +275,19 @@ export const arrabApi = {
   updateProject: (id: string, body: UpdateProjectRequest) =>
     request<Project>(`/v1/projects/${id}`, { method: "PATCH", body }),
   agents: () => request<CollectionResponse<Agent>>("/v1/agents"),
-  createAgent: (body: CreateAgentRequest) =>
-    request<Agent>("/v1/agents", { method: "POST", body }),
-  updateAgent: (id: string, body: UpdateAgentRequest) =>
-    request<Agent>(`/v1/agents/${id}`, { method: "PATCH", body }),
-  deleteAgent: (id: string) =>
-    request<{ ok: true }>(`/v1/agents/${id}`, { method: "DELETE" }),
+  createAgent: (body: CreateAgentRequest, signal?: AbortSignal) =>
+    request<Agent>("/v1/agents", { method: "POST", body, signal }),
+  updateAgent: (id: string, body: UpdateAgentRequest, signal?: AbortSignal) =>
+    request<Agent>(`/v1/agents/${id}`, { method: "PATCH", body, signal }),
+  deleteAgent: (id: string) => request<{ ok: true }>(`/v1/agents/${id}`, { method: "DELETE" }),
+  /** POST archive — works when CORS only allows GET/HEAD/POST. */
+  archiveAgent: (id: string) =>
+    request<Agent>(`/v1/agents/${id}/archive`, { method: "POST", body: {} }),
+  /** POST remove — hard delete with chats retained; CORS-safe. */
+  removeAgent: (id: string) =>
+    request<{ ok: true }>(`/v1/agents/${id}/remove`, { method: "POST", body: {} }),
   teams: () => request<CollectionResponse<Team>>("/v1/teams"),
-  createTeam: (body: CreateTeamRequest) =>
-    request<Team>("/v1/teams", { method: "POST", body }),
+  createTeam: (body: CreateTeamRequest) => request<Team>("/v1/teams", { method: "POST", body }),
   updateTeam: (id: string, body: UpdateTeamRequest) =>
     request<Team>(`/v1/teams/${id}`, { method: "PATCH", body }),
   activity: () => request<CollectionResponse<Activity>>("/v1/activity"),
@@ -253,16 +295,17 @@ export const arrabApi = {
   conversations: () => request<CollectionResponse<Conversation>>("/v1/conversations"),
   agentConversations: (agentId: string) =>
     request<CollectionResponse<Conversation>>(`/v1/agents/${agentId}/conversations`),
-  createConversation: (body: CreateConversationRequest) =>
-    request<Conversation>("/v1/conversations", { method: "POST", body }),
+  createConversation: (body: CreateConversationRequest, signal?: AbortSignal) =>
+    request<Conversation>("/v1/conversations", { method: "POST", body, signal }),
   deleteConversation: (id: string) =>
     request<{ ok: true }>(`/v1/conversations/${id}`, { method: "DELETE" }),
   conversation: (id: string) => request<ConversationDetailResponse>(`/v1/conversations/${id}`),
-  sendMessage: (id: string, body: SendMessageRequest) =>
+  sendMessage: (id: string, body: SendMessageRequest, signal?: AbortSignal) =>
     request<SendMessageResponse>(`/v1/conversations/${id}/messages`, {
       method: "POST",
       body,
       timeoutMs: 90_000,
+      signal,
     }),
   sendMessageStream: async (
     id: string,
@@ -275,13 +318,21 @@ export const arrabApi = {
       onDone?: (response: SendMessageResponse) => void;
       onError?: (message: string) => void;
     } = {},
+    signal?: AbortSignal,
   ) => {
+    signal?.throwIfAborted();
     const controller = new AbortController();
+    const abort = () => controller.abort(signal?.reason);
+    signal?.addEventListener("abort", abort, { once: true });
     const kill = setTimeout(() => controller.abort(), 180_000);
     try {
       const response = await fetch(`${getApiBaseUrl()}/v1/conversations/${id}/messages/stream`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "text/event-stream",
+          ...buildAuthHeaders(),
+        },
         body: JSON.stringify(body),
         signal: controller.signal,
       });
@@ -296,11 +347,13 @@ export const arrabApi = {
       let sawDone = false;
       while (true) {
         const { done, value } = await reader.read();
+        signal?.throwIfAborted();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
         const chunks = buffer.split("\n\n");
         buffer = chunks.pop() ?? "";
         for (const chunk of chunks) {
+          signal?.throwIfAborted();
           const lines = chunk.split("\n");
           let data = "";
           for (const line of lines) {
@@ -344,7 +397,9 @@ export const arrabApi = {
       }
       if (!sawDone) {
         // Proxies sometimes drop SSE; fall back to the solid non-stream path.
-        const fallback = await arrabApi.sendMessage(id, body);
+        signal?.throwIfAborted();
+        const fallback = await arrabApi.sendMessage(id, body, signal);
+        signal?.throwIfAborted();
         if (fallback.assistantMessage?.content) {
           handlers.onToken?.(fallback.assistantMessage.content);
         }
@@ -354,10 +409,12 @@ export const arrabApi = {
         handlers.onDone?.(fallback);
       }
     } catch (err: unknown) {
+      signal?.throwIfAborted();
       if (err instanceof ApiRequestError) throw err;
-      // Network / abort — try non-stream once.
+      // Retry a network/timeout failure; never restart a caller-cancelled request.
       try {
-        const fallback = await arrabApi.sendMessage(id, body);
+        const fallback = await arrabApi.sendMessage(id, body, signal);
+        signal?.throwIfAborted();
         if (fallback.assistantMessage?.content) {
           handlers.onToken?.(fallback.assistantMessage.content);
         }
@@ -366,6 +423,7 @@ export const arrabApi = {
         }
         handlers.onDone?.(fallback);
       } catch (fallbackErr: unknown) {
+        signal?.throwIfAborted();
         const message =
           fallbackErr instanceof Error
             ? fallbackErr.message
@@ -379,16 +437,15 @@ export const arrabApi = {
       }
     } finally {
       clearTimeout(kill);
+      signal?.removeEventListener("abort", abort);
     }
   },
   goals: (status?: string) =>
     request<CollectionResponse<Goal>>(
       status ? `/v1/goals?status=${encodeURIComponent(status)}` : "/v1/goals",
     ),
-  agentGoals: (agentId: string) =>
-    request<CollectionResponse<Goal>>(`/v1/agents/${agentId}/goals`),
-  createGoal: (body: CreateGoalRequest) =>
-    request<Goal>("/v1/goals", { method: "POST", body }),
+  agentGoals: (agentId: string) => request<CollectionResponse<Goal>>(`/v1/agents/${agentId}/goals`),
+  createGoal: (body: CreateGoalRequest) => request<Goal>("/v1/goals", { method: "POST", body }),
   updateGoal: (id: string, body: UpdateGoalRequest) =>
     request<Goal>(`/v1/goals/${id}`, { method: "PATCH", body }),
   connectors: () => request<CollectionResponse<ConnectorPublic>>("/v1/connectors"),
@@ -396,6 +453,24 @@ export const arrabApi = {
     request<CollectionResponse<{ provider: string; available: boolean }>>("/v1/connectors/catalog"),
   connectConnector: (body: ConnectConnectorRequest) =>
     request<ConnectorPublic>("/v1/connectors", { method: "POST", body, timeoutMs: 45_000 }),
+  startGmailOAuth: () =>
+    request<StartGmailOAuthResponse>("/v1/connectors/gmail/oauth/start", {
+      method: "POST",
+      body: {},
+      timeoutMs: 20_000,
+    }),
+  startGithubOAuth: () =>
+    request<StartGmailOAuthResponse>("/v1/connectors/github/oauth/start", {
+      method: "POST",
+      body: {},
+      timeoutMs: 20_000,
+    }),
+  startOutlookOAuth: () =>
+    request<StartGmailOAuthResponse>("/v1/connectors/outlook/oauth/start", {
+      method: "POST",
+      body: {},
+      timeoutMs: 20_000,
+    }),
   verifyConnector: (id: string) =>
     request<ConnectorPublic>(`/v1/connectors/${id}/verify`, { method: "POST", timeoutMs: 45_000 }),
   connectorResources: (id: string, q?: string) =>
@@ -425,6 +500,21 @@ export const arrabApi = {
       body,
       timeoutMs: 45_000,
     }),
+  arrangeEmail: (id: string, body: ArrangeEmailRequest) =>
+    request<ArrangeEmailResponse>(`/v1/connectors/${id}/email/arrange`, {
+      method: "POST",
+      body,
+      timeoutMs: 45_000,
+    }),
+  sshExec: (id: string, body: { command: string }) =>
+    request<{ code: number | null; stdout: string; stderr: string }>(
+      `/v1/connectors/${id}/ssh/exec`,
+      {
+        method: "POST",
+        body,
+        timeoutMs: 45_000,
+      },
+    ),
   githubRepoMeta: (owner: string, repo: string, connectorId: string) =>
     request<GithubRepoMetaResponse>(
       `/v1/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}?connectorId=${encodeURIComponent(connectorId)}`,
@@ -461,11 +551,17 @@ export const arrabApi = {
   unbindProjectRepo: (projectId: string) =>
     request<{ ok: true }>(`/v1/projects/${projectId}/repo`, { method: "DELETE" }),
   operator: () => request<OperatorProfile>("/v1/operator"),
+  companionState: () =>
+    request<{ updatedAt: string | null; state: unknown | null }>("/v1/companions/state"),
+  putCompanionState: (body: { updatedAt: string; state: unknown }) =>
+    request<{ updatedAt: string; state: unknown }>("/v1/companions/state", {
+      method: "PUT",
+      body,
+    }),
   updateOperator: (body: UpdateOperatorRequest) =>
     request<OperatorProfile>("/v1/operator", { method: "PUT", body }),
   tasks: () => request<CollectionResponse<Task>>("/v1/tasks"),
-  createTask: (body: CreateTaskRequest) =>
-    request<Task>("/v1/tasks", { method: "POST", body }),
+  createTask: (body: CreateTaskRequest) => request<Task>("/v1/tasks", { method: "POST", body }),
   updateTask: (id: string, body: UpdateTaskRequest) =>
     request<Task>(`/v1/tasks/${id}`, { method: "PATCH", body }),
   deleteTask: (id: string) => request<{ ok: true }>(`/v1/tasks/${id}`, { method: "DELETE" }),
@@ -476,9 +572,7 @@ export const arrabApi = {
       timeoutMs: 60_000,
     }),
   taskRuns: (taskId?: string) =>
-    request<CollectionResponse<TaskRun>>(
-      taskId ? `/v1/tasks/${taskId}/runs` : "/v1/task-runs",
-    ),
+    request<CollectionResponse<TaskRun>>(taskId ? `/v1/tasks/${taskId}/runs` : "/v1/task-runs"),
   knowledge: () => request<CollectionResponse<Knowledge>>("/v1/knowledge"),
   createKnowledge: (body: CreateKnowledgeRequest) =>
     request<Knowledge>("/v1/knowledge", { method: "POST", body }),
@@ -489,19 +583,16 @@ export const arrabApi = {
   memories: () => request<CollectionResponse<Memory>>("/v1/memories"),
   createMemory: (body: CreateMemoryRequest) =>
     request<Memory>("/v1/memories", { method: "POST", body }),
-  deleteMemory: (id: string) =>
-    request<{ ok: true }>(`/v1/memories/${id}`, { method: "DELETE" }),
+  deleteMemory: (id: string) => request<{ ok: true }>(`/v1/memories/${id}`, { method: "DELETE" }),
   skills: (agentId?: string) =>
     request<CollectionResponse<Skill>>(
       agentId ? `/v1/skills?agentId=${encodeURIComponent(agentId)}` : "/v1/skills",
     ),
   createSkill: (body: CreateSkillRequest) =>
     request<{ skill: Skill; task: Task | null }>("/v1/skills", { method: "POST", body }),
-  deleteSkill: (id: string) =>
-    request<{ ok: true }>(`/v1/skills/${id}`, { method: "DELETE" }),
+  deleteSkill: (id: string) => request<{ ok: true }>(`/v1/skills/${id}`, { method: "DELETE" }),
   approvals: () => request<CollectionResponse<Approval>>("/v1/approvals"),
-  pendingApprovals: () =>
-    request<CollectionResponse<Approval>>("/v1/approvals/pending"),
+  pendingApprovals: () => request<CollectionResponse<Approval>>("/v1/approvals/pending"),
   createApproval: (body: CreateApprovalRequest) =>
     request<Approval>("/v1/approvals", { method: "POST", body }),
   resolveApproval: (id: string, body: ResolveApprovalRequest) =>
@@ -516,4 +607,210 @@ export const arrabApi = {
       timeoutMs: 90_000,
     }),
   reportSummary: () => request<ReportSummaryResponse>("/v1/reports/summary"),
+  orgWorkforce: async () => {
+    try {
+      return await request<import("@arrab/shared").OrgWorkforceSnapshot>("/v1/org/workforce");
+    } catch (err) {
+      if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status < 500)) throw err;
+      const { localOrgSnapshot } = await import("./org-workforce-local");
+      return localOrgSnapshot(readOrgEmployeePublic());
+    }
+  },
+  orgDepartments: async () => {
+    try {
+      return await request<CollectionResponse<import("@arrab/shared").OrgDepartment>>(
+        "/v1/org/departments",
+      );
+    } catch (err) {
+      if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status < 500)) throw err;
+      const { localOrgSnapshot } = await import("./org-workforce-local");
+      const snap = await localOrgSnapshot();
+      return { items: snap.departments };
+    }
+  },
+  createOrgDepartment: async (body: import("@arrab/shared").CreateOrgDepartmentRequest) => {
+    try {
+      return await request<import("@arrab/shared").OrgDepartment>("/v1/org/departments", {
+        method: "POST",
+        body,
+      });
+    } catch (err) {
+      if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status < 500)) throw err;
+      try {
+        const { localCreateDepartment } = await import("./org-workforce-local");
+        return await localCreateDepartment(body);
+      } catch (localErr) {
+        throw new ApiRequestError(
+          localErr instanceof Error ? localErr.message : "Could not create department",
+          400,
+        );
+      }
+    }
+  },
+  updateOrgDepartment: async (
+    id: string,
+    body: import("@arrab/shared").UpdateOrgDepartmentRequest,
+  ) => {
+    try {
+      return await request<import("@arrab/shared").OrgDepartment>(`/v1/org/departments/${id}`, {
+        method: "PATCH",
+        body,
+      });
+    } catch (err) {
+      if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status < 500)) throw err;
+      try {
+        const { localUpdateDepartment } = await import("./org-workforce-local");
+        return await localUpdateDepartment(id, body);
+      } catch (localErr) {
+        throw new ApiRequestError(
+          localErr instanceof Error ? localErr.message : "Could not update department",
+          400,
+        );
+      }
+    }
+  },
+  deleteOrgDepartment: async (id: string) => {
+    try {
+      return await request<{ ok: true }>(`/v1/org/departments/${id}`, { method: "DELETE" });
+    } catch (err) {
+      if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status < 500)) throw err;
+      const { localDeleteDepartment } = await import("./org-workforce-local");
+      return localDeleteDepartment(id);
+    }
+  },
+  orgEmployees: async () => {
+    try {
+      return await request<CollectionResponse<import("@arrab/shared").OrgEmployeePublic>>(
+        "/v1/org/employees",
+      );
+    } catch (err) {
+      if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status < 500)) throw err;
+      const { localOrgSnapshot } = await import("./org-workforce-local");
+      const snap = await localOrgSnapshot(readOrgEmployeePublic());
+      return { items: snap.employees };
+    }
+  },
+  createOrgEmployee: async (body: import("@arrab/shared").CreateOrgEmployeeRequest) => {
+    try {
+      return await request<import("@arrab/shared").OrgEmployeePublic>("/v1/org/employees", {
+        method: "POST",
+        body,
+      });
+    } catch (err) {
+      if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status < 500)) throw err;
+      try {
+        const { localCreateEmployee } = await import("./org-workforce-local");
+        return await localCreateEmployee(body);
+      } catch (localErr) {
+        throw new ApiRequestError(
+          localErr instanceof Error ? localErr.message : "Could not create employee",
+          400,
+        );
+      }
+    }
+  },
+  updateOrgEmployee: async (id: string, body: import("@arrab/shared").UpdateOrgEmployeeRequest) => {
+    try {
+      return await request<import("@arrab/shared").OrgEmployeePublic>(`/v1/org/employees/${id}`, {
+        method: "PATCH",
+        body,
+      });
+    } catch (err) {
+      if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status < 500)) throw err;
+      try {
+        const { localUpdateEmployee } = await import("./org-workforce-local");
+        return await localUpdateEmployee(id, body);
+      } catch (localErr) {
+        throw new ApiRequestError(
+          localErr instanceof Error ? localErr.message : "Could not update employee",
+          400,
+        );
+      }
+    }
+  },
+  deleteOrgEmployee: async (id: string) => {
+    try {
+      return await request<{ ok: true }>(`/v1/org/employees/${id}`, { method: "DELETE" });
+    } catch (err) {
+      if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status < 500)) throw err;
+      const { localDeleteEmployee } = await import("./org-workforce-local");
+      return localDeleteEmployee(id);
+    }
+  },
+  orgEmployeeSignIn: async (body: import("@arrab/shared").OrgEmployeeSignInRequest) => {
+    try {
+      return await request<import("@arrab/shared").OrgEmployeeSessionResponse>(
+        "/v1/org/employees/sign-in",
+        { method: "POST", body },
+      );
+    } catch (err) {
+      if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status < 500)) throw err;
+      try {
+        const { localEmployeeSignIn } = await import("./org-workforce-local");
+        return await localEmployeeSignIn(body);
+      } catch (localErr) {
+        throw new ApiRequestError(
+          localErr instanceof Error ? localErr.message : "Sign-in failed",
+          401,
+        );
+      }
+    }
+  },
+  orgEmployeeSignOut: async () => {
+    try {
+      return await request<{ ok: true }>("/v1/org/employees/sign-out", {
+        method: "POST",
+        body: {},
+      });
+    } catch (err) {
+      if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status < 500)) throw err;
+      const { localEmployeeSignOut } = await import("./org-workforce-local");
+      return localEmployeeSignOut(readOrgEmployeeSessionToken());
+    }
+  },
+  orgEmployeeChangePassword: async (
+    body: import("@arrab/shared").OrgEmployeeChangePasswordRequest,
+  ) => {
+    try {
+      return await request<import("@arrab/shared").OrgEmployeeSessionResponse>(
+        "/v1/org/employees/change-password",
+        { method: "POST", body },
+      );
+    } catch (err) {
+      if (!(err instanceof ApiRequestError) || (err.status !== 404 && err.status < 500)) throw err;
+      const token = readOrgEmployeeSessionToken();
+      if (!token) throw new ApiRequestError("Employee session required", 401);
+      try {
+        const { localEmployeeChangePassword } = await import("./org-workforce-local");
+        return await localEmployeeChangePassword(token, body);
+      } catch (localErr) {
+        throw new ApiRequestError(
+          localErr instanceof Error ? localErr.message : "Could not change password",
+          400,
+        );
+      }
+    }
+  },
 };
+
+function readOrgEmployeeSessionToken(): string | null {
+  try {
+    const raw = localStorage.getItem("arrab.org.employee.session");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { sessionToken?: string };
+    return parsed.sessionToken ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function readOrgEmployeePublic(): import("@arrab/shared").OrgEmployeePublic | null {
+  try {
+    const raw = localStorage.getItem("arrab.org.employee.session");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { employee?: import("@arrab/shared").OrgEmployeePublic };
+    return parsed.employee ?? null;
+  } catch {
+    return null;
+  }
+}

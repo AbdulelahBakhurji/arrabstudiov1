@@ -2,6 +2,8 @@ import { NotFoundError, ValidationError } from "@arrab/core";
 import type { Persistence } from "@arrab/database";
 import type {
   Approval,
+  ArrangeEmailRequest,
+  ArrangeEmailResponse,
   ConnectConnectorRequest,
   ConnectorProvider,
   ConnectorPublic,
@@ -17,10 +19,14 @@ import type {
   ListEmailMessagesResponse,
   SendEmailRequest,
   SendEmailResponse,
+  SshExecRequest,
+  SshExecResponse,
+  StartGmailOAuthResponse,
   WorkspaceId,
 } from "@arrab/shared";
 import { brandId } from "@arrab/shared";
 import { randomUUID } from "node:crypto";
+import { decryptField, encryptField } from "../lib/field-crypto.js";
 import type { WorkspaceCommandService } from "./workspace-commands.js";
 import {
   buildEmailSecret,
@@ -32,6 +38,49 @@ import {
   verifyEmailSecret,
   type EmailSecret,
 } from "./email-connector.js";
+import {
+  arrangeGmailMessages,
+  buildGmailAuthUrl,
+  exchangeGmailAuthCode,
+  listGmailMailboxes,
+  listGmailMessages,
+  newGmailOAuthState,
+  parseGmailSecret,
+  readGmailMessage,
+  sendGmailMessage,
+  verifyGmailSecret,
+  type GoogleOAuthConfig,
+} from "./gmail-connector.js";
+import {
+  buildGithubAuthUrl,
+  exchangeGithubAuthCode,
+  githubAccessTokenFromSecret,
+  newGithubOAuthState,
+  parseGithubOAuthSecret,
+  refreshGithubOAuthSecret,
+  verifyGithubOAuthSecret,
+  type GithubOAuthConfig,
+} from "./github-oauth.js";
+import {
+  arrangeOutlookMessages,
+  buildOutlookAuthUrl,
+  exchangeOutlookAuthCode,
+  listOutlookMailboxes,
+  listOutlookMessages,
+  newOutlookOAuthState,
+  parseOutlookSecret,
+  readOutlookMessage,
+  sendOutlookMessage,
+  verifyOutlookSecret,
+  type MicrosoftOAuthConfig,
+} from "./outlook-connector.js";
+import {
+  buildSshSecret,
+  execSshCommand,
+  listSshHomeEntries,
+  parseSshSecret,
+  verifySshSecret,
+} from "./ssh-connector.js";
 
 const AVAILABLE = new Set<ConnectorProvider>([
   "github",
@@ -40,8 +89,17 @@ const AVAILABLE = new Set<ConnectorProvider>([
   "linear",
   "slack",
   "notion",
+  "gmail",
+  "outlook",
   "email",
+  "ssh",
 ]);
+
+type PendingOAuth = {
+  state: string;
+  createdAt: number;
+  expiresAt: number;
+};
 const GITHUB_API = "https://api.github.com";
 const GITHUB_HEADERS_BASE = {
   Accept: "application/vnd.github+json",
@@ -52,10 +110,40 @@ const GITHUB_HEADERS_BASE = {
 type VerifiedAccount = { login: string; scopes: string[]; secret: string };
 
 export class ConnectorService {
+  private readonly pendingGmailOAuth = new Map<string, PendingOAuth>();
+  private readonly pendingOutlookOAuth = new Map<string, PendingOAuth>();
+  private readonly pendingGithubOAuth = new Map<string, PendingOAuth>();
+
   constructor(
     private readonly persistence: Persistence,
     private readonly commands?: WorkspaceCommandService,
+    private readonly google?: GoogleOAuthConfig | null,
+    private readonly siteUrl = "http://127.0.0.1:8787",
+    private readonly microsoft?: MicrosoftOAuthConfig | null,
+    private readonly githubOAuth?: GithubOAuthConfig | null,
   ) {}
+
+  private openConnector(record: ConnectorSecretRecord): ConnectorSecretRecord {
+    return { ...record, secret: decryptField(record.secret) };
+  }
+
+  private sealConnector(record: ConnectorSecretRecord): ConnectorSecretRecord {
+    return { ...record, secret: encryptField(record.secret) };
+  }
+
+  private async loadConnector(id: string): Promise<ConnectorSecretRecord | null> {
+    const record = await this.persistence.connectors.getById(id);
+    return record ? this.openConnector(record) : null;
+  }
+
+  private async saveConnector(record: ConnectorSecretRecord, mode: "create" | "update"): Promise<void> {
+    const sealed = this.sealConnector(record);
+    if (mode === "create") {
+      await this.persistence.connectors.create(sealed);
+    } else {
+      await this.persistence.connectors.update(sealed);
+    }
+  }
 
   async list(): Promise<ConnectorPublic[]> {
     const items = await this.persistence.connectors.list();
@@ -66,7 +154,8 @@ export class ConnectorService {
     const providers: Array<{ provider: ConnectorProvider; description: string }> = [
       {
         provider: "github",
-        description: "Repositories, commit, push, and pull requests for agent workspace.",
+        description:
+          "Connect GitHub with browser OAuth — browse repos, commit, push, and open pull requests.",
       },
       {
         provider: "gitlab",
@@ -89,8 +178,20 @@ export class ConnectorService {
         description: "Notion pages and databases via integration token.",
       },
       {
+        provider: "gmail",
+        description: "Connect Gmail with Google OAuth — AI can list, read, arrange, and send mail.",
+      },
+      {
+        provider: "outlook",
+        description: "Connect Outlook with Microsoft OAuth — AI can list, read, arrange, and send mail.",
+      },
+      {
         provider: "email",
-        description: "Connect Gmail/Outlook/iCloud/Yahoo with an app password — inbox, read, and send.",
+        description: "Connect IMAP/SMTP inboxes (iCloud, Yahoo, custom) with an app password.",
+      },
+      {
+        provider: "ssh",
+        description: "Connect a remote SSH host with password or private key — list files and run commands.",
       },
     ];
     return providers.map((item) => ({
@@ -99,10 +200,210 @@ export class ConnectorService {
     }));
   }
 
+  startGmailOAuth(): StartGmailOAuthResponse {
+    const config = this.requireGoogleConfig();
+    this.prunePendingGmailOAuth();
+    const state = newGmailOAuthState();
+    const now = Date.now();
+    this.pendingGmailOAuth.set(state, {
+      state,
+      createdAt: now,
+      expiresAt: now + 15 * 60_000,
+    });
+    return buildGmailAuthUrl(config, state);
+  }
+
+  startGithubOAuth(): StartGmailOAuthResponse {
+    const config = this.requireGithubOAuthConfig();
+    this.prunePendingGithubOAuth();
+    const state = newGithubOAuthState();
+    const now = Date.now();
+    this.pendingGithubOAuth.set(state, {
+      state,
+      createdAt: now,
+      expiresAt: now + 15 * 60_000,
+    });
+    return buildGithubAuthUrl(config, state);
+  }
+
+  async completeGithubOAuth(input: {
+    code?: string | null;
+    state?: string | null;
+    error?: string | null;
+    errorDescription?: string | null;
+    installationId?: string | null;
+  }): Promise<{ redirectUrl: string }> {
+    const site = this.siteUrl.replace(/\/$/, "");
+    const fail = (message: string) => ({
+      redirectUrl: `${site}/app?view=connectors&github=error&message=${encodeURIComponent(message)}`,
+    });
+    if (input.error?.trim()) {
+      return fail(input.errorDescription?.trim() || input.error.trim());
+    }
+    const state = input.state?.trim() ?? "";
+    const code = input.code?.trim() ?? "";
+    this.prunePendingGithubOAuth();
+    const pending = this.pendingGithubOAuth.get(state);
+    if (!pending || pending.expiresAt < Date.now()) {
+      this.pendingGithubOAuth.delete(state);
+      return fail("OAuth session expired — start Connect GitHub again");
+    }
+    this.pendingGithubOAuth.delete(state);
+    if (!code) {
+      return fail("Missing GitHub authorization code");
+    }
+    try {
+      const config = this.requireGithubOAuthConfig();
+      const secret = await exchangeGithubAuthCode(config, code, input.installationId);
+      const now = new Date().toISOString();
+      const record: ConnectorSecretRecord = {
+        id: randomUUID(),
+        workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
+        provider: "github",
+        status: "connected",
+        accountLabel: secret.login,
+        scopes: secret.scopes.length > 0 ? secret.scopes : ["github-app"],
+        connectedAt: now,
+        lastVerifiedAt: now,
+        error: null,
+        secret: JSON.stringify(secret),
+      };
+      await this.saveConnector(record, "create");
+      return {
+        redirectUrl: `${site}/app?view=connectors&github=connected`,
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "GitHub connect failed";
+      return fail(message);
+    }
+  }
+
+  async completeGmailOAuth(input: {
+    code?: string | null;
+    state?: string | null;
+    error?: string | null;
+  }): Promise<{ redirectUrl: string }> {
+    const site = this.siteUrl.replace(/\/$/, "");
+    const fail = (message: string) => ({
+      redirectUrl: `${site}/app?view=connectors&gmail=error&message=${encodeURIComponent(message)}`,
+    });
+    if (input.error?.trim()) {
+      return fail(input.error.trim());
+    }
+    const state = input.state?.trim() ?? "";
+    const code = input.code?.trim() ?? "";
+    this.prunePendingGmailOAuth();
+    const pending = this.pendingGmailOAuth.get(state);
+    if (!pending || pending.expiresAt < Date.now()) {
+      this.pendingGmailOAuth.delete(state);
+      return fail("OAuth session expired — start Connect Gmail again");
+    }
+    this.pendingGmailOAuth.delete(state);
+    if (!code) {
+      return fail("Missing Google authorization code");
+    }
+    try {
+      const config = this.requireGoogleConfig();
+      const secret = await exchangeGmailAuthCode(config, code);
+      const now = new Date().toISOString();
+      const record: ConnectorSecretRecord = {
+        id: randomUUID(),
+        workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
+        provider: "gmail",
+        status: "connected",
+        accountLabel: secret.email,
+        scopes: secret.scopes,
+        connectedAt: now,
+        lastVerifiedAt: now,
+        error: null,
+        secret: JSON.stringify(secret),
+      };
+      await this.saveConnector(record, "create");
+      return {
+        redirectUrl: `${site}/app?view=connectors&gmail=connected`,
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Gmail connect failed";
+      return fail(message);
+    }
+  }
+
+  startOutlookOAuth(): StartGmailOAuthResponse {
+    const config = this.requireMicrosoftConfig();
+    this.prunePendingOutlookOAuth();
+    const state = newOutlookOAuthState();
+    const now = Date.now();
+    this.pendingOutlookOAuth.set(state, {
+      state,
+      createdAt: now,
+      expiresAt: now + 15 * 60_000,
+    });
+    return buildOutlookAuthUrl(config, state);
+  }
+
+  async completeOutlookOAuth(input: {
+    code?: string | null;
+    state?: string | null;
+    error?: string | null;
+  }): Promise<{ redirectUrl: string }> {
+    const site = this.siteUrl.replace(/\/$/, "");
+    const fail = (message: string) => ({
+      redirectUrl: `${site}/app?view=connectors&outlook=error&message=${encodeURIComponent(message)}`,
+    });
+    if (input.error?.trim()) {
+      return fail(input.error.trim());
+    }
+    const state = input.state?.trim() ?? "";
+    const code = input.code?.trim() ?? "";
+    this.prunePendingOutlookOAuth();
+    const pending = this.pendingOutlookOAuth.get(state);
+    if (!pending || pending.expiresAt < Date.now()) {
+      this.pendingOutlookOAuth.delete(state);
+      return fail("OAuth session expired — start Connect Outlook again");
+    }
+    this.pendingOutlookOAuth.delete(state);
+    if (!code) {
+      return fail("Missing Microsoft authorization code");
+    }
+    try {
+      const config = this.requireMicrosoftConfig();
+      const secret = await exchangeOutlookAuthCode(config, code);
+      const now = new Date().toISOString();
+      const record: ConnectorSecretRecord = {
+        id: randomUUID(),
+        workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
+        provider: "outlook",
+        status: "connected",
+        accountLabel: secret.email,
+        scopes: secret.scopes,
+        connectedAt: now,
+        lastVerifiedAt: now,
+        error: null,
+        secret: JSON.stringify(secret),
+      };
+      await this.saveConnector(record, "create");
+      return {
+        redirectUrl: `${site}/app?view=connectors&outlook=connected`,
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "Outlook connect failed";
+      return fail(message);
+    }
+  }
+
   async connect(input: ConnectConnectorRequest): Promise<ConnectorPublic> {
     const provider = input.provider;
     if (!provider) {
       throw new ValidationError("Connector provider is required");
+    }
+    if (provider === "gmail") {
+      throw new ValidationError("Use Google OAuth to connect Gmail (Connect Gmail button)");
+    }
+    if (provider === "outlook") {
+      throw new ValidationError("Use Microsoft OAuth to connect Outlook (Connect Outlook button)");
+    }
+    if (provider === "github" && this.githubOAuth?.clientId && this.githubOAuth?.clientSecret) {
+      throw new ValidationError("Use GitHub OAuth to connect GitHub (Connect GitHub button)");
     }
     if (!AVAILABLE.has(provider)) {
       throw new ValidationError(`Connector ${provider} is not available yet`);
@@ -122,12 +423,12 @@ export class ConnectorService {
       error: null,
       secret: verified.secret,
     };
-    await this.persistence.connectors.create(record);
+    await this.saveConnector(record, "create");
     return toPublic(record);
   }
 
   async verify(id: string): Promise<ConnectorPublic> {
-    const existing = await this.persistence.connectors.getById(id);
+    const existing = await this.loadConnector(id);
     if (!existing) {
       throw new NotFoundError("Connector", id);
     }
@@ -146,18 +447,18 @@ export class ConnectorService {
       existing.error = error instanceof Error ? error.message : "Verification failed";
       existing.lastVerifiedAt = new Date().toISOString();
     }
-    await this.persistence.connectors.update(existing);
+    await this.saveConnector(existing, "update");
     return toPublic(existing);
   }
 
   async resources(id: string, query?: string): Promise<ConnectorResource[]> {
-    const existing = await this.persistence.connectors.getById(id);
+    const existing = await this.loadConnector(id);
     if (!existing) {
       throw new NotFoundError("Connector", id);
     }
     switch (existing.provider) {
       case "github":
-        return listGithubRepos(existing.secret, query);
+        return listGithubRepos(await this.resolveGithubAccessToken(existing), query);
       case "gitlab":
         return listGitlabProjects(existing.secret, query);
       case "bitbucket":
@@ -173,9 +474,44 @@ export class ConnectorService {
         if (!secret) throw new ValidationError("Invalid email connector secret");
         return listEmailMailboxes(secret);
       }
+      case "gmail": {
+        const secret = parseGmailSecret(existing.secret);
+        if (!secret) throw new ValidationError("Invalid Gmail connector secret");
+        return listGmailMailboxes(this.requireGoogleConfig(), secret);
+      }
+      case "outlook": {
+        const secret = parseOutlookSecret(existing.secret);
+        if (!secret) throw new ValidationError("Invalid Outlook connector secret");
+        return listOutlookMailboxes(this.requireMicrosoftConfig(), secret);
+      }
+      case "ssh": {
+        const secret = parseSshSecret(existing.secret);
+        if (!secret) throw new ValidationError("Invalid SSH connector secret");
+        return listSshHomeEntries(secret, query);
+      }
       default:
         return [];
     }
+  }
+
+  async execSsh(id: string, body: SshExecRequest): Promise<SshExecResponse> {
+    const connector = await this.loadConnector(id);
+    if (!connector) throw new NotFoundError("Connector", id);
+    if (connector.provider !== "ssh") {
+      throw new ValidationError("Only SSH connectors support remote command execution");
+    }
+    if (connector.status !== "connected") {
+      throw new ValidationError("Reconnect SSH before running remote commands");
+    }
+    const secret = parseSshSecret(connector.secret);
+    if (!secret) throw new ValidationError("Invalid SSH connector secret");
+    return execSshCommand(secret, body.command ?? "");
+  }
+
+  async findPreferredSshConnector(): Promise<ConnectorPublic | null> {
+    const items = await this.persistence.connectors.list();
+    const match = items.find((item) => item.provider === "ssh" && item.status === "connected");
+    return match ? toPublic(match) : null;
   }
 
   async listEmailMessages(
@@ -183,28 +519,107 @@ export class ConnectorService {
     mailbox = "INBOX",
     limit = 30,
   ): Promise<ListEmailMessagesResponse> {
-    const secret = await this.requireEmailSecret(id);
+    const connector = await this.requireMailConnector(id);
+    if (connector.provider === "gmail") {
+      const secret = parseGmailSecret(connector.secret);
+      if (!secret) throw new ValidationError("Invalid Gmail connector secret");
+      const items = await listGmailMessages(
+        this.requireGoogleConfig(),
+        secret,
+        mailbox || "INBOX",
+        Math.min(50, Math.max(1, limit)),
+      );
+      return { mailbox: mailbox || "INBOX", items };
+    }
+    if (connector.provider === "outlook") {
+      const secret = parseOutlookSecret(connector.secret);
+      if (!secret) throw new ValidationError("Invalid Outlook connector secret");
+      const items = await listOutlookMessages(
+        this.requireMicrosoftConfig(),
+        secret,
+        mailbox || "inbox",
+        Math.min(50, Math.max(1, limit)),
+      );
+      return { mailbox: mailbox || "inbox", items };
+    }
+    const secret = parseEmailSecret(connector.secret);
+    if (!secret) throw new ValidationError("Invalid email connector secret");
     const items = await listEmailMessages(secret, mailbox || "INBOX", Math.min(50, Math.max(1, limit)));
     return { mailbox: mailbox || "INBOX", items };
   }
 
   async readEmail(id: string, uid: string, mailbox = "INBOX"): Promise<EmailMessageDetail> {
-    const secret = await this.requireEmailSecret(id);
+    const connector = await this.requireMailConnector(id);
+    if (connector.provider === "gmail") {
+      const secret = parseGmailSecret(connector.secret);
+      if (!secret) throw new ValidationError("Invalid Gmail connector secret");
+      return readGmailMessage(this.requireGoogleConfig(), secret, uid);
+    }
+    if (connector.provider === "outlook") {
+      const secret = parseOutlookSecret(connector.secret);
+      if (!secret) throw new ValidationError("Invalid Outlook connector secret");
+      return readOutlookMessage(this.requireMicrosoftConfig(), secret, uid);
+    }
+    const secret = parseEmailSecret(connector.secret);
+    if (!secret) throw new ValidationError("Invalid email connector secret");
     return readEmailMessage(secret, uid, mailbox || "INBOX");
   }
 
   async sendEmail(id: string, body: SendEmailRequest): Promise<SendEmailResponse> {
-    const secret = await this.requireEmailSecret(id);
+    const connector = await this.requireMailConnector(id);
+    if (connector.provider === "gmail") {
+      const secret = parseGmailSecret(connector.secret);
+      if (!secret) throw new ValidationError("Invalid Gmail connector secret");
+      return sendGmailMessage(this.requireGoogleConfig(), secret, body);
+    }
+    if (connector.provider === "outlook") {
+      const secret = parseOutlookSecret(connector.secret);
+      if (!secret) throw new ValidationError("Invalid Outlook connector secret");
+      return sendOutlookMessage(this.requireMicrosoftConfig(), secret, body);
+    }
+    const secret = parseEmailSecret(connector.secret);
+    if (!secret) throw new ValidationError("Invalid email connector secret");
     return sendEmailMessage(secret, body);
   }
 
+  async arrangeEmail(id: string, body: ArrangeEmailRequest): Promise<ArrangeEmailResponse> {
+    const connector = await this.requireMailConnector(id);
+    if (connector.provider === "gmail") {
+      const secret = parseGmailSecret(connector.secret);
+      if (!secret) throw new ValidationError("Invalid Gmail connector secret");
+      return arrangeGmailMessages(this.requireGoogleConfig(), secret, body);
+    }
+    if (connector.provider === "outlook") {
+      const secret = parseOutlookSecret(connector.secret);
+      if (!secret) throw new ValidationError("Invalid Outlook connector secret");
+      return arrangeOutlookMessages(this.requireMicrosoftConfig(), secret, body);
+    }
+    throw new ValidationError("Arrange is available for Gmail and Outlook OAuth connectors");
+  }
+
+  /** Prefer connected Gmail/Outlook OAuth, else legacy IMAP email. */
+  async findPreferredMailConnector(): Promise<ConnectorPublic | null> {
+    const items = await this.list();
+    const connected = items.filter((item) => item.status === "connected");
+    return (
+      connected.find((item) => item.provider === "gmail") ??
+      connected.find((item) => item.provider === "outlook") ??
+      connected.find((item) => item.provider === "email") ??
+      null
+    );
+  }
+
   async getSecret(id: string): Promise<string | null> {
-    const existing = await this.persistence.connectors.getById(id);
-    return existing?.secret ?? null;
+    const existing = await this.loadConnector(id);
+    if (!existing) return null;
+    if (existing.provider === "github") {
+      return this.resolveGithubAccessToken(existing);
+    }
+    return existing.secret;
   }
 
   async disconnect(id: string): Promise<{ ok: true }> {
-    const existing = await this.persistence.connectors.getById(id);
+    const existing = await this.loadConnector(id);
     if (!existing) {
       throw new NotFoundError("Connector", id);
     }
@@ -218,8 +633,92 @@ export class ConnectorService {
     return { ok: true };
   }
 
+  private async requireMailConnector(id: string): Promise<ConnectorSecretRecord> {
+    const connector = await this.loadConnector(id);
+    if (!connector) throw new NotFoundError("Connector", id);
+    if (
+      connector.provider !== "email" &&
+      connector.provider !== "gmail" &&
+      connector.provider !== "outlook"
+    ) {
+      throw new ValidationError("Only email/Gmail/Outlook connectors support this action");
+    }
+    if (connector.status !== "connected") {
+      throw new ValidationError("Reconnect email before using inbox actions");
+    }
+    return connector;
+  }
+
+  private requireGoogleConfig(): GoogleOAuthConfig {
+    const clientId = this.google?.clientId?.trim() ?? "";
+    const clientSecret = this.google?.clientSecret?.trim() ?? "";
+    const redirectUri = this.google?.redirectUri?.trim() ?? "";
+    if (!clientId || !clientSecret || !redirectUri) {
+      throw new ValidationError(
+        "Gmail OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET on the API.",
+      );
+    }
+    return { clientId, clientSecret, redirectUri };
+  }
+
+  private requireMicrosoftConfig(): MicrosoftOAuthConfig {
+    const clientId = this.microsoft?.clientId?.trim() ?? "";
+    const clientSecret = this.microsoft?.clientSecret?.trim() ?? "";
+    const redirectUri = this.microsoft?.redirectUri?.trim() ?? "";
+    if (!clientId || !clientSecret || !redirectUri) {
+      throw new ValidationError(
+        "Outlook OAuth is not configured. Set MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET on the API.",
+      );
+    }
+    return { clientId, clientSecret, redirectUri };
+  }
+
+  private requireGithubOAuthConfig(): GithubOAuthConfig {
+    const clientId = this.githubOAuth?.clientId?.trim() ?? "";
+    const clientSecret = this.githubOAuth?.clientSecret?.trim() ?? "";
+    const redirectUri = this.githubOAuth?.redirectUri?.trim() ?? "";
+    if (!clientId || !clientSecret || !redirectUri) {
+      throw new ValidationError(
+        "GitHub OAuth is not configured. Set GITHUB_APP_CLIENT_ID and GITHUB_APP_CLIENT_SECRET on the API.",
+      );
+    }
+    return {
+      clientId,
+      clientSecret,
+      redirectUri,
+      appSlug: this.githubOAuth?.appSlug?.trim() || undefined,
+    };
+  }
+
+  private prunePendingGmailOAuth(): void {
+    const now = Date.now();
+    for (const [state, pending] of this.pendingGmailOAuth) {
+      if (pending.expiresAt < now) {
+        this.pendingGmailOAuth.delete(state);
+      }
+    }
+  }
+
+  private prunePendingGithubOAuth(): void {
+    const now = Date.now();
+    for (const [state, pending] of this.pendingGithubOAuth) {
+      if (pending.expiresAt < now) {
+        this.pendingGithubOAuth.delete(state);
+      }
+    }
+  }
+
+  private prunePendingOutlookOAuth(): void {
+    const now = Date.now();
+    for (const [state, pending] of this.pendingOutlookOAuth) {
+      if (pending.expiresAt < now) {
+        this.pendingOutlookOAuth.delete(state);
+      }
+    }
+  }
+
   private async requireEmailSecret(id: string): Promise<EmailSecret> {
-    const connector = await this.persistence.connectors.getById(id);
+    const connector = await this.loadConnector(id);
     if (!connector) throw new NotFoundError("Connector", id);
     if (connector.provider !== "email") {
       throw new ValidationError("Only email connectors support this action");
@@ -272,6 +771,25 @@ export class ConnectorService {
       });
       const verified = await verifyEmailSecret(secret);
       return { login: verified.label, scopes: verified.scopes, secret: JSON.stringify(secret) };
+    }
+
+    if (provider === "ssh") {
+      const authMode = (config.authMode || "password").toLowerCase() === "key" ? "key" : "password";
+      const secret = buildSshSecret({
+        host: config.host || "",
+        port: config.port || "22",
+        username: config.username || "",
+        authMode,
+        password: authMode === "password" ? token : undefined,
+        privateKey: authMode === "key" ? config.privateKey || token : undefined,
+        passphrase: config.passphrase,
+      });
+      const verified = await verifySshSecret(secret);
+      return {
+        login: input.label?.trim() || verified.label,
+        scopes: verified.scopes,
+        secret: JSON.stringify(secret),
+      };
     }
 
     if (token.length < 8) {
@@ -329,6 +847,32 @@ export class ConnectorService {
       const verified = await verifyEmailSecret(secret);
       return { login: verified.label, scopes: verified.scopes, secret: existing.secret };
     }
+    if (provider === "ssh") {
+      const secret = parseSshSecret(existing.secret);
+      if (!secret) throw new ValidationError("Invalid SSH connector secret");
+      const verified = await verifySshSecret(secret);
+      return { login: verified.label, scopes: verified.scopes, secret: existing.secret };
+    }
+    if (provider === "gmail") {
+      const secret = parseGmailSecret(existing.secret);
+      if (!secret) throw new ValidationError("Invalid Gmail connector secret");
+      const verified = await verifyGmailSecret(this.requireGoogleConfig(), secret);
+      return {
+        login: verified.label,
+        scopes: verified.scopes,
+        secret: JSON.stringify(verified.secret),
+      };
+    }
+    if (provider === "outlook") {
+      const secret = parseOutlookSecret(existing.secret);
+      if (!secret) throw new ValidationError("Invalid Outlook connector secret");
+      const verified = await verifyOutlookSecret(this.requireMicrosoftConfig(), secret);
+      return {
+        login: verified.label,
+        scopes: verified.scopes,
+        secret: JSON.stringify(verified.secret),
+      };
+    }
     if (provider === "gitlab") {
       const parsed = parseJsonSecret(existing.secret);
       const token = parsed?.token || existing.secret;
@@ -352,6 +896,15 @@ export class ConnectorService {
       };
     }
     if (provider === "github") {
+      const oauth = parseGithubOAuthSecret(existing.secret);
+      if (oauth) {
+        const verified = await verifyGithubOAuthSecret(this.requireGithubOAuthConfig(), oauth);
+        return {
+          login: verified.label,
+          scopes: verified.scopes,
+          secret: JSON.stringify(verified.secret),
+        };
+      }
       const verified = await verifyGithub(existing.secret);
       return { login: verified.login, scopes: verified.scopes, secret: existing.secret };
     }
@@ -371,7 +924,7 @@ export class ConnectorService {
   }
 
   private async requireGithubToken(connectorId: string): Promise<string> {
-    const connector = await this.persistence.connectors.getById(connectorId);
+    const connector = await this.loadConnector(connectorId);
     if (!connector) {
       throw new NotFoundError("Connector", connectorId);
     }
@@ -381,7 +934,24 @@ export class ConnectorService {
     if (connector.status !== "connected") {
       throw new ValidationError("Reconnect GitHub before using workspace git actions");
     }
-    return connector.secret;
+    return this.resolveGithubAccessToken(connector);
+  }
+
+  /** Resolve PAT or OAuth secret → Bearer access token; persist refreshed OAuth secrets. */
+  private async resolveGithubAccessToken(connector: ConnectorSecretRecord): Promise<string> {
+    const oauth = parseGithubOAuthSecret(connector.secret);
+    if (!oauth) {
+      return githubAccessTokenFromSecret(connector.secret);
+    }
+    if (!this.githubOAuth?.clientId || !this.githubOAuth?.clientSecret) {
+      return oauth.accessToken;
+    }
+    const fresh = await refreshGithubOAuthSecret(this.requireGithubOAuthConfig(), oauth);
+    if (JSON.stringify(fresh) !== connector.secret) {
+      connector.secret = JSON.stringify(fresh);
+      await this.saveConnector(connector, "update");
+    }
+    return fresh.accessToken;
   }
 
   async githubRepoMeta(

@@ -48,6 +48,11 @@ import {
   type StudioAccountRecord,
   type SubscriptionPlanId,
   type SubscriptionStatus,
+  type OrgDepartment,
+  type OrgEmployeeRecord,
+  type OrgDepartmentId,
+  type OrgEmployeeId,
+  type OrgSecurityEvent,
 } from "@arrab/shared";
 import type { Pool } from "pg";
 import {
@@ -55,6 +60,7 @@ import {
   LOCAL_WORKSPACE_ID,
   type ActivityRepository,
   type ApprovalRepository,
+  type CompanionStateRepository,
   type ConnectorRepository,
   type ConversationRepository,
   type EntityRepository,
@@ -73,6 +79,11 @@ import {
   type UsageRepository,
   type WorkspaceContext,
 } from "./types.js";
+import type {
+  OrgDepartmentRepository,
+  OrgEmployeeRepository,
+  OrgSecurityEventRepository,
+} from "./org-workforce-repos.js";
 
 type ProjectRow = {
   id: string;
@@ -130,6 +141,8 @@ type ConversationRow = {
   title: string | null;
   spend_tier?: string | null;
   session_token_budget?: number | null;
+  owner_employee_id?: string | null;
+  visibility?: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -208,6 +221,10 @@ function mapConversation(row: ConversationRow): Conversation {
     row.spend_tier === "medium" || row.spend_tier === "high" || row.spend_tier === "low"
       ? row.spend_tier
       : "low";
+  const visibility =
+    row.visibility === "private" || row.visibility === "department" || row.visibility === "workspace"
+      ? row.visibility
+      : "workspace";
   return {
     id: brandId<ConversationId>(row.id),
     workspaceId: brandId<WorkspaceId>(row.workspace_id),
@@ -220,6 +237,8 @@ function mapConversation(row: ConversationRow): Conversation {
       row.session_token_budget === null || row.session_token_budget === undefined
         ? null
         : Number(row.session_token_budget),
+    ownerEmployeeId: row.owner_employee_id ?? null,
+    visibility,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -506,8 +525,9 @@ class PostgresConversationRepository implements ConversationRepository {
   async create(entity: Conversation): Promise<Conversation> {
     await this.pool.query(
       `insert into conversations
-       (id, workspace_id, project_id, agent_id, team_id, title, spend_tier, session_token_budget, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+       (id, workspace_id, project_id, agent_id, team_id, title, spend_tier, session_token_budget,
+        owner_employee_id, visibility, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         entity.id,
         entity.workspaceId,
@@ -517,6 +537,8 @@ class PostgresConversationRepository implements ConversationRepository {
         entity.title,
         entity.spendTier,
         entity.sessionTokenBudget,
+        entity.ownerEmployeeId,
+        entity.visibility,
         entity.createdAt,
         entity.updatedAt,
       ],
@@ -528,8 +550,9 @@ class PostgresConversationRepository implements ConversationRepository {
     await this.pool.query(
       `update conversations
        set project_id = $1, agent_id = $2, team_id = $3, title = $4,
-           spend_tier = $5, session_token_budget = $6, updated_at = $7
-       where id = $8 and workspace_id = $9`,
+           spend_tier = $5, session_token_budget = $6,
+           owner_employee_id = $7, visibility = $8, updated_at = $9
+       where id = $10 and workspace_id = $11`,
       [
         entity.projectId,
         entity.agentId,
@@ -537,6 +560,8 @@ class PostgresConversationRepository implements ConversationRepository {
         entity.title,
         entity.spendTier,
         entity.sessionTokenBudget,
+        entity.ownerEmployeeId,
+        entity.visibility,
         entity.updatedAt,
         entity.id,
         entity.workspaceId,
@@ -879,6 +904,7 @@ type TaskRow = {
   status: TaskStatus;
   priority: TaskPriority;
   assignee_agent_id: string | null;
+  assignee_employee_id?: string | null;
   team_id: string | null;
   project_id: string | null;
   due_at: Date | null;
@@ -904,6 +930,7 @@ function mapTask(row: TaskRow): Task {
     status: row.status,
     priority: row.priority,
     assigneeAgentId: row.assignee_agent_id ? brandId<AgentId>(row.assignee_agent_id) : null,
+    assigneeEmployeeId: row.assignee_employee_id ?? null,
     teamId: row.team_id ? brandId<TeamId>(row.team_id) : null,
     projectId: row.project_id ? brandId<ProjectId>(row.project_id) : null,
     dueAt: row.due_at ? iso(row.due_at) : null,
@@ -951,8 +978,9 @@ class PostgresTaskRepository implements TaskRepository {
   async create(entity: Task): Promise<Task> {
     await this.pool.query(
       `insert into tasks
-       (id, workspace_id, title, brief, status, priority, assignee_agent_id, team_id, project_id, due_at, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+       (id, workspace_id, title, brief, status, priority, assignee_agent_id, assignee_employee_id,
+        team_id, project_id, due_at, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         entity.id,
         entity.workspaceId,
@@ -961,6 +989,7 @@ class PostgresTaskRepository implements TaskRepository {
         entity.status,
         entity.priority,
         entity.assigneeAgentId,
+        entity.assigneeEmployeeId,
         entity.teamId,
         entity.projectId,
         entity.dueAt,
@@ -974,14 +1003,16 @@ class PostgresTaskRepository implements TaskRepository {
   async update(entity: Task): Promise<Task> {
     await this.pool.query(
       `update tasks set title = $1, brief = $2, status = $3, priority = $4,
-       assignee_agent_id = $5, team_id = $6, project_id = $7, due_at = $8, updated_at = $9
-       where id = $10 and workspace_id = $11`,
+       assignee_agent_id = $5, assignee_employee_id = $6, team_id = $7, project_id = $8,
+       due_at = $9, updated_at = $10
+       where id = $11 and workspace_id = $12`,
       [
         entity.title,
         entity.brief,
         entity.status,
         entity.priority,
         entity.assigneeAgentId,
+        entity.assigneeEmployeeId,
         entity.teamId,
         entity.projectId,
         entity.dueAt,
@@ -1040,6 +1071,40 @@ class PostgresOperatorRepository implements OperatorRepository {
       seats: profile.seats ?? [],
       title: profile.title && profile.title.trim().length > 0 ? profile.title : null,
     };
+  }
+}
+
+class PostgresCompanionStateRepository implements CompanionStateRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async get(): Promise<{ updatedAt: string; state: unknown } | null> {
+    const result = await this.pool.query<{ updated_at: Date | string; state: unknown }>(
+      `select updated_at, state from companion_states where workspace_id = $1`,
+      [this.workspaceId],
+    );
+    const row = result.rows[0];
+    if (!row) return null;
+    const updatedAt =
+      row.updated_at instanceof Date ? row.updated_at.toISOString() : String(row.updated_at);
+    return { updatedAt, state: row.state };
+  }
+
+  async upsert(doc: {
+    updatedAt: string;
+    state: unknown;
+  }): Promise<{ updatedAt: string; state: unknown }> {
+    await this.pool.query(
+      `insert into companion_states (workspace_id, updated_at, state)
+       values ($1, $2, $3::jsonb)
+       on conflict (workspace_id) do update set
+         updated_at = excluded.updated_at,
+         state = excluded.state`,
+      [this.workspaceId, doc.updatedAt, JSON.stringify(doc.state ?? {})],
+    );
+    return doc;
   }
 }
 
@@ -1745,6 +1810,7 @@ export async function createPostgresPersistence(pool: Pool): Promise<Persistence
     usage: new PostgresUsageRepository(pool, context.workspace.id),
     tasks: new PostgresTaskRepository(pool, context.workspace.id),
     operator: new PostgresOperatorRepository(pool, context.workspace.id),
+    companionState: new PostgresCompanionStateRepository(pool, context.workspace.id),
     accounts: new PostgresAccountRepository(pool, context.workspace.id),
     knowledge: new PostgresKnowledgeRepository(pool, context.workspace.id),
     memories: new PostgresMemoryNotesRepository(pool, context.workspace.id),
@@ -1752,5 +1818,307 @@ export async function createPostgresPersistence(pool: Pool): Promise<Persistence
     skills: new PostgresSkillRepository(pool, context.workspace.id),
     approvals: new PostgresApprovalRepository(pool, context.workspace.id),
     goals: new PostgresGoalRepository(pool, context.workspace.id),
+    orgDepartments: new PostgresOrgDepartmentRepository(pool, context.workspace.id),
+    orgEmployees: new PostgresOrgEmployeeRepository(pool, context.workspace.id),
+    orgSecurityEvents: new PostgresOrgSecurityEventRepository(pool, context.workspace.id),
+  };
+}
+
+class PostgresOrgDepartmentRepository implements OrgDepartmentRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async list(): Promise<OrgDepartment[]> {
+    const result = await this.pool.query(
+      `select * from org_departments where workspace_id = $1 order by name asc`,
+      [this.workspaceId],
+    );
+    return result.rows.map(mapOrgDepartment);
+  }
+
+  async getById(id: string): Promise<OrgDepartment | null> {
+    const result = await this.pool.query(
+      `select * from org_departments where id = $1 and workspace_id = $2`,
+      [id, this.workspaceId],
+    );
+    const row = result.rows[0];
+    return row ? mapOrgDepartment(row) : null;
+  }
+
+  async create(entity: OrgDepartment): Promise<OrgDepartment> {
+    await this.pool.query(
+      `insert into org_departments
+       (id, workspace_id, name, description, team_id, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        entity.id,
+        entity.workspaceId,
+        entity.name,
+        entity.description,
+        entity.teamId,
+        entity.createdAt,
+        entity.updatedAt,
+      ],
+    );
+    return entity;
+  }
+
+  async update(entity: OrgDepartment): Promise<OrgDepartment> {
+    await this.pool.query(
+      `update org_departments
+       set name = $1, description = $2, team_id = $3, updated_at = $4
+       where id = $5 and workspace_id = $6`,
+      [
+        entity.name,
+        entity.description,
+        entity.teamId,
+        entity.updatedAt,
+        entity.id,
+        entity.workspaceId,
+      ],
+    );
+    return entity;
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.pool.query(`delete from org_departments where id = $1 and workspace_id = $2`, [
+      id,
+      this.workspaceId,
+    ]);
+  }
+}
+
+class PostgresOrgEmployeeRepository implements OrgEmployeeRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async list(): Promise<OrgEmployeeRecord[]> {
+    const result = await this.pool.query(
+      `select * from org_employees where workspace_id = $1 order by display_name asc`,
+      [this.workspaceId],
+    );
+    return result.rows.map(mapOrgEmployee);
+  }
+
+  async getById(id: string): Promise<OrgEmployeeRecord | null> {
+    const result = await this.pool.query(
+      `select * from org_employees where id = $1 and workspace_id = $2`,
+      [id, this.workspaceId],
+    );
+    const row = result.rows[0];
+    return row ? mapOrgEmployee(row) : null;
+  }
+
+  async getByEmail(email: string): Promise<OrgEmployeeRecord | null> {
+    const result = await this.pool.query(
+      `select * from org_employees where workspace_id = $1 and lower(email) = lower($2)`,
+      [this.workspaceId, email],
+    );
+    const row = result.rows[0];
+    return row ? mapOrgEmployee(row) : null;
+  }
+
+  async getBySessionHash(hash: string): Promise<OrgEmployeeRecord | null> {
+    const result = await this.pool.query(
+      `select * from org_employees where workspace_id = $1 and session_token_hash = $2`,
+      [this.workspaceId, hash],
+    );
+    const row = result.rows[0];
+    return row ? mapOrgEmployee(row) : null;
+  }
+
+  async create(entity: OrgEmployeeRecord): Promise<OrgEmployeeRecord> {
+    await this.pool.query(
+      `insert into org_employees
+       (id, workspace_id, department_id, email, display_name, title, role, status,
+        password_hash, session_token_hash, session_expires_at, failed_login_count,
+        locked_until, password_changed_at, must_change_password, last_login_at,
+        created_at, updated_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`,
+      [
+        entity.id,
+        entity.workspaceId,
+        entity.departmentId,
+        entity.email,
+        entity.displayName,
+        entity.title,
+        entity.role,
+        entity.status,
+        entity.passwordHash,
+        entity.sessionTokenHash,
+        entity.sessionExpiresAt,
+        entity.failedLoginCount,
+        entity.lockedUntil,
+        entity.passwordChangedAt,
+        entity.mustChangePassword,
+        entity.lastLoginAt,
+        entity.createdAt,
+        entity.updatedAt,
+      ],
+    );
+    return entity;
+  }
+
+  async update(entity: OrgEmployeeRecord): Promise<OrgEmployeeRecord> {
+    await this.pool.query(
+      `update org_employees set
+         department_id = $1, email = $2, display_name = $3, title = $4, role = $5, status = $6,
+         password_hash = $7, session_token_hash = $8, session_expires_at = $9,
+         failed_login_count = $10, locked_until = $11, password_changed_at = $12,
+         must_change_password = $13, last_login_at = $14, updated_at = $15
+       where id = $16 and workspace_id = $17`,
+      [
+        entity.departmentId,
+        entity.email,
+        entity.displayName,
+        entity.title,
+        entity.role,
+        entity.status,
+        entity.passwordHash,
+        entity.sessionTokenHash,
+        entity.sessionExpiresAt,
+        entity.failedLoginCount,
+        entity.lockedUntil,
+        entity.passwordChangedAt,
+        entity.mustChangePassword,
+        entity.lastLoginAt,
+        entity.updatedAt,
+        entity.id,
+        entity.workspaceId,
+      ],
+    );
+    return entity;
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.pool.query(`delete from org_employees where id = $1 and workspace_id = $2`, [
+      id,
+      this.workspaceId,
+    ]);
+  }
+}
+
+function mapOrgDepartment(row: {
+  id: string;
+  workspace_id: string;
+  name: string;
+  description: string | null;
+  team_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+}): OrgDepartment {
+  return {
+    id: brandId<OrgDepartmentId>(row.id),
+    workspaceId: brandId<WorkspaceId>(row.workspace_id),
+    name: row.name,
+    description: row.description,
+    teamId: row.team_id ? brandId<TeamId>(row.team_id) : null,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+function mapOrgEmployee(row: {
+  id: string;
+  workspace_id: string;
+  department_id: string | null;
+  email: string;
+  display_name: string;
+  title: string | null;
+  role: OrgEmployeeRecord["role"];
+  status: OrgEmployeeRecord["status"];
+  password_hash: string;
+  session_token_hash: string | null;
+  session_expires_at?: Date | null;
+  failed_login_count?: number | null;
+  locked_until?: Date | null;
+  password_changed_at?: Date | null;
+  must_change_password?: boolean | null;
+  last_login_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}): OrgEmployeeRecord {
+  return {
+    id: brandId<OrgEmployeeId>(row.id),
+    workspaceId: brandId<WorkspaceId>(row.workspace_id),
+    departmentId: row.department_id ? brandId<OrgDepartmentId>(row.department_id) : null,
+    email: row.email,
+    displayName: row.display_name,
+    title: row.title,
+    role: row.role,
+    status: row.status,
+    passwordHash: row.password_hash,
+    sessionTokenHash: row.session_token_hash,
+    sessionExpiresAt: row.session_expires_at ? iso(row.session_expires_at) : null,
+    failedLoginCount: Number(row.failed_login_count ?? 0),
+    lockedUntil: row.locked_until ? iso(row.locked_until) : null,
+    passwordChangedAt: row.password_changed_at ? iso(row.password_changed_at) : null,
+    mustChangePassword: Boolean(row.must_change_password),
+    lastLoginAt: row.last_login_at ? iso(row.last_login_at) : null,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+class PostgresOrgSecurityEventRepository implements OrgSecurityEventRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async listRecent(limit = 50): Promise<OrgSecurityEvent[]> {
+    const result = await this.pool.query(
+      `select * from org_security_events
+       where workspace_id = $1
+       order by created_at desc
+       limit $2`,
+      [this.workspaceId, Math.min(200, Math.max(1, limit))],
+    );
+    return result.rows.map(mapOrgSecurityEvent);
+  }
+
+  async append(event: OrgSecurityEvent): Promise<OrgSecurityEvent> {
+    await this.pool.query(
+      `insert into org_security_events
+       (id, workspace_id, kind, actor_employee_id, target_employee_id, detail, ip_hash, created_at)
+       values ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [
+        event.id,
+        event.workspaceId,
+        event.kind,
+        event.actorEmployeeId,
+        event.targetEmployeeId,
+        event.detail,
+        event.ipHash,
+        event.createdAt,
+      ],
+    );
+    return event;
+  }
+}
+
+function mapOrgSecurityEvent(row: {
+  id: string;
+  workspace_id: string;
+  kind: OrgSecurityEvent["kind"];
+  actor_employee_id: string | null;
+  target_employee_id: string | null;
+  detail: string;
+  ip_hash: string | null;
+  created_at: Date;
+}): OrgSecurityEvent {
+  return {
+    id: row.id,
+    workspaceId: brandId<WorkspaceId>(row.workspace_id),
+    kind: row.kind,
+    actorEmployeeId: row.actor_employee_id,
+    targetEmployeeId: row.target_employee_id,
+    detail: row.detail,
+    ipHash: row.ip_hash,
+    createdAt: iso(row.created_at),
   };
 }

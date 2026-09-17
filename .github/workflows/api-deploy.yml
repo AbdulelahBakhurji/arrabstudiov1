@@ -1,0 +1,47 @@
+name: Deploy Arrab API
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "apps/api/**"
+      - "packages/database/**"
+      - "packages/shared/**"
+      - "packages/core/**"
+      - "packages/ai/**"
+      - "packages/agents/**"
+      - "scripts/deploy-api-vps.sh"
+      - ".github/workflows/api-deploy.yml"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    if: ${{ secrets.ARRAB_VPS_HOST != '' && secrets.ARRAB_VPS_SSH_KEY != '' }}
+    env:
+      APP_DIR: /opt/arrab-studio
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.ARRAB_VPS_HOST }}
+          username: ${{ secrets.ARRAB_VPS_USER }}
+          key: ${{ secrets.ARRAB_VPS_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            APP_DIR="${{ env.APP_DIR }}"
+            cd "$APP_DIR"
+            git fetch origin main
+            git reset --hard origin/main
+            corepack enable
+            pnpm install --frozen-lockfile
+            pnpm --filter @arrab/shared build
+            pnpm --filter @arrab/core build
+            pnpm --filter @arrab/database build
+            pnpm --filter @arrab/ai build
+            pnpm --filter @arrab/agents build
+            pnpm --filter @arrab/api build
+            systemctl restart arrab-api || systemctl restart arrab || true
+            curl -fsS http://127.0.0.1:8787/health
+            curl -fsS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8787/v1/org/workforce

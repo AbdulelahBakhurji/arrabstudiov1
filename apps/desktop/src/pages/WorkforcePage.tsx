@@ -1,21 +1,36 @@
-import { type DragEvent, type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
+  CheckCircle2,
+  Search,
+  Sparkles,
+  CircleDot,
+  Archive,
+  Bell,
+  Copy,
+  EyeOff,
+  FolderPlus,
+  Pencil,
+  Pin,
+  ShieldCheck,
+  ShieldQuestion,
+  SquarePen,
   BarChart3,
   ClipboardList,
   BookOpen,
   Crown,
   Laptop,
+  ListTodo,
+  Map as MapIcon,
   MessageSquare,
-  MoreHorizontal,
   Monitor,
-  Network,
   Pause,
   Play,
   Plus,
   Radio,
   RefreshCw,
-  ShieldCheck,
+  Send,
+  Settings2,
   Trash2,
   UsersRound,
   UserRound,
@@ -38,19 +53,62 @@ import type {
   TeamMembership,
 } from "@arrab/shared";
 import { Surface } from "@/components/StudioFrame";
+import { AgentsOfficeHost } from "@/components/AgentsOfficeHost";
+import { OrgAdministrationPanel } from "@/components/OrgAdministrationPanel";
+import { WorkforceList, type WorkforceListGroup } from "@/components/WorkforceList";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError, isTransientApiError } from "@/lib/api";
 import { collapseDefaultSoloDupes } from "@/lib/agents-bootstrap";
-import { notifyStudio } from "@/lib/notify";
+import {
+  hideAgent,
+  readAgentSessionPolicy,
+  readHiddenAgents,
+  readPinnedAgents,
+  filterLiveWorkforceAgents,
+  readRemovedAgents,
+  rememberRemovedAgent,
+  togglePinnedAgent,
+  writeAgentSessionPolicy,
+  type AgentSessionPolicy,
+} from "@/lib/agent-session-policy";
+import { notifyStudio, pushToast } from "@/lib/notify";
+import {
+  readOrgEmployeeSession,
+  subscribeOrgEmployeeSession,
+} from "@/lib/org-employee-session";
 import { readPrefs } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
+import { parseStudioAssign } from "@/pages/HomePage";
 
-type ViewMode = "org" | "tasks" | "knowledge" | "chat" | "reports";
+type ViewMode =
+  | "map"
+  | "org"
+  | "assign"
+  | "admin"
+  | "tasks"
+  | "knowledge"
+  | "chat"
+  | "reports";
+type OrgSeatRole = "admin" | "manager" | "member";
 type ChatLaunchMode = "solo" | "team";
 type TeamMode = "autonomous" | "supervised" | "pair";
 type ApprovalPolicy = "auto" | "human" | "dual";
 type AutomationLevel = "low" | "medium" | "high";
 const ALL_HANDS_TEAM = "Studio All-Hands";
+
+function resolveOrgSeatRole(title: string | null | undefined): OrgSeatRole {
+  const seat = (title ?? "").trim().toLowerCase();
+  if (!seat) return "admin";
+  if (
+    /\b(ceo|founder|owner|admin|administrator|president|chief|coo|cto|cfo|operator)\b/.test(seat)
+  ) {
+    return "admin";
+  }
+  if (/\b(manager|lead|head|director|dept|department)\b/.test(seat)) {
+    return "manager";
+  }
+  return "member";
+}
 
 type TeamMeta = {
   mode: TeamMode;
@@ -80,6 +138,8 @@ const META_KEY = "arrab.workforce.teamMeta";
 const OPS_KEY = "arrab.workforce.ops";
 const DIRECTIVES_KEY = "arrab.workforce.directives";
 const MAP_ORDER_KEY = "arrab.workforce.mapTeamOrder";
+/** Every department office holds at most 8 agents (matches Live Map desks). */
+const MAX_DEPT_AGENTS = 8;
 
 function readMapTeamOrder(): string[] {
   try {
@@ -166,14 +226,25 @@ export function WorkforcePage() {
   const [report, setReport] = useState<ReportSummaryResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
-  const [view, setView] = useState<ViewMode>("org");
-  const [inspector, setInspector] = useState<"pulse" | "people" | "approvals">("people");
+  const [view, setView] = useState<ViewMode>("map");
+  const [inspector, setInspector] = useState<"pulse" | "approvals">("pulse");
   const [chatLaunchMode, setChatLaunchMode] = useState<ChatLaunchMode>("solo");
   const [composeOpen, setComposeOpen] = useState(false);
   const [hireOpen, setHireOpen] = useState(false);
   const [hireAdvanced, setHireAdvanced] = useState(false);
-  const [personMenu, setPersonMenu] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [agentMenu, setAgentMenu] = useState<{
+    agentId: string;
+    x: number;
+    y: number;
+    openUp?: boolean;
+    confirmDelete?: boolean;
+  } | null>(null);
+  const [pinnedAgentIds, setPinnedAgentIds] = useState<string[]>(() => readPinnedAgents());
+  const [hiddenAgentIds, setHiddenAgentIds] = useState<string[]>(() => readHiddenAgents());
+  const [removedAgentIds, setRemovedAgentIds] = useState<string[]>(() => readRemovedAgents());
+  const [policyTick, setPolicyTick] = useState(0);
   const [agentBusy, setAgentBusy] = useState(false);
   const [taskFormOpen, setTaskFormOpen] = useState(false);
   const [knowledgeFormOpen, setKnowledgeFormOpen] = useState(false);
@@ -185,6 +256,15 @@ export function WorkforcePage() {
   const [ops, setOps] = useState<OpsPolicy>(() => readOps());
   const [directives, setDirectives] = useState<Directive[]>(() => readDirectives());
   const [directiveDraft, setDirectiveDraft] = useState("");
+  const [directiveBusy, setDirectiveBusy] = useState(false);
+  const [directiveFlash, setDirectiveFlash] = useState<string | null>(null);
+  const [assignText, setAssignText] = useState("");
+  const [assignAgentId, setAssignAgentId] = useState<string | null>(null);
+  const [assignBusy, setAssignBusy] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
+  const [assignOk, setAssignOk] = useState<string | null>(null);
+  const [assignPriority, setAssignPriority] = useState<TaskPriority>("medium");
+  const [assignPeopleQuery, setAssignPeopleQuery] = useState("");
 
   const [ceoName, setCeoName] = useState("");
   const [selectedSeat, setSelectedSeat] = useState("");
@@ -211,14 +291,7 @@ export function WorkforcePage() {
   const [hireActive, setHireActive] = useState(true);
   const [tellAgentId, setTellAgentId] = useState("");
   const [tellText, setTellText] = useState("");
-  const [mapDrag, setMapDrag] = useState<{ agentId: string; fromTeamId: string | null } | null>(
-    null,
-  );
-  const [mapDropOver, setMapDropOver] = useState<string | null>(null);
-  const [mapBusy, setMapBusy] = useState(false);
-  const [teamOrder, setTeamOrder] = useState<string[]>(() => readMapTeamOrder());
-  const [teamDragId, setTeamDragId] = useState<string | null>(null);
-  const mapDragMoved = useRef(false);
+  const [teamOrder] = useState<string[]>(() => readMapTeamOrder());
 
   const [taskTitle, setTaskTitle] = useState("");
   const [taskBrief, setTaskBrief] = useState("");
@@ -262,7 +335,7 @@ export function WorkforcePage() {
       settled(arrabApi.pendingApprovals(), { items: [] as Approval[] }),
     ])
       .then(async ([a, tm, p, members, taskList, op, rep, know, runs, binds, approvals]) => {
-        let people = a.items.filter((agent) => agent.status !== "archived");
+        let people = filterLiveWorkforceAgents(a.items);
         try {
           people = await collapseDefaultSoloDupes(people, t("chatSoloDefaultName"));
         } catch {
@@ -297,14 +370,21 @@ export function WorkforcePage() {
   }, [load]);
 
   useEffect(() => {
-    if (!personMenu) return;
+    const openHire = () => setHireOpen(true);
+    if (window.location.hash === "#hire") openHire();
+    window.addEventListener("arrab:open-hire", openHire);
+    return () => window.removeEventListener("arrab:open-hire", openHire);
+  }, []);
+
+  useEffect(() => {
+    if (!agentMenu) return;
     const close = () => {
-      setPersonMenu(null);
+      setAgentMenu(null);
       setPendingDeleteId(null);
     };
     window.addEventListener("pointerdown", close);
     return () => window.removeEventListener("pointerdown", close);
-  }, [personMenu]);
+  }, [agentMenu]);
 
   useEffect(() => {
     localStorage.setItem(OPS_KEY, JSON.stringify(ops));
@@ -347,9 +427,14 @@ export function WorkforcePage() {
   );
 
   const pendingApprovalCount = pendingApprovals.length + draftsNeedingRequest.length;
-  const peopleAgents = useMemo(
-    () => agents.filter((agent) => agent.status !== "archived"),
-    [agents],
+  const peopleAgents = useMemo(() => {
+    void removedAgentIds;
+    void hiddenAgentIds;
+    return filterLiveWorkforceAgents(agents);
+  }, [agents, hiddenAgentIds, removedAgentIds]);
+  const selectedAgent = useMemo(
+    () => peopleAgents.find((agent) => agent.id === selectedAgentId) ?? null,
+    [peopleAgents, selectedAgentId],
   );
   const activeAgents = useMemo(
     () => peopleAgents.filter((agent) => agent.status === "active" || agent.status === "paused"),
@@ -397,6 +482,70 @@ export function WorkforcePage() {
     return [...ordered, ...byId.values()];
   }, [orgTeams, teamOrder]);
 
+  const workforceGroups = useMemo((): WorkforceListGroup[] => {
+    const hidden = new Set(hiddenAgentIds);
+    const pinned = new Set(pinnedAgentIds);
+    const sortAgents = <T extends { id: string; name: string }>(list: T[]) =>
+      [...list].sort((a, b) => {
+        const ap = pinned.has(a.id) ? 0 : 1;
+        const bp = pinned.has(b.id) ? 0 : 1;
+        if (ap !== bp) return ap - bp;
+        return a.name.localeCompare(b.name);
+      });
+
+    const mapAgent = (agent: Agent): WorkforceListGroup["agents"][number] => ({
+      id: agent.id,
+      name: agent.name,
+      role: agent.specialty || agent.role,
+      live: agent.status === "active",
+      pinned: pinned.has(agent.id),
+      policy: readAgentSessionPolicy(agent.id),
+    });
+
+    const groups: WorkforceListGroup[] = orderedOrgTeams.slice(0, 8).map((team) => {
+      const members = sortAgents(
+        (membersByTeam.get(team.id) ?? []).filter(
+          (agent) => agent.status !== "archived" && !hidden.has(agent.id),
+        ),
+      );
+      return {
+        id: team.id,
+        name: team.name,
+        agents: members.map(mapAgent),
+      };
+    });
+    const visibleUnassigned = sortAgents(
+      unassignedAgents.filter((agent) => !hidden.has(agent.id)),
+    );
+    if (visibleUnassigned.length > 0) {
+      groups.push({
+        id: "unassigned",
+        name: t("mapUnassigned"),
+        agents: visibleUnassigned.map(mapAgent),
+      });
+    }
+    if (groups.length === 0) {
+      const visiblePeople = sortAgents(peopleAgents.filter((agent) => !hidden.has(agent.id)));
+      if (visiblePeople.length > 0) {
+        groups.push({
+          id: "workforce",
+          name: t("workforceTitle"),
+          agents: visiblePeople.map(mapAgent),
+        });
+      }
+    }
+    return groups;
+  }, [
+    hiddenAgentIds,
+    membersByTeam,
+    orderedOrgTeams,
+    peopleAgents,
+    pinnedAgentIds,
+    policyTick,
+    t,
+    unassignedAgents,
+  ]);
+
   useEffect(() => {
     localStorage.setItem(MAP_ORDER_KEY, JSON.stringify(teamOrder));
   }, [teamOrder]);
@@ -410,6 +559,50 @@ export function WorkforcePage() {
       setTellAgentId(peopleAgents[0]?.id ?? "");
     }
   }, [peopleAgents, tellAgentId]);
+
+  const activeSeatTitle = selectedSeat.trim() || operator?.title || null;
+  const seatRole = useMemo(() => resolveOrgSeatRole(activeSeatTitle), [activeSeatTitle]);
+  const [orgSessionTick, setOrgSessionTick] = useState(0);
+  useEffect(() => subscribeOrgEmployeeSession(() => setOrgSessionTick((n) => n + 1)), []);
+  const orgEmployee = useMemo(() => {
+    void orgSessionTick;
+    return readOrgEmployeeSession()?.employee ?? null;
+  }, [orgSessionTick]);
+  // Studio owner (no employee seat) keeps operator seat rules.
+  // Signed-in employees: members/managers lose Live Map + Administration.
+  const canAssignWork =
+    orgEmployee == null
+      ? seatRole === "admin" || seatRole === "manager"
+      : orgEmployee.role === "admin" || orgEmployee.role === "manager";
+  const canAdminister =
+    orgEmployee == null ? seatRole === "admin" : orgEmployee.role === "admin";
+  const canOpenLiveMap = orgEmployee == null || orgEmployee.role === "admin";
+
+  const parsedAssign = useMemo(
+    () => parseStudioAssign(assignText, peopleAgents),
+    [assignText, peopleAgents],
+  );
+  const resolvedAssignee =
+    parsedAssign.agent ?? peopleAgents.find((agent) => agent.id === assignAgentId) ?? null;
+
+  const assignRoster = useMemo(() => {
+    const q = assignPeopleQuery.trim().toLowerCase();
+    if (!q) return peopleAgents;
+    return peopleAgents.filter(
+      (agent) =>
+        agent.name.toLowerCase().includes(q) ||
+        (agent.role ?? "").toLowerCase().includes(q) ||
+        (agent.specialty ?? "").toLowerCase().includes(q),
+    );
+  }, [assignPeopleQuery, peopleAgents]);
+
+  useEffect(() => {
+    if ((view === "admin" && !canAdminister) || (view === "map" && !canOpenLiveMap)) {
+      setView(canAssignWork ? "assign" : "tasks");
+    } else if (view === "assign" && !canAssignWork) {
+      setView(canOpenLiveMap ? "map" : "tasks");
+    }
+  }, [canAdminister, canAssignWork, canOpenLiveMap, view]);
 
   const openTasks = useMemo(
     () => tasks.filter((task) => task.status !== "done"),
@@ -728,13 +921,15 @@ export function WorkforcePage() {
   function publishDirective(event: FormEvent) {
     event.preventDefault();
     const text = directiveDraft.trim();
-    if (!text) return;
+    if (!text || directiveBusy) return;
     const next = [
       { id: crypto.randomUUID(), text, createdAt: new Date().toISOString() },
       ...directives,
     ].slice(0, 12);
     setDirectives(next);
     setDirectiveDraft("");
+    setDirectiveBusy(true);
+    setDirectiveFlash(null);
     void (async () => {
       try {
         await arrabApi.createKnowledge({
@@ -742,7 +937,9 @@ export function WorkforcePage() {
           content: next.map((item) => `- ${item.text}`).join("\n"),
           projectId: null,
         });
-        const active = agents.filter((agent) => agent.status === "active" || agent.status === "draft");
+        const active = agents.filter(
+          (agent) => agent.status === "active" || agent.status === "draft",
+        );
         await Promise.all(
           active.slice(0, 20).map((agent) =>
             arrabApi.createMemory({
@@ -752,11 +949,45 @@ export function WorkforcePage() {
             }),
           ),
         );
+        setDirectiveFlash(t("directivePublished"));
         load();
       } catch {
-        // local directive still saved
+        setDirectiveFlash(t("directiveSavedLocal"));
+      } finally {
+        setDirectiveBusy(false);
+        window.setTimeout(() => setDirectiveFlash(null), 2800);
       }
     })();
+  }
+
+  function removeDirective(id: string) {
+    const next = directives.filter((item) => item.id !== id);
+    setDirectives(next);
+    void (async () => {
+      try {
+        await arrabApi.createKnowledge({
+          title: "HQ operator directives",
+          content: next.length
+            ? next.map((item) => `- ${item.text}`).join("\n")
+            : "No active directives.",
+          projectId: null,
+        });
+      } catch {
+        // local list already updated
+      }
+    })();
+  }
+
+  function formatDirectiveAge(iso: string): string {
+    const ms = Date.now() - new Date(iso).getTime();
+    if (!Number.isFinite(ms) || ms < 0) return "";
+    const mins = Math.floor(ms / 60_000);
+    if (mins < 1) return t("justNow");
+    if (mins < 60) return t("minsAgo").replace("{n}", String(mins));
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return t("hoursAgo").replace("{n}", String(hours));
+    const days = Math.floor(hours / 24);
+    return t("daysAgo").replace("{n}", String(days));
   }
 
   async function hireAgent(event: FormEvent) {
@@ -764,6 +995,16 @@ export function WorkforcePage() {
     setSaving(true);
     setError(null);
     try {
+      if (hireTeamId) {
+        const seated = (membersByTeam.get(hireTeamId) ?? []).filter(
+          (agent) => agent.status !== "archived",
+        ).length;
+        if (seated >= MAX_DEPT_AGENTS) {
+          setError(t("deptFull"));
+          setSaving(false);
+          return;
+        }
+      }
       const agent = await arrabApi.createAgent({
         name: hireName.trim(),
         role: hireRole.trim() || "teammate",
@@ -792,7 +1033,7 @@ export function WorkforcePage() {
       setHireProjectId("");
       setHireTeamId("");
       setHireActive(true);
-      setInspector("people");
+      setInspector("pulse");
       setAgents((current) => [agent, ...current.filter((item) => item.id !== agent.id)]);
       load();
     } catch (err: unknown) {
@@ -808,152 +1049,8 @@ export function WorkforcePage() {
     setHireOpen(true);
   }
 
-  async function movePersonOnMap(
-    agentId: string,
-    fromTeamId: string | null,
-    to: string,
-  ) {
-    if (to === "unassigned" && !fromTeamId && !memberships.some((m) => m.agentId === agentId)) {
-      return;
-    }
-    if (to !== "unassigned" && fromTeamId === to) return;
-
-    setMapBusy(true);
-    setError(null);
-    const previous = memberships;
-    try {
-      const currentTeams = memberships
-        .filter((item) => item.agentId === agentId)
-        .map((item) => item.teamId);
-
-      if (to === "unassigned") {
-        for (const teamId of currentTeams) {
-          await arrabApi.removeTeamMember(teamId, agentId);
-        }
-        setMemberships((current) => current.filter((item) => item.agentId !== agentId));
-      } else {
-        for (const teamId of currentTeams) {
-          if (teamId !== to) {
-            await arrabApi.removeTeamMember(teamId, agentId);
-          }
-        }
-        if (!currentTeams.includes(to as TeamId)) {
-          await arrabApi.addTeamMember(to as TeamId, { agentId: agentId as Agent["id"] });
-        }
-        setMemberships((current) => {
-          const cleaned = current.filter((item) => item.agentId !== agentId);
-          return [
-            ...cleaned,
-            {
-              teamId: to as TeamId,
-              agentId: agentId as Agent["id"],
-              createdAt: new Date().toISOString(),
-            },
-          ];
-        });
-      }
-    } catch (err: unknown) {
-      setMemberships(previous);
-      const message = err instanceof ApiRequestError ? err.message : t("apiUnavailable");
-      if (!isTransientApiError(message)) setError(message);
-    } finally {
-      setMapBusy(false);
-      setMapDrag(null);
-      setMapDropOver(null);
-    }
-  }
-
-  function reorderTeamOnMap(draggedId: string, targetId: string) {
-    if (draggedId === targetId) return;
-    setTeamOrder(() => {
-      const base = orderedOrgTeams.map((team) => team.id as string);
-      const without = base.filter((id) => id !== draggedId);
-      const at = without.indexOf(targetId);
-      if (at < 0) return [...without, draggedId];
-      const next = [...without];
-      next.splice(at, 0, draggedId);
-      return next;
-    });
-  }
-
-  function personDragProps(agent: Agent, fromTeamId: string | null) {
-    return {
-      draggable: !mapBusy,
-      onDragStart: (event: DragEvent) => {
-        event.stopPropagation();
-        mapDragMoved.current = false;
-        setMapDrag({ agentId: agent.id, fromTeamId });
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData(
-          "application/x-arrab-agent",
-          JSON.stringify({ agentId: agent.id, fromTeamId }),
-        );
-        event.dataTransfer.setData("text/plain", agent.id);
-      },
-      onDrag: () => {
-        mapDragMoved.current = true;
-      },
-      onDragEnd: () => {
-        setMapDrag(null);
-        setMapDropOver(null);
-      },
-      onClick: () => {
-        if (mapDragMoved.current) {
-          mapDragMoved.current = false;
-          return;
-        }
-        setInspector("people");
-        setPersonMenu(null);
-        openEmployeeDesk(agent.id);
-      },
-    };
-  }
-
-  function dropZoneProps(targetId: string) {
-    return {
-      onDragOver: (event: DragEvent) => {
-        event.preventDefault();
-        event.dataTransfer.dropEffect = "move";
-        setMapDropOver(targetId);
-      },
-      onDragLeave: () => {
-        setMapDropOver((current) => (current === targetId ? null : current));
-      },
-      onDrop: (event: DragEvent) => {
-        event.preventDefault();
-        const teamPayload = event.dataTransfer.getData("application/x-arrab-team");
-        if (teamPayload && targetId !== "unassigned") {
-          reorderTeamOnMap(teamPayload, targetId);
-          setTeamDragId(null);
-          setMapDropOver(null);
-          return;
-        }
-        let agentId = mapDrag?.agentId ?? "";
-        let fromTeamId = mapDrag?.fromTeamId ?? null;
-        try {
-          const raw = event.dataTransfer.getData("application/x-arrab-agent");
-          if (raw) {
-            const parsed = JSON.parse(raw) as { agentId?: string; fromTeamId?: string | null };
-            agentId = parsed.agentId ?? agentId;
-            fromTeamId = parsed.fromTeamId ?? fromTeamId;
-          }
-        } catch {
-          // ignore
-        }
-        if (!agentId) {
-          agentId = event.dataTransfer.getData("text/plain") || agentId;
-        }
-        setMapDropOver(null);
-        setMapDrag(null);
-        if (agentId) {
-          void movePersonOnMap(agentId, fromTeamId, targetId);
-        }
-      },
-    };
-  }
-
   async function setPersonStatus(id: string, status: "active" | "paused") {
-    setPersonMenu(null);
+    setAgentMenu(null);
     setPendingDeleteId(null);
     const previous = agents;
     setAgentBusy(true);
@@ -974,29 +1071,148 @@ export function WorkforcePage() {
     }
   }
 
-  async function deletePerson(id: string) {
-    setPersonMenu(null);
+  async function archivePerson(id: string) {
+    setAgentMenu(null);
     setPendingDeleteId(null);
-    const previous = agents;
-    const previousMemberships = memberships;
+    if (selectedAgentId === id) setSelectedAgentId(null);
     setAgentBusy(true);
     setError(null);
     setAgents((current) => current.filter((agent) => agent.id !== id));
     setMemberships((current) => current.filter((item) => item.agentId !== id));
     try {
       try {
-        await arrabApi.deleteAgent(id);
+        await arrabApi.archiveAgent(id);
       } catch {
-        // Production may not have DELETE yet — archive still removes them from People.
         await arrabApi.updateAgent(id, { status: "archived" });
       }
+      setRemovedAgentIds(rememberRemovedAgent(id));
     } catch {
-      setAgents(previous);
-      setMemberships(previousMemberships);
-      setError(t("chatDeleteFailed"));
+      // Keep them gone locally — never show a delete/archive failure banner.
+      setRemovedAgentIds(rememberRemovedAgent(id));
     } finally {
       setAgentBusy(false);
     }
+  }
+
+  async function deletePerson(id: string) {
+    setAgentMenu(null);
+    setPendingDeleteId(null);
+    if (selectedAgentId === id) setSelectedAgentId(null);
+    setAgentBusy(true);
+    setError(null);
+    setAgents((current) => current.filter((agent) => agent.id !== id));
+    setMemberships((current) => current.filter((item) => item.agentId !== id));
+    try {
+      try {
+        await arrabApi.removeAgent(id);
+      } catch {
+        try {
+          await arrabApi.deleteAgent(id);
+        } catch {
+          try {
+            await arrabApi.archiveAgent(id);
+          } catch {
+            await arrabApi.updateAgent(id, { status: "archived" });
+          }
+        }
+      }
+      setRemovedAgentIds(rememberRemovedAgent(id));
+    } catch {
+      // Last resort: stay removed in this studio — chats remain in the database.
+      setRemovedAgentIds(rememberRemovedAgent(id));
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  function openAgentMenu(agentId: string, clientX: number, clientY: number) {
+    setSelectedAgentId(agentId);
+    setPendingDeleteId(null);
+    const pad = 12;
+    const width = 230;
+    const height = 320;
+    const x = Math.min(Math.max(pad, clientX), window.innerWidth - width - pad);
+    // Prefer opening upward so the menu never drops off the bottom of the screen.
+    const openUp = clientY + height > window.innerHeight - pad;
+    const y = openUp
+      ? Math.max(pad, clientY - height)
+      : Math.min(clientY, window.innerHeight - height - pad);
+    setAgentMenu({ agentId, x, y, openUp });
+  }
+
+  function setAgentApproval(agentId: string, policy: AgentSessionPolicy) {
+    writeAgentSessionPolicy(agentId, policy);
+    setPolicyTick((n) => n + 1);
+    setAgentMenu(null);
+  }
+
+  async function renamePerson(id: string) {
+    const agent = agents.find((item) => item.id === id);
+    if (!agent) return;
+    setAgentMenu(null);
+    const next = window.prompt(t("wfRenamePrompt"), agent.name)?.trim();
+    if (!next || next === agent.name) return;
+    setAgentBusy(true);
+    try {
+      const updated = await arrabApi.updateAgent(id, { name: next });
+      setAgents((current) => current.map((item) => (item.id === id ? updated : item)));
+    } catch (err: unknown) {
+      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function duplicatePerson(id: string) {
+    const source = agents.find((item) => item.id === id);
+    if (!source) return;
+    setAgentMenu(null);
+    setAgentBusy(true);
+    try {
+      const created = await arrabApi.createAgent({
+        name: `${source.name} ${t("chatAgentCopySuffix")}`,
+        role: source.role,
+        specialty: source.specialty,
+        bio: source.bio,
+        instructions: source.instructions,
+        projectId: source.projectId,
+        status: "active",
+      });
+      setAgents((current) => [created, ...current]);
+      setSelectedAgentId(created.id);
+    } catch (err: unknown) {
+      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  async function movePersonToTeam(id: string) {
+    setAgentMenu(null);
+    if (orderedOrgTeams.length === 0) {
+      setComposeOpen(true);
+      return;
+    }
+    const choices = orderedOrgTeams.map((team, index) => `${index + 1}. ${team.name}`).join("\n");
+    const pick = window.prompt(`${t("wfMoveToTeamPrompt")}\n${choices}`, "1")?.trim();
+    if (!pick) return;
+    const index = Number.parseInt(pick, 10) - 1;
+    const team = orderedOrgTeams[index] ?? orderedOrgTeams.find((item) => item.name === pick);
+    if (!team) return;
+    setAgentBusy(true);
+    try {
+      await arrabApi.addTeamMember(team.id, { agentId: id });
+      load();
+    } catch (err: unknown) {
+      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+    } finally {
+      setAgentBusy(false);
+    }
+  }
+
+  function copyAgentId(id: string) {
+    setAgentMenu(null);
+    void navigator.clipboard?.writeText(id);
   }
 
   async function tellSelectedAgent(event: FormEvent) {
@@ -1026,19 +1242,125 @@ export function WorkforcePage() {
     }
   }
 
-  const views = [
-    ["org", t("ccOrg"), Network],
-    ["tasks", t("ccTasks"), ClipboardList],
-    ["knowledge", t("ccKnowledge"), BookOpen],
-    ["chat", t("ccChat"), MessageSquare],
-    ["reports", t("ccReports"), BarChart3],
-  ] as const;
+  async function onAssignWork(event: FormEvent) {
+    event.preventDefault();
+    setAssignError(null);
+    setAssignOk(null);
+    if (!canAssignWork) {
+      setAssignError(t("hqAssignDenied"));
+      return;
+    }
+    if (!assignText.trim()) {
+      setAssignError(t("studioAssignEmpty"));
+      return;
+    }
+    if (!resolvedAssignee) {
+      setAssignError(
+        parsedAssign.nameHint
+          ? t("studioAssignUnknown").replace("{name}", parsedAssign.nameHint)
+          : t("studioAssignPick"),
+      );
+      return;
+    }
+    setAssignBusy(true);
+    try {
+      const title = (parsedAssign.title || assignText).trim().slice(0, 120) || "Task";
+      const task = await arrabApi.createTask({
+        title,
+        brief: assignText.trim() || null,
+        assigneeAgentId: resolvedAssignee.id,
+        status: "assigned",
+        priority: assignPriority,
+      });
+      const doneBody = t("studioAssignDoneBody")
+        .replace("{task}", task.title)
+        .replace("{name}", resolvedAssignee.name);
+      setAssignText("");
+      setAssignAgentId(null);
+      setAssignPriority("medium");
+      setAssignOk(doneBody);
+      pushToast({
+        title: t("studioAssignDone"),
+        body: doneBody,
+        tone: "success",
+        href: "/workforce",
+      });
+      void notifyStudio({
+        kind: "cowork",
+        title: t("studioAssignDone"),
+        body: doneBody,
+        href: "/workforce",
+      });
+      load();
+      window.setTimeout(() => setView("tasks"), 900);
+    } catch (err: unknown) {
+      setAssignError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+    } finally {
+      setAssignBusy(false);
+    }
+  }
+
+  function assignInitials(name: string): string {
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return "?";
+    if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+    return `${parts[0]![0] ?? ""}${parts[1]![0] ?? ""}`.toUpperCase();
+  }
+
+  const views = (
+    [
+      ...(canOpenLiveMap ? ([["map", t("hqLiveMap"), MapIcon]] as const) : []),
+      ["org", t("peopleRoster"), UsersRound],
+      ...(canAssignWork ? ([["assign", t("studioAssignTitle"), ListTodo]] as const) : []),
+      ...(canAdminister ? ([["admin", t("hqAdmin"), Settings2]] as const) : []),
+      ["tasks", t("ccTasks"), ClipboardList],
+      ["knowledge", t("ccKnowledge"), BookOpen],
+      ["chat", t("ccChat"), MessageSquare],
+      ...(canAdminister ? ([["reports", t("ccReports"), BarChart3]] as const) : []),
+    ] as const
+  );
 
   return (
     <Surface className="workforce-shell hq-shell chat-comfy flex h-full flex-col overflow-hidden">
       <div className="workforce-atmosphere pointer-events-none absolute inset-0" />
       <div className="hq-atmosphere pointer-events-none absolute inset-0 opacity-60" />
 
+      {view === "map" ? (
+        <div className="relative z-10 h-full min-h-0">
+          <AgentsOfficeHost
+            onBack={() => setView("org")}
+            departments={[
+              ...orderedOrgTeams.map((team) => ({
+                id: team.id,
+                name: team.name,
+                agents: (membersByTeam.get(team.id) ?? [])
+                  .filter((agent) => agent.status !== "archived")
+                  .slice(0, MAX_DEPT_AGENTS)
+                  .map((agent) => ({
+                    id: agent.id,
+                    name: agent.name,
+                    role: agent.role,
+                    specialty: agent.specialty,
+                  })),
+              })),
+              ...(unassignedAgents.length
+                ? [
+                    {
+                      id: "unassigned",
+                      name: "Workforce",
+                      agents: unassignedAgents.slice(0, MAX_DEPT_AGENTS).map((agent) => ({
+                        id: agent.id,
+                        name: agent.name,
+                        role: agent.role,
+                        specialty: agent.specialty,
+                      })),
+                    },
+                  ]
+                : []),
+            ]}
+          />
+        </div>
+      ) : (
       <div className="relative z-10 flex h-full min-h-0 flex-col">
         <header className="hq-rise flex shrink-0 items-center gap-3 border-b border-white/[0.06] px-4 py-3 lg:px-6">
           <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -1050,10 +1372,6 @@ export function WorkforcePage() {
                 <h1 className="truncate text-[15px] font-medium tracking-[-0.03em] text-white">
                   {t("hqTitle")}
                 </h1>
-                <span className="chat-pro-status hidden sm:inline-flex">
-                  <span className="hq-live-dot" />
-                  {t("hqLive")}
-                </span>
               </div>
               <p className="truncate text-[11px] text-neutral-500">
                 {operator?.displayName ?? t("operatorSeat")}
@@ -1114,6 +1432,7 @@ export function WorkforcePage() {
             </button>
             <button
               type="button"
+              id="hire"
               onClick={() => setHireOpen(true)}
               className="ms-1 hidden h-8 items-center gap-1.5 rounded-full bg-white px-3 text-[12px] font-medium text-black sm:inline-flex"
             >
@@ -1207,7 +1526,7 @@ export function WorkforcePage() {
         ) : null}
 
         <div className="mt-1 flex min-h-0 flex-1 overflow-hidden">
-          <nav className="hidden shrink-0 flex-col gap-0.5 border-e border-white/[0.06] bg-[#050505] px-2 py-3 sm:flex sm:w-[148px]">
+          <nav className="hidden shrink-0 flex-col gap-0.5 border-e border-white/[0.06] bg-[var(--color-background)] px-2 py-3 sm:flex sm:w-[148px]">
             {views.map(([id, label, Icon]) => (
               <button
                 key={id}
@@ -1254,14 +1573,318 @@ export function WorkforcePage() {
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 lg:px-6">
+            {view === "assign" && canAssignWork ? (
+              <section className="hq-assign workforce-rise" aria-label={t("studioAssignTitle")}>
+                <header className="hq-assign-mast">
+                  <div className="min-w-0">
+                    <p className="chat-pro-kicker">{t("studioAssignTitle")}</p>
+                    <h2 className="hq-assign-title">{t("hqAssignHeadline")}</h2>
+                    <p className="hq-assign-lead">{t("hqAssignHint")}</p>
+                  </div>
+                  <div className="hq-assign-badges">
+                    <span className="hq-assign-badge">
+                      {seatRole === "admin" ? t("hqRoleAdmin") : t("hqRoleManager")}
+                    </span>
+                    <span className="hq-assign-badge is-muted">
+                      {peopleAgents.length} {t("employees")}
+                    </span>
+                  </div>
+                </header>
+
+                <form
+                  onSubmit={(event) => void onAssignWork(event)}
+                  className="hq-assign-grid"
+                  onKeyDown={(event) => {
+                    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                      event.preventDefault();
+                      event.currentTarget.requestSubmit();
+                    }
+                  }}
+                >
+                  <div className="hq-assign-composer">
+                    <label className="hq-assign-label" htmlFor="hq-assign-brief">
+                      <Sparkles className="size-3.5" />
+                      {t("hqAssignBriefLabel")}
+                    </label>
+                    <textarea
+                      id="hq-assign-brief"
+                      value={assignText}
+                      onChange={(event) => {
+                        setAssignText(event.target.value);
+                        setAssignError(null);
+                        setAssignOk(null);
+                      }}
+                      rows={6}
+                      className="hq-assign-input"
+                      placeholder={t("studioAssignPlaceholder")}
+                      disabled={peopleAgents.length === 0 || assignBusy}
+                    />
+                    <div className="hq-assign-examples" aria-label={t("hqAssignExamples")}>
+                      {[
+                        t("hqAssignExample1"),
+                        t("hqAssignExample2"),
+                        t("hqAssignExample3"),
+                      ].map((example) => (
+                        <button
+                          key={example}
+                          type="button"
+                          className="hq-assign-example"
+                          disabled={assignBusy || peopleAgents.length === 0}
+                          onClick={() => {
+                            setAssignText(example);
+                            setAssignError(null);
+                            setAssignOk(null);
+                          }}
+                        >
+                          {example}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="hq-assign-priority">
+                      <span className="hq-assign-label">
+                        <CircleDot className="size-3.5" />
+                        {t("taskPriority")}
+                      </span>
+                      <div className="hq-assign-priority-row">
+                        {(["low", "medium", "high", "urgent"] as TaskPriority[]).map((level) => (
+                          <button
+                            key={level}
+                            type="button"
+                            className={cn(
+                              "hq-assign-priority-chip",
+                              assignPriority === level && "is-on",
+                              `is-${level}`,
+                            )}
+                            onClick={() => setAssignPriority(level)}
+                            disabled={assignBusy}
+                          >
+                            {t(
+                              level === "low"
+                                ? "hqAssignPriorityLow"
+                                : level === "medium"
+                                  ? "hqAssignPriorityMedium"
+                                  : level === "high"
+                                    ? "hqAssignPriorityHigh"
+                                    : "hqAssignPriorityUrgent",
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  <aside className="hq-assign-roster">
+                    <label className="hq-assign-label" htmlFor="hq-assign-search">
+                      <UserRound className="size-3.5" />
+                      {t("hqAssignRosterLabel")}
+                    </label>
+                    <div className="hq-assign-search">
+                      <Search className="size-3.5 opacity-50" />
+                      <input
+                        id="hq-assign-search"
+                        value={assignPeopleQuery}
+                        onChange={(event) => setAssignPeopleQuery(event.target.value)}
+                        placeholder={t("hqAssignSearchPeople")}
+                        disabled={peopleAgents.length === 0 || assignBusy}
+                      />
+                    </div>
+                    {peopleAgents.length > 0 ? (
+                      <ul className="hq-assign-people" role="listbox" aria-label={t("hqAssignRosterLabel")}>
+                        {assignRoster.map((agent) => {
+                          const active = resolvedAssignee?.id === agent.id;
+                          return (
+                            <li key={agent.id}>
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={active}
+                                className={cn("hq-assign-person", active && "is-on")}
+                                onClick={() =>
+                                  setAssignAgentId((current) =>
+                                    current === agent.id ? null : agent.id,
+                                  )
+                                }
+                                disabled={assignBusy}
+                              >
+                                <span className="hq-assign-avatar">{assignInitials(agent.name)}</span>
+                                <span className="min-w-0 flex-1 text-start">
+                                  <span className="hq-assign-person-name">{agent.name}</span>
+                                  <span className="hq-assign-person-role">
+                                    {agent.role || agent.specialty || "—"}
+                                  </span>
+                                </span>
+                                {active ? <CheckCircle2 className="size-4 shrink-0" /> : null}
+                              </button>
+                            </li>
+                          );
+                        })}
+                        {assignRoster.length === 0 ? (
+                          <li className="hq-assign-empty">{t("hqAssignNoMatch")}</li>
+                        ) : null}
+                      </ul>
+                    ) : (
+                      <p className="hq-assign-empty">{t("studioAssignNeedPeople")}</p>
+                    )}
+                  </aside>
+
+                  <footer className="hq-assign-foot">
+                    <div className="hq-assign-preview">
+                      {resolvedAssignee ? (
+                        <p>
+                          {t("studioAssignWillGo")
+                            .replace("{name}", resolvedAssignee.name)
+                            .replace("{task}", parsedAssign.title.trim() || assignText.trim() || "…")}
+                        </p>
+                      ) : (
+                        <p className="is-muted">{t("hqAssignPreviewEmpty")}</p>
+                      )}
+                      {assignError ? <p className="hq-assign-error">{assignError}</p> : null}
+                      {assignOk ? (
+                        <p className="hq-assign-success">
+                          <CheckCircle2 className="size-3.5" />
+                          {assignOk}
+                        </p>
+                      ) : null}
+                    </div>
+                    <div className="hq-assign-actions">
+                      <button
+                        type="button"
+                        className="hq-assign-secondary"
+                        disabled={assignBusy || (!assignText && !assignAgentId)}
+                        onClick={() => {
+                          setAssignText("");
+                          setAssignAgentId(null);
+                          setAssignPriority("medium");
+                          setAssignError(null);
+                          setAssignOk(null);
+                        }}
+                      >
+                        {t("clear")}
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={assignBusy || peopleAgents.length === 0 || !assignText.trim()}
+                        className="hq-assign-submit"
+                      >
+                        <Send className="size-3.5" />
+                        {assignBusy ? t("saving") : t("studioAssignCta")}
+                      </button>
+                    </div>
+                  </footer>
+                </form>
+              </section>
+            ) : null}
+
+            {view === "admin" && canAdminister ? (
+              <div className="mx-auto grid max-w-6xl gap-4">
+                <OrgAdministrationPanel teams={orgTeams} onTeamsChanged={() => load()} />
+                <div className="grid gap-4 lg:grid-cols-2">
+                <section className="hq-panel rounded-[22px] border border-white/[0.08] bg-[var(--color-surface)] p-5">
+                  <p className="chat-pro-kicker">{t("hqAdmin")}</p>
+                  <h2 className="mt-1 text-[18px] font-medium tracking-[-0.02em] text-white">
+                    {t("hqAdminTitle")}
+                  </h2>
+                  <p className="mt-2 text-[13px] text-neutral-400">{t("hqAdminBody")}</p>
+                  <dl className="mt-5 space-y-3 text-[13px]">
+                    <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] px-3 py-2.5">
+                      <dt className="text-neutral-500">{t("operatorSeat")}</dt>
+                      <dd className="text-neutral-200">{activeSeatTitle || t("noSeatChosen")}</dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] px-3 py-2.5">
+                      <dt className="text-neutral-500">{t("employees")}</dt>
+                      <dd className="text-neutral-200">{peopleAgents.length}</dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] px-3 py-2.5">
+                      <dt className="text-neutral-500">{t("teams")}</dt>
+                      <dd className="text-neutral-200">{orgTeams.length}</dd>
+                    </div>
+                    <div className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] px-3 py-2.5">
+                      <dt className="text-neutral-500">{t("pendingApprovals")}</dt>
+                      <dd className="text-neutral-200">{pendingApprovalCount}</dd>
+                    </div>
+                  </dl>
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSeatEdit(true)}
+                      className="chat-pro-cta !h-9 !px-4 !text-[12px]"
+                    >
+                      <Crown className="size-3.5" />
+                      {t("operatorSeat")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setComposeOpen(true)}
+                      className="h-9 rounded-full border border-white/15 px-4 text-[12px] text-neutral-200"
+                    >
+                      {t("mapAddTeam")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openHireOnMap()}
+                      className="h-9 rounded-full border border-white/15 px-4 text-[12px] text-neutral-200"
+                    >
+                      {t("mapAddPerson")}
+                    </button>
+                  </div>
+                </section>
+
+                <section className="hq-panel rounded-[22px] border border-white/[0.08] bg-[var(--color-surface)] p-5">
+                  <p className="chat-pro-kicker">{t("workforceOps")}</p>
+                  <p className="mt-2 text-[13px] text-neutral-400">{t("hqAdminOpsHint")}</p>
+                  <div className="mt-5 space-y-3">
+                    <label className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] px-3 py-2.5 text-[13px] text-neutral-200">
+                      <span>{t("ruleDrafts")}</span>
+                      <input
+                        type="checkbox"
+                        checked={ops.draftsNeedActivation}
+                        onChange={(e) =>
+                          setOps((c) => ({ ...c, draftsNeedActivation: e.target.checked }))
+                        }
+                      />
+                    </label>
+                    <label className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] px-3 py-2.5 text-[13px] text-neutral-200">
+                      <span>{t("ruleHighRisk")}</span>
+                      <input
+                        type="checkbox"
+                        checked={ops.highRiskDual}
+                        onChange={(e) => setOps((c) => ({ ...c, highRiskDual: e.target.checked }))}
+                      />
+                    </label>
+                    <label className="flex items-center justify-between gap-3 rounded-xl border border-white/[0.06] px-3 py-2.5 text-[13px] text-neutral-200">
+                      <span>{t("ruleNotify")}</span>
+                      <input
+                        type="checkbox"
+                        checked={ops.notifyOnLaunch}
+                        onChange={(e) => setOps((c) => ({ ...c, notifyOnLaunch: e.target.checked }))}
+                      />
+                    </label>
+                  </div>
+                  {canAssignWork ? (
+                    <button
+                      type="button"
+                      onClick={() => setView("assign")}
+                      className="mt-5 inline-flex h-9 items-center gap-2 rounded-full border border-white/15 px-4 text-[12px] text-neutral-200 hover:bg-white/5"
+                    >
+                      <ListTodo className="size-3.5" />
+                      {t("studioAssignTitle")}
+                    </button>
+                  ) : null}
+                </section>
+                </div>
+              </div>
+            ) : null}
+
             {view === "org" ? (
-              <div className="hq-rise grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(0,1.4fr)_minmax(300px,0.85fr)]">
-                <section className="flex min-h-0 flex-col overflow-hidden rounded-[22px] border border-white/[0.07] bg-[#060606]/0.9]">
+              <div className="hq-rise grid h-full min-h-0 gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,340px)]">
+                <section className="wf-roster-panel flex min-h-0 flex-col overflow-hidden rounded-[22px] border border-white/[0.07] bg-[var(--color-surface)]">
                   <div className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-3">
                     <div className="min-w-0">
-                      <p className="chat-pro-kicker">{t("workforceMap")}</p>
+                      <p className="chat-pro-kicker">{t("peopleRoster")}</p>
                       <p className="mt-0.5 text-[12px] text-neutral-500">
-                        {mapBusy ? t("mapMoving") : t("mapDragHint")}
+                        {peopleAgents.length} {t("employees")} · {orderedOrgTeams.length} {t("teams")}
+                        <span className="text-neutral-600"> · {t("wfContextHint")}</span>
                       </p>
                     </div>
                     <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
@@ -1283,35 +1906,28 @@ export function WorkforcePage() {
                       </button>
                     </div>
                   </div>
-                  <div className="hq-map relative min-h-[320px] flex-1 px-4 py-8">
-                    <div className="flex justify-center">
-                      <HqNode
-                        title={operator?.displayName ?? t("operatorSeat")}
-                        subtitle={operator?.title ?? t("noSeatChosen")}
-                        root
-                      />
-                    </div>
-                    <div className="mx-auto my-1 h-10 w-px bg-gradient-to-b from-white/35 to-white/8" />
-                    <div className="flex flex-col items-center">
-                      <HqNode
-                        title={t("mapStudio")}
-                        subtitle={`${orderedOrgTeams.length} ${t("teams")} · ${peopleAgents.length} ${t("employees")}`}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setComposeOpen(true)}
-                        className="hq-map-add mt-2 inline-flex items-center gap-1 rounded-full border border-dashed border-white/20 px-2.5 py-1 text-[10px] text-neutral-400 hover:border-white/35 hover:text-neutral-200"
-                      >
-                        <Plus className="size-3" />
-                        {t("mapAddTeam")}
-                      </button>
-                    </div>
-                    {orderedOrgTeams.length === 0 && peopleAgents.length === 0 ? (
-                      <div className="mx-auto mt-10 max-w-md text-center">
+
+                  <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 no-scrollbar">
+                    <WorkforceList
+                      hideHead
+                      groups={workforceGroups}
+                      selectedAgentId={selectedAgentId}
+                      onAgentClick={(agentId) => {
+                        setSelectedAgentId((current) => (current === agentId ? null : agentId));
+                        setPendingDeleteId(null);
+                        setAgentMenu(null);
+                      }}
+                      onAgentDoubleClick={(agentId, event) => {
+                        openAgentMenu(agentId, event.clientX, event.clientY);
+                      }}
+                      onAgentContextMenu={(agentId, event) => {
+                        openAgentMenu(agentId, event.clientX, event.clientY);
+                      }}
+                    />
+                    {workforceGroups.length === 0 ? (
+                      <div className="mx-auto mt-6 max-w-md text-center">
                         <p className="text-[14px] text-neutral-300">{t("hqEmptyMap")}</p>
-                        <p className="mt-2 text-[12px] text-neutral-500">
-                          {t("hqEmptyMapHint")}
-                        </p>
+                        <p className="mt-2 text-[12px] text-neutral-500">{t("hqEmptyMapHint")}</p>
                         <div className="mt-5 flex flex-wrap justify-center gap-2">
                           <button
                             type="button"
@@ -1328,494 +1944,262 @@ export function WorkforcePage() {
                           >
                             {t("workforceCompose")}
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => navigate("/cowork")}
-                            className="h-9 rounded-full border border-white/15 px-4 text-[12px] text-neutral-200"
-                          >
-                            {t("hqOpenCowork")}
-                          </button>
                         </div>
                       </div>
-                    ) : (
-                      <>
-                        <div className="mx-auto my-1 h-8 w-px bg-white/12" />
-                        <div className="flex flex-wrap justify-center gap-5">
-                          {orderedOrgTeams.map((team) => {
-                            const meta = teamMeta[team.id];
-                            const members = (membersByTeam.get(team.id) ?? []).filter(
-                              (agent) => agent.status !== "archived",
-                            );
-                            const dropActive = mapDropOver === team.id;
-                            return (
-                              <div
-                                key={team.id}
-                                className={cn(
-                                  "hq-map-column flex min-w-[200px] flex-col items-center rounded-2xl border border-transparent px-2 pb-2 pt-0 transition-colors",
-                                  dropActive && "border-white/25 bg-white/[0.04]",
-                                  teamDragId === team.id && "opacity-50",
-                                )}
-                                {...dropZoneProps(team.id)}
-                              >
-                                <div className="h-5 w-px bg-white/12" />
-                                <div
-                                  draggable={!mapBusy}
-                                  onDragStart={(event) => {
-                                    setTeamDragId(team.id);
-                                    event.dataTransfer.effectAllowed = "move";
-                                    event.dataTransfer.setData("application/x-arrab-team", team.id);
-                                  }}
-                                  onDragEnd={() => setTeamDragId(null)}
-                                  className="cursor-grab active:cursor-grabbing"
-                                  title={t("mapDragHint")}
-                                >
-                                  <HqNode
-                                    title={team.name}
-                                    subtitle={
-                                      meta
-                                        ? `${meta.mode} · ${meta.approval}`
-                                        : (team.purpose ?? t("none"))
-                                    }
-                                  />
-                                </div>
-                                <div className="mt-3 flex min-h-[40px] flex-wrap items-center justify-center gap-1">
-                                  <div className="flex -space-x-2">
-                                    {members.slice(0, 6).map((agent) => (
-                                      <button
-                                        key={agent.id}
-                                        type="button"
-                                        {...personDragProps(agent, team.id)}
-                                        className={cn(
-                                          "hq-avatar flex size-9 cursor-grab items-center justify-center rounded-full border border-white/20 bg-[#111] text-[10px] text-white active:cursor-grabbing",
-                                          mapDrag?.agentId === agent.id && "opacity-40",
-                                        )}
-                                        title={`${agent.name} · ${t("hqManageAgent")}`}
-                                      >
-                                        {initials(agent.name)}
-                                      </button>
-                                    ))}
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => openHireOnMap(team.id)}
-                                    className="hq-map-add flex size-8 items-center justify-center rounded-full border border-dashed border-white/25 text-neutral-500 hover:border-white/40 hover:text-white"
-                                    title={t("mapAddPerson")}
-                                  >
-                                    <Plus className="size-3.5" strokeWidth={1.8} />
-                                  </button>
-                                </div>
-                                {dropActive && mapDrag ? (
-                                  <p className="mt-2 text-[10px] text-neutral-400">{t("mapDropHere")}</p>
-                                ) : null}
-                                <div className="mt-3 flex gap-1.5">
-                                  <button
-                                    type="button"
-                                    disabled={members.length === 0}
-                                    onClick={() => {
-                                      openTeamChat(team.id);
-                                      navigate("/chat");
-                                    }}
-                                    className="rounded-full border border-white/12 px-2.5 py-1 text-[10px] text-neutral-300 hover:bg-white/5 disabled:opacity-40"
-                                  >
-                                    {t("talkToTeam")}
-                                  </button>
-                                  <button
-                                    type="button"
-                                    disabled={members.length === 0}
-                                    onClick={() => {
-                                      if (members[0]) openCoworkWith(members[0].id);
-                                    }}
-                                    className="rounded-full bg-white px-2.5 py-1 text-[10px] text-black disabled:opacity-40"
-                                  >
-                                    {t("hqOpenCowork")}
-                                  </button>
-                                </div>
-                              </div>
-                            );
-                          })}
-                          <div
-                            className={cn(
-                              "hq-map-column flex min-w-[220px] flex-col items-center rounded-2xl border border-transparent px-2 pb-2 transition-colors",
-                              mapDropOver === "unassigned" && "border-white/25 bg-white/[0.04]",
-                            )}
-                            {...dropZoneProps("unassigned")}
-                          >
-                            <div className="h-5 w-px bg-white/12" />
-                            <HqNode
-                              title={t("mapUnassigned")}
-                              subtitle={`${unassignedAgents.length} ${t("employees")}`}
-                            />
-                            <div className="mt-3 flex min-h-[40px] max-w-[240px] flex-wrap justify-center gap-2">
-                              {unassignedAgents.slice(0, 8).map((agent) => (
-                                <button
-                                  key={agent.id}
-                                  type="button"
-                                  {...personDragProps(agent, null)}
-                                  className={cn(
-                                    "hq-avatar flex size-10 cursor-grab items-center justify-center rounded-full border border-white/20 bg-[#111] text-[10px] text-white active:cursor-grabbing",
-                                    mapDrag?.agentId === agent.id && "opacity-40",
-                                  )}
-                                  title={agent.name}
-                                >
-                                  {initials(agent.name)}
-                                </button>
-                              ))}
-                              <button
-                                type="button"
-                                onClick={() => openHireOnMap()}
-                                className="hq-map-add flex size-10 items-center justify-center rounded-full border border-dashed border-white/25 text-neutral-500 hover:border-white/40 hover:text-white"
-                                title={t("mapAddPerson")}
-                              >
-                                <Plus className="size-3.5" strokeWidth={1.8} />
-                              </button>
-                            </div>
-                            {mapDropOver === "unassigned" && mapDrag ? (
-                              <p className="mt-2 text-[10px] text-neutral-400">{t("mapDropHere")}</p>
-                            ) : null}
-                            <div className="mt-3 flex gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() => setInspector("people")}
-                                className="rounded-full border border-white/12 px-2.5 py-1 text-[10px] text-neutral-300 hover:bg-white/5"
-                              >
-                                {t("hqManagePeople")}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  if (unassignedAgents[0]) talkTo(unassignedAgents[0].id);
-                                }}
-                                className="rounded-full bg-white px-2.5 py-1 text-[10px] text-black"
-                              >
-                                {t("deskSoloChat")}
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      </>
-                    )}
+                    ) : null}
                   </div>
+                  {peopleAgents.length > 0 ? (
+                    <div className="shrink-0 border-t border-white/[0.06] px-4 py-3">
+                      <p className="text-[12px] text-neutral-500">{t("wfContextHint")}</p>
+                    </div>
+                  ) : null}
                 </section>
 
-                <aside className="flex min-h-0 flex-col overflow-hidden rounded-[22px] border border-white/[0.07] bg-[#060606]/0.95]">
-                  <div className="flex gap-1 border-b border-white/[0.06] p-2">
+                <aside className="hq-pulse-panel flex min-h-0 flex-col overflow-hidden rounded-[22px] border border-white/[0.07] bg-[var(--color-surface)]">
+                  <div className="hq-pulse-tabs flex gap-1 border-b border-white/[0.06] p-2">
                     {(
                       [
-                        ["pulse", t("hqPulse")],
-                        ["people", t("peopleRoster")],
-                        ["approvals", t("pendingApprovals")],
+                        ["pulse", t("hqPulse"), null],
+                        ["approvals", t("pendingApprovals"), pendingApprovalCount || null],
                       ] as const
-                    ).map(([id, label]) => (
+                    ).map(([id, label, count]) => (
                       <button
                         key={id}
                         type="button"
                         onClick={() => setInspector(id)}
                         className={cn(
-                          "flex-1 rounded-xl px-2 py-2 text-[11px] transition-colors",
+                          "hq-pulse-tab flex flex-1 items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-[11px] font-medium transition-colors",
                           inspector === id
-                            ? "bg-white/[0.08] text-white"
-                            : "text-neutral-500 hover:text-neutral-300",
+                            ? "is-active bg-white text-black"
+                            : "text-neutral-500 hover:bg-white/[0.04] hover:text-neutral-200",
                         )}
                       >
-                        {label}
+                        <span className="truncate">{label}</span>
+                        {typeof count === "number" && count > 0 ? (
+                          <span
+                            className={cn(
+                              "inline-flex min-w-5 items-center justify-center rounded-full px-1.5 text-[10px] font-semibold tabular-nums",
+                              inspector === id
+                                ? "bg-black/10 text-black"
+                                : "bg-white/10 text-neutral-300",
+                            )}
+                          >
+                            {count}
+                          </span>
+                        ) : null}
                       </button>
                     ))}
                   </div>
 
-                  <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                  <div className="min-h-0 flex-1 overflow-y-auto p-3 no-scrollbar">
                     {inspector === "pulse" ? (
-                      <div className="space-y-4">
-                        <section>
-                          <div className="flex items-center gap-2">
-                            <Radio className="size-3.5 text-neutral-500" />
-                            <p className="chat-pro-kicker">{t("operatorDirectives")}</p>
+                      <div className="hq-pulse space-y-4">
+                        <div className="hq-pulse-stats grid grid-cols-3 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => setHireOpen(true)}
+                            className="hq-pulse-stat"
+                          >
+                            <span className="hq-pulse-stat-value">{peopleAgents.length}</span>
+                            <span className="hq-pulse-stat-label">{t("employees")}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setView("tasks");
+                              setTaskFormOpen(false);
+                            }}
+                            className="hq-pulse-stat"
+                          >
+                            <span className="hq-pulse-stat-value">{openTasks.length}</span>
+                            <span className="hq-pulse-stat-label">{t("openTasks")}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setInspector("approvals")}
+                            className="hq-pulse-stat"
+                          >
+                            <span className="hq-pulse-stat-value">{pendingApprovalCount}</span>
+                            <span className="hq-pulse-stat-label">{t("approvalsShort")}</span>
+                          </button>
+                        </div>
+
+                        <div className="hq-pulse-actions flex flex-wrap gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setHireOpen(true)}
+                            className="hq-pulse-action"
+                          >
+                            <Plus className="size-3.5" strokeWidth={1.8} />
+                            {t("hireAgent")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setView("tasks");
+                              setTaskFormOpen(true);
+                            }}
+                            className="hq-pulse-action"
+                          >
+                            <ListTodo className="size-3.5" strokeWidth={1.8} />
+                            {t("assignTask")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => navigate("/cowork")}
+                            className="hq-pulse-action"
+                          >
+                            <Laptop className="size-3.5" strokeWidth={1.8} />
+                            {t("cowork")}
+                          </button>
+                        </div>
+
+                        <section className="hq-pulse-section">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <Radio className="size-3.5 text-neutral-500" />
+                              <p className="chat-pro-kicker">{t("operatorDirectives")}</p>
+                            </div>
+                            {directives.length > 0 ? (
+                              <span className="text-[10px] tabular-nums text-neutral-500">
+                                {directives.length}
+                              </span>
+                            ) : null}
                           </div>
-                          <form onSubmit={publishDirective} className="chat-pro-composer mt-3 !p-2.5">
+                          <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">
+                            {t("directiveHint")}
+                          </p>
+                          <form onSubmit={publishDirective} className="hq-pulse-composer mt-3">
                             <textarea
                               value={directiveDraft}
                               onChange={(e) => setDirectiveDraft(e.target.value)}
                               placeholder={t("directivePlaceholder")}
-                              rows={2}
-                              className="w-full resize-none bg-transparent text-[13px] text-white outline-none placeholder:text-neutral-600"
+                              rows={3}
+                              className="w-full resize-none bg-transparent text-[13px] leading-relaxed text-[var(--color-foreground)] outline-none placeholder:text-neutral-500"
                             />
-                            <div className="mt-2 flex justify-end">
+                            <div className="mt-2 flex items-center justify-between gap-2">
+                              <p className="min-w-0 truncate text-[11px] text-neutral-500">
+                                {directiveFlash ??
+                                  (directiveBusy ? t("directivePublishing") : t("directiveReach"))}
+                              </p>
                               <button
                                 type="submit"
-                                disabled={!directiveDraft.trim()}
+                                disabled={!directiveDraft.trim() || directiveBusy}
                                 className="chat-pro-cta !h-8 !px-3 !text-[11px] disabled:opacity-40"
                               >
-                                {t("publish")}
+                                {directiveBusy ? t("publishing") : t("publish")}
                               </button>
                             </div>
                           </form>
-                          <ul className="mt-3 max-h-36 space-y-1.5 overflow-y-auto">
+                          <ul className="mt-3 space-y-1.5">
                             {directives.length === 0 ? (
-                              <li className="text-[12px] text-neutral-600">{t("noDirectives")}</li>
+                              <li className="hq-pulse-empty">
+                                <p>{t("noDirectives")}</p>
+                                <p>{t("noDirectivesHint")}</p>
+                              </li>
                             ) : (
                               directives.map((d) => (
-                                <li
-                                  key={d.id}
-                                  className="rounded-xl bg-white/[0.03] px-3 py-2 text-[12px] leading-relaxed text-neutral-300"
-                                >
-                                  {d.text}
+                                <li key={d.id} className="hq-pulse-directive">
+                                  <div className="min-w-0 flex-1">
+                                    <p className="text-[12px] leading-relaxed text-[var(--color-foreground)]">
+                                      {d.text}
+                                    </p>
+                                    <p className="mt-1 text-[10px] text-neutral-500">
+                                      {formatDirectiveAge(d.createdAt)}
+                                    </p>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => removeDirective(d.id)}
+                                    className="hq-pulse-directive-del"
+                                    title={t("delete")}
+                                    aria-label={t("delete")}
+                                  >
+                                    <Trash2 className="size-3.5" strokeWidth={1.7} />
+                                  </button>
                                 </li>
                               ))
                             )}
                           </ul>
                         </section>
 
-                        <section>
-                          <p className="chat-pro-kicker">{t("priorityQueue")}</p>
-                          <ul className="mt-2 space-y-1.5">
-                            {(urgentTasks.length > 0 ? urgentTasks : openTasks).slice(0, 5).map((task) => (
-                              <li
-                                key={task.id}
-                                className="flex items-center justify-between gap-2 rounded-xl bg-white/[0.03] px-3 py-2"
-                              >
-                                <div className="min-w-0">
-                                  <p className="truncate text-[13px] text-white">{task.title}</p>
-                                  <p className="text-[10px] text-neutral-500">
-                                    {task.priority} · {agentName(task.assigneeAgentId)}
-                                  </p>
-                                </div>
-                                {task.assigneeAgentId ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => openCoworkWith(task.assigneeAgentId!)}
-                                    className="shrink-0 rounded-full bg-white px-2.5 py-1 text-[10px] text-black"
-                                  >
-                                    {t("hqOpenCowork")}
-                                  </button>
-                                ) : null}
-                              </li>
-                            ))}
-                            {openTasks.length === 0 ? (
-                              <li className="text-[12px] text-neutral-600">{t("noTasksHere")}</li>
-                            ) : null}
-                          </ul>
-                        </section>
-                      </div>
-                    ) : null}
-
-                    {inspector === "people" ? (
-                      <div className="space-y-3">
-                        <div className="flex items-start justify-between gap-2">
-                          <div>
-                            <p className="chat-pro-kicker">{t("peopleRoster")}</p>
-                            <p className="mt-1 text-[12px] text-neutral-500">
-                              {t("hqPeopleHint").replace("{count}", String(peopleAgents.length))}
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setHireOpen(true)}
-                            className="home-btn-primary !h-8 !px-3 !text-[11px]"
-                          >
-                            <Plus className="size-3.5" strokeWidth={2} />
-                            {t("hireAgent")}
-                          </button>
-                        </div>
-
-                        <ul className="space-y-1.5">
-                          {peopleAgents.length === 0 ? (
-                            <li className="rounded-2xl border border-dashed border-white/10 px-4 py-8 text-center">
-                              <p className="text-[13px] text-neutral-300">{t("hqNoPeopleYet")}</p>
-                              <p className="mt-1 text-[12px] text-neutral-600">{t("hqNoPeopleHint")}</p>
+                        <section className="hq-pulse-section">
+                          <div className="flex items-center justify-between gap-2">
+                            <p className="chat-pro-kicker">{t("priorityQueue")}</p>
+                            {openTasks.length > 0 ? (
                               <button
                                 type="button"
-                                onClick={() => setHireOpen(true)}
-                                className="chat-pro-cta mt-4 !h-9 !px-4 !text-[12px]"
+                                onClick={() => setView("tasks")}
+                                className="text-[10px] font-medium text-neutral-400 hover:text-white"
                               >
-                                {t("hireAgent")}
+                                {t("viewAll")}
                               </button>
-                            </li>
-                          ) : (
-                            peopleAgents.map((agent) => {
-                              const paused = agent.status === "paused";
-                              const draft = agent.status === "draft";
-                              const menuOpen = personMenu === agent.id;
-                              return (
-                                <li key={agent.id} className="hq-person relative">
-                                  <div className="home-person flex items-center gap-2.5 !px-2.5 !py-2">
-                                    <button
-                                      type="button"
-                                      disabled={agentBusy}
-                                      onClick={() => openEmployeeDesk(agent.id)}
-                                      className="flex min-w-0 flex-1 items-center gap-2.5 text-start"
-                                    >
-                                      <span className="home-avatar flex size-9 shrink-0 items-center justify-center text-[11px] font-medium">
-                                        {initials(agent.name)}
-                                      </span>
-                                      <span className="min-w-0 flex-1">
-                                        <span className="block truncate text-[13px] text-white">
-                                          {agent.name}
-                                        </span>
-                                        <span className="mt-0.5 block truncate text-[11px] text-neutral-500">
-                                          {paused
-                                            ? t("chatAgentPaused")
-                                            : draft
-                                              ? t("statusDraft")
-                                              : agent.specialty || agent.role}
-                                          {assignedAgentIds.has(agent.id)
-                                            ? ""
-                                            : ` · ${t("hqSoloLabel")}`}
-                                        </span>
-                                      </span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="flex size-8 shrink-0 items-center justify-center rounded-full text-neutral-500 transition hover:bg-white/[0.06] hover:text-white"
-                                      aria-label={t("hqManageAgent")}
-      onClick={(event) => {
-                                        event.stopPropagation();
-                                        setPendingDeleteId(null);
-                                        setPersonMenu(menuOpen ? null : agent.id);
-                                      }}
-                                    >
-                                      <MoreHorizontal className="size-4" strokeWidth={1.7} />
-                                    </button>
-                                  </div>
-                                  {menuOpen ? (
-                                    <div
-                                      className="absolute end-2 top-[calc(100%-4px)] z-20 min-w-[190px] overflow-hidden rounded-2xl border border-white/10 bg-[#111] py-1 shadow-2xl"
-                                      onPointerDown={(event) => event.stopPropagation()}
-                                      onClick={(event) => event.stopPropagation()}
-                                    >
-                                      {pendingDeleteId === agent.id ? (
-                                        <>
-                                          <p className="px-3 py-2 text-[11px] leading-relaxed text-neutral-400">
-                                            {t("chatDeleteAgentConfirm")}
-                                          </p>
-                                          <button
-                                            type="button"
-                                            disabled={agentBusy}
-                                            className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-red-300 hover:bg-white/[0.06] disabled:opacity-40"
-                                            onClick={() => void deletePerson(agent.id)}
-                                          >
-                                            <Trash2 className="size-3.5" strokeWidth={1.7} />
-                                            {t("chatDeleteForever")}
-                                          </button>
-                                          <button
-                                            type="button"
-                                            className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-neutral-300 hover:bg-white/[0.06]"
-                                            onClick={() => setPendingDeleteId(null)}
-                                          >
-                                            {t("cancel")}
-                                          </button>
-                                        </>
-                                      ) : (
-                                        <>
+                            ) : null}
+                          </div>
+                          <ul className="mt-2 space-y-1.5">
+                            {openTasks.length === 0 ? (
+                              <li className="hq-pulse-empty">
+                                <p>{t("priorityQueueEmpty")}</p>
+                                <p>{t("priorityQueueEmptyHint")}</p>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setView("tasks");
+                                    setTaskFormOpen(true);
+                                  }}
+                                  className="hq-pulse-action mt-3"
+                                >
+                                  <Plus className="size-3.5" strokeWidth={1.8} />
+                                  {t("assignTask")}
+                                </button>
+                              </li>
+                            ) : (
+                              (urgentTasks.length > 0 ? urgentTasks : openTasks)
+                                .slice(0, 5)
+                                .map((task) => (
+                                  <li key={task.id} className="hq-pulse-task">
+                                    <span
+                                      className={cn(
+                                        "hq-pulse-priority",
+                                        task.priority === "urgent" && "is-urgent",
+                                        task.priority === "high" && "is-high",
+                                        task.priority === "low" && "is-low",
+                                      )}
+                                      aria-hidden
+                                    />
+                                    <div className="min-w-0 flex-1">
+                                      <p className="truncate text-[13px] text-[var(--color-foreground)]">
+                                        {task.title}
+                                      </p>
+                                      <p className="truncate text-[10px] text-neutral-500">
+                                        {task.priority} · {agentName(task.assigneeAgentId)}
+                                      </p>
+                                    </div>
+                                    {task.assigneeAgentId ? (
                                       <button
                                         type="button"
-                                        className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-neutral-200 hover:bg-white/[0.06]"
-                                        onClick={() => {
-                                          setPersonMenu(null);
-                                          talkTo(agent.id);
-                                        }}
+                                        onClick={() => openCoworkWith(task.assigneeAgentId!)}
+                                        className="shrink-0 rounded-full bg-[var(--color-foreground)] px-2.5 py-1 text-[10px] font-medium text-[var(--color-background)]"
                                       >
-                                        <MessageSquare className="size-3.5 text-neutral-500" strokeWidth={1.7} />
-                                        {t("chatOpenChat")}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-neutral-200 hover:bg-white/[0.06]"
-                                        onClick={() => {
-                                          setPersonMenu(null);
-                                          openCoworkWith(agent.id);
-                                        }}
-                                      >
-                                        <Laptop className="size-3.5 text-neutral-500" strokeWidth={1.7} />
                                         {t("hqOpenCowork")}
                                       </button>
+                                    ) : (
                                       <button
                                         type="button"
-                                        className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-neutral-200 hover:bg-white/[0.06]"
                                         onClick={() => {
-                                          setPersonMenu(null);
-                                          openEmployeeDesk(agent.id);
+                                          setView("tasks");
+                                          setTaskFormOpen(true);
                                         }}
+                                        className="shrink-0 rounded-full border border-white/12 px-2.5 py-1 text-[10px] text-neutral-300 hover:bg-white/5"
                                       >
-                                        <UserRound className="size-3.5 text-neutral-500" strokeWidth={1.7} />
-                                        {t("openDesk")}
+                                        {t("assign")}
                                       </button>
-                                      <button
-                                        type="button"
-                                        disabled={agentBusy || draft}
-                                        className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-neutral-200 hover:bg-white/[0.06] disabled:opacity-40"
-                                        onClick={() =>
-                                          void setPersonStatus(
-                                            agent.id,
-                                            paused ? "active" : "paused",
-                                          )
-                                        }
-                                      >
-                                        {paused ? (
-                                          <Play className="size-3.5 text-neutral-500" strokeWidth={1.7} />
-                                        ) : (
-                                          <Pause className="size-3.5 text-neutral-500" strokeWidth={1.7} />
-                                        )}
-                                        {paused ? t("chatResumeAgent") : t("chatPauseAgent")}
-                                      </button>
-                                      <div className="my-1 h-px bg-white/[0.06]" />
-                                      <button
-                                        type="button"
-                                        disabled={agentBusy}
-                                        className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-red-300 hover:bg-white/[0.06] disabled:opacity-40"
-                                        onClick={() => setPendingDeleteId(agent.id)}
-                                      >
-                                        <Trash2 className="size-3.5" strokeWidth={1.7} />
-                                        {t("chatDeleteAgent")}
-                                      </button>
-                                        </>
-                                      )}
-                                    </div>
-                                  ) : null}
-                                </li>
-                              );
-                            })
-                          )}
-                        </ul>
-
-                        {peopleAgents.length > 0 ? (
-                          <form
-                            onSubmit={(event) => void tellSelectedAgent(event)}
-                            className="space-y-2.5 border-t border-white/[0.06] pt-3"
-                          >
-                            <div>
-                              <p className="chat-pro-kicker">{t("tellAgent")}</p>
-                              <p className="mt-1 text-[11px] text-neutral-600">{t("hqTellHint")}</p>
-                            </div>
-                            <select
-                              value={tellAgentId || peopleAgents[0]?.id || ""}
-                              onChange={(event) => setTellAgentId(event.target.value)}
-                              className="hq-select"
-                            >
-                              {peopleAgents.map((agent) => (
-                                <option key={agent.id} value={agent.id}>
-                                  {agent.name}
-                                </option>
-                              ))}
-                            </select>
-                            <textarea
-                              value={tellText}
-                              onChange={(event) => setTellText(event.target.value)}
-                              rows={5}
-                              placeholder={t("tellAgentPlaceholder")}
-                              className="hq-note"
-                            />
-                            <button
-                              type="submit"
-                              disabled={
-                                saving ||
-                                !(tellAgentId || peopleAgents[0]?.id) ||
-                                !tellText.trim()
-                              }
-                              className="home-btn-primary h-10 w-full text-[13px] disabled:opacity-40"
-                            >
-                              {saving ? t("saving") : t("saveToMemory")}
-                            </button>
-                          </form>
-                        ) : null}
+                                    )}
+                                  </li>
+                                ))
+                            )}
+                          </ul>
+                        </section>
                       </div>
                     ) : null}
 
@@ -1948,7 +2332,7 @@ export function WorkforcePage() {
                 {taskFormOpen ? (
                   <form
                     onSubmit={createTask}
-                    className="rounded-[28px] border border-white/10 bg-[#080808] p-5"
+                    className="rounded-[28px] border border-white/10 bg-[var(--color-surface)] p-5"
                   >
                     <h2 className="text-lg text-white">{t("assignTask")}</h2>
                     <p className="mt-1 text-sm text-neutral-500">{t("assignTaskBody")}</p>
@@ -2054,7 +2438,7 @@ export function WorkforcePage() {
                   {TASK_COLUMNS.map((status) => (
                     <div
                       key={status}
-                      className="min-w-[210px] flex-1 rounded-[22px] border border-white/10 bg-[#070707] p-3"
+                      className="min-w-[210px] flex-1 rounded-[22px] border border-white/10 bg-[var(--color-surface)] p-3"
                     >
                       <p className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">
                         {status.replace("_", " ")}
@@ -2125,7 +2509,7 @@ export function WorkforcePage() {
                   ))}
                 </div>
                 {runPreview ? (
-                  <div className="rounded-[22px] border border-white/10 bg-[#080808] p-4">
+                  <div className="rounded-[22px] border border-white/10 bg-[var(--color-surface)] p-4">
                     <p className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">
                       {t("lastRunOutput")}
                     </p>
@@ -2133,7 +2517,7 @@ export function WorkforcePage() {
                   </div>
                 ) : null}
                 {taskRuns.length > 0 ? (
-                  <div className="rounded-[22px] border border-white/10 bg-[#080808] p-4">
+                  <div className="rounded-[22px] border border-white/10 bg-[var(--color-surface)] p-4">
                     <p className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">
                       {t("runHistory")}
                     </p>
@@ -2156,7 +2540,7 @@ export function WorkforcePage() {
                 {knowledgeFormOpen ? (
                   <form
                     onSubmit={createKnowledge}
-                    className="rounded-[28px] border border-white/10 bg-[#080808] p-5"
+                    className="rounded-[28px] border border-white/10 bg-[var(--color-surface)] p-5"
                   >
                     <h2 className="text-lg text-white">{t("addKnowledge")}</h2>
                     <p className="mt-1 text-sm text-neutral-500">{t("ccKnowledgeBody")}</p>
@@ -2228,7 +2612,7 @@ export function WorkforcePage() {
                   {knowledge.map((doc) => (
                     <article
                       key={doc.id}
-                      className="rounded-[22px] border border-white/10 bg-[#070707] p-4"
+                      className="rounded-[22px] border border-white/10 bg-[var(--color-surface)] p-4"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div>
@@ -2259,7 +2643,7 @@ export function WorkforcePage() {
 
             {view === "chat" ? (
               <section className="hq-rise space-y-4">
-                <div className="rounded-[28px] border border-white/10 bg-[#070707]/0.96] p-5">
+                <div className="rounded-[28px] border border-white/10 bg-[var(--color-surface)] p-5">
                   <div className="flex flex-wrap items-end justify-between gap-4">
                     <div>
                       <h2 className="text-lg text-white">{t("ccChat")}</h2>
@@ -2400,7 +2784,11 @@ export function WorkforcePage() {
                                     </p>
                                   </div>
                                   <span className="shrink-0 text-[10px] uppercase tracking-[0.12em] text-neutral-500">
-                                    {members.length} {t("hqChatMembers")}
+                                  {Math.min(members.length, MAX_DEPT_AGENTS)}/{MAX_DEPT_AGENTS}{" "}
+                                  {t("hqChatMembers")}
+                                  {members.length > MAX_DEPT_AGENTS ? (
+                                    <span className="text-amber-300/80"> · {t("deptFull")}</span>
+                                  ) : null}
                                   </span>
                                 </div>
                                 <div className="mt-3 flex -space-x-2">
@@ -2409,7 +2797,7 @@ export function WorkforcePage() {
                                       key={agent.id}
                                       type="button"
                                       onClick={() => openEmployeeDesk(agent.id)}
-                                      className="hq-avatar flex size-8 items-center justify-center rounded-full border border-white/20 bg-[#111] text-[9px] text-white"
+                                      className="hq-avatar flex size-8 items-center justify-center rounded-full border border-white/20 bg-[var(--color-surface-2)] text-[9px] text-white"
                                       title={agent.name}
                                     >
                                       {initials(agent.name)}
@@ -2455,7 +2843,7 @@ export function WorkforcePage() {
             ) : null}
 
             {view === "reports" ? (
-              <section className="hq-rise rounded-[28px] border border-white/10 bg-[#080808] p-5">
+              <section className="hq-rise rounded-[28px] border border-white/10 bg-[var(--color-surface)] p-5">
                 <h2 className="text-lg text-white">{t("ccReports")}</h2>
                 <p className="mt-1 text-sm text-neutral-500">{t("ccReportsBody")}</p>
                 {report ? (
@@ -2531,12 +2919,13 @@ export function WorkforcePage() {
           </div>
         </div>
       </div>
+      )}
 
       {composeOpen ? (
         <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/70 p-4 sm:items-center">
           <form
             onSubmit={launchTeam}
-            className="hq-rise max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-[28px] border border-white/15 bg-[#0a0a0a] p-5"
+            className="hq-rise max-h-[90vh] w-full max-w-xl overflow-y-auto rounded-[28px] border border-white/15 bg-[var(--color-surface)] p-5"
           >
             <div className="flex items-center justify-between">
               <h2 className="text-lg text-white">{t("workforceCompose")}</h2>
@@ -2612,7 +3001,7 @@ export function WorkforcePage() {
         <div className="fixed inset-0 z-40 flex items-end justify-center bg-black/70 p-4 sm:items-center">
           <form
             onSubmit={(event) => void hireAgent(event)}
-            className="hq-rise max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-[28px] border border-white/15 bg-[#0a0a0a] p-5"
+            className="hq-rise max-h-[92vh] w-full max-w-lg overflow-y-auto rounded-[28px] border border-white/15 bg-[var(--color-surface)] p-5"
           >
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -2738,12 +3127,20 @@ export function WorkforcePage() {
                     className="field"
                   >
                     <option value="">{t("none")}</option>
-                    {teams.map((team) => (
-                      <option key={team.id} value={team.id}>
-                        {team.name}
-                      </option>
-                    ))}
+                    {orgTeams.map((team) => {
+                      const seated = (membersByTeam.get(team.id) ?? []).filter(
+                        (agent) => agent.status !== "archived",
+                      ).length;
+                      const full = seated >= MAX_DEPT_AGENTS;
+                      return (
+                        <option key={team.id} value={team.id} disabled={full}>
+                          {team.name} ({seated}/{MAX_DEPT_AGENTS}
+                          {full ? ` — ${t("deptFull")}` : ""})
+                        </option>
+                      );
+                    })}
                   </select>
+                  <p className="mt-1 text-[11px] text-neutral-500">{t("deptSeatsHint")}</p>
                 </Field>
                 <Field label={t("colProject")}>
                   <select
@@ -2802,6 +3199,118 @@ export function WorkforcePage() {
           </form>
         </div>
       ) : null}
+
+      {agentMenu ? (
+        <div
+          className="wf-agent-menu fixed z-[90] min-w-[230px] overflow-hidden rounded-2xl border border-white/10 bg-[#111] py-1 shadow-2xl"
+          style={{ left: agentMenu.x, top: agentMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+          onContextMenu={(event) => event.preventDefault()}
+        >
+          {(() => {
+            const target = agents.find((agent) => agent.id === agentMenu.agentId);
+            if (!target) return null;
+            const pinned = pinnedAgentIds.includes(target.id);
+            const policy = readAgentSessionPolicy(target.id);
+            return (
+              <>
+                <button
+                  type="button"
+                  className="wf-menu-item"
+                  onClick={() => {
+                    setPinnedAgentIds(togglePinnedAgent(target.id));
+                    setAgentMenu(null);
+                  }}
+                >
+                  <Pin className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  {pinned ? t("wfUnpin") : t("wfPin")}
+                </button>
+                <button
+                  type="button"
+                  className="wf-menu-item"
+                  onClick={() => {
+                    setAgentMenu(null);
+                    talkTo(target.id);
+                  }}
+                >
+                  <Bell className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  {t("wfMessageAgent")}
+                </button>
+                <button
+                  type="button"
+                  className="wf-menu-item"
+                  onClick={() => void renamePerson(target.id)}
+                >
+                  <SquarePen className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  {t("wfRenameAgent")}
+                </button>
+                <button
+                  type="button"
+                  className="wf-menu-item"
+                  onClick={() => {
+                    setAgentMenu(null);
+                    openEmployeeDesk(target.id);
+                  }}
+                >
+                  <Pencil className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  {t("wfEditProfile")}
+                </button>
+                <button
+                  type="button"
+                  className="wf-menu-item"
+                  onClick={() => void duplicatePerson(target.id)}
+                >
+                  <Copy className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  {t("chatDuplicateAgent")}
+                </button>
+                <div className="my-1 h-px bg-white/[0.06]" />
+                <button
+                  type="button"
+                  className="wf-menu-item"
+                  onClick={() => setAgentApproval(target.id, "ask")}
+                >
+                  <ShieldQuestion className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  {t("coworkAskApproval")}
+                  {policy === "ask" ? (
+                    <span className="ms-auto text-[10px] text-neutral-500">✓</span>
+                  ) : null}
+                </button>
+                <button
+                  type="button"
+                  className="wf-menu-item"
+                  onClick={() => setAgentApproval(target.id, "allow")}
+                >
+                  <ShieldCheck className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  {t("coworkAllowEverything")}
+                  {policy === "allow" ? (
+                    <span className="ms-auto text-[10px] text-neutral-500">✓</span>
+                  ) : null}
+                </button>
+                <div className="my-1 h-px bg-white/[0.06]" />
+                <button
+                  type="button"
+                  className="wf-menu-item"
+                  disabled={agentBusy}
+                  onClick={() => void archivePerson(target.id)}
+                >
+                  <Archive className="size-3.5 text-neutral-500" strokeWidth={1.7} />
+                  {t("chatArchiveAgent")}
+                </button>
+                <button
+                  type="button"
+                  className="wf-menu-item is-danger"
+                  disabled={agentBusy}
+                  onClick={() => void deletePerson(target.id)}
+                >
+                  <Trash2 className="size-3.5" strokeWidth={1.7} />
+                  {t("wfDeleteAgent")}
+                </button>
+              </>
+            );
+          })()}
+        </div>
+      ) : null}
     </Surface>
   );
 }
@@ -2821,38 +3330,12 @@ function OpsChip({
     <div
       className={cn(
         "rounded-2xl border px-3 py-2",
-        accent ? "border-white/25 bg-white/[0.06]" : "border-white/10 bg-[#080808]",
+        accent ? "border-white/25 bg-white/[0.06]" : "border-white/10 bg-[var(--color-surface)]",
       )}
     >
       <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">{label}</p>
       <p className="mt-0.5 text-2xl tracking-tight text-white">{value}</p>
       {hint ? <p className="mt-0.5 truncate text-[11px] text-neutral-500">{hint}</p> : null}
-    </div>
-  );
-}
-
-function HqNode({
-  title,
-  subtitle,
-  root,
-}: {
-  title: string;
-  subtitle: string;
-  root?: boolean;
-}) {
-  return (
-    <div
-      className={cn(
-        "min-w-[150px] rounded-2xl border px-4 py-3 text-center shadow-[0_0_0_1px_rgba(255,255,255,0.02)]",
-        root
-          ? "border-white/40 bg-white text-black"
-          : "border-white/15 bg-black/80 text-white backdrop-blur",
-      )}
-    >
-      <p className="text-sm font-medium tracking-tight">{title}</p>
-      <p className={cn("mt-1 text-[11px]", root ? "text-neutral-600" : "text-neutral-500")}>
-        {subtitle}
-      </p>
     </div>
   );
 }

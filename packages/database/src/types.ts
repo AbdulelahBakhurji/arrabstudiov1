@@ -22,7 +22,15 @@ import type {
   Workspace,
   WorkspaceId,
   StudioAccountRecord,
+  OrgDepartment,
+  OrgEmployeeRecord,
+  OrgSecurityEvent,
 } from "@arrab/shared";
+import type {
+  OrgDepartmentRepository,
+  OrgEmployeeRepository,
+  OrgSecurityEventRepository,
+} from "./org-workforce-repos.js";
 
 export interface DatabaseConfig {
   connectionString: string;
@@ -105,6 +113,12 @@ export interface OperatorRepository {
   upsert(profile: OperatorProfile): Promise<OperatorProfile>;
 }
 
+/** Cloud-synced Individuals companion roster + chat pointers (JSON document). */
+export interface CompanionStateRepository {
+  get(): Promise<{ updatedAt: string; state: unknown } | null>;
+  upsert(doc: { updatedAt: string; state: unknown }): Promise<{ updatedAt: string; state: unknown }>;
+}
+
 export interface AccountRepository {
   get(): Promise<StudioAccountRecord | null>;
   upsert(account: StudioAccountRecord): Promise<StudioAccountRecord>;
@@ -163,6 +177,7 @@ export interface Persistence {
   usage: UsageRepository;
   tasks: TaskRepository;
   operator: OperatorRepository;
+  companionState: CompanionStateRepository;
   accounts: AccountRepository;
   knowledge: KnowledgeRepository;
   memories: MemoryRepository;
@@ -170,6 +185,9 @@ export interface Persistence {
   skills: SkillRepository;
   approvals: ApprovalRepository;
   goals: GoalRepository;
+  orgDepartments: OrgDepartmentRepository;
+  orgEmployees: OrgEmployeeRepository;
+  orgSecurityEvents: OrgSecurityEventRepository;
 }
 
 export const LOCAL_ORGANIZATION_ID = "org_local_studio";

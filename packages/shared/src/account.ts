@@ -1,7 +1,13 @@
 import type { Brand } from "./ids.js";
 
-export type SubscriptionPlanId = "free" | "pro" | "team" | "unlimited";
-export type PlanAudience = "individual" | "organization";
+export type SubscriptionPlanId =
+  | "free"
+  | "pro"
+  | "family"
+  | "family_plus"
+  | "team"
+  | "unlimited";
+export type PlanAudience = "individual" | "family" | "organization";
 export type SubscriptionStatus = "active" | "past_due" | "canceled" | "trialing";
 export type AccountId = Brand<string, "AccountId">;
 
@@ -19,6 +25,8 @@ export interface SubscriptionPlan {
   highlight?: boolean;
   badge?: string | null;
   features: string[];
+  /** Optional household / team seat guidance shown in catalog. */
+  seatLimit?: number | null;
 }
 
 /** Built-in Arrab Studio plans. Limits are total tokens per billing period. */
@@ -57,6 +65,45 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionPlanId, SubscriptionPlan> = 
       "Priority model routing",
       "Desktop Studio + testing workspace",
       "Mada, Visa, Apple Pay, STC Pay",
+    ],
+  },
+  family: {
+    id: "family",
+    name: "Family",
+    audience: "family",
+    monthlyTokenLimit: 4_000_000,
+    description: "One shared studio for the household — companions, chats, and desks together.",
+    monthlyPriceHalalas: 7_900,
+    currency: "SAR",
+    interval: "month",
+    badge: "Household",
+    seatLimit: 6,
+    features: [
+      "4,000,000 tokens shared every month",
+      "Up to 6 family seats",
+      "Shared companions & chat history",
+      "Parental-friendly usage overview",
+      "macOS Studio on every home Mac",
+    ],
+  },
+  family_plus: {
+    id: "family_plus",
+    name: "Family Plus",
+    audience: "family",
+    monthlyTokenLimit: 8_000_000,
+    description: "More room for larger households and heavier daily use.",
+    monthlyPriceHalalas: 12_900,
+    currency: "SAR",
+    interval: "month",
+    highlight: true,
+    badge: "Family pick",
+    seatLimit: 10,
+    features: [
+      "8,000,000 tokens shared every month",
+      "Up to 10 family seats",
+      "Priority routing for every member",
+      "Shared knowledge & memories",
+      "Priority household support",
     ],
   },
   team: {
@@ -101,6 +148,8 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionPlanId, SubscriptionPlan> = 
 export const SUBSCRIPTION_REDEEM_CODES: Record<string, SubscriptionPlanId> = {
   "FREE-ARRAB": "free",
   "PRO-ARRAB": "pro",
+  "FAMILY-ARRAB": "family",
+  "FAMILY-PLUS-ARRAB": "family_plus",
   "TEAM-ARRAB": "team",
   "UNLIMITED-ARRAB": "unlimited",
 };
@@ -146,7 +195,15 @@ export interface AccountEntitlements {
   tokenLimit: number | null;
   tokensUsed: number;
   tokensRemaining: number | null;
+  /** True when the monthly token pool is exhausted — studio AI work is paused. */
   overLimit: boolean;
+  /**
+   * How the operator can continue after a pause:
+   * - upgrade_required: Free / local — must upgrade (or connect) to resume
+   * - upgrade_or_wait: Paid capped plan — upgrade now or wait until periodEnd
+   * - null: not paused
+   */
+  pauseMode: "upgrade_required" | "upgrade_or_wait" | null;
   periodStart: string;
   periodEnd: string;
 }

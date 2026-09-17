@@ -1,5 +1,5 @@
 import type { AiGateway } from "@arrab/ai";
-import { ValidationError } from "@arrab/core";
+import { ForbiddenError, UnauthorizedError, ValidationError } from "@arrab/core";
 import type {
   ActivateSubscriptionRequest,
   AddTeamMemberRequest,
@@ -27,14 +27,23 @@ import type {
   CompleteWebAuthRequest,
   VerifyAccountSessionRequest,
   BillingCheckoutRequest,
+  ArrangeEmailRequest,
   UpdateAccountProfileRequest,
   UpdateAgentRequest,
   UpdateGoalRequest,
   UpdateKnowledgeRequest,
   UpdateOperatorRequest,
+  UpsertCompanionStateRequest,
   UpdateProjectRequest,
   UpdateTaskRequest,
   UpdateTeamRequest,
+  CreateOrgDepartmentRequest,
+  CreateOrgEmployeeRequest,
+  UpdateOrgDepartmentRequest,
+  UpdateOrgEmployeeRequest,
+  OrgEmployeeSignInRequest,
+  OrgEmployeeRecord,
+  OrgEmployeeChangePasswordRequest,
 } from "@arrab/shared";
 import type { FastifyInstance } from "fastify";
 import type { ConnectorService } from "../services/connector-service.js";
@@ -44,6 +53,7 @@ import type { BillingService } from "../services/billing-service.js";
 import { listStudioReleases } from "../services/releases.js";
 import type { GoalService } from "../services/goal-service.js";
 import type { TaskExecutionService } from "../services/task-execution-service.js";
+import type { OrgWorkforceService } from "../services/org-workforce-service.js";
 import type { WorkspaceCommandService } from "../services/workspace-commands.js";
 import type { WorkspaceQueryService } from "../services/workspace-query.js";
 
@@ -58,6 +68,7 @@ export function registerV1Routes(
     billing: BillingService;
     goals: GoalService;
     taskExecution: TaskExecutionService;
+    orgWorkforce: OrgWorkforceService;
     gateway: AiGateway;
     persistence: PersistenceMode;
     workspaceId: string;
@@ -70,11 +81,16 @@ export function registerV1Routes(
     publicBaseUrl: string;
   },
 ): void {
+  app.addHook("onRequest", async (request) => {
+    const header = request.headers["x-arrab-employee-session"];
+    const token = Array.isArray(header) ? header[0] : header;
+    request.orgEmployee = await deps.orgWorkforce.resolveSession(token ?? null);
+  });
   app.get("/v1/meta", async () => {
     const status = await deps.accounts.status();
     return {
       name: "arrab-api" as const,
-      version: "0.13.0",
+      version: "0.15.0",
       phase: "12",
       persistence: deps.persistence,
       workspaceId: deps.workspaceId,
@@ -86,6 +102,7 @@ export function registerV1Routes(
         tokensUsed: status.entitlements.tokensUsed,
         tokensRemaining: status.entitlements.tokensRemaining,
         overLimit: status.entitlements.overLimit,
+        pauseMode: status.entitlements.pauseMode,
       },
     };
   });
@@ -116,8 +133,10 @@ export function registerV1Routes(
   app.post<{ Body: StartWebAuthRequest }>("/v1/account/auth/web/start", async () =>
     deps.accounts.startWebAuth(),
   );
-  app.get<{ Querystring: { state?: string } }>("/v1/account/auth/web/poll", async (request) =>
-    deps.accounts.pollWebAuth(request.query.state ?? ""),
+  app.get<{ Querystring: { state?: string; pollSecret?: string } }>(
+    "/v1/account/auth/web/poll",
+    async (request) =>
+      deps.accounts.pollWebAuth(request.query.state ?? "", request.query.pollSecret ?? ""),
   );
   app.post<{ Body: CompleteWebAuthRequest }>("/v1/account/auth/web/complete", async (request) =>
     deps.accounts.completeWebAuth(
@@ -158,13 +177,14 @@ export function registerV1Routes(
     label { display: grid; gap: 6px; margin-top: 14px; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: #737373; }
     input { width: 100%; box-sizing: border-box; border-radius: 12px; border: 1px solid rgba(255,255,255,.14); background: #000; color: #fff; padding: 12px 14px; font-size: 14px; }
     button { margin-top: 18px; width: 100%; border: 0; border-radius: 999px; background: #fff; color: #000; font-weight: 600; padding: 12px 16px; cursor: pointer; }
+    a.open { display: inline-block; margin-top: 12px; color: #bbf7d0; }
     .ok { color: #bbf7d0; } .err { color: #fecaca; }
   </style>
 </head>
 <body>
   <form class="card" id="form">
     <h1>Sign in to Arrab Studio</h1>
-    <p>Complete sign-in in the browser. The desktop app will detect this and show you as signed in.</p>
+    <p>Complete sign-in here. When it succeeds, Arrab Studio opens automatically.</p>
     <input type="hidden" name="state" value="${state.replace(/"/g, "&quot;")}" />
     <label>Display name<input name="displayName" placeholder="Your name" /></label>
     <label>Email<input name="email" type="email" required placeholder="you@company.com" /></label>
@@ -172,10 +192,16 @@ export function registerV1Routes(
     <label>Plan code (optional)<input name="planCode" placeholder="PRO-ARRAB" /></label>
     <button type="submit">Sign in</button>
     <p id="msg"></p>
+    <a class="open" id="openApp" href="arrab://auth/complete" hidden>Open Arrab Studio</a>
   </form>
   <script>
     const form = document.getElementById('form');
     const msg = document.getElementById('msg');
+    const openApp = document.getElementById('openApp');
+    function openStudio() {
+      openApp.hidden = false;
+      window.location.href = 'arrab://auth/complete';
+    }
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
       msg.textContent = 'Signing in…';
@@ -190,8 +216,9 @@ export function registerV1Routes(
         const payload = await response.json();
         if (!response.ok) throw new Error(payload?.error?.message || 'Sign-in failed');
         msg.className = 'ok';
-        msg.textContent = 'Signed in as ' + payload.account.email + '. You can return to Arrab Studio.';
+        msg.textContent = 'Signed in as ' + payload.account.email + '. Opening Arrab Studio…';
         form.querySelector('button').disabled = true;
+        openStudio();
       } catch (error) {
         msg.className = 'err';
         msg.textContent = error instanceof Error ? error.message : 'Sign-in failed';
@@ -208,17 +235,116 @@ export function registerV1Routes(
     deps.commands.updateOperator(request.body ?? {}),
   );
 
-  app.get("/v1/tasks", async () => ({ items: await deps.queries.listTasks() }));
-  app.post<{ Body: CreateTaskRequest }>("/v1/tasks", async (request) =>
-    deps.commands.createTask(request.body ?? { title: "" }),
+  app.get("/v1/companions/state", async () => deps.queries.getCompanionState());
+  app.put<{ Body: UpsertCompanionStateRequest }>("/v1/companions/state", async (request) =>
+    deps.commands.upsertCompanionState(request.body ?? { updatedAt: "", state: null }),
   );
+
+  function clientIp(request: { ip?: string; headers: Record<string, unknown> }): string | null {
+    const forwarded = request.headers["x-forwarded-for"];
+    if (typeof forwarded === "string" && forwarded.trim()) {
+      return forwarded.split(",")[0]?.trim() || null;
+    }
+    return request.ip ?? null;
+  }
+
+  app.get("/v1/org/workforce", async (request) =>
+    deps.orgWorkforce.snapshot(request.orgEmployee),
+  );
+  app.post<{ Body: OrgEmployeeSignInRequest }>("/v1/org/employees/sign-in", async (request) =>
+    deps.orgWorkforce.signIn(request.body ?? { email: "", password: "" }, clientIp(request)),
+  );
+  app.post("/v1/org/employees/sign-out", async (request) => {
+    if (!request.orgEmployee) return { ok: true as const };
+    return deps.orgWorkforce.signOut(request.orgEmployee);
+  });
+  app.post<{ Body: OrgEmployeeChangePasswordRequest }>(
+    "/v1/org/employees/change-password",
+    async (request) => {
+      if (!request.orgEmployee) {
+        throw new UnauthorizedError("Employee session required");
+      }
+      return deps.orgWorkforce.changePassword(
+        request.orgEmployee,
+        request.body ?? { currentPassword: "", newPassword: "" },
+      );
+    },
+  );
+  app.get("/v1/org/departments", async () => ({
+    items: await deps.orgWorkforce.listDepartments(),
+  }));
+  app.post<{ Body: CreateOrgDepartmentRequest }>("/v1/org/departments", async (request) =>
+    deps.orgWorkforce.createDepartment(request.body ?? { name: "" }, request.orgEmployee),
+  );
+  app.patch<{ Params: { id: string }; Body: UpdateOrgDepartmentRequest }>(
+    "/v1/org/departments/:id",
+    async (request) =>
+      deps.orgWorkforce.updateDepartment(
+        request.params.id,
+        request.body ?? {},
+        request.orgEmployee,
+      ),
+  );
+  app.delete<{ Params: { id: string } }>("/v1/org/departments/:id", async (request) =>
+    deps.orgWorkforce.deleteDepartment(request.params.id, request.orgEmployee),
+  );
+  app.get("/v1/org/employees", async (request) => ({
+    items: await deps.orgWorkforce.listEmployees(request.orgEmployee),
+  }));
+  app.post<{ Body: CreateOrgEmployeeRequest }>("/v1/org/employees", async (request) =>
+    deps.orgWorkforce.createEmployee(
+      request.body ?? { email: "", password: "", displayName: "" },
+      request.orgEmployee,
+    ),
+  );
+  app.patch<{ Params: { id: string }; Body: UpdateOrgEmployeeRequest }>(
+    "/v1/org/employees/:id",
+    async (request) =>
+      deps.orgWorkforce.updateEmployee(
+        request.params.id,
+        request.body ?? {},
+        request.orgEmployee,
+      ),
+  );
+  app.delete<{ Params: { id: string } }>("/v1/org/employees/:id", async (request) =>
+    deps.orgWorkforce.deleteEmployee(request.params.id, request.orgEmployee),
+  );
+
+  app.get("/v1/tasks", async (request) => ({
+    items: await deps.orgWorkforce.filterTasks(
+      await deps.queries.listTasks(),
+      request.orgEmployee,
+    ),
+  }));
+  app.post<{ Body: CreateTaskRequest }>("/v1/tasks", async (request) => {
+    deps.orgWorkforce.assertCapability(
+      request.orgEmployee,
+      "canAssignWork",
+      "Managers and admins can create tasks",
+    );
+    deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
+    return deps.commands.createTask(request.body ?? { title: "" });
+  });
   app.patch<{ Params: { id: string }; Body: UpdateTaskRequest }>(
     "/v1/tasks/:id",
-    async (request) => deps.commands.updateTask(request.params.id, request.body ?? {}),
+    async (request) => {
+      deps.orgWorkforce.assertCapability(
+        request.orgEmployee,
+        "canAssignWork",
+        "Managers and admins can update tasks",
+      );
+      deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
+      return deps.commands.updateTask(request.params.id, request.body ?? {});
+    },
   );
-  app.delete<{ Params: { id: string } }>("/v1/tasks/:id", async (request) =>
-    deps.commands.deleteTask(request.params.id),
-  );
+  app.delete<{ Params: { id: string } }>("/v1/tasks/:id", async (request) => {
+    deps.orgWorkforce.assertCapability(
+      request.orgEmployee,
+      "canAssignWork",
+      "Managers and admins can delete tasks",
+    );
+    return deps.commands.deleteTask(request.params.id);
+  });
   app.post<{ Params: { id: string }; Body: { requireApproval?: boolean } }>(
     "/v1/tasks/:id/run",
     async (request) =>
@@ -333,31 +459,87 @@ export function registerV1Routes(
 
   app.get("/v1/bindings", async () => ({ items: await deps.queries.listBindings() }));
 
-  app.get("/v1/agents", async () => ({ items: await deps.queries.listAgents() }));
-  app.post<{ Body: CreateAgentRequest }>("/v1/agents", async (request) =>
-    deps.commands.createAgent(request.body ?? { name: "", role: "" }),
-  );
+  app.get("/v1/agents", async (request) => ({
+    items: await deps.orgWorkforce.filterAgents(
+      await deps.queries.listAgents(),
+      request.orgEmployee,
+    ),
+  }));
+  app.post<{ Body: CreateAgentRequest }>("/v1/agents", async (request) => {
+    deps.orgWorkforce.assertCapability(
+      request.orgEmployee,
+      "canHireAgents",
+      "Only admins can hire AI employees",
+    );
+    deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
+    return deps.commands.createAgent(request.body ?? { name: "", role: "" });
+  });
   app.patch<{ Params: { id: string }; Body: UpdateAgentRequest }>(
     "/v1/agents/:id",
-    async (request) => deps.commands.updateAgent(request.params.id, request.body ?? {}),
+    async (request) => {
+      deps.orgWorkforce.assertCapability(
+        request.orgEmployee,
+        "canHireAgents",
+        "Only admins can update AI employees",
+      );
+      return deps.commands.updateAgent(request.params.id, request.body ?? {});
+    },
   );
-  app.delete<{ Params: { id: string } }>("/v1/agents/:id", async (request) =>
-    deps.commands.deleteAgent(request.params.id),
-  );
+  app.delete<{ Params: { id: string } }>("/v1/agents/:id", async (request) => {
+    deps.orgWorkforce.assertCapability(
+      request.orgEmployee,
+      "canHireAgents",
+      "Only admins can delete AI employees",
+    );
+    return deps.commands.deleteAgent(request.params.id);
+  });
+  // POST fallbacks — some clients/CORS policies only allow GET/HEAD/POST.
+  app.post<{ Params: { id: string } }>("/v1/agents/:id/archive", async (request) => {
+    deps.orgWorkforce.assertCapability(
+      request.orgEmployee,
+      "canHireAgents",
+      "Only admins can archive AI employees",
+    );
+    return deps.commands.updateAgent(request.params.id, { status: "archived" });
+  });
+  app.post<{ Params: { id: string } }>("/v1/agents/:id/remove", async (request) => {
+    deps.orgWorkforce.assertCapability(
+      request.orgEmployee,
+      "canHireAgents",
+      "Only admins can delete AI employees",
+    );
+    return deps.commands.deleteAgent(request.params.id);
+  });
   app.get<{ Params: { agentId: string } }>(
     "/v1/agents/:agentId/conversations",
-    async (request) => ({
-      items: await deps.conversations.listByAgent(request.params.agentId),
-    }),
+    async (request) => {
+      const items = await deps.conversations.listByAgent(request.params.agentId);
+      return {
+        items: await deps.orgWorkforce.filterConversations(items, request.orgEmployee),
+      };
+    },
   );
 
   app.get("/v1/teams", async () => ({ items: await deps.queries.listTeams() }));
-  app.post<{ Body: CreateTeamRequest }>("/v1/teams", async (request) =>
-    deps.commands.createTeam(request.body ?? { name: "" }),
-  );
+  app.post<{ Body: CreateTeamRequest }>("/v1/teams", async (request) => {
+    deps.orgWorkforce.assertCapability(
+      request.orgEmployee,
+      "canManageTeams",
+      "Only admins can create teams",
+    );
+    deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
+    return deps.commands.createTeam(request.body ?? { name: "" });
+  });
   app.patch<{ Params: { id: string }; Body: UpdateTeamRequest }>(
     "/v1/teams/:id",
-    async (request) => deps.commands.updateTeam(request.params.id, request.body ?? {}),
+    async (request) => {
+      deps.orgWorkforce.assertCapability(
+        request.orgEmployee,
+        "canManageTeams",
+        "Only admins can update teams",
+      );
+      return deps.commands.updateTeam(request.params.id, request.body ?? {});
+    },
   );
   app.get("/v1/memberships", async () => ({ items: await deps.queries.listMemberships() }));
   app.get<{ Params: { id: string } }>("/v1/teams/:id/members", async (request) => ({
@@ -365,35 +547,78 @@ export function registerV1Routes(
   }));
   app.post<{ Params: { id: string }; Body: AddTeamMemberRequest }>(
     "/v1/teams/:id/members",
-    async (request) =>
-      deps.commands.addTeamMember(request.params.id, request.body ?? { agentId: "" }),
+    async (request) => {
+      deps.orgWorkforce.assertCapability(
+        request.orgEmployee,
+        "canManageTeams",
+        "Only admins can change team membership",
+      );
+      return deps.commands.addTeamMember(request.params.id, request.body ?? { agentId: "" });
+    },
   );
   app.delete<{ Params: { id: string; agentId: string } }>(
     "/v1/teams/:id/members/:agentId",
-    async (request) =>
-      deps.commands.removeTeamMember(request.params.id, request.params.agentId),
+    async (request) => {
+      deps.orgWorkforce.assertCapability(
+        request.orgEmployee,
+        "canManageTeams",
+        "Only admins can change team membership",
+      );
+      return deps.commands.removeTeamMember(request.params.id, request.params.agentId);
+    },
   );
 
-  app.get("/v1/conversations", async () => ({
-    items: await deps.conversations.listConversations(),
+  app.get("/v1/conversations", async (request) => ({
+    items: await deps.orgWorkforce.filterConversations(
+      await deps.conversations.listConversations(),
+      request.orgEmployee,
+    ),
   }));
-  app.post<{ Body: CreateConversationRequest }>("/v1/conversations", async (request) =>
-    deps.conversations.createConversation(request.body ?? { agentId: "" }),
-  );
-  app.get<{ Params: { id: string } }>("/v1/conversations/:id", async (request) =>
-    deps.conversations.getConversation(request.params.id),
-  );
-  app.delete<{ Params: { id: string } }>("/v1/conversations/:id", async (request) =>
-    deps.conversations.deleteConversation(request.params.id),
-  );
+  app.post<{ Body: CreateConversationRequest }>("/v1/conversations", async (request) => {
+    deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
+    return deps.conversations.createConversation(
+      request.body ?? { agentId: "" },
+      request.orgEmployee?.id ?? null,
+    );
+  });
+  app.get<{ Params: { id: string } }>("/v1/conversations/:id", async (request) => {
+    const detail = await deps.conversations.getConversation(request.params.id);
+    await deps.orgWorkforce.assertCanOpenConversation(
+      detail.conversation,
+      request.orgEmployee,
+    );
+    return detail;
+  });
+  app.delete<{ Params: { id: string } }>("/v1/conversations/:id", async (request) => {
+    const detail = await deps.conversations.getConversation(request.params.id);
+    await deps.orgWorkforce.assertCanOpenConversation(
+      detail.conversation,
+      request.orgEmployee,
+    );
+    deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
+    return deps.conversations.deleteConversation(request.params.id);
+  });
   app.post<{ Params: { id: string }; Body: SendMessageRequest }>(
     "/v1/conversations/:id/messages",
-    async (request) =>
-      deps.conversations.sendMessage(request.params.id, request.body ?? { content: "" }),
+    async (request) => {
+      const detail = await deps.conversations.getConversation(request.params.id);
+      await deps.orgWorkforce.assertCanOpenConversation(
+        detail.conversation,
+        request.orgEmployee,
+      );
+      deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
+      return deps.conversations.sendMessage(request.params.id, request.body ?? { content: "" });
+    },
   );
   app.post<{ Params: { id: string }; Body: SendMessageRequest }>(
     "/v1/conversations/:id/messages/stream",
     async (request, reply) => {
+      const detail = await deps.conversations.getConversation(request.params.id);
+      await deps.orgWorkforce.assertCanOpenConversation(
+        detail.conversation,
+        request.orgEmployee,
+      );
+      deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
       reply.hijack();
       reply.raw.writeHead(200, {
         "Content-Type": "text/event-stream",
@@ -461,13 +686,25 @@ export function registerV1Routes(
     models:
       deps.primaryProviderId === "openrouter"
         ? (deps.openRouterModels ?? [])
-        : (deps.bedrockModels ?? []),
+        : deps.primaryProviderId === "openai"
+          ? ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"]
+          : deps.primaryProviderId === "anthropic"
+            ? ["claude-3-5-haiku-latest", "claude-sonnet-4-20250514", "claude-opus-4-20250514"]
+            : deps.primaryProviderId === "xai"
+              ? ["grok-3-mini", "grok-3"]
+              : (deps.bedrockModels ?? []),
     region: deps.bedrockRegion ?? null,
     primaryProvider: deps.primaryProviderId ?? "bedrock",
     replyPath:
       deps.primaryProviderId === "openrouter"
         ? ("openrouter-chat" as const)
-        : ("bedrock-converse" as const),
+        : deps.primaryProviderId === "openai"
+          ? ("openai-chat" as const)
+          : deps.primaryProviderId === "anthropic"
+            ? ("anthropic-messages" as const)
+            : deps.primaryProviderId === "xai"
+              ? ("xai-chat" as const)
+              : ("bedrock-converse" as const),
   }));
 
   app.get("/v1/connectors/catalog", async () => ({ items: deps.connectors.catalog() }));
@@ -475,6 +712,48 @@ export function registerV1Routes(
   app.post<{ Body: ConnectConnectorRequest }>("/v1/connectors", async (request) =>
     deps.connectors.connect(request.body ?? { provider: "github", token: "" }),
   );
+  app.post("/v1/connectors/gmail/oauth/start", async () => deps.connectors.startGmailOAuth());
+  app.get<{
+    Querystring: { code?: string; state?: string; error?: string };
+  }>("/v1/connectors/gmail/oauth/callback", async (request, reply) => {
+    const result = await deps.connectors.completeGmailOAuth({
+      code: request.query.code,
+      state: request.query.state,
+      error: request.query.error,
+    });
+    return reply.redirect(result.redirectUrl);
+  });
+  app.post("/v1/connectors/github/oauth/start", async () => deps.connectors.startGithubOAuth());
+  app.get<{
+    Querystring: {
+      code?: string;
+      state?: string;
+      error?: string;
+      error_description?: string;
+      installation_id?: string;
+      setup_action?: string;
+    };
+  }>("/v1/connectors/github/oauth/callback", async (request, reply) => {
+    const result = await deps.connectors.completeGithubOAuth({
+      code: request.query.code,
+      state: request.query.state,
+      error: request.query.error,
+      errorDescription: request.query.error_description,
+      installationId: request.query.installation_id,
+    });
+    return reply.redirect(result.redirectUrl);
+  });
+  app.post("/v1/connectors/outlook/oauth/start", async () => deps.connectors.startOutlookOAuth());
+  app.get<{
+    Querystring: { code?: string; state?: string; error?: string; error_description?: string };
+  }>("/v1/connectors/outlook/oauth/callback", async (request, reply) => {
+    const result = await deps.connectors.completeOutlookOAuth({
+      code: request.query.code,
+      state: request.query.state,
+      error: request.query.error_description || request.query.error,
+    });
+    return reply.redirect(result.redirectUrl);
+  });
   app.post<{ Params: { id: string } }>("/v1/connectors/:id/verify", async (request) =>
     deps.connectors.verify(request.params.id),
   );
@@ -483,6 +762,11 @@ export function registerV1Routes(
     async (request) => ({
       items: await deps.connectors.resources(request.params.id, request.query.q),
     }),
+  );
+  app.post<{ Params: { id: string }; Body: { command?: string } }>(
+    "/v1/connectors/:id/ssh/exec",
+    async (request) =>
+      deps.connectors.execSsh(request.params.id, { command: request.body?.command ?? "" }),
   );
   app.delete<{ Params: { id: string } }>("/v1/connectors/:id", async (request) =>
     deps.connectors.disconnect(request.params.id),
@@ -509,6 +793,11 @@ export function registerV1Routes(
     "/v1/connectors/:id/email/send",
     async (request) =>
       deps.connectors.sendEmail(request.params.id, request.body ?? { to: "", subject: "", text: "" }),
+  );
+  app.post<{ Params: { id: string }; Body: ArrangeEmailRequest }>(
+    "/v1/connectors/:id/email/arrange",
+    async (request) =>
+      deps.connectors.arrangeEmail(request.params.id, request.body ?? { action: "archive", messageIds: [] }),
   );
 
   app.get<{

@@ -10,6 +10,7 @@ export type {
   MemoryRepository,
   MessageRepository,
   OperatorRepository,
+  CompanionStateRepository,
   AccountRepository,
   Persistence,
   ProjectRepoBindingRepository,

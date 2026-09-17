@@ -99,6 +99,10 @@ export interface Conversation extends Timestamps {
   spendTier: TokenSpendTier;
   /** Soft cap on input+output tokens for this conversation; null = no session cap. */
   sessionTokenBudget: number | null;
+  /** Human employee who owns this chat (null = studio operator / legacy). */
+  ownerEmployeeId: string | null;
+  /** private = owner only; department = same dept; workspace = all humans. */
+  visibility: "private" | "department" | "workspace";
 }
 
 export type MessageRole = "user" | "assistant" | "system" | "tool";
@@ -298,6 +302,8 @@ export interface Task extends Timestamps {
   status: TaskStatus;
   priority: TaskPriority;
   assigneeAgentId: AgentId | null;
+  /** Human employee assignee (org seats). */
+  assigneeEmployeeId: string | null;
   teamId: TeamId | null;
   projectId: ProjectId | null;
   dueAt: string | null;

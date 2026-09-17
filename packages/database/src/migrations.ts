@@ -333,6 +333,121 @@ set title = null
 where title is not null and length(trim(title)) = 0;
 `;
 
+export const MIGRATION_015_COMPANION_STATE = `
+create table if not exists companion_states (
+  workspace_id text primary key references workspaces(id) on delete cascade,
+  updated_at timestamptz not null,
+  state jsonb not null
+);
+`;
+
+export const MIGRATION_016_FAMILY_PLANS = `
+alter table studio_accounts drop constraint if exists studio_accounts_plan_id_check;
+alter table studio_accounts
+  add constraint studio_accounts_plan_id_check
+  check (plan_id in ('free', 'pro', 'family', 'family_plus', 'team', 'unlimited'));
+`;
+
+export const MIGRATION_017_ORG_WORKFORCE = `
+create table if not exists org_departments (
+  id text primary key,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  name text not null,
+  description text,
+  team_id text references teams(id) on delete set null,
+  created_at timestamptz not null,
+  updated_at timestamptz not null
+);
+
+create unique index if not exists org_departments_workspace_name_idx
+  on org_departments (workspace_id, lower(name));
+
+create table if not exists org_employees (
+  id text primary key,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  department_id text references org_departments(id) on delete set null,
+  email text not null,
+  display_name text not null,
+  title text,
+  role text not null check (role in ('admin', 'manager', 'member')),
+  status text not null check (status in ('active', 'disabled')),
+  password_hash text not null,
+  session_token_hash text,
+  last_login_at timestamptz,
+  created_at timestamptz not null,
+  updated_at timestamptz not null
+);
+
+create unique index if not exists org_employees_workspace_email_idx
+  on org_employees (workspace_id, lower(email));
+
+alter table conversations
+  add column if not exists owner_employee_id text references org_employees(id) on delete set null;
+alter table conversations
+  add column if not exists visibility text not null default 'workspace';
+alter table conversations drop constraint if exists conversations_visibility_check;
+alter table conversations
+  add constraint conversations_visibility_check
+  check (visibility in ('private', 'department', 'workspace'));
+
+alter table tasks
+  add column if not exists assignee_employee_id text references org_employees(id) on delete set null;
+
+create index if not exists conversations_owner_employee_idx on conversations(owner_employee_id);
+create index if not exists tasks_assignee_employee_idx on tasks(assignee_employee_id);
+`;
+
+export const MIGRATION_018_ORG_SECURITY = `
+alter table org_employees
+  add column if not exists session_expires_at timestamptz;
+alter table org_employees
+  add column if not exists failed_login_count integer not null default 0;
+alter table org_employees
+  add column if not exists locked_until timestamptz;
+alter table org_employees
+  add column if not exists password_changed_at timestamptz;
+alter table org_employees
+  add column if not exists must_change_password boolean not null default false;
+
+create table if not exists org_security_events (
+  id text primary key,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  kind text not null,
+  actor_employee_id text references org_employees(id) on delete set null,
+  target_employee_id text references org_employees(id) on delete set null,
+  detail text not null,
+  ip_hash text,
+  created_at timestamptz not null
+);
+
+create index if not exists org_security_events_workspace_created_idx
+  on org_security_events (workspace_id, created_at desc);
+`;
+
+/** Keep chats when an agent row is removed — detach, never cascade-delete messages. */
+export const MIGRATION_019_CHAT_SURVIVES_AGENT_DELETE = `
+do $$
+declare
+  fk_name text;
+begin
+  select con.conname into fk_name
+  from pg_constraint con
+  join pg_class rel on rel.oid = con.conrelid
+  join pg_namespace nsp on nsp.oid = rel.relnamespace
+  where rel.relname = 'conversations'
+    and nsp.nspname = current_schema()
+    and con.contype = 'f'
+    and pg_get_constraintdef(con.oid) ilike '%agent_id%';
+  if fk_name is not null then
+    execute format('alter table conversations drop constraint %I', fk_name);
+  end if;
+end $$;
+
+alter table conversations
+  add constraint conversations_agent_id_fkey
+  foreign key (agent_id) references agents(id) on delete set null;
+`;
+
 export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "001_core", sql: MIGRATION_001_CORE },
   { id: "002_conversations", sql: MIGRATION_002_CONVERSATIONS },
@@ -348,4 +463,9 @@ export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "012_goals_phase12", sql: MIGRATION_012_GOALS_PHASE12 },
   { id: "013_call_tool_approval", sql: MIGRATION_013_CALL_TOOL_APPROVAL },
   { id: "014_operator_title_nullable", sql: MIGRATION_014_OPERATOR_TITLE_NULLABLE },
+  { id: "015_companion_state", sql: MIGRATION_015_COMPANION_STATE },
+  { id: "016_family_plans", sql: MIGRATION_016_FAMILY_PLANS },
+  { id: "017_org_workforce", sql: MIGRATION_017_ORG_WORKFORCE },
+  { id: "018_org_security", sql: MIGRATION_018_ORG_SECURITY },
+  { id: "019_chat_survives_agent_delete", sql: MIGRATION_019_CHAT_SURVIVES_AGENT_DELETE },
 ];
