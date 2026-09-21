@@ -1,8 +1,33 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./terminal";
+import { getApiRoot } from "./api";
 
 /** Public plans page opened from in-app “Manage plans”. */
 export const ARRAB_PLANS_URL = "https://studio.arrabai.com/plans";
+
+/**
+ * Server auth/OAuth links sometimes use host `0.0.0.0` / localhost when
+ * ARRAB_PUBLIC_BASE_URL is unset. Rewrite onto the API root the app uses
+ * (including Coolify route prefix).
+ */
+export function resolvePublicApiUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (!/^(0\.0\.0\.0|127\.0\.0\.1|localhost)$/i.test(parsed.hostname)) {
+      return url;
+    }
+    const root = new URL(getApiRoot());
+    parsed.protocol = root.protocol;
+    parsed.host = root.host;
+    const rootPath = root.pathname.replace(/\/$/, "");
+    if (rootPath && rootPath !== "/") {
+      parsed.pathname = `${rootPath}${parsed.pathname}`;
+    }
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
 
 export async function setAlwaysOnTop(enabled: boolean): Promise<void> {
   if (!isTauriRuntime()) {
@@ -12,11 +37,12 @@ export async function setAlwaysOnTop(enabled: boolean): Promise<void> {
 }
 
 export async function openExternalUrl(url: string): Promise<void> {
+  const resolved = resolvePublicApiUrl(url);
   if (isTauriRuntime()) {
-    await invoke("open_external_url", { url });
+    await invoke("open_external_url", { url: resolved });
     return;
   }
-  window.open(url, "_blank", "noopener,noreferrer");
+  window.open(resolved, "_blank", "noopener,noreferrer");
 }
 
 export async function openPlansPage(): Promise<void> {

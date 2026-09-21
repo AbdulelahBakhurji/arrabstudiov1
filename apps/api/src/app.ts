@@ -388,6 +388,27 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
 
   app.decorate("arrab", context);
 
+  /**
+   * Coolify public URL keeps `/r/<id>` on the request. Strip it so `/health` and
+   * `/v1/*` resolve. Must run before security + routing.
+   */
+  const stripPrefix =
+    context.env.apiRoutePrefix || "/r/nmpi6uidtpkh1bdf";
+  app.addHook("onRequest", async (request) => {
+    const raw = request.raw.url ?? "";
+    const q = raw.indexOf("?");
+    const path = q >= 0 ? raw.slice(0, q) : raw;
+    const query = q >= 0 ? raw.slice(q) : "";
+    if (path === stripPrefix) {
+      request.raw.url = `/${query}`;
+      return;
+    }
+    if (path.startsWith(`${stripPrefix}/`)) {
+      const rest = path.slice(stripPrefix.length);
+      request.raw.url = `${rest || "/"}${query}`;
+    }
+  });
+
   await app.register(cors, {
     origin: (origin, callback) => {
       if (!origin) {
@@ -416,7 +437,7 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     app,
     context.accounts,
     (token) => context.orgWorkforce.resolveSession(token),
-    context.env.apiRoutePrefix,
+    stripPrefix,
   );
   registerErrorHandler(app);
 
@@ -424,6 +445,7 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
   const whatsappWebhookPaths = new Set(
     ["/v1/connectors/whatsapp/webhook"].concat(
       routePrefix ? [`${routePrefix}/v1/connectors/whatsapp/webhook`] : [],
+      ["/r/nmpi6uidtpkh1bdf/v1/connectors/whatsapp/webhook"],
     ),
   );
 
@@ -475,11 +497,14 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     registerV1Routes(instance, v1Options);
   };
 
-  // Always mount at root (local / Railway / nginx /health probes).
+  // Always mount at root. Coolify prefix is stripped in onRequest above.
+  // Also mount under the prefix in case a proxy strip runs before us.
   await registerCoreRoutes(app);
-  // Also mount under Coolify/Traefik public path when the proxy does not strip it.
-  if (routePrefix) {
-    await app.register(registerCoreRoutes, { prefix: routePrefix });
+  const mountPrefixes = new Set<string>();
+  if (routePrefix) mountPrefixes.add(routePrefix);
+  mountPrefixes.add("/r/nmpi6uidtpkh1bdf");
+  for (const prefix of mountPrefixes) {
+    await app.register(registerCoreRoutes, { prefix });
   }
 
   return app;
