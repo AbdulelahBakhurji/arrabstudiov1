@@ -24,7 +24,7 @@ import pkg from "../../package.json";
 import { useRole } from "@/roles/RoleProvider";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useTheme } from "@/theme/ThemeProvider";
-import { arrabApi, ApiRequestError } from "@/lib/api";
+import { arrabApi, ApiRequestError, getApiBaseUrl, getApiRoutePrefix, getEnvApiBaseUrl, getEnvApiRoutePrefix } from "@/lib/api";
 import {
   clearAccountSession,
   initialsFromName,
@@ -44,10 +44,13 @@ import {
   clearCrashLog,
   clearLocalStudioData,
   defaultPrefs,
+  readApiBaseOverride,
+  readApiRoutePrefixOverride,
   readCrashLog,
   readPrefs,
   recordCrash,
   writeApiBaseOverride,
+  writeApiRoutePrefixOverride,
   writePrefs,
   type StudioPrefs,
 } from "@/lib/prefs";
@@ -117,6 +120,10 @@ export function SettingsPage() {
   } | null>(null);
   const [connectionMsg, setConnectionMsg] = useState<string | null>(null);
   const [connectionChecking, setConnectionChecking] = useState(false);
+  const [apiBaseDraft, setApiBaseDraft] = useState(() => readApiBaseOverride() ?? getApiBaseUrl());
+  const [apiPrefixDraft, setApiPrefixDraft] = useState(
+    () => readApiRoutePrefixOverride() ?? getApiRoutePrefix(),
+  );
   const [coworkFolder, setCoworkFolder] = useState<string | null>(() => {
     try {
       return localStorage.getItem(FOLDER_KEY);
@@ -196,8 +203,6 @@ export function SettingsPage() {
   }, [t]);
 
   useEffect(() => {
-    // Desktop talks only to the managed public API — never keep a local URL override.
-    writeApiBaseOverride(null);
     loadOperator();
   }, [loadOperator]);
 
@@ -572,6 +577,24 @@ export function SettingsPage() {
     }
   }
 
+  function applyConnectionUrl() {
+    const base = apiBaseDraft.trim().replace(/\/$/, "");
+    if (!base) {
+      setConnectionMsg(t("apiUnavailable"));
+      return;
+    }
+    writeApiBaseOverride(base);
+    writeApiRoutePrefixOverride(apiPrefixDraft);
+    setApiBaseDraft(getApiBaseUrl());
+    setApiPrefixDraft(getApiRoutePrefix());
+    setConnectionMsg(t("connectionApplied"));
+    pushToast({
+      title: t("connectionApplied"),
+      body: `${getApiBaseUrl()}${getApiRoutePrefix()}`,
+      tone: "success",
+    });
+  }
+
   async function chooseDefaultFolder() {
     try {
       const folder = await pickFolder();
@@ -624,7 +647,10 @@ export function SettingsPage() {
     }
     clearLocalStudioData();
     writeApiBaseOverride(null);
+    writeApiRoutePrefixOverride(null);
     setPrefs(defaultPrefs());
+    setApiBaseDraft(getEnvApiBaseUrl());
+    setApiPrefixDraft(getEnvApiRoutePrefix());
     setCoworkFolder(null);
     setCrashLog([]);
     pushToast({ title: t("clearLocalDone"), tone: "success" });
@@ -1637,6 +1663,74 @@ export function SettingsPage() {
                     </div>
                   ))}
                 </div>
+              </article>
+            </section>
+          ) : null}
+
+          {tab === "connection" ? (
+            <section className="settings-panel space-y-4">
+              <header className="sg-head">
+                <p className="sg-kicker">{t("amApiEndpoint")}</p>
+                <h2>{t("amApiEndpoint")}</h2>
+                <p className="sg-body">{t("connectionBody")}</p>
+              </header>
+              <article className="sg-hero">
+                <p className="sg-body">{t("connectionManagedBody")}</p>
+                <div className="sg-fields">
+                  <Field label={t("apiBaseUrlLabel")}>
+                    <input
+                      value={apiBaseDraft}
+                      onChange={(event) => setApiBaseDraft(event.target.value)}
+                      className="field"
+                      placeholder="https://api.arrabai.com"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </Field>
+                  <Field label={t("apiRoutePrefixLabel")}>
+                    <input
+                      value={apiPrefixDraft}
+                      onChange={(event) => setApiPrefixDraft(event.target.value)}
+                      className="field"
+                      placeholder="/r/nmpi6uidtpkh1bdf"
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </Field>
+                </div>
+                <p className="sg-body">{t("apiRoutePrefixHint")}</p>
+                <div className="sg-facts">
+                  <div className="sg-fact">
+                    <span>{t("studioHealth")}</span>
+                    <strong>{online ? t("healthOnline") : t("healthOffline")}</strong>
+                  </div>
+                  <div className="sg-fact">
+                    <span>{t("apiVersion")}</span>
+                    <strong className="tabular-nums">{meta?.version ?? "—"}</strong>
+                  </div>
+                  <div className="sg-fact">
+                    <span>{t("apiBaseUrlLabel")}</span>
+                    <strong className="sg-mono">{getApiBaseUrl()}</strong>
+                  </div>
+                  <div className="sg-fact">
+                    <span>{t("apiRoutePrefixLabel")}</span>
+                    <strong className="sg-mono">{getApiRoutePrefix() || "—"}</strong>
+                  </div>
+                </div>
+                <div className="sg-actions">
+                  <button type="button" onClick={applyConnectionUrl} className="sg-cta">
+                    {t("applyUrl")}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={connectionChecking}
+                    onClick={() => void testConnection()}
+                    className="sg-ghost"
+                  >
+                    {connectionChecking ? t("checkingConnection") : t("checkConnection")}
+                  </button>
+                </div>
+                {connectionMsg ? <p className="sg-body">{connectionMsg}</p> : null}
               </article>
             </section>
           ) : null}

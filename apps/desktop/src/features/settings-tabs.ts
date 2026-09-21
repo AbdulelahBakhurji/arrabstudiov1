@@ -5,6 +5,7 @@ import {
   Bell,
   ChartColumn,
   CircleUserRound,
+  Cable,
   HardDrive,
   Keyboard,
   KeyRound,
@@ -29,6 +30,7 @@ export type SettingsTabId =
   | "privacy"
   | "cowork"
   | "desktop"
+  | "connection"
   | "shortcuts"
   | "about";
 
@@ -110,6 +112,12 @@ export const SETTINGS_TAB_DEFS: SettingsTabDef[] = [
     labelKey: "settingsDesktop",
     audiences: ["individual", "family", "organization"],
     icon: Monitor,
+  },
+  {
+    id: "connection",
+    labelKey: "amApiEndpoint",
+    audiences: ["individual", "family", "organization"],
+    icon: Cable,
   },
   {
     id: "shortcuts",

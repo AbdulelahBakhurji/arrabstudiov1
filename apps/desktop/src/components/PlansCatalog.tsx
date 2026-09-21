@@ -146,6 +146,7 @@ export function PlansCatalog({
     setBusyId(plan.id);
     try {
       const status = await arrabApi.activateSubscription({ code });
+      window.dispatchEvent(new CustomEvent("arrab:account"));
       onAccountChanged?.(status);
       pushToast({
         title: t("subscriptionActivated"),

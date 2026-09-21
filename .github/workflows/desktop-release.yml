@@ -30,6 +30,7 @@ jobs:
       - name: Install & package
         env:
           VITE_ARRAB_API_URL: https://api.arrabai.com
+          VITE_ARRAB_API_ROUTE_PREFIX: /r/nmpi6uidtpkh1bdf
           ARRAB_UNIVERSAL: ${{ inputs.universal_mac && '1' || '0' }}
         run: |
           pnpm install
@@ -59,6 +60,7 @@ jobs:
       - name: Install & package
         env:
           VITE_ARRAB_API_URL: https://api.arrabai.com
+          VITE_ARRAB_API_ROUTE_PREFIX: /r/nmpi6uidtpkh1bdf
         shell: bash
         run: |
           pnpm install

@@ -570,6 +570,8 @@ export class FamilyHouseholdService {
     if (member.isPaused) {
       throw new ForbiddenError("This family profile is paused by a parent");
     }
+    // Family Free trial: seats and chat stay open; token budgets are soft until finalized.
+    if (account.planId === "family_free") return;
     if (member.tokenAllowance > 0 && member.tokensUsed >= member.tokenAllowance) {
       throw new ForbiddenError(
         "This profile’s token allowance is used up. Ask a parent to assign more.",

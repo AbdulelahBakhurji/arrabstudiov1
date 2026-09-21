@@ -68,13 +68,15 @@ NODE
 
 prepare_desktop_env() {
   local api_url="${VITE_ARRAB_API_URL:-https://api.arrabai.com}"
+  local api_prefix="${VITE_ARRAB_API_ROUTE_PREFIX:-/r/nmpi6uidtpkh1bdf}"
   mkdir -p "$ROOT/apps/desktop"
   if [[ ! -f "$ROOT/apps/desktop/.env" ]]; then
     cat > "$ROOT/apps/desktop/.env" <<EOF
 VITE_ARRAB_API_URL=${api_url}
+VITE_ARRAB_API_ROUTE_PREFIX=${api_prefix}
 EOF
   fi
-  echo "Desktop API → ${api_url}"
+  echo "Desktop API → ${api_url}${api_prefix}"
 }
 
 collect_artifacts() {

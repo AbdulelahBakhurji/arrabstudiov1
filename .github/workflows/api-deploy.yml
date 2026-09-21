@@ -31,9 +31,16 @@ jobs:
           script: |
             set -euo pipefail
             APP_DIR="${{ env.APP_DIR }}"
+            ROUTE_PREFIX="/r/nmpi6uidtpkh1bdf"
             cd "$APP_DIR"
             git fetch origin main
             git reset --hard origin/main
+            touch .env
+            if grep -q '^ARRAB_API_ROUTE_PREFIX=' .env; then
+              sed -i "s|^ARRAB_API_ROUTE_PREFIX=.*|ARRAB_API_ROUTE_PREFIX=${ROUTE_PREFIX}|" .env
+            else
+              printf '\nARRAB_API_ROUTE_PREFIX=%s\n' "$ROUTE_PREFIX" >> .env
+            fi
             corepack enable
             pnpm install --frozen-lockfile
             pnpm --filter @arrab/shared build
@@ -44,4 +51,5 @@ jobs:
             pnpm --filter @arrab/api build
             systemctl restart arrab-api || systemctl restart arrab || true
             curl -fsS http://127.0.0.1:8787/health
-            curl -fsS -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8787/v1/org/workforce
+            curl -fsS "http://127.0.0.1:8787${ROUTE_PREFIX}/health"
+            curl -fsS -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:8787${ROUTE_PREFIX}/v1/meta"

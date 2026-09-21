@@ -88,16 +88,25 @@ import type {
 } from "@arrab/shared";
 
 import { readAccountSessionToken } from "./account-session";
-import { readApiBaseOverride, writeApiBaseOverride } from "./prefs";
+import {
+  normalizeApiRoutePrefix,
+  readApiBaseOverride,
+  readApiRoutePrefixOverride,
+  writeApiBaseOverride,
+} from "./prefs";
 
 const envApiBaseUrl = (import.meta.env.VITE_ARRAB_API_URL ?? "http://127.0.0.1:8787").replace(
   /\/$/,
   "",
 );
 
+const envApiRoutePrefix = normalizeApiRoutePrefix(
+  import.meta.env.VITE_ARRAB_API_ROUTE_PREFIX ?? "",
+);
+
 const DEAD_API_HOSTS = /185\.197\.250\.43/i;
 
-/** Managed API base from env. Local URL overrides are cleared by Settings. */
+/** Origin (scheme + host) for the Arrab API — no path prefix. */
 export function getApiBaseUrl(): string {
   const override = readApiBaseOverride();
   if (override && DEAD_API_HOSTS.test(override)) {
@@ -105,6 +114,28 @@ export function getApiBaseUrl(): string {
     return envApiBaseUrl;
   }
   return override ?? envApiBaseUrl;
+}
+
+/** Optional Coolify/Traefik path prefix before `/health` and `/v1/*`. */
+export function getApiRoutePrefix(): string {
+  const override = readApiRoutePrefixOverride();
+  if (override !== null) return override;
+  // Never glue a production proxy path onto a local API host.
+  if (isLocalApiBase(getApiBaseUrl())) return "";
+  return envApiRoutePrefix;
+}
+
+/** Full API root: base URL + route prefix (no trailing slash). */
+export function getApiRoot(): string {
+  return `${getApiBaseUrl()}${getApiRoutePrefix()}`;
+}
+
+export function getEnvApiBaseUrl(): string {
+  return envApiBaseUrl;
+}
+
+export function getEnvApiRoutePrefix(): string {
+  return envApiRoutePrefix;
 }
 
 export class ApiRequestError extends Error {
@@ -129,14 +160,14 @@ function isLocalApiBase(url: string): boolean {
 }
 
 function unreachableMessage(kind: "timeout" | "network", detail?: string): string {
-  const base = getApiBaseUrl();
-  if (isLocalApiBase(base)) {
+  const root = getApiRoot();
+  if (isLocalApiBase(root)) {
     if (kind === "timeout") {
-      return `Arrab API timed out at ${base} — is pnpm dev:api running?`;
+      return `Arrab API timed out at ${root} — is pnpm dev:api running?`;
     }
     return detail
-      ? `Cannot reach the Arrab API at ${base}: ${detail}`
-      : `Cannot reach the Arrab API at ${base} — start it with pnpm dev:api`;
+      ? `Cannot reach the Arrab API at ${root}: ${detail}`
+      : `Cannot reach the Arrab API at ${root} — start it with pnpm dev:api`;
   }
   return kind === "timeout"
     ? "Arrab timed out. Check your connection and try again."
@@ -180,9 +211,9 @@ async function request<T>(
   path: string,
   init?: { method?: string; body?: unknown; timeoutMs?: number; signal?: AbortSignal },
 ): Promise<T> {
-  const base = getApiBaseUrl();
-  const timeoutMs = init?.timeoutMs ?? (isLocalApiBase(base) ? 15_000 : 25_000);
-  const url = `${base}${path}`;
+  const root = getApiRoot();
+  const timeoutMs = init?.timeoutMs ?? (isLocalApiBase(root) ? 15_000 : 25_000);
+  const url = `${root}${path}`;
   let lastError: unknown = null;
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -362,7 +393,7 @@ export const arrabApi = {
       "run_terminal",
     ]);
     try {
-      const response = await fetch(`${getApiBaseUrl()}/v1/conversations/${id}/messages/stream`, {
+      const response = await fetch(`${getApiRoot()}/v1/conversations/${id}/messages/stream`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

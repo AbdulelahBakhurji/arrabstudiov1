@@ -5,7 +5,9 @@ describe("settings tabs registry", () => {
   it("exposes stable tab ids", () => {
     expect(SETTINGS_TAB_IDS).toContain("usage");
     expect(SETTINGS_TAB_IDS).toContain("family");
+    expect(SETTINGS_TAB_IDS).toContain("connection");
     expect(isSettingsTabId("usage")).toBe(true);
+    expect(isSettingsTabId("connection")).toBe(true);
     expect(isSettingsTabId("nope")).toBe(false);
   });
 

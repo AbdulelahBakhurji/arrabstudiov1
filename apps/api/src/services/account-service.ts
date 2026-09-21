@@ -149,20 +149,23 @@ export class AccountService {
     const tokensUsed = await this.periodTokensUsed(current.periodStart, current.periodEnd);
     const tokenLimit = plan.monthlyTokenLimit;
     const overLimit = tokenLimit !== null && tokensUsed >= tokenLimit;
-    const pauseMode = !overLimit
+    // Free / Family Free: full product features stay on. Token ceilings are soft for now
+    // (usage is still metered) — hard pause comes later when free-plan budgets are finalized.
+    const freeTier = current.planId === "free" || current.planId === "family_free";
+    const pauseMode = !overLimit || freeTier
       ? null
-      : current.planId === "free" || current.planId === "family_free" || tokenLimit === 0
+      : tokenLimit === 0
         ? "upgrade_required"
         : "upgrade_or_wait";
     return {
       connected: true,
       planId: current.planId,
       planName: plan.name,
-      subscriptionStatus: current.subscriptionStatus,
+      subscriptionStatus: freeTier ? "trialing" : current.subscriptionStatus,
       tokenLimit,
       tokensUsed,
       tokensRemaining: tokenLimit === null ? null : Math.max(0, tokenLimit - tokensUsed),
-      overLimit,
+      overLimit: freeTier ? false : overLimit,
       pauseMode,
       periodStart: current.periodStart,
       periodEnd: current.periodEnd,
@@ -346,10 +349,11 @@ export class AccountService {
     const account = await this.requireConnectedAccount();
     const now = this.clock.isoNow();
     const period = billingPeriod(new Date(now));
+    const freeTier = planId === "free" || planId === "family_free";
     const updated: StudioAccountRecord = {
       ...account,
       planId,
-      subscriptionStatus: "active",
+      subscriptionStatus: freeTier ? "trialing" : "active",
       periodStart: period.start,
       periodEnd: period.end,
       updatedAt: now,

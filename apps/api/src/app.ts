@@ -412,14 +412,25 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
       "X-Requested-With",
     ],
   });
-  await registerSecurity(app, context.accounts, (token) =>
-    context.orgWorkforce.resolveSession(token),
+  await registerSecurity(
+    app,
+    context.accounts,
+    (token) => context.orgWorkforce.resolveSession(token),
+    context.env.apiRoutePrefix,
   );
   registerErrorHandler(app);
 
+  const routePrefix = context.env.apiRoutePrefix;
+  const whatsappWebhookPaths = new Set(
+    ["/v1/connectors/whatsapp/webhook"].concat(
+      routePrefix ? [`${routePrefix}/v1/connectors/whatsapp/webhook`] : [],
+    ),
+  );
+
   // Capture raw body for Meta WhatsApp webhook HMAC (X-Hub-Signature-256).
   app.addHook("preParsing", async (request, _reply, payload) => {
-    if (request.method !== "POST" || !request.url.startsWith("/v1/connectors/whatsapp/webhook")) {
+    const path = request.url.split("?")[0] ?? request.url;
+    if (request.method !== "POST" || !whatsappWebhookPaths.has(path)) {
       return payload;
     }
     const chunks: Buffer[] = [];
@@ -432,13 +443,7 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     return Readable.from(buf);
   });
 
-  app.get("/health", async () => ({
-    status: "ok" as const,
-    service: "arrab-api" as const,
-    time: new Date().toISOString(),
-  }));
-
-  registerV1Routes(app, {
+  const v1Options = {
     queries: context.queries,
     commands: context.commands,
     conversations: context.conversations,
@@ -459,7 +464,23 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     bedrockRegion: context.env.bedrockRegion,
     releasesDir: context.env.releasesDir,
     publicBaseUrl: context.env.siteUrl,
-  });
+  };
+
+  const registerCoreRoutes = async (instance: FastifyInstance) => {
+    instance.get("/health", async () => ({
+      status: "ok" as const,
+      service: "arrab-api" as const,
+      time: new Date().toISOString(),
+    }));
+    registerV1Routes(instance, v1Options);
+  };
+
+  // Always mount at root (local / Railway / nginx /health probes).
+  await registerCoreRoutes(app);
+  // Also mount under Coolify/Traefik public path when the proxy does not strip it.
+  if (routePrefix) {
+    await app.register(registerCoreRoutes, { prefix: routePrefix });
+  }
 
   return app;
 }

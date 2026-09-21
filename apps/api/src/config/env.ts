@@ -43,6 +43,11 @@ export interface ApiEnv {
   authWebUrl: string | undefined;
   /** Public website (testing workspace) — login, plans, downloads. */
   siteUrl: string;
+  /**
+   * Optional public path prefix (Coolify/Traefik) before /health and /v1/*.
+   * Example: /r/nmpi6uidtpkh1bdf — leave empty for local / Railway direct hosts.
+   */
+  apiRoutePrefix: string;
   /** Moyasar secret key (sk_test_… / sk_live_…). Empty = billing checkout disabled. */
   moyasarSecretKey: string | undefined;
   /** Moyasar publishable key for hosted forms (optional). */
@@ -118,6 +123,13 @@ export interface ApiEnv {
 }
 
 const LOG_LEVELS = new Set(["fatal", "error", "warn", "info", "debug", "trace"]);
+
+/** Normalize `/r/foo` or `r/foo/` → `/r/foo`. Empty when unset. */
+export function normalizeApiRoutePrefix(value: string | undefined): string {
+  const trimmed = (value ?? "").trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
 
 export function loadDotEnv(fromDir = process.cwd()): void {
   const candidates = [path.resolve(fromDir, ".env"), path.resolve(fromDir, "../../.env")];
@@ -263,6 +275,7 @@ export function loadApiEnv(): ApiEnv {
     publicBaseUrl: publicBaseUrl.replace(/\/$/, ""),
     authWebUrl,
     siteUrl: (siteUrl ?? publicBaseUrl).replace(/\/$/, ""),
+    apiRoutePrefix: normalizeApiRoutePrefix(readOptionalEnv("ARRAB_API_ROUTE_PREFIX")),
     moyasarSecretKey: readOptionalEnv("MOYASAR_SECRET_KEY"),
     moyasarPublishableKey: readOptionalEnv("MOYASAR_PUBLISHABLE_KEY"),
     dataEncryptionKey: readOptionalEnv("DATA_ENCRYPTION_KEY"),

@@ -64,16 +64,25 @@ function extractAccountToken(request: FastifyRequest): string | null {
   return value?.trim() || null;
 }
 
-function isPublicPath(url: string): boolean {
-  const path = url.split("?")[0] ?? url;
+function isPublicPath(url: string, routePrefix = ""): boolean {
+  const path = stripRoutePrefix(url.split("?")[0] ?? url, routePrefix);
   return PUBLIC_PREFIXES.some((prefix) => path === prefix || path.startsWith(prefix));
 }
 
-function isProtectedPath(url: string): boolean {
-  const path = url.split("?")[0] ?? url;
+function isProtectedPath(url: string, routePrefix = ""): boolean {
+  const path = stripRoutePrefix(url.split("?")[0] ?? url, routePrefix);
   if (path === "/v1/connectors/catalog") return false;
   if (path.endsWith("/oauth/callback")) return false;
   return PROTECTED_PREFIXES.some((prefix) => path === prefix || path.startsWith(prefix));
+}
+
+function stripRoutePrefix(path: string, routePrefix: string): string {
+  if (!routePrefix) return path;
+  if (path === routePrefix) return "/";
+  if (path.startsWith(`${routePrefix}/`)) {
+    return path.slice(routePrefix.length) || "/";
+  }
+  return path;
 }
 
 function clientKey(request: FastifyRequest): string {
@@ -99,15 +108,18 @@ export async function registerSecurity(
   app: FastifyInstance,
   accounts: AccountService,
   resolveOrgEmployee?: (token: string | null) => Promise<OrgEmployeeRecord | null>,
+  routePrefix = "",
 ): Promise<void> {
   const buckets = new Map<string, RateBucket>();
+  const prefix = routePrefix.replace(/\/$/, "");
 
   app.addHook("onRequest", async (request) => {
     request.principal = { type: "anonymous" };
     request.orgEmployee = null;
     request.account = null;
 
-    const path = request.url.split("?")[0] ?? request.url;
+    const fullPath = request.url.split("?")[0] ?? request.url;
+    const path = stripRoutePrefix(fullPath, prefix);
     if (
       path.startsWith("/v1/account/auth/") ||
       path.startsWith("/v1/account/sign-in") ||
@@ -151,7 +163,7 @@ export async function registerSecurity(
       request.orgEmployee = await resolveOrgEmployee(empToken?.trim() || null);
     }
 
-    if (isProtectedPath(request.url) && !isPublicPath(request.url)) {
+    if (isProtectedPath(request.url, prefix) && !isPublicPath(request.url, prefix)) {
       await requireStudioSession(request, accounts);
     }
   });

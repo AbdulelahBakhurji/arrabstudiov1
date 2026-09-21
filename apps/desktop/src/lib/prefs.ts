@@ -35,6 +35,8 @@ export type StudioPrefs = {
 
 export const PREFS_KEY = "arrab.settings.prefs";
 export const API_BASE_KEY = "arrab.apiBaseUrl";
+/** Optional path prefix in front of `/health` and `/v1/*` (Coolify/Traefik public URL). */
+export const API_ROUTE_PREFIX_KEY = "arrab.apiRoutePrefix";
 export const LAST_COWORK_AGENT_KEY = "arrab.cowork.lastAgent";
 export const LAST_CHAT_AGENT_KEY = "arrab.chat.lastAgent";
 export const CRASH_LOG_KEY = "arrab.crashLog";
@@ -122,6 +124,36 @@ export function writeApiBaseOverride(url: string | null): void {
   }
 }
 
+/** Normalize `/r/foo` or `r/foo/` → `/r/foo`. Empty string clears. */
+export function normalizeApiRoutePrefix(value: string | null | undefined): string {
+  const trimmed = (value ?? "").trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+}
+
+export function readApiRoutePrefixOverride(): string | null {
+  try {
+    const raw = localStorage.getItem(API_ROUTE_PREFIX_KEY);
+    if (raw === null) return null;
+    return normalizeApiRoutePrefix(raw);
+  } catch {
+    return null;
+  }
+}
+
+export function writeApiRoutePrefixOverride(prefix: string | null): void {
+  if (prefix === null) {
+    localStorage.removeItem(API_ROUTE_PREFIX_KEY);
+    return;
+  }
+  const normalized = normalizeApiRoutePrefix(prefix);
+  if (!normalized) {
+    localStorage.setItem(API_ROUTE_PREFIX_KEY, "");
+  } else {
+    localStorage.setItem(API_ROUTE_PREFIX_KEY, normalized);
+  }
+}
+
 export type CrashEntry = {
   at: string;
   message: string;
@@ -156,6 +188,7 @@ export function clearCrashLog(): void {
 export const CLEARABLE_LOCAL_KEYS = [
   PREFS_KEY,
   API_BASE_KEY,
+  API_ROUTE_PREFIX_KEY,
   CRASH_LOG_KEY,
   LAST_COWORK_AGENT_KEY,
   LAST_CHAT_AGENT_KEY,

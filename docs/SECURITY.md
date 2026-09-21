@@ -11,7 +11,7 @@ The desktop application must **never** contain:
 - GitHub App client secrets, Google/Microsoft OAuth client secrets
 - User connector tokens (GitHub, Gmail, etc.)
 
-It may only know the public Arrab API base URL (`VITE_ARRAB_API_URL`).
+It may only know the public Arrab API base URL (`VITE_ARRAB_API_URL`) and optional route prefix (`VITE_ARRAB_API_ROUTE_PREFIX`).
 
 ### Token guard (desktop → API)
 
@@ -64,7 +64,7 @@ Ignored / never ship:
 
 ## Operator checklist before shipping
 
-1. Desktop `.env` / build env has **only** `VITE_ARRAB_API_URL=https://api.arrabai.com`
+1. Desktop `.env` / build env has **only** `VITE_ARRAB_API_URL=https://api.arrabai.com` and `VITE_ARRAB_API_ROUTE_PREFIX=/r/nmpi6uidtpkh1bdf` (no secrets)
 2. All secrets are on Railway / API host — not in the app repo or installer
 3. GitHub App callback is `https://api.arrabai.com/v1/connectors/github/oauth/callback`
 4. Confirm `GET /v1/connectors` without a session returns **401** once an account exists
