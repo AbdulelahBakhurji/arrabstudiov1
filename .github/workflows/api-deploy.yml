@@ -17,11 +17,23 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    if: ${{ secrets.ARRAB_VPS_HOST != '' && secrets.ARRAB_VPS_SSH_KEY != '' }}
     env:
       APP_DIR: /opt/arrab-studio
     steps:
+      - name: Check deploy secrets
+        id: gate
+        env:
+          HOST: ${{ secrets.ARRAB_VPS_HOST }}
+          KEY: ${{ secrets.ARRAB_VPS_SSH_KEY }}
+        run: |
+          if [ -z "$HOST" ] || [ -z "$KEY" ]; then
+            echo "missing=1" >> "$GITHUB_OUTPUT"
+            echo "ARRAB_VPS_HOST / ARRAB_VPS_SSH_KEY not configured — skipping deploy."
+          else
+            echo "missing=0" >> "$GITHUB_OUTPUT"
+          fi
       - name: Deploy over SSH
+        if: steps.gate.outputs.missing == '0'
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.ARRAB_VPS_HOST }}
