@@ -1,0 +1,311 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		FBE26106751C5AC8A88987BD /* ArrabStudioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A3A8CF00E202494814F84D3 /* ArrabStudioApp.swift */; };
+		BDBF625EE8F3981C004F15AD /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C21F2D20CB8734DF78FCB47 /* RootView.swift */; };
+		284ADDA5E3FE5EBDD00D9913 /* AdaptiveLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = F941CC01F2E3E3F0EEC5C667 /* AdaptiveLayout.swift */; };
+		5480CBE13C42BAC2A1EAA088 /* AppSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50E3F90755A9E968A185BE7E /* AppSession.swift */; };
+		5F46066043954E9D9FC3B12D /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8B1A4901135F0499268C265 /* KeychainStore.swift */; };
+		6F08C95776A017195704CA52 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 258EE20C0E4132A464168C1B /* Theme.swift */; };
+		91F815B82B8A50EF20729F2C /* AuthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F20B2E59DBF5A676B544EF8 /* AuthView.swift */; };
+		2DA253828302BDBBF143FB40 /* BrainHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6B64472B391D2FA1B8B7E29 /* BrainHomeView.swift */; };
+		71091A571982D74BDC04911D /* ChatHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B46C898097853CDC409AF931 /* ChatHomeView.swift */; };
+		16C86A1B59F7ADF49CD118A3 /* LinkPCView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D51EE61E6441C6E4CC7F2D12 /* LinkPCView.swift */; };
+		B4306C57305B93F14113FB69 /* PCLinkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFDE8C41E2E25B6F66735C03 /* PCLinkStore.swift */; };
+		1B8EDBEDDFB196A60EF6A1A9 /* MeHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56E7E3BEB638BFB3880D8A47 /* MeHomeView.swift */; };
+		CF7A7298FBBEE0FA249A8554 /* StudioHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A738B363B9504312D0A51F1F /* StudioHomeView.swift */; };
+		100CD197F2D2D2C366928A0F /* TasksHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DB57C095CC3E24EE8CD9920 /* TasksHomeView.swift */; };
+		715FA08B4AE0DD1153456199 /* ArrabAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C989444CF2DAC132864B0393 /* ArrabAPIClient.swift */; };
+		FBC3A7F34F67D88C040CE7E1 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE6437D04076B515D167CF51 /* Models.swift */; };
+		A088F412D12B43C7C57575EA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F482F04DAFA798B58B78759D /* Assets.xcassets */; };
+		9C45C3BA153FF0CE0DFC6E52 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 9B6D06C53012AEFF5B93EAF5 /* PrivacyInfo.xcprivacy */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		4A3A8CF00E202494814F84D3 /* ArrabStudioApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/App/ArrabStudioApp.swift"; sourceTree = SOURCE_ROOT; };
+		0C21F2D20CB8734DF78FCB47 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/App/RootView.swift"; sourceTree = SOURCE_ROOT; };
+		F941CC01F2E3E3F0EEC5C667 /* AdaptiveLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Core/AdaptiveLayout.swift"; sourceTree = SOURCE_ROOT; };
+		50E3F90755A9E968A185BE7E /* AppSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Core/AppSession.swift"; sourceTree = SOURCE_ROOT; };
+		B8B1A4901135F0499268C265 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Core/KeychainStore.swift"; sourceTree = SOURCE_ROOT; };
+		258EE20C0E4132A464168C1B /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Core/Theme.swift"; sourceTree = SOURCE_ROOT; };
+		3F20B2E59DBF5A676B544EF8 /* AuthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/Auth/AuthView.swift"; sourceTree = SOURCE_ROOT; };
+		C6B64472B391D2FA1B8B7E29 /* BrainHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/Brain/BrainHomeView.swift"; sourceTree = SOURCE_ROOT; };
+		B46C898097853CDC409AF931 /* ChatHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/Chat/ChatHomeView.swift"; sourceTree = SOURCE_ROOT; };
+		D51EE61E6441C6E4CC7F2D12 /* LinkPCView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/LinkPC/LinkPCView.swift"; sourceTree = SOURCE_ROOT; };
+		AFDE8C41E2E25B6F66735C03 /* PCLinkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/LinkPC/PCLinkStore.swift"; sourceTree = SOURCE_ROOT; };
+		56E7E3BEB638BFB3880D8A47 /* MeHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/Me/MeHomeView.swift"; sourceTree = SOURCE_ROOT; };
+		A738B363B9504312D0A51F1F /* StudioHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/Studio/StudioHomeView.swift"; sourceTree = SOURCE_ROOT; };
+		7DB57C095CC3E24EE8CD9920 /* TasksHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/Tasks/TasksHomeView.swift"; sourceTree = SOURCE_ROOT; };
+		C989444CF2DAC132864B0393 /* ArrabAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Networking/ArrabAPIClient.swift"; sourceTree = SOURCE_ROOT; };
+		AE6437D04076B515D167CF51 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Networking/Models.swift"; sourceTree = SOURCE_ROOT; };
+		F482F04DAFA798B58B78759D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "ArrabStudio/Resources/Assets.xcassets"; sourceTree = SOURCE_ROOT; };
+		E3591370414ECFC5903F2A2F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config/Info.plist; sourceTree = SOURCE_ROOT; };
+		9B6D06C53012AEFF5B93EAF5 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		A14184912903BA75642EFD96 /* ArrabStudio.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Config/ArrabStudio.entitlements; sourceTree = SOURCE_ROOT; };
+		6551A2D26B8CAC0FB451BA33 /* ArrabStudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ArrabStudio.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		4FC2EDC708CEFC25F2978550 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		E515BC4DACBC04ABB469D715 = {
+			isa = PBXGroup;
+			children = (
+				3475C1D47D541CFD47389D4D /* ArrabStudio */,
+				7BA47944EBEE654DFAFDACD1 /* Config */,
+				B9314E478DDA8C690D8F7A40 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		3475C1D47D541CFD47389D4D /* ArrabStudio */ = {
+			isa = PBXGroup;
+			children = (
+				4A3A8CF00E202494814F84D3 /* ArrabStudioApp.swift */,
+				0C21F2D20CB8734DF78FCB47 /* RootView.swift */,
+				F941CC01F2E3E3F0EEC5C667 /* AdaptiveLayout.swift */,
+				50E3F90755A9E968A185BE7E /* AppSession.swift */,
+				B8B1A4901135F0499268C265 /* KeychainStore.swift */,
+				258EE20C0E4132A464168C1B /* Theme.swift */,
+				3F20B2E59DBF5A676B544EF8 /* AuthView.swift */,
+				C6B64472B391D2FA1B8B7E29 /* BrainHomeView.swift */,
+				B46C898097853CDC409AF931 /* ChatHomeView.swift */,
+				D51EE61E6441C6E4CC7F2D12 /* LinkPCView.swift */,
+				AFDE8C41E2E25B6F66735C03 /* PCLinkStore.swift */,
+				56E7E3BEB638BFB3880D8A47 /* MeHomeView.swift */,
+				A738B363B9504312D0A51F1F /* StudioHomeView.swift */,
+				7DB57C095CC3E24EE8CD9920 /* TasksHomeView.swift */,
+				C989444CF2DAC132864B0393 /* ArrabAPIClient.swift */,
+				AE6437D04076B515D167CF51 /* Models.swift */,
+				F482F04DAFA798B58B78759D /* Assets.xcassets */,
+			);
+			name = ArrabStudio;
+			sourceTree = "<group>";
+		};
+		7BA47944EBEE654DFAFDACD1 /* Config */ = {
+			isa = PBXGroup;
+			children = (
+				E3591370414ECFC5903F2A2F /* Info.plist */,
+				9B6D06C53012AEFF5B93EAF5 /* PrivacyInfo.xcprivacy */,
+				A14184912903BA75642EFD96 /* ArrabStudio.entitlements */,
+			);
+			name = Config;
+			sourceTree = "<group>";
+		};
+		B9314E478DDA8C690D8F7A40 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				6551A2D26B8CAC0FB451BA33 /* ArrabStudio.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		DFA617094D27FE6CAB45D05D /* ArrabStudio */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 889878D8E8B7CA6B75187E49 /* Build configuration list for PBXNativeTarget "ArrabStudio" */;
+			buildPhases = (
+				BE0DDBC61468F2A026002A42 /* Sources */,
+				4FC2EDC708CEFC25F2978550 /* Frameworks */,
+				BD0744CC5802D229BF0DFD4D /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ArrabStudio;
+			productName = ArrabStudio;
+			productReference = 6551A2D26B8CAC0FB451BA33 /* ArrabStudio.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		25B391F852FD68CB79FA9908 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = 0CD3268D6EA59F0F319AB9B3 /* Build configuration list for PBXProject "ArrabStudio" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+				ar,
+			);
+			mainGroup = E515BC4DACBC04ABB469D715;
+			productRefGroup = B9314E478DDA8C690D8F7A40 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				DFA617094D27FE6CAB45D05D /* ArrabStudio */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		BD0744CC5802D229BF0DFD4D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A088F412D12B43C7C57575EA /* Assets.xcassets in Resources */,
+				9C45C3BA153FF0CE0DFC6E52 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		BE0DDBC61468F2A026002A42 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FBE26106751C5AC8A88987BD /* ArrabStudioApp.swift in Sources */,
+				BDBF625EE8F3981C004F15AD /* RootView.swift in Sources */,
+				284ADDA5E3FE5EBDD00D9913 /* AdaptiveLayout.swift in Sources */,
+				5480CBE13C42BAC2A1EAA088 /* AppSession.swift in Sources */,
+				5F46066043954E9D9FC3B12D /* KeychainStore.swift in Sources */,
+				6F08C95776A017195704CA52 /* Theme.swift in Sources */,
+				91F815B82B8A50EF20729F2C /* AuthView.swift in Sources */,
+				2DA253828302BDBBF143FB40 /* BrainHomeView.swift in Sources */,
+				71091A571982D74BDC04911D /* ChatHomeView.swift in Sources */,
+				16C86A1B59F7ADF49CD118A3 /* LinkPCView.swift in Sources */,
+				B4306C57305B93F14113FB69 /* PCLinkStore.swift in Sources */,
+				1B8EDBEDDFB196A60EF6A1A9 /* MeHomeView.swift in Sources */,
+				CF7A7298FBBEE0FA249A8554 /* StudioHomeView.swift in Sources */,
+				100CD197F2D2D2C366928A0F /* TasksHomeView.swift in Sources */,
+				715FA08B4AE0DD1153456199 /* ArrabAPIClient.swift in Sources */,
+				FBC3A7F34F67D88C040CE7E1 /* Models.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		6188BE9AEBD206E205B523E0 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		968C79A3EA5060ACBA8F8341 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+
+		03E7B0CD093E30442548CB91 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Config/ArrabStudio.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = studio.arrab.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+
+		A99D11BA4C2E9175AD77EDBC /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Config/ArrabStudio.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = studio.arrab.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0CD3268D6EA59F0F319AB9B3 /* Build configuration list for PBXProject "ArrabStudio" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				6188BE9AEBD206E205B523E0 /* Debug */,
+				968C79A3EA5060ACBA8F8341 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		889878D8E8B7CA6B75187E49 /* Build configuration list for PBXNativeTarget "ArrabStudio" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				03E7B0CD093E30442548CB91 /* Debug */,
+				A99D11BA4C2E9175AD77EDBC /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 25B391F852FD68CB79FA9908 /* Project object */;
+}

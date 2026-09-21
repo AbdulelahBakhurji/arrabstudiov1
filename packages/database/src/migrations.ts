@@ -448,6 +448,84 @@ alter table conversations
   foreign key (agent_id) references agents(id) on delete set null;
 `;
 
+export const MIGRATION_020_FAMILY_HOUSEHOLD = `
+create table if not exists family_members (
+  id text primary key,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  display_name text not null,
+  role text not null check (role in ('parent', 'partner', 'child')),
+  age_tier text check (age_tier is null or age_tier in ('tier_6_9', 'tier_10_13', 'tier_14_17')),
+  color text not null default '#7C6A4E',
+  pin_hash text,
+  is_owner boolean not null default false,
+  is_paused boolean not null default false,
+  token_allowance integer not null default 0,
+  tokens_used integer not null default 0,
+  last_active_at timestamptz,
+  created_at timestamptz not null,
+  updated_at timestamptz not null
+);
+
+create index if not exists family_members_workspace_idx
+  on family_members (workspace_id, display_name);
+
+create table if not exists family_household (
+  workspace_id text primary key references workspaces(id) on delete cascade,
+  extra_seats integer not null default 0,
+  active_member_id text,
+  updated_at timestamptz not null
+);
+
+create table if not exists family_guidance (
+  id text primary key,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  companion_id text not null,
+  child_member_id text not null references family_members(id) on delete cascade,
+  author_member_id text not null references family_members(id) on delete cascade,
+  author_name text not null,
+  content text not null,
+  created_at timestamptz not null
+);
+
+create index if not exists family_guidance_companion_idx
+  on family_guidance (workspace_id, companion_id, created_at desc);
+`;
+
+export const MIGRATION_021_FAMILY_MEMBER_TOKENS = `
+alter table family_members
+  add column if not exists token_allowance integer not null default 0;
+alter table family_members
+  add column if not exists tokens_used integer not null default 0;
+
+create table if not exists family_household (
+  workspace_id text primary key references workspaces(id) on delete cascade,
+  extra_seats integer not null default 0,
+  active_member_id text,
+  updated_at timestamptz not null
+);
+
+create table if not exists family_guidance (
+  id text primary key,
+  workspace_id text not null references workspaces(id) on delete cascade,
+  companion_id text not null,
+  child_member_id text not null,
+  author_member_id text not null,
+  author_name text not null,
+  content text not null,
+  created_at timestamptz not null
+);
+
+create index if not exists family_guidance_companion_idx
+  on family_guidance (workspace_id, companion_id, created_at desc);
+`;
+
+export const MIGRATION_022_FAMILY_FREE_PLAN = `
+alter table studio_accounts drop constraint if exists studio_accounts_plan_id_check;
+alter table studio_accounts
+  add constraint studio_accounts_plan_id_check
+  check (plan_id in ('free', 'pro', 'family_free', 'family', 'family_plus', 'team', 'unlimited'));
+`;
+
 export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "001_core", sql: MIGRATION_001_CORE },
   { id: "002_conversations", sql: MIGRATION_002_CONVERSATIONS },
@@ -468,4 +546,7 @@ export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "017_org_workforce", sql: MIGRATION_017_ORG_WORKFORCE },
   { id: "018_org_security", sql: MIGRATION_018_ORG_SECURITY },
   { id: "019_chat_survives_agent_delete", sql: MIGRATION_019_CHAT_SURVIVES_AGENT_DELETE },
+  { id: "020_family_household", sql: MIGRATION_020_FAMILY_HOUSEHOLD },
+  { id: "021_family_member_tokens", sql: MIGRATION_021_FAMILY_MEMBER_TOKENS },
+  { id: "022_family_free_plan", sql: MIGRATION_022_FAMILY_FREE_PLAN },
 ];

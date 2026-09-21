@@ -110,4 +110,6 @@ Without a provider key, the user message is still saved and the API reports `pro
 - **Activity / Settings** (Account · Usage · Connection · Desktop · …)
 - **AR / EN** with RTL for Arabic
 
+To add a new surface in small agile slices, follow [FEATURE.md](./FEATURE.md) (`pnpm new:feature …`).
+
 The local terminal runs only on the user’s laptop via Tauri (`run_local_command`). Agents cannot drive the shell yet.

@@ -19,6 +19,9 @@ const testEnv: ApiEnv = {
   ],
   openRouterApiKey: undefined,
   openRouterModels: ["openai/gpt-4o-mini"],
+  openAiApiKey: undefined,
+  anthropicApiKey: undefined,
+  xaiApiKey: undefined,
   defaultModel: "amazon.nova-lite-v1:0",
   primaryProviderId: "bedrock",
   publicBaseUrl: "http://127.0.0.1:8787",
@@ -26,7 +29,37 @@ const testEnv: ApiEnv = {
   siteUrl: "http://127.0.0.1:8787",
   moyasarSecretKey: undefined,
   moyasarPublishableKey: undefined,
+  dataEncryptionKey: undefined,
   releasesDir: "/tmp/arrab-releases-test",
+  googleClientId: undefined,
+  googleClientSecret: undefined,
+  googleOAuthRedirectUri: undefined,
+  microsoftClientId: undefined,
+  microsoftClientSecret: undefined,
+  microsoftOAuthRedirectUri: undefined,
+  githubAppClientId: undefined,
+  githubAppClientSecret: undefined,
+  githubAppSlug: undefined,
+  githubOAuthRedirectUri: undefined,
+  gitlabClientId: undefined,
+  gitlabClientSecret: undefined,
+  gitlabOAuthRedirectUri: undefined,
+  bitbucketClientId: undefined,
+  bitbucketClientSecret: undefined,
+  bitbucketOAuthRedirectUri: undefined,
+  linearClientId: undefined,
+  linearClientSecret: undefined,
+  linearOAuthRedirectUri: undefined,
+  slackClientId: undefined,
+  slackClientSecret: undefined,
+  slackOAuthRedirectUri: undefined,
+  notionClientId: undefined,
+  notionClientSecret: undefined,
+  notionOAuthRedirectUri: undefined,
+  whatsappWebhookVerifyToken: undefined,
+  whatsappAppSecret: undefined,
+  finnhubApiKey: undefined,
+  finnhubWebhookSecret: undefined,
 };
 
 describe("arrab api", () => {
@@ -506,6 +539,16 @@ describe("arrab api", () => {
     expect(connectedBody.entitlements.tokenLimit).toBe(100_000);
     expect(connectedBody.sessionToken.length).toBeGreaterThan(20);
 
+    const blocked = await app.inject({ method: "GET", url: "/v1/connectors" });
+    expect(blocked.statusCode).toBe(401);
+
+    const allowed = await app.inject({
+      method: "GET",
+      url: "/v1/connectors",
+      headers: { authorization: `Bearer ${connectedBody.sessionToken}` },
+    });
+    expect(allowed.statusCode).toBe(200);
+
     const upgraded = await app.inject({
       method: "POST",
       url: "/v1/account/subscribe",
@@ -528,6 +571,64 @@ describe("arrab api", () => {
     expect((meta.json() as { account: { connected: boolean; planId: string } }).account.connected).toBe(
       true,
     );
+
+    await app.close();
+  });
+
+  it("scopes /v1/usage totals to the current billing period", async () => {
+    const context = await createApiContext(testEnv);
+    const app = await buildApp(context);
+
+    const connected = await app.inject({
+      method: "POST",
+      url: "/v1/account/connect",
+      payload: {
+        email: "usage-period@arrab.studio",
+        password: "securepass",
+        displayName: "Usage Period",
+      },
+    });
+    expect(connected.statusCode).toBe(200);
+    const account = (connected.json() as { account: { periodStart: string; periodEnd: string } })
+      .account;
+
+    const workspace = await context.persistence.getWorkspace();
+    await context.persistence.usage.append({
+      id: "usage-old",
+      workspaceId: workspace.workspace.id,
+      conversationId: null,
+      agentId: null,
+      providerId: "anthropic",
+      model: "claude",
+      inputTokens: 500_000,
+      outputTokens: 20_000,
+      // Outside the current period — must not appear in Settings token cards.
+      createdAt: new Date(new Date(account.periodStart).getTime() - 86_400_000).toISOString(),
+    });
+    await context.persistence.usage.append({
+      id: "usage-current",
+      workspaceId: workspace.workspace.id,
+      conversationId: null,
+      agentId: null,
+      providerId: "anthropic",
+      model: "claude",
+      inputTokens: 1_200,
+      outputTokens: 300,
+      createdAt: new Date(
+        new Date(account.periodStart).getTime() + 60_000,
+      ).toISOString(),
+    });
+
+    const usage = await app.inject({ method: "GET", url: "/v1/usage" });
+    expect(usage.statusCode).toBe(200);
+    const body = usage.json() as {
+      totals: { inputTokens: number; outputTokens: number; events: number };
+      entitlements: { tokensUsed: number };
+    };
+    expect(body.totals.inputTokens).toBe(1_200);
+    expect(body.totals.outputTokens).toBe(300);
+    expect(body.totals.events).toBe(1);
+    expect(body.entitlements.tokensUsed).toBe(1_500);
 
     await app.close();
   });
@@ -594,18 +695,26 @@ describe("arrab api", () => {
     expect(started.statusCode).toBe(200);
     const startBody = started.json() as {
       state: string;
+      pollSecret: string;
       authorizationUrl: string;
       pollIntervalMs: number;
     };
     expect(startBody.state.length).toBeGreaterThan(10);
+    expect(startBody.pollSecret.length).toBeGreaterThan(20);
     expect(startBody.authorizationUrl).toContain(startBody.state);
 
     const pending = await app.inject({
       method: "GET",
-      url: `/v1/account/auth/web/poll?state=${encodeURIComponent(startBody.state)}`,
+      url: `/v1/account/auth/web/poll?state=${encodeURIComponent(startBody.state)}&pollSecret=${encodeURIComponent(startBody.pollSecret)}`,
     });
     expect(pending.statusCode).toBe(200);
     expect((pending.json() as { status: string }).status).toBe("pending");
+
+    const badPoll = await app.inject({
+      method: "GET",
+      url: `/v1/account/auth/web/poll?state=${encodeURIComponent(startBody.state)}`,
+    });
+    expect(badPoll.statusCode).toBe(401);
 
     const completed = await app.inject({
       method: "POST",
@@ -629,7 +738,7 @@ describe("arrab api", () => {
 
     const polled = await app.inject({
       method: "GET",
-      url: `/v1/account/auth/web/poll?state=${encodeURIComponent(startBody.state)}`,
+      url: `/v1/account/auth/web/poll?state=${encodeURIComponent(startBody.state)}&pollSecret=${encodeURIComponent(startBody.pollSecret)}`,
     });
     expect(polled.statusCode).toBe(200);
     const polledBody = polled.json() as {
@@ -646,7 +755,18 @@ describe("arrab api", () => {
 
     const logout = await app.inject({ method: "POST", url: "/v1/account/logout" });
     expect(logout.statusCode).toBe(200);
-    expect((logout.json() as { connected: boolean }).connected).toBe(false);
+    // Logout ends the device session but keeps the account for reconnect.
+    expect((logout.json() as { connected: boolean; account: unknown }).connected).toBe(true);
+    expect((logout.json() as { account: { email: string } | null }).account?.email).toBe(
+      "web@arrab.studio",
+    );
+
+    const staleSession = await app.inject({
+      method: "POST",
+      url: "/v1/account/session",
+      payload: { sessionToken: completedBody.sessionToken },
+    });
+    expect(staleSession.statusCode).toBe(401);
 
     await app.close();
   });

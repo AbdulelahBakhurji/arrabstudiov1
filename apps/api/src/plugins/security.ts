@@ -31,6 +31,17 @@ const PUBLIC_PREFIXES = [
   "/v1/connectors/gmail/oauth/callback",
   "/v1/connectors/outlook/oauth/callback",
   "/v1/connectors/github/oauth/callback",
+  "/v1/connectors/gitlab/oauth/callback",
+  "/v1/connectors/bitbucket/oauth/callback",
+  "/v1/connectors/linear/oauth/callback",
+  "/v1/connectors/slack/oauth/callback",
+  "/v1/connectors/notion/oauth/callback",
+  "/v1/connectors/whoop/oauth/callback",
+  "/v1/connectors/fitbit/oauth/callback",
+  "/v1/connectors/google_drive/oauth/callback",
+  "/v1/connectors/google_calendar/oauth/callback",
+  "/v1/connectors/figma/oauth/callback",
+  "/v1/connectors/whatsapp/webhook",
   "/v1/org/employees/sign-in",
 ] as const;
 
@@ -39,6 +50,7 @@ const PROTECTED_PREFIXES = [
   "/v1/connectors",
   "/v1/github/",
   "/v1/org/",
+  "/v1/family",
 ] as const;
 
 function extractAccountToken(request: FastifyRequest): string | null {

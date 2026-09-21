@@ -258,7 +258,14 @@ export type ConnectorProvider =
   | "gmail"
   | "outlook"
   | "email"
-  | "ssh";
+  | "ssh"
+  | "whatsapp"
+  | "finnhub"
+  | "whoop"
+  | "fitbit"
+  | "google_drive"
+  | "google_calendar"
+  | "figma";
 
 export type ConnectorConnectionStatus = "connected" | "error";
 
@@ -291,6 +298,7 @@ export interface ConnectConnectorRequest {
    * Bitbucket: username
    * GitLab: baseUrl (optional self-hosted)
    * SSH: host, port, username, authMode (password|key), privateKey, passphrase
+   * WhatsApp: phone_number_id, waba_id (token = permanent Cloud API access token)
    */
   config?: Record<string, string> | null;
 }
@@ -371,6 +379,35 @@ export interface SendEmailRequest {
 export interface SendEmailResponse {
   messageId: string | null;
   accepted: string[];
+}
+
+/** POST /v1/connectors/:id/whatsapp/send */
+export interface SendWhatsAppRequest {
+  /** E.164 phone digits (with or without +). */
+  to: string;
+  text: string;
+}
+
+export interface SendWhatsAppResponse {
+  ok: true;
+  messageId: string | null;
+  to: string;
+}
+
+export interface WhatsAppInboundMessage {
+  id: string;
+  connectorId: string | null;
+  phoneNumberId: string;
+  from: string;
+  to: string | null;
+  text: string;
+  timestamp: string;
+  rawType: string;
+  receivedAt: string;
+}
+
+export interface ListWhatsAppMessagesResponse {
+  items: WhatsAppInboundMessage[];
 }
 
 /** POST /v1/connectors/:id/ssh/exec */
@@ -460,6 +497,12 @@ export interface UsageSummaryResponse {
     events: number;
   };
   byProvider: Array<{ providerId: string; inputTokens: number; outputTokens: number; events: number }>;
+  byAgent: Array<{
+    agentId: string | null;
+    inputTokens: number;
+    outputTokens: number;
+    events: number;
+  }>;
   recent: Array<{
     id: string;
     providerId: string;
@@ -484,7 +527,7 @@ export interface SignInAccountRequest {
 }
 
 export interface ActivateSubscriptionRequest {
-  /** Redeem code such as PRO-ARRAB, TEAM-ARRAB, UNLIMITED-ARRAB */
+  /** Redeem code such as PRO-ARRAB, TEAM-ARRAB, SCALE-ARRAB */
   code: string;
 }
 
@@ -497,6 +540,8 @@ export interface ConnectAccountResponse {
   entitlements: AccountEntitlements;
   /** Shown once — store on desktop for reconnect/auth */
   sessionToken: string;
+  /** True when this response created a brand-new account (not a returning sign-in). */
+  accountCreated?: boolean;
 }
 
 export interface StartWebAuthRequest {
@@ -519,6 +564,8 @@ export interface PollWebAuthResponse {
   entitlements?: AccountEntitlements;
   sessionToken?: string;
   message?: string;
+  /** True when the completed handoff created a new account. */
+  accountCreated?: boolean;
 }
 
 export interface CompleteWebAuthRequest {

@@ -22,6 +22,7 @@ export {
   type WorkspaceId,
   type OrgDepartmentId,
   type OrgEmployeeId,
+  type FamilyMemberId,
 } from "./ids.js";
 
 export type {
@@ -72,6 +73,7 @@ export {
   SUBSCRIPTION_PLANS,
   SUBSCRIPTION_REDEEM_CODES,
   LOCAL_UNCONNECTED_TOKEN_LIMIT,
+  isFamilyPlanId,
   type AccountEntitlements,
   type AccountId,
   type AccountPublic,
@@ -146,6 +148,10 @@ export {
   type ListEmailMessagesResponse,
   type SendEmailRequest,
   type SendEmailResponse,
+  type SendWhatsAppRequest,
+  type SendWhatsAppResponse,
+  type WhatsAppInboundMessage,
+  type ListWhatsAppMessagesResponse,
   type SshExecRequest,
   type SshExecResponse,
   type BindProjectRepoRequest,
@@ -188,3 +194,21 @@ export type {
   UpdateOrgEmployeeRequest,
   OrgEmployeeChangePasswordRequest,
 } from "./org-workforce.js";
+
+export type {
+  CreateFamilyGuidanceRequest,
+  CreateFamilyMemberRequest,
+  FamilyAgeTier,
+  FamilyGuidancePublic,
+  FamilyGuidanceRecord,
+  FamilyHouseholdSnapshot,
+  FamilyMemberPublic,
+  FamilyMemberRecord,
+  FamilyMemberRole,
+  FamilySeatPack,
+  GrantFamilyTokensRequest,
+  PurchaseFamilySeatsRequest,
+  SwitchFamilyProfileRequest,
+  SwitchFamilyProfileResponse,
+  UpdateFamilyMemberRequest,
+} from "./family.js";

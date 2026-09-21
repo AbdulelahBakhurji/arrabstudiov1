@@ -29,8 +29,9 @@ import type {
 import { Surface } from "@/components/StudioFrame";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError } from "@/lib/api";
-import { LAST_COWORK_AGENT_KEY } from "@/lib/prefs";
+import { prepareWorkplaceStudio } from "@/lib/workplace-handoff";
 import { cn } from "@/lib/utils";
+import { ROLE_PATH } from "@/roles/catalog";
 
 type DeskTab = "overview" | "profile" | "data" | "skills" | "team" | "work";
 
@@ -298,13 +299,8 @@ export function EmployeeDeskPage() {
 
   function openCowork() {
     if (!agent) return;
-    try {
-      localStorage.setItem(LAST_COWORK_AGENT_KEY, agent.id);
-    } catch {
-      // ignore
-    }
-    sessionStorage.setItem("arrab.chatAgent", agent.id);
-    navigate("/cowork");
+    prepareWorkplaceStudio({ agentId: agent.id, kindId: "arrab-assistant" });
+    navigate(`${ROLE_PATH.organization}/workplace`);
   }
 
   function openTeamChat(teamId: string) {
@@ -387,7 +383,7 @@ export function EmployeeDeskPage() {
         ) : null}
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          <nav className="hidden w-[160px] shrink-0 flex-col gap-0.5 border-e border-white/[0.06] bg-[#050505] px-2 py-3 lg:flex">
+          <nav className="hidden w-[160px] shrink-0 flex-col gap-0.5 border-e border-white/[0.06] bg-[var(--color-background)] px-2 py-3 lg:flex">
             {tabs.map((item) => (
               <button
                 key={item.id}
@@ -426,7 +422,7 @@ export function EmployeeDeskPage() {
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 lg:px-6">
               {tab === "overview" ? (
                 <div className="mx-auto grid max-w-5xl gap-4 lg:grid-cols-[1.2fr_0.8fr]">
-                  <section className="rounded-[22px] border border-white/[0.07] bg-[#060606]/0.9] p-5">
+                  <section className="rounded-[22px] border border-white/[0.07] bg-[var(--color-surface)] p-5">
                     <p className="chat-pro-kicker">{t("employeeDesk")}</p>
                     <h2 className="mt-2 text-2xl font-medium tracking-[-0.03em] text-white">
                       {agent?.name}
@@ -503,7 +499,7 @@ export function EmployeeDeskPage() {
               {tab === "profile" ? (
                 <form
                   onSubmit={(event) => void saveProfile(event)}
-                  className="mx-auto max-w-2xl space-y-4 rounded-[22px] border border-white/[0.07] bg-[#060606]/0.9] p-5"
+                  className="mx-auto max-w-2xl space-y-4 rounded-[22px] border border-white/[0.07] bg-[var(--color-surface)] p-5"
                 >
                   <div>
                     <p className="chat-pro-kicker">{t("deskTabProfile")}</p>
@@ -580,7 +576,7 @@ export function EmployeeDeskPage() {
 
               {tab === "data" ? (
                 <div className="mx-auto grid max-w-4xl gap-4 lg:grid-cols-2">
-                  <section className="rounded-[22px] border border-white/[0.07] bg-[#060606]/0.9] p-4">
+                  <section className="rounded-[22px] border border-white/[0.07] bg-[var(--color-surface)] p-4">
                     <p className="chat-pro-kicker">{t("tellAgent")}</p>
                     <form onSubmit={(event) => void addMemory(event)} className="mt-3 space-y-2">
                       <textarea
@@ -624,7 +620,7 @@ export function EmployeeDeskPage() {
                       )}
                     </ul>
                   </section>
-                  <section className="rounded-[22px] border border-white/[0.07] bg-[#060606]/0.9] p-4">
+                  <section className="rounded-[22px] border border-white/[0.07] bg-[var(--color-surface)] p-4">
                     <p className="chat-pro-kicker">{t("knowledge")}</p>
                     <p className="mt-1 text-[12px] text-neutral-500">{t("deskKnowledgeHint")}</p>
                     <ul className="mt-4 max-h-[520px] space-y-2 overflow-y-auto">
@@ -647,7 +643,7 @@ export function EmployeeDeskPage() {
                 <div className="mx-auto max-w-2xl space-y-4">
                   <form
                     onSubmit={(event) => void addSkill(event)}
-                    className="rounded-[22px] border border-white/[0.07] bg-[#060606]/0.9] p-4"
+                    className="rounded-[22px] border border-white/[0.07] bg-[var(--color-surface)] p-4"
                   >
                     <p className="chat-pro-kicker">{t("taughtSkills")}</p>
                     <p className="mt-1 text-[12px] text-neutral-500">{t("teachSkillBody")}</p>
@@ -681,7 +677,7 @@ export function EmployeeDeskPage() {
                       skills.map((skill) => (
                         <li
                           key={skill.id}
-                          className="rounded-[18px] border border-white/[0.07] bg-[#060606]/0.9] px-4 py-3"
+                          className="rounded-[18px] border border-white/[0.07] bg-[var(--color-surface)] px-4 py-3"
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div>
@@ -707,7 +703,7 @@ export function EmployeeDeskPage() {
 
               {tab === "team" ? (
                 <div className="mx-auto max-w-2xl space-y-4">
-                  <section className="rounded-[22px] border border-white/[0.07] bg-[#060606]/0.9] p-4">
+                  <section className="rounded-[22px] border border-white/[0.07] bg-[var(--color-surface)] p-4">
                     <p className="chat-pro-kicker">{t("deskCurrentTeams")}</p>
                     <ul className="mt-3 space-y-2">
                       {agentTeams.length === 0 ? (
@@ -745,7 +741,7 @@ export function EmployeeDeskPage() {
                   </section>
                   <form
                     onSubmit={(event) => void joinTeam(event)}
-                    className="rounded-[22px] border border-white/[0.07] bg-[#060606]/0.9] p-4"
+                    className="rounded-[22px] border border-white/[0.07] bg-[var(--color-surface)] p-4"
                   >
                     <p className="chat-pro-kicker">{t("deskAssignTeam")}</p>
                     <div className="mt-3 flex flex-wrap gap-2">
@@ -777,7 +773,7 @@ export function EmployeeDeskPage() {
                 <div className="mx-auto max-w-3xl space-y-4">
                   <form
                     onSubmit={(event) => void assignTask(event)}
-                    className="rounded-[22px] border border-white/[0.07] bg-[#060606]/0.9] p-4"
+                    className="rounded-[22px] border border-white/[0.07] bg-[var(--color-surface)] p-4"
                   >
                     <p className="chat-pro-kicker">{t("assignTask")}</p>
                     <div className="mt-3 space-y-2">
@@ -810,7 +806,7 @@ export function EmployeeDeskPage() {
                       tasks.map((task) => (
                         <li
                           key={task.id}
-                          className="rounded-[18px] border border-white/[0.07] bg-[#060606]/0.9] px-4 py-3"
+                          className="rounded-[18px] border border-white/[0.07] bg-[var(--color-surface)] px-4 py-3"
                         >
                           <div className="flex items-start justify-between gap-2">
                             <div>
@@ -825,20 +821,16 @@ export function EmployeeDeskPage() {
                             <button
                               type="button"
                               onClick={() => {
-                                sessionStorage.setItem("arrab.chatAgent", agentId);
-                                sessionStorage.setItem(
-                                  "arrab.chatTask",
-                                  JSON.stringify({
-                                    id: task.id,
-                                    title: task.title,
-                                    brief: task.brief,
-                                  }),
-                                );
-                                navigate("/chat");
+                                prepareWorkplaceStudio({
+                                  agentId,
+                                  task,
+                                  kindId: "arrab-assistant",
+                                });
+                                navigate(`${ROLE_PATH.organization}/workplace`);
                               }}
                               className="rounded-full border border-white/12 px-2.5 py-1 text-[10px] text-neutral-300"
                             >
-                              {t("openChat")}
+                              {t("hqOpenCowork")}
                             </button>
                           </div>
                         </li>
@@ -866,7 +858,7 @@ function Stat({ label, value }: { label: string; value: number }) {
 
 function Card({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-[22px] border border-white/[0.07] bg-[#060606]/0.9] p-4">
+    <div className="rounded-[22px] border border-white/[0.07] bg-[var(--color-surface)] p-4">
       <p className="chat-pro-kicker">{title}</p>
       <div className="mt-2">{children}</div>
     </div>

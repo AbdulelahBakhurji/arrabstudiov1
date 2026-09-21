@@ -14,6 +14,15 @@ export default defineConfig({
     },
   },
   clearScreen: false,
+  build: {
+    rollupOptions: {
+      input: {
+        main: path.resolve(import.meta.dirname, "index.html"),
+        "agent-presence": path.resolve(import.meta.dirname, "agent-presence.html"),
+        "companion-panel": path.resolve(import.meta.dirname, "companion-panel.html"),
+      },
+    },
+  },
   server: {
     port: 1420,
     strictPort: true,

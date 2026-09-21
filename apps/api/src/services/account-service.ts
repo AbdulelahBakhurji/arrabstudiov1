@@ -31,6 +31,7 @@ import {
 
 type PendingWebAuth = {
   state: string;
+  pollSecret: string;
   createdAt: string;
   expiresAt: string;
   status: "pending" | "completed" | "expired";
@@ -127,6 +128,7 @@ export class AccountService {
       const period = billingPeriod(new Date(this.clock.isoNow()));
       const tokensUsed = await this.periodTokensUsed(period.start, period.end);
       const tokenLimit = LOCAL_UNCONNECTED_TOKEN_LIMIT;
+      const overLimit = tokensUsed >= tokenLimit;
       return {
         connected: false,
         planId: null,
@@ -135,7 +137,8 @@ export class AccountService {
         tokenLimit,
         tokensUsed,
         tokensRemaining: Math.max(0, tokenLimit - tokensUsed),
-        overLimit: tokensUsed >= tokenLimit,
+        overLimit,
+        pauseMode: overLimit ? "upgrade_required" : null,
         periodStart: period.start,
         periodEnd: period.end,
       };
@@ -146,6 +149,11 @@ export class AccountService {
     const tokensUsed = await this.periodTokensUsed(current.periodStart, current.periodEnd);
     const tokenLimit = plan.monthlyTokenLimit;
     const overLimit = tokenLimit !== null && tokensUsed >= tokenLimit;
+    const pauseMode = !overLimit
+      ? null
+      : current.planId === "free" || current.planId === "family_free" || tokenLimit === 0
+        ? "upgrade_required"
+        : "upgrade_or_wait";
     return {
       connected: true,
       planId: current.planId,
@@ -155,6 +163,7 @@ export class AccountService {
       tokensUsed,
       tokensRemaining: tokenLimit === null ? null : Math.max(0, tokenLimit - tokensUsed),
       overLimit,
+      pauseMode,
       periodStart: current.periodStart,
       periodEnd: current.periodEnd,
     };
@@ -174,16 +183,34 @@ export class AccountService {
   async assertWithinQuota(): Promise<AccountEntitlements> {
     const account = await this.persistence.accounts.get();
     const entitlements = await this.buildEntitlements(account);
-    if (entitlements.overLimit) {
-      const limitLabel =
-        entitlements.tokenLimit === null ? "unlimited" : entitlements.tokenLimit.toLocaleString();
+    if (!entitlements.overLimit) {
+      return entitlements;
+    }
+
+    const used = entitlements.tokensUsed.toLocaleString();
+    const limit =
+      entitlements.tokenLimit === null ? "unlimited" : entitlements.tokenLimit.toLocaleString();
+    const renews = new Date(entitlements.periodEnd).toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+
+    if (entitlements.pauseMode === "upgrade_or_wait") {
       throw new QuotaExceededError(
-        entitlements.connected
-          ? `Token limit reached for ${entitlements.planName} (${entitlements.tokensUsed.toLocaleString()} / ${limitLabel}). Upgrade with a subscription code in Settings → Account.`
-          : `Local token allowance reached (${entitlements.tokensUsed.toLocaleString()} / ${limitLabel}). Connect an Arrab account in Settings → Account to continue.`,
+        `Paused — ${entitlements.planName} token limit reached (${used} / ${limit}). Upgrade to keep working, or wait until ${renews} when your monthly allowance resets.`,
       );
     }
-    return entitlements;
+
+    if (!entitlements.connected) {
+      throw new QuotaExceededError(
+        `Paused — local allowance reached (${used} / ${limit}). Connect an Arrab account and upgrade to continue.`,
+      );
+    }
+
+    throw new QuotaExceededError(
+      `Paused — Free plan token limit reached (${used} / ${limit}). Upgrade to a paid plan to continue. Free does not unlock more tokens until you upgrade.`,
+    );
   }
 
   private validateCredentials(email: string, password: string): string {
@@ -247,6 +274,7 @@ export class AccountService {
       account: toPublic(account),
       entitlements: await this.buildEntitlements(account),
       sessionToken,
+      accountCreated: true,
     };
   }
 
@@ -271,6 +299,7 @@ export class AccountService {
       account: toPublic(updated),
       entitlements: await this.buildEntitlements(updated),
       sessionToken,
+      accountCreated: false,
     };
   }
 
@@ -282,13 +311,32 @@ export class AccountService {
     return this.ensurePeriod(account);
   }
 
+  /** True when a studio account exists (signed-up workspace). */
+  async hasAccount(): Promise<boolean> {
+    const account = await this.persistence.accounts.get();
+    return Boolean(account);
+  }
+
+  /**
+   * Resolve a raw session token to the studio account, or null if invalid.
+   * Does not throw — used by the request auth guard.
+   */
+  async resolveSessionToken(token: string | null | undefined): Promise<StudioAccountRecord | null> {
+    const trimmed = token?.trim() ?? "";
+    if (!trimmed) return null;
+    const account = await this.persistence.accounts.get();
+    if (!account?.sessionTokenHash) return null;
+    if (account.sessionTokenHash !== hashSessionToken(trimmed)) return null;
+    return this.ensurePeriod(account);
+  }
+
   async verifySession(token: string): Promise<AccountStatusResponse> {
     const trimmed = token.trim();
     if (!trimmed) {
       throw new UnauthorizedError("Sign in with email and password");
     }
-    const account = await this.persistence.accounts.get();
-    if (!account?.sessionTokenHash || account.sessionTokenHash !== hashSessionToken(trimmed)) {
+    const account = await this.resolveSessionToken(trimmed);
+    if (!account) {
       throw new UnauthorizedError("Session expired. Sign in with email and password");
     }
     return this.status();
@@ -315,9 +363,19 @@ export class AccountService {
     return this.status();
   }
 
-  /** Alias used by desktop signed-in UX. */
   async logout(): Promise<AccountStatusResponse> {
-    return this.disconnect();
+    const account = await this.persistence.accounts.get();
+    if (!account) {
+      return this.status();
+    }
+    const now = this.clock.isoNow();
+    // End this device session only — keep the account so the app can reconnect.
+    await this.persistence.accounts.upsert({
+      ...account,
+      sessionTokenHash: null,
+      updatedAt: now,
+    });
+    return this.status();
   }
 
   private prunePendingAuth(nowIso: string): void {
@@ -338,9 +396,11 @@ export class AccountService {
     const now = this.clock.isoNow();
     this.prunePendingAuth(now);
     const state = randomBytes(18).toString("hex");
+    const pollSecret = randomBytes(32).toString("hex");
     const expiresAt = new Date(Date.parse(now) + 10 * 60_000).toISOString();
     this.pendingWebAuth.set(state, {
       state,
+      pollSecret,
       createdAt: now,
       expiresAt,
       status: "pending",
@@ -353,18 +413,28 @@ export class AccountService {
 
     return {
       state,
+      pollSecret,
       authorizationUrl,
       expiresAt,
       pollIntervalMs: 1500,
     };
   }
 
-  async pollWebAuth(state: string): Promise<PollWebAuthResponse> {
+  async pollWebAuth(state: string, pollSecret = ""): Promise<PollWebAuthResponse> {
     const now = this.clock.isoNow();
     this.prunePendingAuth(now);
     const pending = this.pendingWebAuth.get(state.trim());
     if (!pending) {
       return { status: "expired", message: "Sign-in session not found or expired" };
+    }
+    const provided = Buffer.from(pollSecret.trim(), "utf8");
+    const expected = Buffer.from(pending.pollSecret, "utf8");
+    if (
+      provided.length === 0 ||
+      provided.length !== expected.length ||
+      !timingSafeEqual(provided, expected)
+    ) {
+      throw new UnauthorizedError("Invalid poll credentials");
     }
     if (pending.expiresAt <= now && pending.status === "pending") {
       pending.status = "expired";
@@ -378,6 +448,7 @@ export class AccountService {
         account: pending.result.account,
         entitlements: pending.result.entitlements,
         sessionToken: pending.result.sessionToken,
+        accountCreated: pending.result.accountCreated,
       };
     }
     return { status: "pending" };
@@ -411,6 +482,7 @@ export class AccountService {
 
     const existing = await this.persistence.accounts.get();
     let account: StudioAccountRecord;
+    let accountCreated = false;
     if (existing && existing.email === email) {
       if (!verifyPassword(input.password, existing.passwordHash)) {
         throw new UnauthorizedError("Invalid email or password");
@@ -429,6 +501,7 @@ export class AccountService {
         "Another account is already connected on this studio. Sign in with that email and password.",
       );
     } else {
+      accountCreated = true;
       account = {
         id: brandId(this.ids.next("acc")),
         workspaceId: this.persistence.workspaceId,
@@ -469,6 +542,7 @@ export class AccountService {
       account: toPublic(account),
       entitlements: await this.buildEntitlements(account),
       sessionToken,
+      accountCreated,
     };
     pending.status = "completed";
     pending.result = result;
@@ -481,7 +555,7 @@ export class AccountService {
     const planId = SUBSCRIPTION_REDEEM_CODES[code] as SubscriptionPlanId | undefined;
     if (!planId) {
       throw new ValidationError(
-        "Unknown subscription code. Use FREE-ARRAB, PRO-ARRAB, TEAM-ARRAB, or UNLIMITED-ARRAB.",
+        "Unknown subscription code. Use FREE-ARRAB, PRO-ARRAB, FAMILY-FREE-ARRAB, FAMILY-ARRAB, FAMILY-PLUS-ARRAB, TEAM-ARRAB, or SCALE-ARRAB.",
       );
     }
     return this.applyPlan(planId);

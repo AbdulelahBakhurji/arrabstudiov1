@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="990" viewBox="0 0 1400 990" role="img" aria-label="تصوّر ثابت للواجهة المحسّنة"><title>Arrab Studio — illustrative improved interface</title><style>text { font-family: 'SF Arabic', Tahoma, Arial, sans-serif; }</style><rect x="0" y="0" width="1400" height="990" rx="0" fill="#e8e9f0" stroke="none" stroke-width="1"/>
+<circle cx="64" cy="44" r="22" fill="#f8f9fd" stroke="none" stroke-width="1"/>
+<text x="64" y="52" font-size="26" fill="#17171f" text-anchor="middle" font-weight="800">A</text>
+<text x="102" y="51" font-size="21" fill="#17171f" text-anchor="start" font-weight="600">Arrab Studio</text>
+<rect x="1013" y="26" width="220" height="38" rx="19" fill="#edeef5" stroke="#d9dae5" stroke-width="1"/>
+<rect x="1113" y="29" width="116" height="32" rx="16" fill="#17171f" stroke="none" stroke-width="1"/>
+<text x="1171" y="51" font-size="14" fill="#fff" text-anchor="middle" font-weight="400">الأفراد</text>
+<text x="1065" y="51" font-size="14" fill="#625f70" text-anchor="middle" font-weight="400">المنظمات</text>
+<circle cx="1270" cy="45" r="20" fill="#edeef5" stroke="#d9dae5" stroke-width="1"/>
+<text x="1270" y="51" font-size="18" fill="#625f70" text-anchor="middle" font-weight="400">ع</text>
+<circle cx="1322" cy="45" r="20" fill="#edeef5" stroke="#d9dae5" stroke-width="1"/>
+<g transform="translate(1312 35) scale(0.8333333333333334)" fill="none" stroke="#17171f" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M20 15A8.5 8.5 0 0 1 9 4a8.5 8.5 0 1 0 11 11Z"/></g>
+<circle cx="1370" cy="45" r="20" fill="#edeef5" stroke="#d9dae5" stroke-width="1"/>
+<text x="1370" y="51" font-size="16" fill="#17171f" text-anchor="middle" font-weight="400">م</text>
+<rect x="1292" y="95" width="84" height="839" rx="42" fill="#f8f9fd" stroke="#d9dae5" stroke-width="1"/>
+<circle cx="1334" cy="140" r="23" fill="#17171f" stroke="#17171f" stroke-width="1"/>
+<g transform="translate(1322.5 128.5) scale(0.9583333333333334)" fill="none" stroke="#fff" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H9l-5 3V6a2 2 0 0 1 1-2Z"/></g>
+<text x="1334" y="186" font-size="13" fill="#17171f" text-anchor="middle" font-weight="600">المحادثة</text>
+<circle cx="1334" cy="246" r="23" fill="#f8f9fd" stroke="#d9dae5" stroke-width="1"/>
+<g transform="translate(1322.5 234.5) scale(0.9583333333333334)" fill="none" stroke="#625f70" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></g>
+<text x="1334" y="292" font-size="13" fill="#625f70" text-anchor="middle" font-weight="400">اللوحة</text>
+<circle cx="1334" cy="352" r="23" fill="#f8f9fd" stroke="#d9dae5" stroke-width="1"/>
+<g transform="translate(1322.5 340.5) scale(0.9583333333333334)" fill="none" stroke="#625f70" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m3 6 2 2 4-4M12 6h9M3 13l2 2 4-4M12 13h9M4 20h3M12 20h9"/></g>
+<text x="1334" y="398" font-size="13" fill="#625f70" text-anchor="middle" font-weight="400">المهام</text>
+<circle cx="1334" cy="458" r="23" fill="#f8f9fd" stroke="#d9dae5" stroke-width="1"/>
+<g transform="translate(1322.5 446.5) scale(0.9583333333333334)" fill="none" stroke="#625f70" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="7" r="4"/><path d="M4 21v-2a8 8 0 0 1 16 0v2"/></g>
+<text x="1334" y="504" font-size="13" fill="#625f70" text-anchor="middle" font-weight="400">أنا</text>
+<text x="1252" y="118" font-size="12" fill="#656272" text-anchor="end" font-weight="400">ARRAB / COMPANIONS</text>
+<text x="1252" y="159" font-size="32" fill="#17171f" text-anchor="end" font-weight="600">المحادثة</text>
+<rect x="40" y="112" width="242" height="44" rx="22" fill="#edeef5" stroke="#d9dae5" stroke-width="1"/>
+<rect x="161" y="116" width="117" height="36" rx="18" fill="#f8f9fd" stroke="none" stroke-width="1"/>
+<text x="219" y="140" font-size="15" fill="#17171f" text-anchor="middle" font-weight="500">الشخصي</text>
+<text x="101" y="140" font-size="15" fill="#625f70" text-anchor="middle" font-weight="400">المهني</text>
+<circle cx="1206" cy="225" r="34" fill="#c9bcff" stroke="#756096" stroke-width="2"/>
+<g transform="translate(1190.5 209.5) scale(1.2916666666666667)" fill="none" stroke="#17171f" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 2.5 7.5L22 12l-7.5 2.5L12 22l-2.5-7.5L2 12l7.5-2.5Z"/><path d="M21 2v4M19 4h4"/></g>
+<text x="1206" y="279" font-size="15" fill="#17171f" text-anchor="middle" font-weight="500">عام</text>
+<text x="1206" y="300" font-size="12" fill="#656272" text-anchor="middle" font-weight="400">مساحة لكل شيء</text>
+<circle cx="1098" cy="225" r="33" fill="none" stroke="#656272" stroke-dasharray="3 4"/>
+<g transform="translate(1085.5 212.5) scale(1.0416666666666667)" fill="none" stroke="#625f70" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v16M4 12h16"/></g>
+<text x="1098" y="279" font-size="15" fill="#17171f" text-anchor="middle" font-weight="400">إضافة</text>
+<text x="1098" y="300" font-size="12" fill="#656272" text-anchor="middle" font-weight="400">رفيق جديد</text>
+<rect x="40" y="219" width="145" height="42" rx="21" fill="#e8e9f0" stroke="#d9dae5" stroke-width="1"/>
+<text x="106" y="246" font-size="14" fill="#17171f" text-anchor="middle" font-weight="400">كل الرفاق</text>
+<text x="162" y="245" font-size="15" fill="#625f70" text-anchor="middle" font-weight="400">•••</text>
+<rect x="40" y="329" width="1216" height="605" rx="25" fill="#f8f9fd" stroke="none" stroke-width="1"/>
+<path d="M40 407H1256" stroke="#d9dae5"/>
+<circle cx="1204" cy="368" r="20" fill="#edeef5" stroke="#d9dae5" stroke-width="1"/>
+<g transform="translate(1193.5 357.5) scale(0.875)" fill="none" stroke="#17171f" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 2.5 7.5L22 12l-7.5 2.5L12 22l-2.5-7.5L2 12l7.5-2.5Z"/><path d="M21 2v4M19 4h4"/></g>
+<text x="1166" y="375" font-size="17" fill="#17171f" text-anchor="end" font-weight="600">عام</text>
+<rect x="63" y="348" width="193" height="41" rx="21" fill="#f8f9fd" stroke="#d9dae5" stroke-width="1"/>
+<text x="173" y="375" font-size="14" fill="#17171f" text-anchor="middle" font-weight="400">الذاكرة والأسلوب</text>
+<g transform="translate(77 360) scale(0.6666666666666666)" fill="none" stroke="#625f70" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18 18 6M7 6h11v11"/></g>
+<circle cx="649" cy="487" r="40" fill="#e5dffd" stroke="none" stroke-width="1"/>
+<g transform="translate(629.5 467.5) scale(1.625)" fill="none" stroke="#17171f" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 2.5 7.5L22 12l-7.5 2.5L12 22l-2.5-7.5L2 12l7.5-2.5Z"/><path d="M21 2v4M19 4h4"/></g>
+<text x="649" y="561" font-size="13" fill="#656272" text-anchor="middle" font-weight="400">مساحتك، على راحتك</text>
+<text x="649" y="606" font-size="34" fill="#17171f" text-anchor="middle" font-weight="500">وش في بالك اليوم؟</text>
+<text x="649" y="643" font-size="17" fill="#625f70" text-anchor="middle" font-weight="400">ابدأ بفكرة، سؤال، أو حتى يوم طويل.</text>
+<rect x="474" y="675" width="179" height="48" rx="14" fill="#f8f9fd" stroke="#d9dae5" stroke-width="1"/>
+<text x="571" y="705" font-size="14" fill="#625f70" text-anchor="middle" font-weight="400">كان يوماً طويلاً</text>
+<g transform="translate(484.5 691.5) scale(0.625)" fill="none" stroke="#625f70" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18 18 6M7 6h11v11"/></g>
+<rect x="665" y="675" width="202" height="48" rx="14" fill="#f8f9fd" stroke="#d9dae5" stroke-width="1"/>
+<text x="771" y="705" font-size="14" fill="#625f70" text-anchor="middle" font-weight="400">لخّص لي هذا النص</text>
+<g transform="translate(677.5 691.5) scale(0.625)" fill="none" stroke="#625f70" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M6 18 18 6M7 6h11v11"/></g>
+<rect x="1058" y="757" width="166" height="38" rx="19" fill="#f8f9fd" stroke="#d9dae5" stroke-width="1"/>
+<text x="1141" y="782" font-size="13" fill="#625f70" text-anchor="middle" font-weight="400">أريد أن أفضفض فقط</text>
+<rect x="943" y="757" width="103" height="38" rx="19" fill="#f8f9fd" stroke="#d9dae5" stroke-width="1"/>
+<text x="994" y="782" font-size="13" fill="#625f70" text-anchor="middle" font-weight="400">أريد رأيك</text>
+<text x="77" y="782" font-size="13" fill="#656272" text-anchor="start" font-weight="400">عام سيردّ عليك</text>
+<rect x="76" y="809" width="1148" height="70" rx="24" fill="#edeef5" stroke="#d9dae5" stroke-width="1"/>
+<circle cx="1168" cy="844" r="20" fill="#f8f9fd" stroke="#d9dae5" stroke-width="1"/>
+<g transform="translate(1157 833) scale(0.9166666666666666)" fill="none" stroke="#17171f" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 2.5 7.5L22 12l-7.5 2.5L12 22l-2.5-7.5L2 12l7.5-2.5Z"/><path d="M21 2v4M19 4h4"/></g>
+<g transform="translate(1126.5 836.5) scale(0.625)" fill="none" stroke="#625f70" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="m7 10 5 5 5-5"/></g>
+<text x="1101" y="850" font-size="17" fill="#656272" text-anchor="end" font-weight="400">اكتب اللي في بالك…</text>
+<circle cx="110" cy="844" r="23" fill="#96949d" stroke="none" stroke-width="1"/>
+<g transform="translate(98.5 832.5) scale(0.9583333333333334)" fill="none" stroke="#fff" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V4m-7 7 7-7 7 7"/></g>
+<text x="1215" y="907" font-size="12" fill="#656272" text-anchor="end" font-weight="400">على راحتك.</text>
+<text x="80" y="907" font-size="12" fill="#656272" text-anchor="start" font-weight="400">Enter للإرسال · Shift + Enter لسطر جديد</text>
+<text x="1256" y="970" font-size="13" fill="#625f70" text-anchor="end" font-weight="400">تصوّر ثابت للواجهة المحسّنة — معاينة توضيحية وليست لقطة من التطبيق</text></svg>

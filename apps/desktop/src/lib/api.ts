@@ -54,6 +54,9 @@ import type {
   RunTaskResponse,
   SendEmailRequest,
   SendEmailResponse,
+  SendWhatsAppRequest,
+  SendWhatsAppResponse,
+  ListWhatsAppMessagesResponse,
   ArrangeEmailRequest,
   ArrangeEmailResponse,
   StartGmailOAuthResponse,
@@ -72,6 +75,16 @@ import type {
   UpdateTaskRequest,
   UpdateTeamRequest,
   UsageSummaryResponse,
+  FamilyHouseholdSnapshot,
+  FamilyMemberPublic,
+  FamilyGuidancePublic,
+  CreateFamilyMemberRequest,
+  UpdateFamilyMemberRequest,
+  SwitchFamilyProfileRequest,
+  SwitchFamilyProfileResponse,
+  GrantFamilyTokensRequest,
+  PurchaseFamilySeatsRequest,
+  CreateFamilyGuidanceRequest,
 } from "@arrab/shared";
 
 import { readAccountSessionToken } from "./account-session";
@@ -148,6 +161,14 @@ function buildAuthHeaders(): Record<string, string> {
       if (parsed.sessionToken) {
         authHeaders["X-Arrab-Employee-Session"] = parsed.sessionToken;
       }
+    }
+  } catch {
+    // ignore
+  }
+  try {
+    const familyMemberId = localStorage.getItem("arrab.family.activeMemberId");
+    if (familyMemberId?.trim()) {
+      authHeaders["X-Arrab-Family-Member"] = familyMemberId.trim();
     }
   } catch {
     // ignore
@@ -244,7 +265,7 @@ export const arrabApi = {
         pauseMode: "upgrade_required" | "upgrade_or_wait" | null;
       };
     }>("/v1/meta"),
-  account: () => request<AccountStatusResponse>("/v1/account"),
+  account: () => request<AccountStatusResponse>("/v1/account", { timeoutMs: 6_000 }),
   connectAccount: (body: ConnectAccountRequest) =>
     request<ConnectAccountResponse>("/v1/account/connect", { method: "POST", body }),
   signInAccount: (body: SignInAccountRequest) =>
@@ -262,8 +283,12 @@ export const arrabApi = {
     request<AccountStatusResponse>("/v1/account/subscribe", { method: "POST", body }),
   updateAccountProfile: (body: UpdateAccountProfileRequest) =>
     request<AccountStatusResponse>("/v1/account", { method: "PATCH", body }),
-  verifyAccountSession: (body: VerifyAccountSessionRequest) =>
-    request<AccountStatusResponse>("/v1/account/session", { method: "POST", body }),
+  verifyAccountSession: (body: VerifyAccountSessionRequest, timeoutMs = 2_500) =>
+    request<AccountStatusResponse>("/v1/account/session", {
+      method: "POST",
+      body,
+      timeoutMs,
+    }),
   billingCheckout: (body: BillingCheckoutRequest) =>
     request<BillingCheckoutResponse>("/v1/billing/checkout", { method: "POST", body }),
   billingConfirm: (invoiceId: string) =>
@@ -325,6 +350,17 @@ export const arrabApi = {
     const abort = () => controller.abort(signal?.reason);
     signal?.addEventListener("abort", abort, { once: true });
     const kill = setTimeout(() => controller.abort(), 180_000);
+    let sawMutatingTool = false;
+    const MUTATING_STREAM_TOOLS = new Set([
+      "send_email",
+      "arrange_email",
+      "write_file",
+      "apply_patch",
+      "delete_file",
+      "rename_file",
+      "create_dir",
+      "run_terminal",
+    ]);
     try {
       const response = await fetch(`${getApiBaseUrl()}/v1/conversations/${id}/messages/stream`, {
         method: "POST",
@@ -378,8 +414,10 @@ export const arrabApi = {
             } else if (eventName === "token" && parsed.text) {
               handlers.onToken?.(parsed.text);
             } else if (eventName === "tool_start" && parsed.name) {
+              if (MUTATING_STREAM_TOOLS.has(parsed.name)) sawMutatingTool = true;
               handlers.onToolStart?.(parsed.name, parsed.detail);
             } else if (eventName === "tool" && parsed.name) {
+              if (MUTATING_STREAM_TOOLS.has(parsed.name)) sawMutatingTool = true;
               handlers.onTool?.(parsed.name, parsed.result ?? "");
             } else if (eventName === "approval" && parsed.approval) {
               handlers.onApproval?.(parsed.approval);
@@ -396,7 +434,13 @@ export const arrabApi = {
         }
       }
       if (!sawDone) {
-        // Proxies sometimes drop SSE; fall back to the solid non-stream path.
+        // Never replay a turn that already mutated mail/files (duplicate emails).
+        if (sawMutatingTool) {
+          const message =
+            "Connection dropped after a tool already ran. Not retrying automatically — check results before sending again.";
+          handlers.onError?.(message);
+          throw new ApiRequestError(message, 0);
+        }
         signal?.throwIfAborted();
         const fallback = await arrabApi.sendMessage(id, body, signal);
         signal?.throwIfAborted();
@@ -411,6 +455,12 @@ export const arrabApi = {
     } catch (err: unknown) {
       signal?.throwIfAborted();
       if (err instanceof ApiRequestError) throw err;
+      if (sawMutatingTool) {
+        const message =
+          "Connection dropped after a tool already ran. Not retrying automatically — check results before sending again.";
+        handlers.onError?.(message);
+        throw new ApiRequestError(message, 0);
+      }
       // Retry a network/timeout failure; never restart a caller-cancelled request.
       try {
         const fallback = await arrabApi.sendMessage(id, body, signal);
@@ -471,6 +521,24 @@ export const arrabApi = {
       body: {},
       timeoutMs: 20_000,
     }),
+  startGenericOAuth: (
+    provider:
+      | "gitlab"
+      | "bitbucket"
+      | "linear"
+      | "slack"
+      | "notion"
+      | "whoop"
+      | "fitbit"
+      | "google_drive"
+      | "google_calendar"
+      | "figma",
+  ) =>
+    request<StartGmailOAuthResponse>(`/v1/connectors/${provider}/oauth/start`, {
+      method: "POST",
+      body: {},
+      timeoutMs: 20_000,
+    }),
   verifyConnector: (id: string) =>
     request<ConnectorPublic>(`/v1/connectors/${id}/verify`, { method: "POST", timeoutMs: 45_000 }),
   connectorResources: (id: string, q?: string) =>
@@ -506,6 +574,17 @@ export const arrabApi = {
       body,
       timeoutMs: 45_000,
     }),
+  whatsappMessages: (id: string, limit = 40) =>
+    request<ListWhatsAppMessagesResponse>(
+      `/v1/connectors/${id}/whatsapp/messages?limit=${limit}`,
+      { timeoutMs: 20_000 },
+    ),
+  sendWhatsApp: (id: string, body: SendWhatsAppRequest) =>
+    request<SendWhatsAppResponse>(`/v1/connectors/${id}/whatsapp/send`, {
+      method: "POST",
+      body,
+      timeoutMs: 45_000,
+    }),
   sshExec: (id: string, body: { command: string }) =>
     request<{ code: number | null; stdout: string; stderr: string }>(
       `/v1/connectors/${id}/ssh/exec`,
@@ -536,6 +615,25 @@ export const arrabApi = {
       { method: "POST", body, timeoutMs: 30_000 },
     ),
   usage: () => request<UsageSummaryResponse>("/v1/usage"),
+  familyHousehold: () => request<FamilyHouseholdSnapshot>("/v1/family"),
+  createFamilyMember: (body: CreateFamilyMemberRequest) =>
+    request<FamilyMemberPublic>("/v1/family/members", { method: "POST", body }),
+  updateFamilyMember: (id: string, body: UpdateFamilyMemberRequest) =>
+    request<FamilyMemberPublic>(`/v1/family/members/${id}`, { method: "PATCH", body }),
+  deleteFamilyMember: (id: string) =>
+    request<{ ok: true }>(`/v1/family/members/${id}`, { method: "DELETE" }),
+  switchFamilyProfile: (body: SwitchFamilyProfileRequest) =>
+    request<SwitchFamilyProfileResponse>("/v1/family/switch", { method: "POST", body }),
+  grantFamilyTokens: (body: GrantFamilyTokensRequest) =>
+    request<FamilyHouseholdSnapshot>("/v1/family/tokens/grant", { method: "POST", body }),
+  purchaseFamilySeats: (body: PurchaseFamilySeatsRequest) =>
+    request<FamilyHouseholdSnapshot>("/v1/family/seats/purchase", { method: "POST", body }),
+  addFamilyGuidance: (body: CreateFamilyGuidanceRequest) =>
+    request<FamilyGuidancePublic>("/v1/family/guidance", { method: "POST", body }),
+  familyGuidanceForCompanion: (companionId: string) =>
+    request<{ items: FamilyGuidancePublic[] }>(
+      `/v1/family/guidance?companionId=${encodeURIComponent(companionId)}`,
+    ),
   memberships: () => request<CollectionResponse<TeamMembership>>("/v1/memberships"),
   teamMembers: (teamId: string) =>
     request<CollectionResponse<TeamMembership>>(`/v1/teams/${teamId}/members`),

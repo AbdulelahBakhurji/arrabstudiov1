@@ -13,7 +13,6 @@ import {
   type Activity,
   type ActivityId,
   type AgentId,
-  type Approval,
   type ApprovalId,
   type ConversationId,
   type MemoryId,
@@ -23,6 +22,8 @@ import {
   type TaskRunId,
   type WorkspaceId,
 } from "@arrab/shared";
+import { encryptField } from "../lib/field-crypto.js";
+import type { AccountService } from "./account-service.js";
 import type { ConversationService } from "./conversation-service.js";
 
 export class TaskExecutionService {
@@ -30,6 +31,7 @@ export class TaskExecutionService {
     private readonly persistence: Persistence,
     private readonly conversations: ConversationService,
     private readonly gateway: AiGateway,
+    private readonly accounts: AccountService,
     private readonly ids: IdGenerator = randomIdGenerator,
     private readonly clock: Clock = systemClock,
   ) {}
@@ -59,6 +61,8 @@ export class TaskExecutionService {
     taskId: string,
     options: { requireApproval?: boolean } = {},
   ): Promise<RunTaskResponse> {
+    await this.accounts.assertWithinQuota();
+
     const task = await this.persistence.tasks.getById(taskId);
     if (!task) {
       throw new NotFoundError("Task", taskId);
@@ -179,14 +183,14 @@ export class TaskExecutionService {
         agent.id,
       );
 
-      // Capture a short memory from the run
+      // Capture a short memory from the run (encrypted at rest)
       if (summary) {
         await this.persistence.memories.create({
           id: brandId<MemoryId>(this.ids.next("mem")),
           workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
           agentId: brandId<AgentId>(agent.id),
           projectId: task.projectId,
-          content: `Task "${task.title}": ${summary}`,
+          content: encryptField(`Task "${task.title}": ${summary}`),
           createdAt: this.clock.isoNow(),
           updatedAt: this.clock.isoNow(),
         });

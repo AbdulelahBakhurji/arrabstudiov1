@@ -4,88 +4,99 @@ import logoTall from "@/assets/logotall.png";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useTheme } from "@/theme/ThemeProvider";
 import { arrabApi, ApiRequestError } from "@/lib/api";
-import { writeAccountSession } from "@/lib/account-session";
+import { readPendingWebAuth } from "@/lib/account-session";
+import { cancelAllWebAuthPolls, pollWebAuthUntilDone, resumePendingWebAuth } from "@/lib/web-auth";
 import { openExternalUrl } from "@/lib/desktop";
 import { pushToast } from "@/lib/notify";
 import { ToastHost } from "@/components/ToastHost";
-import { cn } from "@/lib/utils";
 
 export function SignInPage({ onSignedIn }: { onSignedIn: () => void }) {
   const { t, toggleLocale, dir } = useLanguage();
   const { theme, toggleTheme } = useTheme();
-  const [mode, setMode] = useState<"signIn" | "connect">("signIn");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [displayName, setDisplayName] = useState("");
   const [busy, setBusy] = useState(false);
   const [webWaiting, setWebWaiting] = useState(false);
-  const [showLocal, setShowLocal] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<{ cancelled: boolean; timer?: number }>({ cancelled: false });
+  const pollSignalRef = useRef<{ cancelled: boolean; timer?: number }>({ cancelled: false });
+  const signedInRef = useRef(false);
 
   useEffect(() => {
-    return () => {
-      abortRef.current.cancelled = true;
-      if (abortRef.current.timer) {
-        window.clearTimeout(abortRef.current.timer);
-      }
-    };
-  }, []);
+    // Resume if the user already started browser auth before a remount/focus.
+    if (readPendingWebAuth()) {
+      setWebWaiting(true);
+      void resumePendingWebAuth({ onPending: () => setWebWaiting(true) }).then((result) => {
+        if (!result || signedInRef.current) return;
+        if (result.kind === "completed") {
+          signedInRef.current = true;
+          setWebWaiting(false);
+          pushToast({
+            title: t("accountSignedIn"),
+            body: result.response.account
+              ? `${result.response.account.displayName} · ${result.response.account.email}`
+              : undefined,
+            tone: "success",
+          });
+          onSignedIn();
+          return;
+        }
+        if (result.kind === "expired") {
+          setWebWaiting(false);
+          setError(result.message || t("webAuthExpired"));
+        }
+      });
+    }
+  }, [onSignedIn, t]);
 
   function cancelWebAuth() {
-    abortRef.current.cancelled = true;
-    if (abortRef.current.timer) {
-      window.clearTimeout(abortRef.current.timer);
-      abortRef.current.timer = undefined;
-    }
+    pollSignalRef.current.cancelled = true;
+    cancelAllWebAuthPolls();
+    pollSignalRef.current = { cancelled: false };
     setWebWaiting(false);
   }
 
   async function startBrowserSignIn() {
     setError(null);
     setBusy(true);
-    abortRef.current.cancelled = false;
+    pollSignalRef.current.cancelled = false;
     try {
       const started = await arrabApi.startWebAuth();
+      const pollSecret = started.pollSecret?.trim() ?? "";
+      if (!started.state?.trim() || !pollSecret) {
+        throw new ApiRequestError(t("webAuthMissingCredentials"), 400);
+      }
       await openExternalUrl(started.authorizationUrl);
       setWebWaiting(true);
       pushToast({ title: t("webAuthOpened"), body: t("webAuthOpenedBody"), tone: "info" });
 
-      const poll = async () => {
-        if (abortRef.current.cancelled) {
-          return;
-        }
-        const polled = await arrabApi.pollWebAuth(started.state);
-        if (abortRef.current.cancelled) {
-          return;
-        }
-        if (polled.status === "completed" && polled.sessionToken) {
-          writeAccountSession(polled.sessionToken);
-          setWebWaiting(false);
-          pushToast({
-            title: t("accountSignedIn"),
-            body: polled.account ? `${polled.account.displayName} · ${polled.account.email}` : undefined,
-            tone: "success",
-          });
-          onSignedIn();
-          return;
-        }
-        if (polled.status === "expired") {
-          setWebWaiting(false);
-          setError(polled.message ?? t("webAuthExpired"));
-          return;
-        }
-        abortRef.current.timer = window.setTimeout(() => {
-          void poll().catch((err: unknown) => {
-            if (!abortRef.current.cancelled) {
-              setWebWaiting(false);
-              setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
-            }
-          });
-        }, 1600);
-      };
+      const result = await pollWebAuthUntilDone({
+        state: started.state,
+        pollSecret,
+        pollIntervalMs: started.pollIntervalMs,
+        signal: pollSignalRef.current,
+        onPending: () => setWebWaiting(true),
+      });
 
-      await poll();
+      if (result.kind === "completed") {
+        signedInRef.current = true;
+        setWebWaiting(false);
+        pushToast({
+          title: t("accountSignedIn"),
+          body: result.response.account
+            ? `${result.response.account.displayName} · ${result.response.account.email}`
+            : undefined,
+          tone: "success",
+        });
+        onSignedIn();
+        return;
+      }
+      if (result.kind === "expired") {
+        setWebWaiting(false);
+        setError(result.message || t("webAuthExpired"));
+        return;
+      }
+      if (result.kind === "error") {
+        setWebWaiting(false);
+        setError(result.message);
+      }
     } catch (err: unknown) {
       setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
       setWebWaiting(false);
@@ -94,40 +105,14 @@ export function SignInPage({ onSignedIn }: { onSignedIn: () => void }) {
     }
   }
 
-  async function submitLocal() {
-    setError(null);
-    setBusy(true);
-    try {
-      const result =
-        mode === "connect"
-          ? await arrabApi.connectAccount({
-              email,
-              password,
-              displayName: displayName.trim() || undefined,
-            })
-          : await arrabApi.signInAccount({ email, password });
-      writeAccountSession(result.sessionToken);
-      pushToast({
-        title: t("accountSignedIn"),
-        body: `${result.account.planName} · ${result.account.email}`,
-        tone: "success",
-      });
-      onSignedIn();
-    } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
-    <div dir={dir} className="relative flex h-full w-full overflow-hidden bg-[#040404] text-foreground">
+    <div dir={dir} className="relative flex h-full w-full overflow-hidden bg-[var(--color-background)] text-foreground">
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            "radial-gradient(ellipse 80% 60% at 50% -10%, rgba(255,255,255,0.08), transparent 55%), radial-gradient(ellipse 50% 40% at 85% 90%, rgba(16,185,129,0.06), transparent 50%), linear-gradient(180deg, #070707 0%, #040404 100%)",
+            "radial-gradient(ellipse 80% 60% at 50% -10%, rgba(255,255,255,0.08), transparent 55%), radial-gradient(ellipse 50% 40% at 85% 90%, rgba(16,185,129,0.06), transparent 50%), linear-gradient(180deg, var(--color-surface) 0%, var(--color-background) 100%)",
         }}
       />
       <div
@@ -139,7 +124,14 @@ export function SignInPage({ onSignedIn }: { onSignedIn: () => void }) {
         }}
       />
 
-      <div className="no-drag absolute end-4 top-4 z-20 flex items-center gap-2">
+      <div
+        dir="ltr"
+        className={
+          dir === "rtl"
+            ? "no-drag absolute left-20 top-4 z-20 flex items-center gap-2"
+            : "no-drag absolute right-4 top-4 z-20 flex items-center gap-2"
+        }
+      >
         <button
           type="button"
           onClick={toggleLocale}
@@ -200,102 +192,10 @@ export function SignInPage({ onSignedIn }: { onSignedIn: () => void }) {
                   {t("cancelWebAuth")}
                 </button>
               </div>
-            ) : (
-              <p className="text-center text-xs text-neutral-500">{t("webAuthHint")}</p>
-            )}
-
-            <button
-              type="button"
-              onClick={() => setShowLocal((open) => !open)}
-              className="w-full text-center text-xs text-neutral-500 underline-offset-2 hover:text-neutral-300 hover:underline"
-            >
-              {showLocal ? t("hideLocalAuth") : t("showLocalAuth")}
-            </button>
-
-            {showLocal ? (
-              <div className="arrab-rise space-y-3 border-t border-white/8 pt-4">
-                <div className="flex gap-2 rounded-full border border-white/10 p-1">
-                  <button
-                    type="button"
-                    onClick={() => setMode("signIn")}
-                    className={cn(
-                      "h-9 flex-1 rounded-full text-xs font-medium transition",
-                      mode === "signIn" ? "bg-white text-black" : "text-neutral-400 hover:text-white",
-                    )}
-                  >
-                    {t("signInAccount")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setMode("connect")}
-                    className={cn(
-                      "h-9 flex-1 rounded-full text-xs font-medium transition",
-                      mode === "connect" ? "bg-white text-black" : "text-neutral-400 hover:text-white",
-                    )}
-                  >
-                    {t("createAccount")}
-                  </button>
-                </div>
-
-                {mode === "connect" ? (
-                  <label className="block space-y-1.5">
-                    <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                      {t("profileName")}
-                    </span>
-                    <input
-                      value={displayName}
-                      onChange={(event) => setDisplayName(event.target.value)}
-                      className="field"
-                      autoComplete="name"
-                    />
-                  </label>
-                ) : null}
-
-                <label className="block space-y-1.5">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                    {t("accountEmail")}
-                  </span>
-                  <input
-                    type="email"
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
-                    className="field"
-                    autoComplete="email"
-                  />
-                </label>
-
-                <label className="block space-y-1.5">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                    {t("accountPassword")}
-                  </span>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    className="field"
-                    autoComplete={mode === "connect" ? "new-password" : "current-password"}
-                  />
-                </label>
-
-                <p className="text-[11px] text-neutral-500">{t("accountLocalHint")}</p>
-
-                <button
-                  type="button"
-                  disabled={busy || !email.trim() || password.length < 8}
-                  onClick={() => void submitLocal()}
-                  className="h-11 w-full rounded-full border border-white/15 text-sm font-medium text-white hover:bg-white/5 disabled:opacity-50"
-                >
-                  {mode === "connect" ? t("connectAccount") : t("signInAccount")}
-                </button>
-              </div>
             ) : null}
 
             {error ? <p className="text-sm text-red-300">{error}</p> : null}
           </div>
-
-          <p className="arrab-rise-delay-2 mt-8 text-center text-[11px] text-neutral-600">
-            {t("authGateFooter")}
-          </p>
         </div>
       </div>
       <ToastHost />

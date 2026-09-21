@@ -28,7 +28,6 @@ import {
   Play,
   Plus,
   Radio,
-  RefreshCw,
   Send,
   Settings2,
   Trash2,
@@ -55,6 +54,8 @@ import type {
   Team,
   TeamId,
   TeamMembership,
+  UsageSummaryResponse,
+  Activity,
 } from "@arrab/shared";
 import { Surface } from "@/components/StudioFrame";
 import { AgentsOfficeHost } from "@/components/AgentsOfficeHost";
@@ -80,8 +81,10 @@ import {
   readOrgEmployeeSession,
   subscribeOrgEmployeeSession,
 } from "@/lib/org-employee-session";
-import { readPrefs } from "@/lib/prefs";
+import { useOrgSeatCapabilities } from "@/lib/org-seat";
+import { prepareWorkplaceStudio } from "@/lib/workplace-handoff";
 import { cn } from "@/lib/utils";
+import { ROLE_PATH } from "@/roles/catalog";
 import { parseStudioAssign } from "@/pages/HomePage";
 
 type ViewMode =
@@ -215,6 +218,58 @@ function openDesk(agentId: string) {
   sessionStorage.setItem("arrab.deskAgent", agentId);
 }
 
+function buildWorkforceReport(input: {
+  operator: OperatorProfile | null;
+  agents: Agent[];
+  teams: Team[];
+  tasks: Task[];
+  knowledge: Knowledge[];
+  taskRuns: TaskRun[];
+  pendingApprovals: Approval[];
+}): ReportSummaryResponse {
+  const agentsByStatus: Record<string, number> = {};
+  for (const agent of input.agents) {
+    agentsByStatus[agent.status] = (agentsByStatus[agent.status] ?? 0) + 1;
+  }
+  const byStatus: Record<string, number> = {};
+  const byPriority: Record<string, number> = {};
+  let open = 0;
+  let done = 0;
+  for (const task of input.tasks) {
+    byStatus[task.status] = (byStatus[task.status] ?? 0) + 1;
+    byPriority[task.priority] = (byPriority[task.priority] ?? 0) + 1;
+    if (task.status === "done") done += 1;
+    else open += 1;
+  }
+  const operator: OperatorProfile = input.operator ?? {
+    workspaceId: "ws_local" as OperatorProfile["workspaceId"],
+    displayName: "Studio operator",
+    title: null,
+    seats: [],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  return {
+    operator,
+    agentsByStatus,
+    teams: input.teams.length,
+    tasks: {
+      total: input.tasks.length,
+      open,
+      done,
+      byStatus,
+      byPriority,
+    },
+    usage: { inputTokens: 0, outputTokens: 0, events: 0 },
+    recentActivity: [],
+    knowledgeCount: input.knowledge.length,
+    memoryCount: 0,
+    skillCount: 0,
+    pendingApprovals: input.pendingApprovals.length,
+    recentTaskRuns: input.taskRuns.slice(0, 8),
+  };
+}
+
 export function WorkforcePage() {
   const { t } = useLanguage();
   const navigate = useNavigate();
@@ -228,6 +283,9 @@ export function WorkforcePage() {
   const [pendingApprovals, setPendingApprovals] = useState<Approval[]>([]);
   const [operator, setOperator] = useState<OperatorProfile | null>(null);
   const [report, setReport] = useState<ReportSummaryResponse | null>(null);
+  const [usageSummary, setUsageSummary] = useState<UsageSummaryResponse | null>(null);
+  const [featureLog, setFeatureLog] = useState<Activity[]>([]);
+  const [reportAgentId, setReportAgentId] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<ViewMode>("map");
@@ -321,7 +379,6 @@ export function WorkforcePage() {
   const load = useCallback(() => {
     setError(null);
     setLoading(true);
-    const allowAnalytics = readPrefs().privacyAnalytics;
 
     const settled = <T,>(promise: Promise<T>, fallback: T) =>
       promise.then(
@@ -336,9 +393,7 @@ export function WorkforcePage() {
       settled(arrabApi.memberships(), { items: [] as TeamMembership[] }),
       settled(arrabApi.tasks(), { items: [] as Task[] }),
       settled(arrabApi.operator(), null as OperatorProfile | null),
-      allowAnalytics
-        ? settled(arrabApi.reportSummary(), null as ReportSummaryResponse | null)
-        : Promise.resolve(null as ReportSummaryResponse | null),
+      settled(arrabApi.reportSummary(), null as ReportSummaryResponse | null),
       settled(arrabApi.knowledge(), { items: [] as Knowledge[] }),
       settled(arrabApi.taskRuns(), { items: [] as TaskRun[] }),
       settled(arrabApi.bindings(), { items: [] as ProjectRepoBinding[] }),
@@ -361,7 +416,18 @@ export function WorkforcePage() {
           setCeoName(op.displayName);
           setSelectedSeat(op.title ?? "");
         }
-        setReport(rep);
+        setReport(
+          rep ??
+            buildWorkforceReport({
+              operator: op,
+              agents: people,
+              teams: tm.items,
+              tasks: taskList.items,
+              knowledge: know.items,
+              taskRuns: runs.items,
+              pendingApprovals: approvals.items,
+            }),
+        );
         setKnowledge(know.items);
         setTaskRuns(runs.items);
         setBindings(binds.items);
@@ -578,15 +644,11 @@ export function WorkforcePage() {
     void orgSessionTick;
     return readOrgEmployeeSession()?.employee ?? null;
   }, [orgSessionTick]);
-  // Studio owner (no employee seat) keeps operator seat rules.
-  // Signed-in employees: members/managers lose Live Map + Administration.
-  const canAssignWork =
-    orgEmployee == null
-      ? seatRole === "admin" || seatRole === "manager"
-      : orgEmployee.role === "admin" || orgEmployee.role === "manager";
-  const canAdminister =
-    orgEmployee == null ? seatRole === "admin" : orgEmployee.role === "admin";
-  const canOpenLiveMap = orgEmployee == null || orgEmployee.role === "admin";
+  // Signed-in employee seats use org-seat. Billing owner (no seat) = full admin.
+  const seatCaps = useOrgSeatCapabilities();
+  const canAssignWork = seatCaps.canAssignWork;
+  const canAdminister = seatCaps.canAdminister;
+  const canOpenLiveMap = seatCaps.canOpenLiveMap;
 
   const parsedAssign = useMemo(
     () => parseStudioAssign(assignText, peopleAgents),
@@ -658,6 +720,169 @@ export function WorkforcePage() {
     const done = tasks.filter((task) => task.status === "done").length;
     return { open, inProgress, blocked, done, total: tasks.length };
   }, [tasks]);
+
+  const liveReport = useMemo(() => {
+    if (report) return report;
+    return buildWorkforceReport({
+      operator,
+      agents,
+      teams,
+      tasks,
+      knowledge,
+      taskRuns,
+      pendingApprovals,
+    });
+  }, [agents, knowledge, operator, pendingApprovals, report, taskRuns, tasks, teams]);
+
+  const agentTokenRows = useMemo(() => {
+    const roster = [
+      ...taskBoardAgents,
+      ...agents.filter((agent) => !taskBoardAgents.some((live) => live.id === agent.id)),
+    ];
+    const resolveName = (agentId: string | null | undefined, index: number) => {
+      if (!agentId) return t("unassigned");
+      const exact = roster.find((agent) => agent.id === agentId);
+      const bySuffix = roster.find(
+        (agent) =>
+          agent.id.endsWith(agentId) ||
+          agentId.endsWith(agent.id) ||
+          agent.id.replace(/^agt[_-]?/i, "") === agentId.replace(/^agt[_-]?/i, ""),
+      );
+      const found = (exact ?? bySuffix)?.name?.trim();
+      if (found && !/^agt[_-]/i.test(found) && found !== agentId) return found;
+      if (roster.length === 1) {
+        const solo = roster[0]?.name?.trim();
+        if (solo && !/^agt[_-]/i.test(solo)) return solo;
+      }
+      if (roster[index]?.name?.trim()) return roster[index]!.name.trim();
+      return t("hqReportsEmployee");
+    };
+    const fromApi = usageSummary?.byAgent;
+    const source =
+      fromApi && fromApi.length > 0
+        ? fromApi
+        : (() => {
+            const map = new Map<
+              string,
+              { agentId: string | null; inputTokens: number; outputTokens: number; events: number }
+            >();
+            for (const event of usageSummary?.recent ?? []) {
+              const key = event.agentId ?? "__unassigned__";
+              const row = map.get(key) ?? {
+                agentId: event.agentId,
+                inputTokens: 0,
+                outputTokens: 0,
+                events: 0,
+              };
+              row.inputTokens += event.inputTokens;
+              row.outputTokens += event.outputTokens;
+              row.events += 1;
+              map.set(key, row);
+            }
+            return [...map.values()];
+          })();
+
+    const rows = source
+      .map((row, index) => ({
+        ...row,
+        name: resolveName(row.agentId, index),
+        total: row.inputTokens + row.outputTokens,
+      }))
+      .sort((a, b) => b.total - a.total);
+
+    // If usage only has orphaned IDs but we have a live roster, fold orphan
+    // spend onto the matching roster person so the board never shows "Employee 1".
+    if (rows.length > 0 && roster.length > 0) {
+      const orphaned = rows.every(
+        (row) => !row.agentId || !roster.some((agent) => agent.id === row.agentId),
+      );
+      if (orphaned && roster.length === 1 && rows.length === 1) {
+        return [
+          {
+            ...rows[0]!,
+            agentId: roster[0]!.id,
+            name: roster[0]!.name.trim() || t("hqReportsEmployee"),
+          },
+        ];
+      }
+    }
+    return rows;
+  }, [agents, t, taskBoardAgents, usageSummary]);
+
+  const selectedAgentTokens = useMemo(() => {
+    if (!reportAgentId) {
+      return {
+        inputTokens: usageSummary?.totals.inputTokens ?? liveReport.usage.inputTokens,
+        outputTokens: usageSummary?.totals.outputTokens ?? liveReport.usage.outputTokens,
+        events: usageSummary?.totals.events ?? liveReport.usage.events,
+        label: t("hqReportsAllEmployees"),
+      };
+    }
+    const row = agentTokenRows.find((item) => item.agentId === reportAgentId);
+    return {
+      inputTokens: row?.inputTokens ?? 0,
+      outputTokens: row?.outputTokens ?? 0,
+      events: row?.events ?? 0,
+      label: row?.name ?? t("unassigned"),
+    };
+  }, [agentTokenRows, liveReport.usage, reportAgentId, t, usageSummary]);
+
+  const selectedAgentRecent = useMemo(() => {
+    const recent = usageSummary?.recent ?? [];
+    if (!reportAgentId) return recent.slice(0, 10);
+    return recent.filter((item) => item.agentId === reportAgentId).slice(0, 10);
+  }, [reportAgentId, usageSummary]);
+
+  const featureLogEntries = useMemo(() => {
+    const fromReport = liveReport.recentActivity ?? [];
+    const merged = [...featureLog, ...fromReport];
+    const seen = new Set<string>();
+    const unique: Activity[] = [];
+    for (const entry of merged) {
+      if (seen.has(entry.id)) continue;
+      seen.add(entry.id);
+      unique.push(entry);
+    }
+    return unique
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 40);
+  }, [featureLog, liveReport.recentActivity]);
+
+  useEffect(() => {
+    if (view !== "reports") return;
+    const refreshReport = () => {
+      void Promise.all([
+        arrabApi.reportSummary().catch(() => null),
+        arrabApi.usage().catch(() => null),
+        arrabApi.activity().catch(() => ({ items: [] as Activity[] })),
+      ]).then(([rep, usage, activity]) => {
+        if (rep) {
+          setReport(rep);
+        } else {
+          setReport(
+            buildWorkforceReport({
+              operator,
+              agents,
+              teams,
+              tasks,
+              knowledge,
+              taskRuns,
+              pendingApprovals,
+            }),
+          );
+        }
+        if (usage) setUsageSummary(usage);
+        if (activity?.items) setFeatureLog(activity.items);
+      });
+    };
+    refreshReport();
+    const id = window.setInterval(refreshReport, 10_000);
+    window.addEventListener("focus", refreshReport);
+    return () => {
+      window.clearInterval(id);
+      window.removeEventListener("focus", refreshReport);
+    };
+  }, [agents, knowledge, operator, pendingApprovals, taskRuns, tasks, teams, view]);
 
   useEffect(() => {
     if (view !== "tasks") return;
@@ -768,6 +993,11 @@ export function WorkforcePage() {
           title: t("teamLaunchNotify"),
           body: team.name,
           href: "/workforce",
+          agentName: team.name,
+          hue: 262,
+          faceSeed: 44,
+          presenceState: "working",
+          progress: 0.4,
         });
       }
     } catch (err: unknown) {
@@ -866,6 +1096,20 @@ export function WorkforcePage() {
       case "low":
         return t("priorityLow");
     }
+  }
+
+  function featureLabel(objectType: string): string {
+    const key = objectType.trim().toLowerCase();
+    if (key.includes("task")) return t("featureLogTasks");
+    if (key.includes("knowledge") || key.includes("doc")) return t("featureLogKnowledge");
+    if (key.includes("agent") || key.includes("employee")) return t("featureLogAgents");
+    if (key.includes("approval")) return t("featureLogApprovals");
+    if (key.includes("team")) return t("featureLogTeams");
+    if (key.includes("project")) return t("featureLogProjects");
+    if (key.includes("memory")) return t("featureLogMemory");
+    if (key.includes("usage") || key.includes("token")) return t("featureLogUsage");
+    if (key.includes("skill")) return t("featureLogSkills");
+    return t("featureLogActivity");
   }
 
   async function runTask(task: Task) {
@@ -1030,14 +1274,9 @@ export function WorkforcePage() {
     navigate("/chat");
   }
 
-  function openCoworkWith(agentId: string) {
-    try {
-      localStorage.setItem("arrab.cowork.lastAgent", agentId);
-    } catch {
-      // ignore
-    }
-    sessionStorage.setItem("arrab.chatAgent", agentId);
-    navigate("/cowork");
+  function openCoworkWith(agentId: string, task?: Task) {
+    prepareWorkplaceStudio({ agentId, task: task ?? null, kindId: "arrab-assistant" });
+    navigate(`${ROLE_PATH.organization}/workplace`);
   }
 
   function openEmployeeDesk(agentId: string) {
@@ -1555,16 +1794,7 @@ export function WorkforcePage() {
             </button>
             <button
               type="button"
-              onClick={() => load()}
-              className="chat-pro-icon-btn"
-              title={t("refresh")}
-              aria-label={t("refresh")}
-            >
-              <RefreshCw className={cn("size-4", loading && "animate-spin")} strokeWidth={1.6} />
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate("/cowork")}
+              onClick={() => navigate(`${ROLE_PATH.organization}/workplace`)}
               className="chat-pro-icon-btn"
               title={t("hqOpenCowork")}
               aria-label={t("hqOpenCowork")}
@@ -2206,7 +2436,7 @@ export function WorkforcePage() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => navigate("/cowork")}
+                            onClick={() => navigate(`${ROLE_PATH.organization}/workplace`)}
                             className="hq-pulse-action"
                           >
                             <Laptop className="size-3.5" strokeWidth={1.8} />
@@ -2338,7 +2568,7 @@ export function WorkforcePage() {
                                     {task.assigneeAgentId ? (
                                       <button
                                         type="button"
-                                        onClick={() => openCoworkWith(task.assigneeAgentId!)}
+                                        onClick={() => openCoworkWith(task.assigneeAgentId!, task)}
                                         className="shrink-0 rounded-full bg-[var(--color-foreground)] px-2.5 py-1 text-[10px] font-medium text-[var(--color-background)]"
                                       >
                                         {t("hqOpenCowork")}
@@ -2445,15 +2675,6 @@ export function WorkforcePage() {
                     <p className="hq-tasks-lead">{t("hqTasksHint")}</p>
                   </div>
                   <div className="hq-tasks-mast-actions">
-                    <button
-                      type="button"
-                      className="hq-tasks-ghost"
-                      onClick={() => load()}
-                      disabled={loading}
-                    >
-                      <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
-                      {t("refresh")}
-                    </button>
                     <button
                       type="button"
                       onClick={() => setTaskFormOpen((open) => !open)}
@@ -3230,76 +3451,319 @@ export function WorkforcePage() {
             ) : null}
 
             {view === "reports" ? (
-              <section className="hq-rise rounded-[28px] border border-white/10 bg-[var(--color-surface)] p-5">
-                <h2 className="text-lg text-white">{t("ccReports")}</h2>
-                <p className="mt-1 text-sm text-neutral-500">{t("ccReportsBody")}</p>
-                {report ? (
-                  <>
-                    <div className="mt-5 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                      <OpsChip label={t("openTasks")} value={report.tasks.open} />
-                      <OpsChip label={t("doneTasks")} value={report.tasks.done} />
-                      <OpsChip label={t("knowledgeCount")} value={report.knowledgeCount} />
-                      <OpsChip label={t("memoryCount")} value={report.memoryCount} />
-                      <OpsChip label={t("skillCount")} value={report.skillCount ?? 0} />
-                      <OpsChip
-                        label={t("pendingApprovals")}
-                        value={report.pendingApprovals ?? 0}
-                      />
+              <section className="hq-reports workforce-rise" aria-label={t("ccReports")}>
+                <div className="hq-reports-stage">
+                  <header className="hq-reports-mast">
+                    <div className="min-w-0">
+                      <p className="hq-reports-kicker">{t("ccReports")}</p>
+                      <h2 className="hq-reports-title">{t("hqReportsHeadline")}</h2>
+                      <p className="hq-reports-lead">{t("hqReportsHint")}</p>
                     </div>
-                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                      <OpsChip label={t("usageInputTokens")} value={report.usage.inputTokens} />
-                      <OpsChip label={t("usageOutputTokens")} value={report.usage.outputTokens} />
+                    <div className="hq-reports-live">
+                      <span className="hq-reports-live-dot" aria-hidden />
+                      {t("hqReportsLive")}
                     </div>
-                    <div className="mt-6 grid gap-4 lg:grid-cols-2">
+                  </header>
+
+                  <div className="hq-reports-command">
+                    <div className="hq-reports-command-main">
+                      <p className="hq-reports-command-label">{t("hqReportsTokenFocus")}</p>
+                      <div className="hq-reports-command-pick">
+                        <UserRound className="size-4 opacity-60" />
+                        <select
+                          value={reportAgentId}
+                          onChange={(e) => setReportAgentId(e.target.value)}
+                          aria-label={t("hqReportsPickEmployee")}
+                        >
+                          <option value="">{t("hqReportsAllEmployees")}</option>
+                          {taskBoardAgents.map((agent) => (
+                            <option key={agent.id} value={agent.id}>
+                              {agent.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <p className="hq-reports-command-name">{selectedAgentTokens.label}</p>
+                      <p className="hq-reports-command-total">
+                        {(
+                          selectedAgentTokens.inputTokens + selectedAgentTokens.outputTokens
+                        ).toLocaleString()}
+                        <span> {t("hqReportsTokens").toLowerCase()}</span>
+                      </p>
+                      {(() => {
+                        const total =
+                          selectedAgentTokens.inputTokens + selectedAgentTokens.outputTokens;
+                        const inPct =
+                          total > 0
+                            ? Math.round((selectedAgentTokens.inputTokens / total) * 100)
+                            : 50;
+                        return (
+                          <div className="hq-reports-split" aria-hidden={total === 0}>
+                            <div className="hq-reports-split-track">
+                              <i className="is-in" style={{ width: `${inPct}%` }} />
+                              <i className="is-out" style={{ width: `${100 - inPct}%` }} />
+                            </div>
+                            <div className="hq-reports-split-legend">
+                              <span>
+                                <em className="is-in" />
+                                {t("usageInputTokens")} {inPct}%
+                              </span>
+                              <span>
+                                <em className="is-out" />
+                                {t("usageOutputTokens")} {100 - inPct}%
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                    <div className="hq-reports-command-stats">
                       <div>
-                        <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">
-                          {t("agentsByStatus")}
-                        </p>
-                        <div className="mt-3 space-y-2">
-                          {Object.entries(report.agentsByStatus).map(([status, count]) => (
-                            <BarRow
-                              key={status}
-                              label={status}
-                              value={count}
-                              max={Math.max(1, agents.length)}
-                            />
-                          ))}
-                        </div>
+                        <span>{t("usageInputTokens")}</span>
+                        <strong>{selectedAgentTokens.inputTokens.toLocaleString()}</strong>
                       </div>
                       <div>
-                        <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">
-                          {t("runHistory")}
-                        </p>
-                        <ul className="mt-3 space-y-2">
-                          {(report.recentTaskRuns ?? []).slice(0, 6).map((run) => (
-                            <li key={run.id} className="text-sm text-neutral-300">
-                              <span className="text-neutral-500">{run.status}</span>
-                              {" · "}
-                              {run.summary ?? t("noRunSummary")}
-                            </li>
-                          ))}
-                          {(report.recentTaskRuns ?? []).length === 0 ? (
-                            <li className="text-sm text-neutral-600">{t("noRunsYet")}</li>
-                          ) : null}
-                        </ul>
+                        <span>{t("usageOutputTokens")}</span>
+                        <strong>{selectedAgentTokens.outputTokens.toLocaleString()}</strong>
                       </div>
-                      <div className="lg:col-span-2">
-                        <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">
-                          {t("recentPulse")}
-                        </p>
-                        <ul className="mt-3 space-y-2">
-                          {report.recentActivity.slice(0, 8).map((entry) => (
-                            <li key={entry.id} className="text-sm text-neutral-300">
-                              {entry.summary}
-                            </li>
-                          ))}
-                        </ul>
+                      <div>
+                        <span>{t("hqReportsEvents")}</span>
+                        <strong>{selectedAgentTokens.events.toLocaleString()}</strong>
+                      </div>
+                      <div>
+                        <span>{t("hqReportsHealth")}</span>
+                        <strong>
+                          {liveReport.tasks.open === 0 && (liveReport.pendingApprovals ?? 0) === 0
+                            ? t("hqReportsHealthClear")
+                            : t("hqReportsHealthActive")}
+                        </strong>
                       </div>
                     </div>
-                  </>
-                ) : (
-                  <p className="mt-4 text-sm text-neutral-500">{t("loading")}</p>
-                )}
+                  </div>
+
+                  <div className="hq-reports-strip">
+                    <div>
+                      <span>{t("hqReportsWorkforce")}</span>
+                      <strong>{agents.length}</strong>
+                      <em>
+                        {liveReport.teams} {t("hqReportsTeams").toLowerCase()}
+                      </em>
+                    </div>
+                    <div>
+                      <span>{t("openTasks")}</span>
+                      <strong>{liveReport.tasks.open}</strong>
+                      <em>
+                        {liveReport.tasks.done} {t("doneTasks").toLowerCase()}
+                      </em>
+                    </div>
+                    <div>
+                      <span>{t("knowledgeCount")}</span>
+                      <strong>{liveReport.knowledgeCount}</strong>
+                      <em>
+                        {liveReport.pendingApprovals ?? 0} {t("pendingApprovals").toLowerCase()}
+                      </em>
+                    </div>
+                    <div>
+                      <span>{t("skillCount")}</span>
+                      <strong>{liveReport.skillCount ?? 0}</strong>
+                      <em>
+                        {liveReport.memoryCount} {t("memoryCount").toLowerCase()}
+                      </em>
+                    </div>
+                  </div>
+
+                  <div className="hq-reports-grid">
+                    <article className="hq-reports-card">
+                      <header>
+                        <h3>{t("hqReportsTaskFlow")}</h3>
+                        <p>{t("hqReportsTaskFlowBody")}</p>
+                      </header>
+                      <div className="hq-reports-flow">
+                        {TASK_COLUMNS.map((status) => {
+                          const value = liveReport.tasks.byStatus[status] ?? 0;
+                          const max = Math.max(1, liveReport.tasks.total, value);
+                          return (
+                            <div key={status} className="hq-reports-flow-row">
+                              <div className="hq-reports-flow-meta">
+                                <span>{taskColumnLabel(status)}</span>
+                                <strong>{value}</strong>
+                              </div>
+                              <div className="hq-reports-flow-track">
+                                <i style={{ width: `${Math.round((value / max) * 100)}%` }} />
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </article>
+
+                    <article className="hq-reports-card">
+                      <header>
+                        <h3>{t("hqReportsPriority")}</h3>
+                        <p>{t("hqReportsPriorityBody")}</p>
+                      </header>
+                      <div className="hq-reports-prio-grid">
+                        {(["urgent", "high", "medium", "low"] as TaskPriority[]).map((priority) => (
+                          <div key={priority} className={cn("hq-reports-prio", `is-${priority}`)}>
+                            <span>{priorityLabel(priority)}</span>
+                            <strong>{liveReport.tasks.byPriority[priority] ?? 0}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </article>
+
+                    <article className="hq-reports-card hq-reports-card-spend">
+                      <header>
+                        <h3>{t("hqReportsTopSpenders")}</h3>
+                        <p>{t("hqReportsTopSpendersBody")}</p>
+                      </header>
+                      <div className="hq-reports-people">
+                        {agentTokenRows.slice(0, 8).map((row, index) => {
+                          const orgTotal = Math.max(
+                            1,
+                            agentTokenRows.reduce((sum, item) => sum + item.total, 0),
+                          );
+                          const max = Math.max(1, agentTokenRows[0]?.total ?? row.total);
+                          const share = Math.round((row.total / orgTotal) * 100);
+                          const bar = Math.max(6, Math.round((row.total / max) * 100));
+                          const active = reportAgentId === (row.agentId ?? "");
+                          const initials = row.name
+                            .split(/\s+/)
+                            .filter(Boolean)
+                            .slice(0, 2)
+                            .map((part) => part[0]?.toUpperCase() ?? "")
+                            .join("");
+                          return (
+                            <button
+                              key={row.agentId ?? `spender-${index}`}
+                              type="button"
+                              className={cn("hq-reports-person", active && "is-on")}
+                              onClick={() => setReportAgentId(row.agentId ?? "")}
+                            >
+                              <span className="hq-reports-rank">#{index + 1}</span>
+                              <span className="hq-reports-avatar" aria-hidden>
+                                {initials || "A"}
+                              </span>
+                              <span className="hq-reports-person-copy">
+                                <strong>{row.name}</strong>
+                                <em>
+                                  {share}% {t("hqReportsShare").toLowerCase()}
+                                  {" · "}
+                                  {row.inputTokens.toLocaleString()} in
+                                  {" / "}
+                                  {row.outputTokens.toLocaleString()} out
+                                </em>
+                                <span className="hq-reports-person-track">
+                                  <i style={{ width: `${bar}%` }} />
+                                </span>
+                              </span>
+                              <span className="hq-reports-person-total">
+                                {row.total.toLocaleString()}
+                                <small>{t("hqReportsTokens")}</small>
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {agentTokenRows.length === 0 ? (
+                          <p className="hq-reports-empty">{t("hqReportsNoTokens")}</p>
+                        ) : null}
+                      </div>
+                    </article>
+
+                    <article className="hq-reports-card">
+                      <header>
+                        <h3>{t("hqReportsTokenTimeline")}</h3>
+                        <p>{t("hqReportsTokenTimelineBody")}</p>
+                      </header>
+                      <ul className="hq-reports-timeline">
+                        {selectedAgentRecent.map((event, index) => {
+                          const who =
+                            agentTokenRows.find((row) => row.agentId === event.agentId)?.name ??
+                            (() => {
+                              const matched = event.agentId
+                                ? agents.find((agent) => agent.id === event.agentId)?.name?.trim()
+                                : null;
+                              if (matched && !/^agt[_-]/i.test(matched) && matched !== event.agentId) {
+                                return matched;
+                              }
+                              if (taskBoardAgents.length === 1) {
+                                return taskBoardAgents[0]!.name.trim() || t("hqReportsEmployee");
+                              }
+                              return event.agentId ? t("hqReportsEmployee") : t("unassigned");
+                            })();
+                          const total = event.inputTokens + event.outputTokens;
+                          return (
+                            <li key={event.id}>
+                              <span className="hq-reports-timeline-dot" aria-hidden />
+                              <div>
+                                <strong>
+                                  {total.toLocaleString()} {t("hqReportsTokens").toLowerCase()}
+                                </strong>
+                                <p>
+                                  {who}
+                                  {" · "}
+                                  {event.inputTokens.toLocaleString()} in
+                                  {" / "}
+                                  {event.outputTokens.toLocaleString()} out
+                                  {" · "}
+                                  {new Date(event.createdAt).toLocaleString()}
+                                </p>
+                              </div>
+                            </li>
+                          );
+                        })}
+                        {selectedAgentRecent.length === 0 ? (
+                          <li className="hq-reports-empty">{t("hqReportsNoTokenEvents")}</li>
+                        ) : null}
+                      </ul>
+                    </article>
+                  </div>
+
+                  <div className="hq-reports-bottom">
+                    <article className="hq-reports-card">
+                      <header>
+                        <h3>{t("runHistory")}</h3>
+                        <p>{t("hqReportsRunsBody")}</p>
+                      </header>
+                      <ul className="hq-reports-clean-list">
+                        {(liveReport.recentTaskRuns ?? []).slice(0, 8).map((run) => (
+                          <li key={run.id}>
+                            <span className={cn("hq-reports-status", `is-${run.status}`)}>
+                              {run.status.replaceAll("_", " ")}
+                            </span>
+                            <p>{run.summary ?? t("noRunSummary")}</p>
+                          </li>
+                        ))}
+                        {(liveReport.recentTaskRuns ?? []).length === 0 ? (
+                          <li className="hq-reports-empty">{t("noRunsYet")}</li>
+                        ) : null}
+                      </ul>
+                    </article>
+
+                    <article className="hq-reports-card">
+                      <header>
+                        <h3>{t("hqReportsFeatureLog")}</h3>
+                        <p>{t("hqReportsFeatureLogBody")}</p>
+                      </header>
+                      <ul className="hq-reports-clean-list">
+                        {featureLogEntries.map((entry) => (
+                          <li key={entry.id}>
+                            <span className="hq-reports-feature">
+                              {featureLabel(entry.objectType)}
+                            </span>
+                            <div>
+                              <p>{entry.summary}</p>
+                              <em>{new Date(entry.createdAt).toLocaleString()}</em>
+                            </div>
+                          </li>
+                        ))}
+                        {featureLogEntries.length === 0 ? (
+                          <li className="hq-reports-empty">{t("hqReportsNoPulse")}</li>
+                        ) : null}
+                      </ul>
+                    </article>
+                  </div>
+                </div>
               </section>
             ) : null}
             </div>

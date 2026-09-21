@@ -12,6 +12,8 @@ export default tseslint.config(
       "**/*.config.js",
       "**/*.config.ts",
       "apps/desktop/src-tauri/**",
+      "apps/testingworkspace/public/**",
+      "docs/design/**",
     ],
   },
   js.configs.recommended,

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { Building2, Check, Sparkles, UserRound } from "lucide-react";
+import { Building2, Check, Home, UserRound } from "lucide-react";
 import {
   SUBSCRIPTION_PLANS,
   SUBSCRIPTION_REDEEM_CODES,
@@ -26,11 +26,48 @@ function priceLabel(plan: SubscriptionPlan, locale: string): string {
   return (plan.monthlyPriceHalalas / 100).toLocaleString(locale === "ar" ? "ar-SA" : "en-US");
 }
 
-function tokenLabel(plan: SubscriptionPlan, unlimited: string): string {
-  if (plan.monthlyTokenLimit === null) {
-    return unlimited;
+/** Cursor-style usage multiplier vs Free — never show raw token counts on plans. */
+function usageTierLabel(plan: SubscriptionPlan): string {
+  const base = SUBSCRIPTION_PLANS.free.monthlyTokenLimit || 100_000;
+  const mult = Math.max(1, Math.round(plan.monthlyTokenLimit / base));
+  return `${mult}×`;
+}
+
+function badgeLabel(
+  badge: string,
+  t: (key: "plansMostChosen" | "plansScale" | "plansHousehold" | "plansFamilyPick" | "plansTrial") => string,
+): string {
+  if (badge === "Most chosen") return t("plansMostChosen");
+  if (badge === "Scale") return t("plansScale");
+  if (badge === "Household") return t("plansHousehold");
+  if (badge === "Family pick") return t("plansFamilyPick");
+  if (badge === "Trial") return t("plansTrial");
+  return badge;
+}
+
+function audienceCopy(
+  audience: PlanAudience,
+  t: ReturnType<typeof useLanguage>["t"],
+): { title: string; body: string; forLabel: string } {
+  if (audience === "family") {
+    return {
+      title: t("plansFamilyTitle"),
+      body: t("plansFamilyBody"),
+      forLabel: t("plansForFamily"),
+    };
   }
-  return plan.monthlyTokenLimit.toLocaleString();
+  if (audience === "organization") {
+    return {
+      title: t("plansOrganizationTitle"),
+      body: t("plansOrganizationBody"),
+      forLabel: t("plansForStudio"),
+    };
+  }
+  return {
+    title: t("plansIndividualTitle"),
+    body: t("plansIndividualBody"),
+    forLabel: t("plansForYou"),
+  };
 }
 
 export function PlansCatalog({
@@ -41,6 +78,8 @@ export function PlansCatalog({
   onAccountChanged,
   onNeedSignIn,
   variant = "page",
+  /** When set, user cannot browse other audiences (locked by account plan). */
+  lockAudience = false,
 }: {
   audience: PlanAudience;
   onAudienceChange: (next: PlanAudience) => void;
@@ -49,18 +88,32 @@ export function PlansCatalog({
   onAccountChanged?: (status: AccountStatusResponse) => void;
   onNeedSignIn?: () => void;
   variant?: "page" | "settings";
+  lockAudience?: boolean;
 }) {
   const { t, locale } = useLanguage();
   const navigate = useNavigate();
   const { href } = useRole();
   const [busyId, setBusyId] = useState<SubscriptionPlanId | null>(null);
 
+  const lockedAudience = useMemo(() => {
+    if (!lockAudience || !currentPlanId) return null;
+    return SUBSCRIPTION_PLANS[currentPlanId]?.audience ?? null;
+  }, [lockAudience, currentPlanId]);
+
+  const activeAudience = lockedAudience ?? audience;
+
   const plans = useMemo(
-    () => Object.values(SUBSCRIPTION_PLANS).filter((plan) => plan.audience === audience),
-    [audience],
+    () => Object.values(SUBSCRIPTION_PLANS).filter((plan) => plan.audience === activeAudience),
+    [activeAudience],
   );
 
-  const isIndividual = audience === "individual";
+  const copy = audienceCopy(activeAudience, t);
+  const accent =
+    activeAudience === "family"
+      ? "family"
+      : activeAudience === "organization"
+        ? "organization"
+        : "individual";
 
   function goSignIn() {
     if (onNeedSignIn) {
@@ -72,6 +125,14 @@ export function PlansCatalog({
 
   async function choosePlan(plan: SubscriptionPlan) {
     if (plan.id === currentPlanId) {
+      return;
+    }
+    if (lockedAudience && plan.audience !== lockedAudience) {
+      pushToast({
+        title: t("plansAudienceLocked"),
+        body: t("plansAudienceLockedBody"),
+        tone: "warn",
+      });
       return;
     }
     if (!signedIn) {
@@ -102,7 +163,7 @@ export function PlansCatalog({
   }
 
   return (
-    <div className={cn("plans-catalog", isIndividual ? "plans-individual" : "plans-organization")}>
+    <div className={cn("plans-catalog", `plans-${accent}`)}>
       <div
         className={cn(
           "flex flex-wrap items-center justify-between gap-4",
@@ -119,31 +180,48 @@ export function PlansCatalog({
               variant === "page" ? "text-3xl sm:text-[2.15rem]" : "text-2xl",
             )}
           >
-            {isIndividual ? t("plansIndividualTitle") : t("plansOrganizationTitle")}
+            {copy.title}
           </h2>
-          <p className="mt-2 max-w-xl text-sm leading-relaxed text-neutral-400">
-            {isIndividual ? t("plansIndividualBody") : t("plansOrganizationBody")}
-          </p>
+          <p className="mt-2 max-w-xl text-sm leading-relaxed text-neutral-400">{copy.body}</p>
+          {lockedAudience ? (
+            <p className="mt-2 text-xs text-neutral-500">{t("plansAudienceLockedHint")}</p>
+          ) : null}
         </div>
 
-        <div
-          className="inline-flex rounded-full border border-white/10 bg-black/40 p-1"
-          role="tablist"
-          aria-label={t("plans")}
-        >
-          <AudienceTab
-            active={isIndividual}
-            icon={UserRound}
-            label={t("plansIndividuals")}
-            onClick={() => onAudienceChange("individual")}
-          />
-          <AudienceTab
-            active={!isIndividual}
-            icon={Building2}
-            label={t("plansOrganizations")}
-            onClick={() => onAudienceChange("organization")}
-          />
-        </div>
+        {!lockedAudience ? (
+          <div
+            className="inline-flex flex-wrap rounded-full border border-white/10 bg-black/40 p-1"
+            role="tablist"
+            aria-label={t("plans")}
+          >
+            <AudienceTab
+              active={activeAudience === "individual"}
+              icon={UserRound}
+              label={t("plansIndividuals")}
+              onClick={() => onAudienceChange("individual")}
+            />
+            <AudienceTab
+              active={activeAudience === "family"}
+              icon={Home}
+              label={t("plansFamilies")}
+              onClick={() => onAudienceChange("family")}
+            />
+            <AudienceTab
+              active={activeAudience === "organization"}
+              icon={Building2}
+              label={t("plansOrganizations")}
+              onClick={() => onAudienceChange("organization")}
+            />
+          </div>
+        ) : (
+          <div className="rounded-full border border-white/10 bg-black/40 px-3 py-1.5 text-[11px] uppercase tracking-[0.14em] text-neutral-300">
+            {activeAudience === "family"
+              ? t("plansFamilies")
+              : activeAudience === "organization"
+                ? t("plansOrganizations")
+                : t("plansIndividuals")}
+          </div>
+        )}
       </div>
 
       {currentPlanId ? (
@@ -161,39 +239,48 @@ export function PlansCatalog({
       <div
         className={cn(
           "grid gap-4",
-          isIndividual ? "lg:grid-cols-[minmax(0,1fr)_minmax(0,1.08fr)]" : "lg:grid-cols-2",
+          activeAudience === "individual"
+            ? "lg:grid-cols-[minmax(0,1fr)_minmax(0,1.08fr)]"
+            : "lg:grid-cols-2",
         )}
       >
         {plans.map((plan) => {
           const current = plan.id === currentPlanId;
-          const featured = Boolean(plan.highlight) || plan.id === "unlimited";
+          const featured = Boolean(plan.highlight);
           return (
             <article
               key={plan.id}
               className={cn(
                 "relative overflow-hidden rounded-[22px] border p-5 sm:p-6",
                 featured
-                  ? isIndividual
-                    ? "border-[#7eb6ff]/50 bg-gradient-to-br from-[#121a28] via-[#0d1420] to-[#0a0e14]"
-                    : "border-amber-300/35 bg-gradient-to-br from-[#1a1610] via-[#12100c] to-[#0a0e14]"
-                  : "border-white/10 bg-[#080808]",
+                  ? cn(
+                      "plans-card-featured",
+                      accent === "individual"
+                        ? "border-[#7eb6ff]/50 bg-gradient-to-br from-[#121a28] via-[#0d1420] to-[#0a0e14]"
+                        : accent === "family"
+                          ? "border-rose-300/40 bg-gradient-to-br from-[#1a1216] via-[#140f12] to-[#0a0e14]"
+                          : "border-amber-300/35 bg-gradient-to-br from-[#1a1610] via-[#12100c] to-[#0a0e14]",
+                    )
+                  : "border-white/10 bg-[var(--color-surface)]",
               )}
             >
               {plan.badge ? (
                 <span
                   className={cn(
                     "absolute end-5 top-5 rounded-full px-2.5 py-1 text-[10px] uppercase tracking-[0.14em]",
-                    isIndividual
+                    accent === "individual"
                       ? "bg-[#7eb6ff] text-[#0a1220]"
-                      : "bg-amber-200 text-[#1a1408]",
+                      : accent === "family"
+                        ? "bg-rose-200 text-[#1a0e12]"
+                        : "bg-amber-200 text-[#1a1408]",
                   )}
                 >
-                  {plan.badge === "Most chosen" ? t("plansMostChosen") : t("plansScale")}
+                  {badgeLabel(plan.badge, t)}
                 </span>
               ) : null}
 
               <p className="text-[11px] uppercase tracking-[0.16em] text-neutral-500">
-                {isIndividual ? t("plansForYou") : t("plansForStudio")}
+                {copy.forLabel}
               </p>
               <div className="mt-2 flex items-end gap-2">
                 <h3 className="text-2xl font-medium tracking-[-0.03em] text-white">{plan.name}</h3>
@@ -213,8 +300,11 @@ export function PlansCatalog({
                   {t("plansSar")} {t("plansPerMonth")}
                 </span>
               </div>
-              <p className="mt-1 text-xs tabular-nums text-neutral-500">
-                {tokenLabel(plan, t("unlimitedTokens"))} {t("tokensPerMonth")}
+              <p className="mt-1 text-xs text-neutral-500">
+                {t("plansUsageTier").replace("{n}", usageTierLabel(plan))}
+                {plan.seatLimit
+                  ? ` · ${t("plansSeats").replace("{n}", String(plan.seatLimit))}`
+                  : null}
               </p>
 
               <ul className="mt-6 space-y-2.5">
@@ -224,9 +314,11 @@ export function PlansCatalog({
                       className={cn(
                         "mt-0.5 size-3.5 shrink-0",
                         featured
-                          ? isIndividual
+                          ? accent === "individual"
                             ? "text-[#7eb6ff]"
-                            : "text-amber-200"
+                            : accent === "family"
+                              ? "text-rose-200"
+                              : "text-amber-200"
                           : "text-neutral-500",
                       )}
                       strokeWidth={2.2}
@@ -245,9 +337,11 @@ export function PlansCatalog({
                   current
                     ? "border border-white/15 text-neutral-400"
                     : featured
-                      ? isIndividual
+                      ? accent === "individual"
                         ? "bg-[#7eb6ff] text-[#0a1220] hover:bg-[#9bc5ff]"
-                        : "bg-amber-200 text-[#1a1408] hover:bg-amber-100"
+                        : accent === "family"
+                          ? "bg-rose-200 text-[#1a0e12] hover:bg-rose-100"
+                          : "bg-amber-200 text-[#1a1408] hover:bg-amber-100"
                       : "bg-white text-black hover:bg-neutral-200",
                 )}
               >
@@ -264,25 +358,29 @@ export function PlansCatalog({
         })}
       </div>
 
-      <div className="mt-6 grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
-        <div className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3.5">
-          <p className="flex items-center gap-2 text-sm text-white">
-            <Sparkles className="size-3.5" strokeWidth={1.8} />
-            {t("plansTrustTitle")}
-          </p>
-          <p className="mt-1 text-xs leading-relaxed text-neutral-500">{t("plansTrustBody")}</p>
-          <p className="mt-2 text-[11px] uppercase tracking-[0.14em] text-neutral-600">
-            {t("plansPayMarks")}
-          </p>
+      {!lockedAudience ? (
+        <div className="mt-6 flex justify-end">
+          <button
+            type="button"
+            onClick={() =>
+              onAudienceChange(
+                activeAudience === "individual"
+                  ? "family"
+                  : activeAudience === "family"
+                    ? "organization"
+                    : "individual",
+              )
+            }
+            className="h-11 rounded-full border border-white/15 px-5 text-sm text-neutral-300 hover:bg-white/5 hover:text-white"
+          >
+            {activeAudience === "individual"
+              ? t("plansSwitchToFamily")
+              : activeAudience === "family"
+                ? t("plansSwitchToOrg")
+                : t("plansSwitchToIndividual")}
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => onAudienceChange(isIndividual ? "organization" : "individual")}
-          className="h-11 rounded-full border border-white/15 px-5 text-sm text-neutral-300 hover:bg-white/5 hover:text-white"
-        >
-          {isIndividual ? t("plansSwitchToOrg") : t("plansSwitchToIndividual")}
-        </button>
-      </div>
+      ) : null}
     </div>
   );
 }

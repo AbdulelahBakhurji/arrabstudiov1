@@ -5,9 +5,30 @@
     <link rel="icon" type="image/png" href="/symbol.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Arrab Studio</title>
+    <style>
+      html,
+      body,
+      #root {
+        height: 100%;
+        margin: 0;
+        background: #17171f;
+        color: #f4f3fb;
+      }
+      #boot-splash {
+        display: grid;
+        place-items: center;
+        height: 100%;
+        font: 12px/1.4 system-ui, sans-serif;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: #8b8799;
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot-splash">Arrab Studio</div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

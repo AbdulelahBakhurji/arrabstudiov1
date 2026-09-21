@@ -15,7 +15,9 @@ import {
   type MoyasarInvoice,
 } from "./moyasar.js";
 
-const PLAN_IDS = new Set<SubscriptionPlanId>(["free", "pro", "team", "unlimited"]);
+const PLAN_IDS = new Set<SubscriptionPlanId>(
+  Object.keys(SUBSCRIPTION_PLANS) as SubscriptionPlanId[],
+);
 
 function isPlanId(value: string): value is SubscriptionPlanId {
   return PLAN_IDS.has(value as SubscriptionPlanId);
@@ -26,7 +28,7 @@ function planFromInvoice(invoice: MoyasarInvoice): SubscriptionPlanId | null {
   if (fromMeta && isPlanId(fromMeta)) {
     return fromMeta;
   }
-  const fromDescription = invoice.description?.match(/\(([a-z]+)\)\s*$/i);
+  const fromDescription = invoice.description?.match(/\(([a-z_]+)\)\s*$/i);
   const captured = fromDescription?.[1]?.toLowerCase();
   if (captured && isPlanId(captured)) {
     return captured;

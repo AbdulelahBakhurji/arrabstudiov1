@@ -57,7 +57,7 @@
         </label>
 
         <p class="fine create-only">You’ll start on the Free plan. Billing options come next.</p>
-        <p class="fine desktop-only" id="desktop-hint" hidden>Opened from Arrab Studio — return to the app when you’re done.</p>
+        <p class="fine desktop-only" id="desktop-hint" hidden>Opened from Arrab Studio — when sign-in succeeds, the app opens automatically.</p>
 
         <button type="submit" class="cta" id="submit">Continue</button>
         <p class="status" id="status" role="status" aria-live="polite"></p>
@@ -71,11 +71,12 @@
           <code id="session-token"></code>
           <button type="button" class="linkish" id="copy-token">Copy token</button>
         </div>
-        <p class="fine">You can close this window and open Arrab Studio.</p>
+        <p class="fine" id="success-fine">Opening Arrab Studio…</p>
+        <a class="cta" id="open-studio" href="arrab://auth/complete" hidden>Open Arrab Studio</a>
       </div>
     </section>
   </main>
 
-  <script src="/app.js?v=6" defer></script>
+  <script src="/app.js?v=8" defer></script>
 </body>
 </html>

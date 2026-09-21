@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arrab Studio · Live Map</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #e8e9f0; --paper: #f8f9fd; --ink: #17171f; --muted: #5a5768;
+  --line: rgba(23,23,31,.12); --scene: #d8dbd4; --accent: #3d5a4a;
+  --font: "Cairo", "SF Pro Display", "Segoe UI", sans-serif;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; background: transparent; color: var(--ink); font-family: var(--font); }
+#hero { position: fixed; inset: 0; background: transparent; }
+#scene { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+#scene:active { cursor: grabbing; }
+#tags { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+
+/* agent name chips — compact so desks stay visible */
+.tag {
+  position: absolute; transform: translate(-50%, -120%);
+  background: rgba(255,255,255,.94); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 999px; padding: 2px 7px 2px 5px; font-size: 9px; font-weight: 700;
+  letter-spacing: .04em; white-space: nowrap; display: flex; align-items: center; gap: 4px;
+  pointer-events: auto; cursor: pointer; max-width: 110px;
+  box-shadow: 0 4px 14px rgba(23,23,31,.08);
+}
+.tag .nm { overflow: hidden; text-overflow: ellipsis; }
+.tag.sel { background: var(--ink); color: #fff; }
+.tag .dot { width: 5px; height: 5px; border-radius: 50%; background: #c6ccc5; flex: none; }
+.tag .dot.on { background: #4f9a5a; }
+
+/* office labels float HIGH above rooms */
+.room-tag {
+  position: absolute; transform: translate(-50%, -130%);
+  background: rgba(255,255,255,.95); border: 1px solid var(--line); border-radius: 14px;
+  padding: 8px 14px; pointer-events: auto; cursor: pointer; text-align: center; min-width: 120px;
+  box-shadow: 0 12px 32px rgba(23,23,31,.12);
+  backdrop-filter: blur(8px);
+}
+.room-tag:hover, .room-tag.sel { border-color: var(--ink); box-shadow: 0 14px 36px rgba(23,23,31,.16); }
+.room-tag .n { font-size: 10px; letter-spacing: .16em; text-transform: uppercase; font-weight: 700; }
+.room-tag .c { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.room-tag.cross {
+  min-width: 0; padding: 6px 10px; border-radius: 999px; font-size: 10px; font-weight: 700;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+}
+.room-tag.brain {
+  border-color: #8fa3c8; background: linear-gradient(180deg, #f4f7fc, #e8eef8);
+  box-shadow: 0 14px 36px rgba(90, 111, 148, .18);
+}
+.room-tag.brain .n { color: #3d4f6f; }
+.room-tag.files {
+  border-color: #a8b4c4; background: linear-gradient(180deg, #f6f7f9, #e9edf3);
+}
+
+#hint {
+  position: fixed; right: 18px; top: 18px; z-index: 5;
+  font-size: 11.5px; background: rgba(255,255,255,.88); border: 1px solid var(--line);
+  border-radius: 10px; padding: 6px 11px; color: var(--muted); pointer-events: none;
+}
+#live {
+  /* Host chrome already shows Back / LIVE MAP — hide this duplicate white pill */
+  display: none !important;
+}
+
+#zoomCtl {
+  position: fixed; left: 18px; bottom: 18px; z-index: 6; display: flex; flex-direction: column; gap: 6px;
+  padding: 6px; border-radius: 999px; background: rgba(255,255,255,.92); border: 1px solid var(--line);
+  box-shadow: 0 12px 28px rgba(23,23,31,.1); transition: bottom .35s ease;
+}
+#zoomCtl button {
+  width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: #fff;
+  cursor: pointer; font-size: 18px; color: var(--ink); line-height: 1;
+}
+#zoomCtl button:hover { border-color: var(--ink); }
+body.panel-open #zoomCtl { bottom: 18px; left: 18px; }
+
+/* right dock — department / agent panels */
+#dock {
+  position: fixed; top: 64px; right: 18px; bottom: 18px; width: min(380px, calc(100vw - 36px));
+  z-index: 12; display: none; flex-direction: column;
+  background: rgba(248,249,253,.97); border: 1px solid var(--line); border-radius: 20px;
+  box-shadow: 0 24px 70px rgba(23,23,31,.16); overflow: hidden;
+  backdrop-filter: blur(16px);
+}
+#dock.on { display: flex; }
+#dock .dk-h {
+  display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line);
+}
+#dock .dk-h .back {
+  border: 1px solid var(--line); background: #fff; border-radius: 999px; width: 32px; height: 32px;
+  cursor: pointer; font-size: 16px; line-height: 1; color: var(--ink);
+}
+#dock .dk-h .ttl { flex: 1; min-width: 0; }
+#dock .dk-h .ttl .k { font-size: 9px; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+#dock .dk-h .ttl .v { font-size: 17px; font-weight: 700; letter-spacing: -.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#dock .dk-tabs { display: flex; gap: 4px; padding: 10px 12px 0; border-bottom: 1px solid var(--line); }
+#dock .dk-tabs button {
+  flex: 1; border: 0; background: none; padding: 9px 8px; cursor: pointer; font: inherit;
+  font-size: 10px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; color: var(--muted);
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+#dock .dk-tabs button.on { color: var(--ink); border-bottom-color: var(--ink); }
+#dock .dk-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+#dock .meta {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+}
+#dock .meta .m {
+  background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px;
+}
+#dock .meta .m .k { font-size: 9px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 700; }
+#dock .meta .m .v { font-size: 14px; font-weight: 600; margin-top: 2px; }
+#dock .row {
+  display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid var(--line);
+  border-radius: 12px; padding: 10px 12px; cursor: pointer; text-align: left; width: 100%; font: inherit;
+}
+#dock .row:hover { border-color: var(--ink); }
+#dock .row .dot { width: 8px; height: 8px; border-radius: 50%; background: #4f9a5a; flex: none; }
+#dock .row .nm { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; }
+#dock .row .rl { font-size: 11px; color: var(--muted); }
+#dock .empty { color: var(--muted); font-size: 13px; font-style: italic; padding: 8px 2px; }
+#dock .feed { display: flex; flex-direction: column; gap: 8px; }
+#dock .feed .ev {
+  background: #fff; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font-size: 12.5px;
+}
+#dock .feed .ev .t { color: var(--muted); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; margin-bottom: 4px; }
+#dock .chat { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+#dock .msgs { flex: 1; overflow: auto; display: flex; flex-direction: column; gap: 8px; min-height: 160px; }
+#dock .bubble {
+  max-width: 92%; padding: 9px 12px; border-radius: 14px; font-size: 13px; line-height: 1.4;
+  background: #fff; border: 1px solid var(--line);
+}
+#dock .bubble.me { align-self: flex-end; background: var(--ink); color: #fff; border-color: var(--ink); }
+#dock .bubble.bot { align-self: flex-start; }
+#dock .compose { display: flex; gap: 8px; padding-top: 4px; }
+#dock .compose input {
+  flex: 1; border: 1px solid var(--line); border-radius: 999px; padding: 10px 14px; font: inherit; font-size: 13px; background: #fff;
+}
+#dock .compose button {
+  border: 0; background: var(--ink); color: #fff; border-radius: 999px; padding: 10px 16px;
+  font: inherit; font-size: 11px; letter-spacing: .12em; text-transform: uppercase; font-weight: 700; cursor: pointer;
+}
+#dock .people-list { display: flex; flex-direction: column; gap: 6px; }
+
+#emptyCampus {
+  position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 4;
+  width: min(420px, 86vw); background: rgba(255,255,255,.96); border: 1px solid var(--line);
+  border-radius: 20px; padding: 22px 24px; text-align: center; box-shadow: 0 20px 50px rgba(23,23,31,.12);
+  display: none;
+}
+#emptyCampus.on { display: block; }
+#emptyCampus h2 { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
+#emptyCampus p { color: var(--muted); font-size: 13.5px; line-height: 1.45; }
+
+#veil {
+  position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+  background: var(--scene); color: var(--muted); font-size: 15px; transition: opacity .55s;
+}
+#veil.gone { opacity: 0; pointer-events: none; }
+body.dock-open #hint { right: min(410px, calc(100vw - 20px)); }
+</style>
+</head>
+<body>
+<div id="hero">
+  <canvas id="scene" aria-label="Arrab studio map"></canvas>
+  <div id="tags"></div>
+</div>
+<div id="live"><span class="dot" id="liveDot"></span><span id="liveText">Opening studio…</span></div>
+<div id="hint">Drag to look · scroll to zoom · click a room or corridor</div>
+<div id="emptyCampus">
+  <h2>No offices yet</h2>
+  <p>Create a team in Workforce and assign people — their office appears here on the live map.</p>
+</div>
+<div id="dock">
+  <div class="dk-h">
+    <button type="button" class="back" id="dkBack" title="Back">‹</button>
+    <div class="ttl"><div class="k" id="dkKind">OFFICE</div><div class="v" id="dkTitle">—</div></div>
+  </div>
+  <div class="dk-tabs" id="dkTabs"></div>
+  <div class="dk-body" id="dkBody"></div>
+</div>
+<div id="zoomCtl">
+  <button type="button" id="zIn" title="Zoom in">+</button>
+  <button type="button" id="zOut" title="Zoom out">−</button>
+  <button type="button" id="zHome" title="Overview">⌂</button>
+</div>
+<div id="veil">Opening the studio…</div>
+<!--APP-->
+</body>
+</html>

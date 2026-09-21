@@ -1,27 +1,48 @@
-import { type FormEvent, useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Cable,
-  CheckCircle2,
-  ExternalLink,
-  Github,
-  Link2,
-  LoaderCircle,
-  Mail,
-  Send,
-  Unplug,
-} from "lucide-react";
-import type {
-  ConnectorProvider,
-  ConnectorPublic,
-  ConnectorResource,
-  EmailMessageDetail,
-  EmailMessageSummary,
-} from "@arrab/shared";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Check, LoaderCircle, Plus, RefreshCw, X } from "lucide-react";
+import { useSearchParams } from "react-router-dom";
+import type { ConnectorProvider, ConnectorPublic } from "@arrab/shared";
+import { ConnectorBrandIcon } from "@/components/ConnectorBrandIcon";
 import { Surface } from "@/components/StudioFrame";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError } from "@/lib/api";
+import { openExternalUrl } from "@/lib/desktop";
 import { notifyStudio } from "@/lib/notify";
+import { isTauriRuntime } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
+
+function isOAuthBrowserProvider(provider: ConnectorProvider | null | undefined): boolean {
+  return (
+    provider === "gmail" ||
+    provider === "outlook" ||
+    provider === "github" ||
+    provider === "gitlab" ||
+    provider === "bitbucket" ||
+    provider === "linear" ||
+    provider === "slack" ||
+    provider === "notion" ||
+    provider === "whoop" ||
+    provider === "fitbit" ||
+    provider === "google_drive" ||
+    provider === "google_calendar" ||
+    provider === "figma"
+  );
+}
+
+type BrowserOAuthProvider =
+  | "gmail"
+  | "outlook"
+  | "github"
+  | "gitlab"
+  | "bitbucket"
+  | "linear"
+  | "slack"
+  | "notion"
+  | "whoop"
+  | "fitbit"
+  | "google_drive"
+  | "google_calendar"
+  | "figma";
 
 const CATALOG: Array<{
   provider: ConnectorProvider;
@@ -30,91 +51,164 @@ const CATALOG: Array<{
   available: boolean;
 }> = [
   {
+    provider: "gmail",
+    name: "Gmail",
+    blurb: "Draft replies, summarize threads, & search your inbox",
+    available: true,
+  },
+  {
+    provider: "outlook",
+    name: "Outlook",
+    blurb: "Manage your schedule and mail with Microsoft 365",
+    available: true,
+  },
+  {
     provider: "email",
-    name: "Email",
-    blurb: "Gmail, Outlook, iCloud, Yahoo — inbox, read, and send with an app password.",
+    name: "Email (IMAP)",
+    blurb: "iCloud, Yahoo, or custom IMAP — inbox, read, and send with an app password",
+    available: true,
+  },
+  {
+    provider: "whatsapp",
+    name: "WhatsApp Business",
+    blurb: "Official Cloud API — receive customer messages and reply from agents",
     available: true,
   },
   {
     provider: "github",
     name: "GitHub",
-    blurb: "Repos, commit, push, and pull requests for agent workspace.",
+    blurb: "Sign in on GitHub in your browser — browse repos, commit, push, and open PRs",
     available: true,
   },
   {
     provider: "gitlab",
     name: "GitLab",
-    blurb: "Projects via personal access token (api scope).",
+    blurb: "Sign in on GitLab in your browser — access projects and repositories",
     available: true,
   },
   {
     provider: "bitbucket",
     name: "Bitbucket",
-    blurb: "Repos via username + app password.",
+    blurb: "Sign in on Bitbucket in your browser — connect repos and workspaces",
     available: true,
   },
   {
     provider: "linear",
     name: "Linear",
-    blurb: "Teams and issues via personal API key.",
+    blurb: "Sign in on Linear in your browser — search issues and track projects",
     available: true,
   },
   {
     provider: "slack",
     name: "Slack",
-    blurb: "Channels via bot or user token.",
+    blurb: "Sign in on Slack in your browser — channels, messages, and workspace data",
     available: true,
   },
   {
     provider: "notion",
     name: "Notion",
-    blurb: "Pages via internal integration token.",
+    blurb: "Sign in on Notion in your browser — search, read, and update pages",
+    available: true,
+  },
+  {
+    provider: "ssh",
+    name: "SSH",
+    blurb: "Connect a remote host with password or private key — list files and run commands",
+    available: true,
+  },
+  {
+    provider: "finnhub",
+    name: "Finnhub",
+    blurb: "Live quotes and company news for Trader companions (API key)",
+    available: true,
+  },
+  {
+    provider: "whoop",
+    name: "WHOOP",
+    blurb: "Sign in with WHOOP — recovery, sleep, strain, and workouts",
+    available: true,
+  },
+  {
+    provider: "fitbit",
+    name: "Fitbit",
+    blurb: "Sign in with Fitbit — activity, heart rate, sleep, and weight",
+    available: true,
+  },
+  {
+    provider: "google_drive",
+    name: "Google Drive",
+    blurb: "Sign in with Google — browse and work with Drive files",
+    available: true,
+  },
+  {
+    provider: "google_calendar",
+    name: "Google Calendar",
+    blurb: "Sign in with Google — list and manage calendar events",
+    available: true,
+  },
+  {
+    provider: "figma",
+    name: "Figma",
+    blurb: "Sign in with Figma — read designs, metadata, and comments",
     available: true,
   },
 ];
 
 const EMAIL_PRESETS = [
-  { id: "gmail", label: "Gmail" },
-  { id: "outlook", label: "Outlook" },
   { id: "icloud", label: "iCloud" },
   { id: "yahoo", label: "Yahoo" },
   { id: "custom", label: "Custom" },
 ] as const;
 
 const TOKEN_HINTS: Record<ConnectorProvider, string> = {
-  email: "Use an app password (not your normal login). Gmail: Google Account → Security → App passwords.",
-  github: "Classic PAT with repo scope, or fine-grained token with repository access.",
-  gitlab: "Personal access token with api scope.",
-  bitbucket: "App password with account + repository read. Username is required.",
-  linear: "Personal API key from Linear Settings → API.",
-  slack: "Bot or user OAuth token (xoxb-… / xoxp-…).",
-  notion: "Internal integration secret from Notion developers.",
+  gmail: "Sign in with Google in your browser. Arrab never sees your Google password.",
+  outlook: "Sign in with Microsoft in your browser. Arrab never sees your Outlook password.",
+  email: "Use an app password (not your normal login).",
+  whatsapp:
+    "Permanent Cloud API token from Meta. Also need Phone number ID and WhatsApp Business Account ID.",
+  github: "Sign in with GitHub in your browser. Arrab never sees your GitHub password.",
+  gitlab: "Sign in with GitLab in your browser. Arrab never sees your GitLab password.",
+  bitbucket: "Sign in with Bitbucket in your browser. Arrab never sees your Bitbucket password.",
+  linear: "Sign in with Linear in your browser. Arrab never sees your Linear password.",
+  slack: "Sign in with Slack in your browser. Arrab never sees your Slack password.",
+  notion: "Sign in with Notion in your browser. Arrab never sees your Notion password.",
+  ssh: "Password or private key for a remote SSH host. Secrets stay on the Arrab API.",
+  finnhub: "Finnhub API key from finnhub.io — quotes and company news for Trader.",
+  whoop: "Sign in with WHOOP in your browser. Arrab never sees your WHOOP password.",
+  fitbit: "Sign in with Fitbit in your browser. Arrab never sees your Fitbit password.",
+  google_drive: "Sign in with Google in your browser. Arrab never sees your Google password.",
+  google_calendar: "Sign in with Google in your browser. Arrab never sees your Google password.",
+  figma: "Sign in with Figma in your browser. Arrab never sees your Figma password.",
 };
 
 export function ConnectorsPage() {
   const { t } = useLanguage();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [items, setItems] = useState<ConnectorPublic[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [selected, setSelected] = useState<ConnectorProvider>("email");
+  const [selected, setSelected] = useState<ConnectorProvider | null>(null);
+  const [panelOpen, setPanelOpen] = useState(false);
   const [token, setToken] = useState("");
   const [label, setLabel] = useState("");
   const [emailAddress, setEmailAddress] = useState("");
-  const [emailPreset, setEmailPreset] = useState<(typeof EMAIL_PRESETS)[number]["id"]>("gmail");
-  const [imapHost, setImapHost] = useState("imap.gmail.com");
-  const [smtpHost, setSmtpHost] = useState("smtp.gmail.com");
+  const [emailPreset, setEmailPreset] = useState<(typeof EMAIL_PRESETS)[number]["id"]>("icloud");
+  const [imapHost, setImapHost] = useState("imap.mail.me.com");
+  const [smtpHost, setSmtpHost] = useState("smtp.mail.me.com");
   const [imapPort, setImapPort] = useState("993");
-  const [smtpPort, setSmtpPort] = useState("465");
+  const [smtpPort, setSmtpPort] = useState("587");
   const [bitbucketUser, setBitbucketUser] = useState("");
   const [gitlabBase, setGitlabBase] = useState("https://gitlab.com");
-  const [activeId, setActiveId] = useState<string | null>(null);
-  const [resources, setResources] = useState<ConnectorResource[]>([]);
-  const [mailbox, setMailbox] = useState("INBOX");
-  const [messages, setMessages] = useState<EmailMessageSummary[]>([]);
-  const [selectedMessage, setSelectedMessage] = useState<EmailMessageDetail | null>(null);
-  const [composeTo, setComposeTo] = useState("");
-  const [composeSubject, setComposeSubject] = useState("");
-  const [composeBody, setComposeBody] = useState("");
+  const [sshHost, setSshHost] = useState("");
+  const [sshPort, setSshPort] = useState("22");
+  const [sshUsername, setSshUsername] = useState("");
+  const [sshAuthMode, setSshAuthMode] = useState<"password" | "key">("password");
+  const [sshPrivateKey, setSshPrivateKey] = useState("");
+  const [sshPassphrase, setSshPassphrase] = useState("");
+  const [whatsappPhoneNumberId, setWhatsappPhoneNumberId] = useState("");
+  const [whatsappWabaId, setWhatsappWabaId] = useState("");
+  const oauthPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
 
   const load = useCallback(() => {
     setError(null);
@@ -122,7 +216,6 @@ export function ConnectorsPage() {
       .connectors()
       .then((response) => {
         setItems(response.items);
-        setActiveId((current) => current ?? response.items[0]?.id ?? null);
       })
       .catch((err: unknown) => {
         setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
@@ -131,20 +224,57 @@ export function ConnectorsPage() {
 
   useEffect(() => {
     load();
+    return () => {
+      if (oauthPollRef.current) {
+        clearInterval(oauthPollRef.current);
+        oauthPollRef.current = null;
+      }
+    };
   }, [load]);
 
+  // When browser OAuth finishes, deep link focuses the app — refresh connectors.
   useEffect(() => {
-    if (emailPreset === "gmail") {
-      setImapHost("imap.gmail.com");
-      setSmtpHost("smtp.gmail.com");
-      setImapPort("993");
-      setSmtpPort("465");
-    } else if (emailPreset === "outlook") {
-      setImapHost("outlook.office365.com");
-      setSmtpHost("smtp.office365.com");
-      setImapPort("993");
-      setSmtpPort("587");
-    } else if (emailPreset === "icloud") {
+    if (!isTauriRuntime()) return;
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void import("@tauri-apps/api/event").then(({ listen }) => {
+      if (cancelled) return;
+      void listen<string>("arrab:deep-link", (event) => {
+        const url = event.payload ?? "";
+        if (!url.includes("connectors/")) return;
+        setBusy(false);
+        if (oauthPollRef.current) {
+          clearInterval(oauthPollRef.current);
+          oauthPollRef.current = null;
+        }
+        load();
+        if (url.includes("connected")) {
+          const provider = new URL(url).searchParams.get("provider") ?? "connector";
+          void notifyStudio({
+            kind: "connector",
+            title: t("connectorConnectedNotify"),
+            body: provider,
+            href: "/connectors",
+          });
+        }
+      }).then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      });
+    });
+    const onFocus = () => {
+      if (oauthPollRef.current) load();
+    };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      cancelled = true;
+      unlisten?.();
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [load, t]);
+
+  useEffect(() => {
+    if (emailPreset === "icloud") {
       setImapHost("imap.mail.me.com");
       setSmtpHost("smtp.mail.me.com");
       setImapPort("993");
@@ -157,24 +287,154 @@ export function ConnectorsPage() {
     }
   }, [emailPreset]);
 
-  const active = useMemo(
-    () => items.find((item) => item.id === activeId) ?? null,
-    [activeId, items],
-  );
-
   const canSubmit = useMemo(() => {
-    if (busy) return false;
+    if (busy || !selected || isOAuthBrowserProvider(selected)) return false;
     if (selected === "email") {
       return emailAddress.includes("@") && token.trim().length >= 4;
     }
     if (selected === "bitbucket") {
       return bitbucketUser.trim().length > 0 && token.trim().length >= 8;
     }
+    if (selected === "ssh") {
+      if (!sshHost.trim() || !sshUsername.trim()) return false;
+      if (sshAuthMode === "password") return token.trim().length >= 1;
+      return sshPrivateKey.trim().length >= 32 || token.trim().length >= 32;
+    }
+    if (selected === "whatsapp") {
+      return (
+        token.trim().length >= 20 &&
+        whatsappPhoneNumberId.trim().length > 0 &&
+        whatsappWabaId.trim().length > 0
+      );
+    }
     return token.trim().length >= 8;
-  }, [bitbucketUser, busy, emailAddress, selected, token]);
+  }, [
+    bitbucketUser,
+    busy,
+    emailAddress,
+    selected,
+    sshAuthMode,
+    sshHost,
+    sshPrivateKey,
+    sshUsername,
+    token,
+    whatsappPhoneNumberId,
+    whatsappWabaId,
+  ]);
+
+  function openProvider(provider: ConnectorProvider) {
+    setSelected(provider);
+    setError(null);
+    if (isOAuthBrowserProvider(provider)) {
+      setPanelOpen(false);
+      void onConnectBrowserOAuth(provider as BrowserOAuthProvider);
+      return;
+    }
+    setPanelOpen(true);
+    window.setTimeout(() => {
+      panelRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }, 50);
+  }
+
+  useEffect(() => {
+    const raw = searchParams.get("provider")?.trim().toLowerCase();
+    if (!raw) return;
+    openProvider(raw as ConnectorProvider);
+    const next = new URLSearchParams(searchParams);
+    next.delete("provider");
+    setSearchParams(next, { replace: true });
+    // Intentionally run once when the deep-link param is present.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
+
+  async function onConnectBrowserOAuth(provider: BrowserOAuthProvider) {
+    setBusy(true);
+    setError(null);
+    try {
+      const before = new Set(
+        items.filter((item) => item.provider === provider).map((item) => item.id),
+      );
+      const started =
+        provider === "gmail"
+          ? await arrabApi.startGmailOAuth()
+          : provider === "github"
+            ? await arrabApi.startGithubOAuth()
+            : provider === "outlook"
+              ? await arrabApi.startOutlookOAuth()
+              : await arrabApi.startGenericOAuth(provider);
+      await openExternalUrl(started.url);
+      pollForOAuthProvider(provider, before);
+    } catch (err: unknown) {
+      setBusy(false);
+      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      void notifyStudio({
+        kind: "connector",
+        title: t("connectorFailedNotify"),
+        body: err instanceof ApiRequestError ? err.message : t("apiUnavailable"),
+        href: "/connectors",
+      });
+    }
+  }
+
+  function pollForOAuthProvider(provider: BrowserOAuthProvider, before: Set<string>) {
+    if (oauthPollRef.current) {
+      clearInterval(oauthPollRef.current);
+    }
+    const startedAt = Date.now() - 2_000;
+    let attempts = 0;
+    oauthPollRef.current = setInterval(() => {
+      attempts += 1;
+      void arrabApi
+        .connectors()
+        .then((response) => {
+          setItems(response.items);
+          const match = response.items.find((item) => {
+            if (item.provider !== provider || item.status !== "connected") return false;
+            if (!before.has(item.id)) return true;
+            const stamp = Date.parse(item.lastVerifiedAt || item.connectedAt || "");
+            return Number.isFinite(stamp) && stamp >= startedAt;
+          });
+          if (match) {
+            if (oauthPollRef.current) {
+              clearInterval(oauthPollRef.current);
+              oauthPollRef.current = null;
+            }
+            setBusy(false);
+            setPanelOpen(false);
+            void notifyStudio({
+              kind: "connector",
+              title: t("connectorConnectedNotify"),
+              body: match.accountLabel || provider,
+              href: "/connectors",
+            });
+          } else if (attempts >= 90) {
+            if (oauthPollRef.current) {
+              clearInterval(oauthPollRef.current);
+              oauthPollRef.current = null;
+            }
+            setBusy(false);
+            setError(
+              provider === "gmail"
+                ? t("gmailOAuthWaiting")
+                : provider === "outlook"
+                  ? t("outlookOAuthWaiting")
+                  : t("githubOAuthWaiting"),
+            );
+          }
+        })
+        .catch(() => {
+          /* keep polling while browser OAuth finishes */
+        });
+    }, 2000);
+  }
 
   async function onConnect(event: FormEvent) {
     event.preventDefault();
+    if (!selected) return;
+    if (isOAuthBrowserProvider(selected)) {
+      await onConnectBrowserOAuth(selected as BrowserOAuthProvider);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -190,24 +450,47 @@ export function ConnectorsPage() {
         config.username = bitbucketUser.trim();
       } else if (selected === "gitlab" && gitlabBase.trim()) {
         config.baseUrl = gitlabBase.trim();
+      } else if (selected === "ssh") {
+        config.host = sshHost.trim();
+        config.port = sshPort.trim() || "22";
+        config.username = sshUsername.trim();
+        config.authMode = sshAuthMode;
+        if (sshAuthMode === "key") {
+          config.privateKey = sshPrivateKey.trim() || token.trim();
+          if (sshPassphrase.trim()) config.passphrase = sshPassphrase.trim();
+        }
+      } else if (selected === "whatsapp") {
+        config.phone_number_id = whatsappPhoneNumberId.trim();
+        config.waba_id = whatsappWabaId.trim();
       }
+      const connectToken =
+        selected === "ssh" && sshAuthMode === "key" ? sshPrivateKey.trim() || token : token;
       const connected = await arrabApi.connectConnector({
         provider: selected,
-        token,
-        label: label.trim() || (selected === "email" ? emailAddress.trim() : null),
+        token: connectToken,
+        label:
+          label.trim() ||
+          (selected === "email"
+            ? emailAddress.trim()
+            : selected === "ssh"
+              ? `${sshUsername.trim()}@${sshHost.trim()}`
+              : selected === "whatsapp"
+                ? `WhatsApp ${whatsappPhoneNumberId.trim()}`
+                : null),
         config: Object.keys(config).length > 0 ? config : null,
       });
       setToken("");
       setLabel("");
-      setActiveId(connected.id);
-      setResources([]);
-      setMessages([]);
-      setSelectedMessage(null);
+      setSshPrivateKey("");
+      setSshPassphrase("");
+      setWhatsappPhoneNumberId("");
+      setWhatsappWabaId("");
+      setPanelOpen(false);
       load();
       void notifyStudio({
         kind: "connector",
         title: t("connectorConnectedNotify"),
-        body: connected.accountLabel || connected.provider,
+        body: connected.provider,
         href: "/connectors",
       });
     } catch (err: unknown) {
@@ -223,593 +506,430 @@ export function ConnectorsPage() {
     }
   }
 
-  async function onVerify(id: string) {
-    setBusy(true);
-    setError(null);
-    try {
-      await arrabApi.verifyConnector(id);
-      load();
-      void notifyStudio({
-        kind: "connector",
-        title: t("connectorVerifiedNotify"),
-        href: "/connectors",
-      });
-    } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onDisconnect(id: string) {
-    setBusy(true);
-    setError(null);
-    try {
-      await arrabApi.disconnectConnector(id);
-      if (activeId === id) {
-        setActiveId(null);
-        setResources([]);
-        setMessages([]);
-        setSelectedMessage(null);
-      }
-      load();
-    } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onResources(id: string) {
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await arrabApi.connectorResources(id);
-      setResources(response.items);
-      setActiveId(id);
-      const connector = items.find((item) => item.id === id);
-      if (connector?.provider === "email") {
-        const inbox = response.items.find((item) => /inbox/i.test(item.name))?.name || "INBOX";
-        setMailbox(inbox);
-        const mail = await arrabApi.emailMessages(id, inbox, 30);
-        setMessages(mail.items);
-        setSelectedMessage(null);
-      }
-    } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function openMailbox(path: string) {
-    if (!active || active.provider !== "email") return;
-    setBusy(true);
-    setError(null);
-    try {
-      setMailbox(path);
-      const mail = await arrabApi.emailMessages(active.id, path, 30);
-      setMessages(mail.items);
-      setSelectedMessage(null);
-    } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function openMessage(uid: string) {
-    if (!active || active.provider !== "email") return;
-    setBusy(true);
-    setError(null);
-    try {
-      const detail = await arrabApi.emailMessage(active.id, uid, mailbox);
-      setSelectedMessage(detail);
-    } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onSendEmail(event: FormEvent) {
-    event.preventDefault();
-    if (!active || active.provider !== "email") return;
-    setBusy(true);
-    setError(null);
-    try {
-      await arrabApi.sendEmail(active.id, {
-        to: composeTo.trim(),
-        subject: composeSubject.trim(),
-        text: composeBody.trim(),
-      });
-      setComposeTo("");
-      setComposeSubject("");
-      setComposeBody("");
-      void notifyStudio({
-        kind: "connector",
-        title: t("emailSentNotify"),
-        href: "/connectors",
-      });
-    } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
   const selectedMeta = CATALOG.find((item) => item.provider === selected);
 
   return (
     <Surface className="connector-shell">
       <div className="connector-atmosphere pointer-events-none absolute inset-0" />
-      <div className="relative mx-auto max-w-[1200px] px-6 py-8 lg:px-10">
-        <header className="flex flex-wrap items-end justify-between gap-4">
-          <div>
+      <div className="relative mx-auto max-w-[1100px] px-6 py-8 lg:px-10">
+        <header className="connector-header mb-8">
+          <div className="min-w-0">
             <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">{t("connectors")}</p>
-            <h1 className="mt-1 text-3xl font-medium tracking-[-0.03em] text-white">
+            <h1 className="mt-1 text-[clamp(1.85rem,3vw,2.35rem)] font-medium tracking-[-0.035em] text-[var(--color-foreground)]">
               {t("connectorsTitle")}
             </h1>
-            <p className="mt-2 max-w-2xl text-sm text-neutral-500">{t("connectorsBody")}</p>
-          </div>
-          <div className="inline-flex items-center gap-2 rounded-full border border-white/10 px-3 py-1.5 text-xs text-neutral-400">
-            <Cable className="size-3.5" strokeWidth={1.7} />
-            {items.length} {t("connected")}
+            <p className="mt-2 max-w-2xl text-[14px] leading-relaxed text-[var(--color-muted)]">
+              {t("connectorsBody")}
+            </p>
           </div>
         </header>
 
-        {error ? <p className="mt-4 text-sm text-red-300/90">{error}</p> : null}
+        {error ? <p className="mb-4 text-sm text-red-300/90">{error}</p> : null}
 
-        <div className="mt-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="connector-grid">
           {CATALOG.map((item) => {
-            const linked = items.filter((connection) => connection.provider === item.provider);
-            const isSelected = selected === item.provider;
+            const linked = items.find(
+              (entry) => entry.provider === item.provider && entry.status === "connected",
+            );
+            const busyThis = busy && selected === item.provider;
             return (
-              <button
+              <article
                 key={item.provider}
-                type="button"
-                onClick={() => setSelected(item.provider)}
                 className={cn(
-                  "rounded-[24px] border p-4 text-start transition-colors",
-                  isSelected
-                    ? "border-white/30 bg-white/[0.04]"
-                    : "border-white/10 bg-[#080808] hover:border-white/20",
+                  "connector-row",
+                  selected === item.provider && panelOpen && "is-active",
+                  linked && "is-connected",
                 )}
               >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex size-10 items-center justify-center rounded-xl border border-white/12 bg-black">
-                    {item.provider === "github" ? (
-                      <Github className="size-5 text-white" strokeWidth={1.6} />
-                    ) : item.provider === "email" ? (
-                      <Mail className="size-5 text-white" strokeWidth={1.6} />
-                    ) : (
-                      <Link2 className="size-5 text-white" strokeWidth={1.6} />
-                    )}
-                  </div>
-                  <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-neutral-500">
-                    {linked.length > 0 ? t("connected") : t("available")}
+                <button
+                  type="button"
+                  className="connector-row-main"
+                  onClick={() => openProvider(item.provider)}
+                >
+                  <span className={cn("connector-brand", `brand-${item.provider}`)}>
+                    <ConnectorBrandIcon provider={item.provider} size={20} />
                   </span>
-                </div>
-                <p className="mt-4 text-sm text-white">{item.name}</p>
-                <p className="mt-1 text-xs leading-relaxed text-neutral-500">{item.blurb}</p>
-                {linked.length > 0 ? (
-                  <p className="mt-3 text-[11px] text-neutral-400">
-                    {linked.map((connection) => connection.accountLabel).join(" · ")}
-                  </p>
-                ) : null}
-              </button>
+                  <span className="connector-copy min-w-0">
+                    <span className="connector-title">
+                      <span>{item.name}</span>
+                      {linked ? (
+                        <span className="connector-verified" title={t("verifiedConnector")}>
+                          <Check className="size-2.5" strokeWidth={3} />
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="connector-blurb">
+                      {linked
+                        ? t("connectorConnectedAs").replace(
+                            "{account}",
+                            linked.accountLabel || linked.provider,
+                          )
+                        : item.blurb}
+                    </span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="connector-add"
+                  disabled={busyThis}
+                  aria-label={
+                    linked
+                      ? `${t("reconnect")} ${item.name}`
+                      : `${t("connect")} ${item.name}`
+                  }
+                  onClick={() => openProvider(item.provider)}
+                >
+                  {busyThis ? (
+                    <LoaderCircle className="size-4 animate-spin" />
+                  ) : linked ? (
+                    <RefreshCw className="size-4" strokeWidth={2.2} />
+                  ) : (
+                    <Plus className="size-4" strokeWidth={2.2} />
+                  )}
+                </button>
+              </article>
             );
           })}
         </div>
 
-        <div className="mt-6 grid gap-5 lg:grid-cols-[1.05fr_0.95fr]">
-          <form
-            onSubmit={(event) => void onConnect(event)}
-            className="rounded-[28px] border border-white/10 bg-[#080808] p-5"
-          >
-            <div className="flex items-center gap-2">
-              {selected === "email" ? (
-                <Mail className="size-4 text-neutral-400" strokeWidth={1.7} />
-              ) : selected === "github" ? (
-                <Github className="size-4 text-neutral-400" strokeWidth={1.7} />
-              ) : (
-                <Link2 className="size-4 text-neutral-400" strokeWidth={1.7} />
-              )}
-              <h2 className="text-sm text-white">
-                {t("connect")} {selectedMeta?.name ?? selected}
-              </h2>
+        {panelOpen && selected && !isOAuthBrowserProvider(selected) ? (
+          <section ref={panelRef} className="connector-panel mt-6">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <h2 className="text-sm font-medium text-[var(--color-foreground)]">
+                  {t("connect")} {selectedMeta?.name ?? selected}
+                </h2>
+                <p className="mt-1 text-xs text-[var(--color-muted)]">{TOKEN_HINTS[selected]}</p>
+              </div>
+              <button
+                type="button"
+                className="connector-add"
+                aria-label={t("cancel")}
+                onClick={() => setPanelOpen(false)}
+              >
+                <X className="size-4" />
+              </button>
             </div>
-            <p className="mt-2 text-xs text-neutral-500">{TOKEN_HINTS[selected]}</p>
 
-            <label className="mt-5 grid gap-1.5">
-              <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                {t("connectionLabel")}
-              </span>
-              <input
-                value={label}
-                onChange={(event) => setLabel(event.target.value)}
-                className="field"
-                placeholder={selected === "email" ? "work-inbox" : `${selected}-studio`}
-              />
-            </label>
+            <form onSubmit={(event) => void onConnect(event)} className="mt-5 space-y-3.5">
+              <label className="grid gap-1.5">
+                <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                  {t("connectionLabel")}
+                </span>
+                <input
+                  value={label}
+                  onChange={(event) => setLabel(event.target.value)}
+                  className="field"
+                  placeholder={selected === "email" ? "work-inbox" : `${selected}-studio`}
+                />
+              </label>
 
-            {selected === "email" ? (
-              <>
-                <label className="mt-3 grid gap-1.5">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                    {t("emailAddress")}
-                  </span>
-                  <input
-                    required
-                    type="email"
-                    value={emailAddress}
-                    onChange={(event) => setEmailAddress(event.target.value)}
-                    className="field"
-                    placeholder="you@gmail.com"
-                  />
-                </label>
-                <label className="mt-3 grid gap-1.5">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                    {t("emailPreset")}
-                  </span>
-                  <select
-                    value={emailPreset}
-                    onChange={(event) =>
-                      setEmailPreset(event.target.value as (typeof EMAIL_PRESETS)[number]["id"])
-                    }
-                    className="field"
-                  >
-                    {EMAIL_PRESETS.map((preset) => (
-                      <option key={preset.id} value={preset.id}>
-                        {preset.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {emailPreset === "custom" ? (
-                  <div className="mt-3 grid gap-3 sm:grid-cols-2">
-                    <label className="grid gap-1.5">
-                      <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                        IMAP host
-                      </span>
-                      <input value={imapHost} onChange={(e) => setImapHost(e.target.value)} className="field" />
-                    </label>
-                    <label className="grid gap-1.5">
-                      <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                        SMTP host
-                      </span>
-                      <input value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} className="field" />
-                    </label>
-                    <label className="grid gap-1.5">
-                      <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                        IMAP port
-                      </span>
-                      <input value={imapPort} onChange={(e) => setImapPort(e.target.value)} className="field" />
-                    </label>
-                    <label className="grid gap-1.5">
-                      <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                        SMTP port
-                      </span>
-                      <input value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} className="field" />
-                    </label>
-                  </div>
-                ) : null}
-                <label className="mt-3 grid gap-1.5">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                    {t("emailAppPassword")}
-                  </span>
-                  <input
-                    required
-                    type="password"
-                    autoComplete="off"
-                    value={token}
-                    onChange={(event) => setToken(event.target.value)}
-                    className="field"
-                    placeholder="xxxx xxxx xxxx xxxx"
-                  />
-                </label>
-              </>
-            ) : (
-              <>
-                {selected === "bitbucket" ? (
-                  <label className="mt-3 grid gap-1.5">
+              {selected === "email" ? (
+                <>
+                  <label className="grid gap-1.5">
                     <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                      {t("bitbucketUsername")}
+                      {t("emailAddress")}
                     </span>
                     <input
                       required
-                      value={bitbucketUser}
-                      onChange={(event) => setBitbucketUser(event.target.value)}
+                      type="email"
+                      value={emailAddress}
+                      onChange={(event) => setEmailAddress(event.target.value)}
                       className="field"
-                      placeholder="your-bitbucket-username"
+                      placeholder="you@company.com"
                     />
                   </label>
-                ) : null}
-                {selected === "gitlab" ? (
-                  <label className="mt-3 grid gap-1.5">
+                  <label className="grid gap-1.5">
                     <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                      {t("gitlabBaseUrl")}
+                      {t("emailPreset")}
+                    </span>
+                    <select
+                      value={emailPreset}
+                      onChange={(event) =>
+                        setEmailPreset(event.target.value as (typeof EMAIL_PRESETS)[number]["id"])
+                      }
+                      className="field"
+                    >
+                      {EMAIL_PRESETS.map((preset) => (
+                        <option key={preset.id} value={preset.id}>
+                          {preset.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {emailPreset === "custom" ? (
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="grid gap-1.5">
+                        <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                          IMAP host
+                        </span>
+                        <input
+                          value={imapHost}
+                          onChange={(e) => setImapHost(e.target.value)}
+                          className="field"
+                        />
+                      </label>
+                      <label className="grid gap-1.5">
+                        <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                          SMTP host
+                        </span>
+                        <input
+                          value={smtpHost}
+                          onChange={(e) => setSmtpHost(e.target.value)}
+                          className="field"
+                        />
+                      </label>
+                      <label className="grid gap-1.5">
+                        <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                          IMAP port
+                        </span>
+                        <input
+                          value={imapPort}
+                          onChange={(e) => setImapPort(e.target.value)}
+                          className="field"
+                        />
+                      </label>
+                      <label className="grid gap-1.5">
+                        <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                          SMTP port
+                        </span>
+                        <input
+                          value={smtpPort}
+                          onChange={(e) => setSmtpPort(e.target.value)}
+                          className="field"
+                        />
+                      </label>
+                    </div>
+                  ) : null}
+                  <label className="grid gap-1.5">
+                    <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                      {t("emailAppPassword")}
                     </span>
                     <input
-                      value={gitlabBase}
-                      onChange={(event) => setGitlabBase(event.target.value)}
+                      required
+                      type="password"
+                      autoComplete="off"
+                      value={token}
+                      onChange={(event) => setToken(event.target.value)}
                       className="field"
-                      placeholder="https://gitlab.com"
+                      placeholder="xxxx xxxx xxxx xxxx"
                     />
                   </label>
-                ) : null}
-                <label className="mt-3 grid gap-1.5">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                    {selected === "github" ? t("githubToken") : t("accessToken")}
-                  </span>
-                  <input
-                    required
-                    type="password"
-                    autoComplete="off"
-                    value={token}
-                    onChange={(event) => setToken(event.target.value)}
-                    className="field"
-                    placeholder={
-                      selected === "github"
-                        ? "ghp_…"
-                        : selected === "slack"
-                          ? "xoxb-…"
-                          : "token…"
-                    }
-                  />
-                </label>
-              </>
-            )}
-
-            <button
-              type="submit"
-              disabled={!canSubmit}
-              className="mt-5 inline-flex h-10 items-center gap-2 rounded-full bg-white px-5 text-sm font-medium text-black hover:bg-neutral-200 disabled:opacity-40"
-            >
-              {busy ? <LoaderCircle className="size-4 animate-spin" /> : <Cable className="size-4" />}
-              {t("connect")}
-            </button>
-          </form>
-
-          <section className="rounded-[28px] border border-white/10 bg-[#070707] p-5">
-            <h2 className="text-sm text-white">{t("connected")}</h2>
-            {items.length === 0 ? (
-              <p className="mt-4 text-sm text-neutral-500">{t("noConnectors")}</p>
-            ) : (
-              <ul className="mt-4 space-y-3">
-                {items.map((item) => (
-                  <li
-                    key={item.id}
-                    className={cn(
-                      "rounded-2xl border px-4 py-3",
-                      activeId === item.id ? "border-white/25 bg-white/[0.03]" : "border-white/10",
-                    )}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <button
-                        type="button"
-                        className="min-w-0 text-start"
-                        onClick={() => {
-                          setActiveId(item.id);
-                          setResources([]);
-                          setMessages([]);
-                          setSelectedMessage(null);
-                        }}
-                      >
-                        <p className="truncate text-sm text-white">
-                          {item.accountLabel ?? item.provider}
-                        </p>
-                        <p className="mt-1 text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                          {item.provider} · {item.status}
-                        </p>
-                      </button>
-                      {item.status === "connected" ? (
-                        <CheckCircle2 className="size-4 shrink-0 text-white" strokeWidth={1.7} />
-                      ) : (
-                        <Unplug className="size-4 shrink-0 text-neutral-500" strokeWidth={1.7} />
-                      )}
-                    </div>
-                    {item.error ? (
-                      <p className="mt-2 text-xs text-neutral-400">
-                        {t("connectorError")}: {item.error}
-                      </p>
-                    ) : null}
-                    {item.scopes.length > 0 ? (
-                      <p className="mt-2 text-[11px] text-neutral-600">
-                        {t("scopes")}: {item.scopes.join(", ")}
-                      </p>
-                    ) : null}
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void onVerify(item.id)}
-                        className="rounded-full border border-white/15 px-3 py-1.5 text-[11px] text-neutral-300 hover:text-white disabled:opacity-40"
-                      >
-                        {t("verify")}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void onResources(item.id)}
-                        className="rounded-full border border-white/15 px-3 py-1.5 text-[11px] text-neutral-300 hover:text-white disabled:opacity-40"
-                      >
-                        {item.provider === "email" ? t("openInbox") : t("refreshRepos")}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void onDisconnect(item.id)}
-                        className="rounded-full border border-white/15 px-3 py-1.5 text-[11px] text-neutral-300 hover:text-white disabled:opacity-40"
-                      >
-                        {t("disconnect")}
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            <div className="mt-5 border-t border-white/8 pt-4">
-              <p className="text-[10px] uppercase tracking-[0.16em] text-neutral-500">{t("resources")}</p>
-              {!active || resources.length === 0 ? (
-                <p className="mt-3 text-sm text-neutral-500">{t("noResources")}</p>
-              ) : (
-                <ul className="mt-3 max-h-48 divide-y divide-white/8 overflow-y-auto">
-                  {resources.map((resource) => (
-                    <li key={resource.id} className="flex items-center justify-between gap-3 py-2.5">
-                      <button
-                        type="button"
-                        className="min-w-0 text-start"
-                        onClick={() => {
-                          if (active?.provider === "email") void openMailbox(resource.name);
-                        }}
-                      >
-                        <p className="truncate text-sm text-white">{resource.name}</p>
-                        <p className="text-[11px] text-neutral-500">{resource.kind}</p>
-                      </button>
-                      {resource.url ? (
-                        <a
-                          href={resource.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="text-neutral-500 hover:text-white"
-                        >
-                          <ExternalLink className="size-3.5" />
-                        </a>
-                      ) : null}
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </section>
-        </div>
-
-        {active?.provider === "email" ? (
-          <section className="mt-6 grid gap-5 lg:grid-cols-[0.9fr_1.1fr]">
-            <div className="rounded-[28px] border border-white/10 bg-[#080808] p-5">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-sm text-white">
-                  {t("inbox")} · {mailbox}
-                </h2>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => void openMailbox(mailbox)}
-                  className="text-[11px] text-neutral-400 hover:text-white disabled:opacity-40"
-                >
-                  {t("refresh")}
-                </button>
-              </div>
-              {messages.length === 0 ? (
-                <p className="mt-4 text-sm text-neutral-500">{t("noEmailMessages")}</p>
-              ) : (
-                <ul className="mt-4 max-h-[420px] space-y-2 overflow-y-auto">
-                  {messages.map((message) => (
-                    <li key={message.id}>
-                      <button
-                        type="button"
-                        onClick={() => void openMessage(message.id)}
-                        className={cn(
-                          "w-full rounded-2xl border px-3 py-2.5 text-start transition",
-                          selectedMessage?.id === message.id
-                            ? "border-white/25 bg-white/[0.04]"
-                            : "border-white/10 hover:border-white/20",
-                        )}
-                      >
-                        <p className="truncate text-[13px] text-white">{message.subject}</p>
-                        <p className="mt-1 truncate text-[11px] text-neutral-500">
-                          {message.from}
-                          {message.date ? ` · ${new Date(message.date).toLocaleString()}` : ""}
-                        </p>
-                        {message.snippet ? (
-                          <p className="mt-1 line-clamp-2 text-[11px] text-neutral-600">
-                            {message.snippet}
-                          </p>
-                        ) : null}
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-
-            <div className="space-y-5">
-              <div className="rounded-[28px] border border-white/10 bg-[#070707] p-5">
-                <h2 className="text-sm text-white">{t("emailRead")}</h2>
-                {selectedMessage ? (
-                  <div className="mt-3 space-y-2">
-                    <p className="text-[15px] text-white">{selectedMessage.subject}</p>
-                    <p className="text-[12px] text-neutral-500">
-                      {t("from")}: {selectedMessage.from}
-                    </p>
-                    {selectedMessage.to.length > 0 ? (
-                      <p className="text-[12px] text-neutral-500">
-                        {t("to")}: {selectedMessage.to.join(", ")}
-                      </p>
-                    ) : null}
-                    <pre className="mt-3 max-h-[280px] overflow-auto whitespace-pre-wrap rounded-2xl border border-white/8 bg-black/40 p-3 text-[12px] leading-relaxed text-neutral-300">
-                      {selectedMessage.text || selectedMessage.snippet || ""}
-                    </pre>
+                </>
+              ) : selected === "ssh" ? (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-[1fr_7rem]">
+                    <label className="grid gap-1.5">
+                      <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                        Host
+                      </span>
+                      <input
+                        required
+                        value={sshHost}
+                        onChange={(event) => setSshHost(event.target.value)}
+                        className="field"
+                        placeholder="host.example.com"
+                        autoComplete="off"
+                      />
+                    </label>
+                    <label className="grid gap-1.5">
+                      <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                        Port
+                      </span>
+                      <input
+                        value={sshPort}
+                        onChange={(event) => setSshPort(event.target.value)}
+                        className="field"
+                        placeholder="22"
+                        inputMode="numeric"
+                      />
+                    </label>
                   </div>
-                ) : (
-                  <p className="mt-3 text-sm text-neutral-500">{t("selectEmailHint")}</p>
-                )}
-              </div>
+                  <label className="grid gap-1.5">
+                    <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                      Username
+                    </span>
+                    <input
+                      required
+                      value={sshUsername}
+                      onChange={(event) => setSshUsername(event.target.value)}
+                      className="field"
+                      placeholder="ubuntu"
+                      autoComplete="off"
+                    />
+                  </label>
+                  <label className="grid gap-1.5">
+                    <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                      Auth
+                    </span>
+                    <select
+                      value={sshAuthMode}
+                      onChange={(event) =>
+                        setSshAuthMode(event.target.value === "key" ? "key" : "password")
+                      }
+                      className="field"
+                    >
+                      <option value="password">Password</option>
+                      <option value="key">Private key</option>
+                    </select>
+                  </label>
+                  {sshAuthMode === "password" ? (
+                    <label className="grid gap-1.5">
+                      <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                        Password
+                      </span>
+                      <input
+                        required
+                        type="password"
+                        autoComplete="off"
+                        value={token}
+                        onChange={(event) => setToken(event.target.value)}
+                        className="field"
+                        placeholder="SSH password"
+                      />
+                    </label>
+                  ) : (
+                    <>
+                      <label className="grid gap-1.5">
+                        <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                          Private key
+                        </span>
+                        <textarea
+                          required
+                          value={sshPrivateKey}
+                          onChange={(event) => setSshPrivateKey(event.target.value)}
+                          className="field min-h-[120px] font-mono text-[12px]"
+                          placeholder="-----BEGIN OPENSSH PRIVATE KEY-----"
+                          spellCheck={false}
+                        />
+                      </label>
+                      <label className="grid gap-1.5">
+                        <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                          Passphrase (optional)
+                        </span>
+                        <input
+                          type="password"
+                          autoComplete="off"
+                          value={sshPassphrase}
+                          onChange={(event) => setSshPassphrase(event.target.value)}
+                          className="field"
+                          placeholder="Key passphrase"
+                        />
+                      </label>
+                    </>
+                  )}
+                </>
+              ) : selected === "whatsapp" ? (
+                <>
+                  <label className="grid gap-1.5">
+                    <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                      Phone number ID
+                    </span>
+                    <input
+                      required
+                      value={whatsappPhoneNumberId}
+                      onChange={(event) => setWhatsappPhoneNumberId(event.target.value)}
+                      className="field font-mono text-[12px]"
+                      placeholder="From Meta → WhatsApp → API Setup"
+                    />
+                  </label>
+                  <label className="grid gap-1.5">
+                    <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                      WhatsApp Business Account ID
+                    </span>
+                    <input
+                      required
+                      value={whatsappWabaId}
+                      onChange={(event) => setWhatsappWabaId(event.target.value)}
+                      className="field font-mono text-[12px]"
+                      placeholder="WABA ID"
+                    />
+                  </label>
+                  <label className="grid gap-1.5">
+                    <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                      Permanent access token
+                    </span>
+                    <input
+                      required
+                      type="password"
+                      autoComplete="off"
+                      value={token}
+                      onChange={(event) => setToken(event.target.value)}
+                      className="field"
+                      placeholder="Meta system user / permanent token"
+                    />
+                  </label>
+                  <p className="text-[11px] text-neutral-500">
+                    Webhook URL on your API:{" "}
+                    <code className="text-neutral-300">
+                      /v1/connectors/whatsapp/webhook
+                    </code>
+                  </p>
+                </>
+              ) : (
+                <>
+                  {selected === "bitbucket" ? (
+                    <label className="grid gap-1.5">
+                      <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                        {t("bitbucketUsername")}
+                      </span>
+                      <input
+                        required
+                        value={bitbucketUser}
+                        onChange={(event) => setBitbucketUser(event.target.value)}
+                        className="field"
+                        placeholder="your-bitbucket-username"
+                      />
+                    </label>
+                  ) : null}
+                  {selected === "gitlab" ? (
+                    <label className="grid gap-1.5">
+                      <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                        {t("gitlabBaseUrl")}
+                      </span>
+                      <input
+                        value={gitlabBase}
+                        onChange={(event) => setGitlabBase(event.target.value)}
+                        className="field"
+                        placeholder="https://gitlab.com"
+                      />
+                    </label>
+                  ) : null}
+                  <label className="grid gap-1.5">
+                    <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                      {selected === "github" ? t("githubToken") : t("accessToken")}
+                    </span>
+                    <input
+                      required
+                      type="password"
+                      autoComplete="off"
+                      value={token}
+                      onChange={(event) => setToken(event.target.value)}
+                      className="field"
+                      placeholder={
+                        selected === "github"
+                          ? "ghp_…"
+                          : selected === "slack"
+                            ? "xoxb-…"
+                            : "token…"
+                      }
+                    />
+                  </label>
+                </>
+              )}
 
-              <form
-                onSubmit={(event) => void onSendEmail(event)}
-                className="rounded-[28px] border border-white/10 bg-[#080808] p-5"
+              <button
+                type="submit"
+                disabled={!canSubmit}
+                className="home-btn-primary mt-2 inline-flex h-10 items-center gap-2 px-5 text-sm font-medium disabled:opacity-40"
               >
-                <h2 className="text-sm text-white">{t("composeEmail")}</h2>
-                <label className="mt-3 grid gap-1.5">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                    {t("to")}
-                  </span>
-                  <input
-                    required
-                    value={composeTo}
-                    onChange={(event) => setComposeTo(event.target.value)}
-                    className="field"
-                    placeholder="teammate@company.com"
-                  />
-                </label>
-                <label className="mt-3 grid gap-1.5">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                    {t("subject")}
-                  </span>
-                  <input
-                    required
-                    value={composeSubject}
-                    onChange={(event) => setComposeSubject(event.target.value)}
-                    className="field"
-                  />
-                </label>
-                <label className="mt-3 grid gap-1.5">
-                  <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-                    {t("message")}
-                  </span>
-                  <textarea
-                    required
-                    value={composeBody}
-                    onChange={(event) => setComposeBody(event.target.value)}
-                    rows={6}
-                    className="field min-h-[120px]"
-                  />
-                </label>
-                <button
-                  type="submit"
-                  disabled={busy || !composeTo.trim() || !composeSubject.trim() || !composeBody.trim()}
-                  className="mt-4 inline-flex h-10 items-center gap-2 rounded-full bg-white px-5 text-sm font-medium text-black disabled:opacity-40"
-                >
-                  {busy ? <LoaderCircle className="size-4 animate-spin" /> : <Send className="size-4" />}
-                  {t("sendEmail")}
-                </button>
-              </form>
-            </div>
+                {busy ? <LoaderCircle className="size-4 animate-spin" /> : <Plus className="size-4" />}
+                {t("connect")}
+              </button>
+            </form>
           </section>
         ) : null}
+
       </div>
     </Surface>
   );

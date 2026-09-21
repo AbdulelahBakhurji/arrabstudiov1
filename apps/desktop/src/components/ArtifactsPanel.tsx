@@ -62,7 +62,7 @@ export function ArtifactsPanel({
   }
 
   return (
-    <div className={cn("flex min-h-0 flex-col rounded-2xl border border-white/[0.07] bg-[#080808]", className)}>
+    <div className={cn("flex min-h-0 flex-col rounded-2xl border border-white/[0.07] bg-[var(--color-surface)]", className)}>
       <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2">
         <FileCode2 className="size-3.5 text-neutral-400" />
         <p className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">Artifacts</p>

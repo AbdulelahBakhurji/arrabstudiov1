@@ -1,0 +1,755 @@
+// Agents Office v2 — procedural mesh builders (stylised 3D, Image-1/2 blend on nominal palette)
+import * as THREE from 'three';
+
+export const PLINTH_H = 2.15;
+const STONE = '#E7E2D8';
+const WOOD = '#C4A57A';
+const WOOD_DARK = '#A88962';
+const WHITE = '#F2EFE8';
+
+const matCache = new Map();
+export function mat(color, opts = {}) {
+  const key = color + JSON.stringify(opts);
+  if (!matCache.has(key)) {
+    matCache.set(key, new THREE.MeshStandardMaterial({
+      color, roughness: opts.rough ?? 0.78, metalness: opts.metal ?? 0.04,
+      envMapIntensity: opts.env ?? 0.35,
+      ...(opts.emissive ? { emissive: opts.emissive, emissiveIntensity: opts.ei ?? 1 } : {}),
+    }));
+  }
+  return matCache.get(key);
+}
+
+// Soft rounded prism — higher curve segments + tiny bevel for less LEGO look
+const geoCache = new Map();
+export function rboxGeo(w, d, h, r = 0.45) {
+  const key = `${w}|${d}|${h}|${r}|b`;
+  if (geoCache.has(key)) return geoCache.get(key);
+  const rr = Math.min(r, Math.min(w, d) * 0.42);
+  const s = new THREE.Shape();
+  const x = -w / 2, y = -d / 2;
+  s.moveTo(x + rr, y);
+  s.lineTo(x + w - rr, y); s.quadraticCurveTo(x + w, y, x + w, y + rr);
+  s.lineTo(x + w, y + d - rr); s.quadraticCurveTo(x + w, y + d, x + w - rr, y + d);
+  s.lineTo(x + rr, y + d); s.quadraticCurveTo(x, y + d, x, y + d - rr);
+  s.lineTo(x, y + rr); s.quadraticCurveTo(x, y, x + rr, y);
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: h, bevelEnabled: true, bevelThickness: Math.min(0.07, h * 0.12),
+    bevelSize: Math.min(0.06, rr * 0.25), bevelSegments: 2, curveSegments: 14,
+  });
+  g.rotateX(-Math.PI / 2);
+  geoCache.set(key, g);
+  return g;
+}
+
+export function rbox(w, d, h, color, r) {
+  const m = new THREE.Mesh(rboxGeo(w, d, h, r), typeof color === 'string' ? mat(color) : color);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+
+/* ---------- plinth: floating white pod with pastel dept floor ---------- */
+export function makePlinth(w, d, floorColor) {
+  const g = new THREE.Group();
+  // warm plaster pod — soft stone, not plastic brick
+  const body = rbox(w, d, PLINTH_H, mat(STONE, { rough: 0.92, metal: 0.01 }), 1.35);
+  body.position.y = -PLINTH_H;
+  g.add(body);
+  // soft under-lip for depth
+  const lip = rbox(w - 0.35, d - 0.35, 0.18, mat('#D9D3C8', { rough: 0.95 }), 1.15);
+  lip.position.y = -0.08;
+  lip.castShadow = false;
+  g.add(lip);
+  // muted carpet / floor wash
+  const floor = rbox(w - 0.9, d - 0.9, 0.1, mat(floorColor, { rough: 0.88 }), 1.0);
+  floor.position.y = 0.02;
+  floor.castShadow = false;
+  g.add(floor);
+  return g;
+}
+
+/* ---------- floor title: serif letterspaced dept name lying on the floor ---------- */
+export function makeFloorTitle(text, inkColor, width) {
+  const c = document.createElement('canvas');
+  const W = 1024, H = 192; c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  x.clearRect(0, 0, W, H);
+  x.font = '700 92px Georgia, "Times New Roman", serif';
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  const sp = 14; // letterspacing via manual draw
+  let total = 0;
+  for (const ch of text) total += x.measureText(ch).width + sp;
+  let cx0 = (W - total + sp) / 2;
+  x.fillStyle = inkColor;
+  for (const ch of text) {
+    const cw = x.measureText(ch).width;
+    x.fillText(ch, cx0 + cw / 2, H / 2 + 6);
+    cx0 += cw + sp;
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  const h = width * (H / W);
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, h),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.85, depthWrite: false })
+  );
+  m.rotation.x = -Math.PI / 2;
+  m.position.y = 0.14;
+  return m;
+}
+
+/* ---------- desk: wood top, white pedestals, monitor with live screen, chair ---------- */
+export function makeDeskScreenTexture(chip) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 160;
+  const x = c.getContext('2d');
+  const draw = (lines) => {
+    // live cream screen (v1 rule: wood desks with live cream/mint screens)
+    x.fillStyle = '#FDFFF8'; x.fillRect(0, 0, 256, 160);
+    x.fillStyle = chip; x.fillRect(0, 0, 256, 26);
+    x.fillStyle = '#151414'; x.font = 'bold 15px Menlo, monospace'; x.fillText('● working', 10, 18);
+    x.font = '13px Menlo, monospace';
+    lines.forEach((l, i) => {
+      x.fillStyle = i === lines.length - 1 ? '#1E9070' : 'rgba(21,20,20,.78)';
+      x.fillText(l, 10, 48 + i * 22);
+    });
+  };
+  draw(['▸ …', '▸ …', '▸ …']);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return { tex, canvas: c, ctx: x, draw };
+}
+
+export function makeDesk(chip) {
+  const g = new THREE.Group();
+  const top = rbox(5.2, 2.6, 0.16, mat(WOOD, { rough: 0.72 }), 0.28); top.position.y = 2.08; g.add(top);
+  const ped1 = rbox(0.85, 2.05, 1.85, mat('#EFEAE2', { rough: 0.86 }), 0.2); ped1.position.set(-1.95, 0.12, 0); g.add(ped1);
+  const ped2 = rbox(0.85, 2.05, 1.85, mat('#EFEAE2', { rough: 0.86 }), 0.2); ped2.position.set(1.95, 0.12, 0); g.add(ped2);
+  const screenSet = makeDeskScreenTexture(chip);
+  const monBack = rbox(2.15, 0.12, 1.35, mat('#2A2C30', { rough: 0.55, metal: 0.18 }), 0.12); monBack.position.set(0, 2.72, -0.82); g.add(monBack);
+  const screen = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.95, 1.18),
+    new THREE.MeshBasicMaterial({ map: screenSet.tex })
+  );
+  screen.position.set(0, 3.38, -0.75); g.add(screen);
+  const stand = rbox(0.14, 0.14, 0.4, mat('#4A4C52', { rough: 0.5, metal: 0.2 }), 0.06); stand.position.set(0, 2.3, -0.86); g.add(stand);
+  // keyboard + mug
+  const kb = rbox(1.45, 0.48, 0.05, mat('#E8E4DC', { rough: 0.8 }), 0.08); kb.position.set(0, 2.18, 0.38); g.add(kb);
+  const mug = new THREE.Mesh(new THREE.CylinderGeometry(0.15, 0.13, 0.28, 16), mat(chip, { rough: 0.55 }));
+  mug.position.set(1.9, 2.36, 0.4); mug.castShadow = true; g.add(mug);
+  return { group: g, screenSet };
+}
+
+export function makeChair() {
+  const g = new THREE.Group();
+  const seat = rbox(1.28, 1.18, 0.18, mat('#7F8B7A', { rough: 0.9 }), 0.42); seat.position.y = 1.22; g.add(seat);
+  const back = rbox(1.2, 0.16, 1.2, mat('#6F7A6A', { rough: 0.88 }), 0.35); back.position.set(0, 1.55, 0.58); g.add(back);
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.82, 12), mat('#5A5C62', { rough: 0.45, metal: 0.25 }));
+  pole.position.y = 0.72; g.add(pole);
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.56, 0.08, 16), mat('#5A5C62', { rough: 0.45, metal: 0.25 }));
+  base.position.y = 0.08; g.add(base);
+  return g;
+}
+
+/* ---------- stylised 3D person ---------- */
+export function makePerson({ hair, skin, chip, lead }) {
+  const g = new THREE.Group();
+  const S = lead ? 1.06 : 1;
+  const shirtCol = lead ? '#3A4254' : chip;
+  const shirt = mat(shirtCol, { rough: 0.86 });
+  const skinM = mat(skin, { rough: 0.62 });
+  const hairM = mat(hair, { rough: 0.92 });
+  const pantsM = mat('#454851', { rough: 0.9 });
+
+  const legs = new THREE.Group();
+  const legGeo = new THREE.CapsuleGeometry(0.15 * S, 0.82 * S, 4, 10);
+  const legL = new THREE.Mesh(legGeo, pantsM); legL.position.set(-0.18 * S, 0.62 * S, 0);
+  const legR = new THREE.Mesh(legGeo, pantsM); legR.position.set(0.18 * S, 0.62 * S, 0);
+  legL.castShadow = legR.castShadow = true;
+  legs.add(legL, legR); g.add(legs);
+
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.36 * S, 0.95 * S, 6, 14), shirt);
+  torso.position.y = 1.78 * S; torso.castShadow = true; g.add(torso);
+
+  if (lead) {
+    const tie = new THREE.Mesh(new THREE.ConeGeometry(0.09 * S, 0.48 * S, 6), mat(chip, { rough: 0.7 }));
+    tie.rotation.x = Math.PI; tie.position.set(0, 1.88 * S, 0.34 * S); g.add(tie);
+    const pin = new THREE.Mesh(new THREE.SphereGeometry(0.045 * S, 10, 10),
+      mat('#C9A84A', { metal: 0.65, rough: 0.35 }));
+    pin.position.set(0.22 * S, 2.02 * S, 0.32 * S); g.add(pin);
+  }
+
+  const armGeo = new THREE.CapsuleGeometry(0.13 * S, 0.68 * S, 4, 10);
+  const armL = new THREE.Mesh(armGeo, shirt); armL.castShadow = true;
+  const armR = new THREE.Mesh(armGeo, shirt); armR.castShadow = true;
+  const shL = new THREE.Group(); shL.position.set(-0.44 * S, 2.12 * S, 0); armL.position.y = -0.4 * S; shL.add(armL);
+  const shR = new THREE.Group(); shR.position.set(0.44 * S, 2.12 * S, 0); armR.position.y = -0.4 * S; shR.add(armR);
+  g.add(shL, shR);
+
+  const headG = new THREE.Group();
+  headG.position.y = 2.68 * S;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.38 * S, 22, 18), skinM);
+  head.position.y = 0.2 * S; head.castShadow = true; headG.add(head);
+  const hairMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.4 * S, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.58), hairM);
+  hairMesh.position.y = 0.26 * S; headG.add(hairMesh);
+  g.add(headG);
+
+  g.userData = { legs, legL, legR, shL, shR, torso, headG, S };
+  return g;
+}
+
+/* seated work poses — varied desk life, smoothly blended between modes */
+export function poseWork(g, mode, t, dt) {
+  const u = g.userData;
+  u.legs.visible = false;
+  // NOTE the camera sees agents from BEHIND — poses must read as back-view silhouettes.
+  // z-rotation sign: negative shLz / positive shRz flare the arms OUTWARD past the head.
+  // standK 0 = seated at desk, 1 = standing beside it (position lerp happens in main).
+  const tg = { shLx: -1.05, shLz: 0.25, shRx: -1.05, shRz: -0.25, headRx: 0.04, headRy: 0, torsoRx: 0, posY: 0.55, standK: 0 };
+  switch (mode) {
+    case 'type':
+      tg.shLx = -1.05 + Math.sin(t / 170) * 0.12;
+      tg.shRx = -1.05 + Math.sin(t / 140 + 1.3) * 0.14;
+      tg.headRx = 0.07 + Math.sin(t / 380) * 0.05;
+      break;
+    case 'read': // leans back off the keyboard, arms drop to the sides, head tilts at the screen
+      tg.shLx = -0.3; tg.shLz = -0.35; tg.shRx = -0.3; tg.shRz = 0.35;
+      tg.torsoRx = -0.12;
+      tg.headRx = 0.18 + Math.sin(t / 650) * 0.05;
+      break;
+    case 'phone': // right arm visibly up and out to the ear, small nods
+      tg.shRx = -2.3; tg.shRz = 0.55; tg.shLx = -0.4; tg.shLz = -0.2;
+      tg.headRy = -0.18; tg.headRx = 0.05 + (Math.sin(t / 330) > 0.55 ? 0.09 : 0);
+      break;
+    case 'glance': // big head turn toward a neighbour
+      tg.shLx = -0.9; tg.shRx = -0.9;
+      tg.headRy = u.glanceDir || 0.55;
+      break;
+    case 'sip': // mug arm up and out, head tips back a touch
+      tg.shRx = -2.0; tg.shRz = 0.5; tg.shLx = -0.6; tg.headRx = -0.12;
+      break;
+    case 'spin': // slow chair spin, arms out — rotation itself driven in main
+      tg.shLx = -0.7; tg.shLz = -0.55; tg.shRx = -0.7; tg.shRz = 0.55;
+      tg.headRx = -0.05;
+      break;
+    case 'stretch': // STANDS beside the desk, arms up in a wide V
+      tg.standK = 1; tg.posY = 0.12;
+      tg.shLx = -2.6; tg.shLz = -0.75; tg.shRx = -2.6; tg.shRz = 0.75;
+      tg.headRx = -0.15; tg.torsoRx = -0.05;
+      break;
+    case 'wave': // STUCK: standing, facing the camera, waving for attention
+      tg.standK = 1; tg.posY = 0.12;
+      tg.shRx = -2.6; tg.shRz = 0.55 + Math.sin(t / 150) * 0.4;
+      tg.shLx = -0.3; tg.shLz = -0.25;
+      tg.headRx = -0.05;
+      break;
+    case 'cheer': // approval granted — standing, arms V, little hops
+      tg.standK = 1;
+      tg.posY = 0.12 + Math.abs(Math.sin(t / 150)) * 0.16;
+      tg.shLx = -2.7; tg.shLz = -0.85 + Math.sin(t / 190) * 0.12;
+      tg.shRx = -2.7; tg.shRz = 0.85 - Math.sin(t / 190) * 0.12;
+      tg.headRx = -0.2;
+      break;
+    case 'slump': // approval rejected — head drops, arms droop
+      tg.shLx = -0.2; tg.shLz = -0.3; tg.shRx = -0.2; tg.shRz = 0.3;
+      tg.headRx = 0.45; tg.posY = 0.5;
+      break;
+  }
+  if (!u.cur) u.cur = { ...tg };
+  const k = 1 - Math.exp(-(dt || 0.016) * 7);
+  for (const key in tg) u.cur[key] += (tg[key] - u.cur[key]) * k;
+  u.shL.rotation.x = u.cur.shLx; u.shL.rotation.z = u.cur.shLz;
+  u.shR.rotation.x = u.cur.shRx; u.shR.rotation.z = u.cur.shRz;
+  u.headG.rotation.x = u.cur.headRx; u.headG.rotation.y = u.cur.headRy;
+  u.torso.rotation.x = u.cur.torsoRx;
+  u.legs.visible = u.cur.standK > 0.4;
+  g.position.y = u.cur.posY + Math.sin(t / 460) * 0.02;
+}
+
+export function posePerson(g, pose, t = 0) {
+  const u = g.userData;
+  u.cur = null; // walking/standing sets rotations directly; work poses re-blend from here
+  u.headG.rotation.x = 0; u.headG.rotation.y = 0;
+  if (pose === 'walk') {
+    u.legs.visible = true;
+    const sw = Math.sin(t / 110);
+    g.position.y = Math.abs(Math.cos(t / 110)) * 0.08;
+    u.legL.rotation.x = sw * 0.55; u.legR.rotation.x = -sw * 0.55;
+    u.shL.rotation.x = -sw * 0.45; u.shR.rotation.x = sw * 0.45;
+    u.shL.rotation.z = 0.08; u.shR.rotation.z = -0.08;
+  } else { // stand (meeting)
+    u.legs.visible = true;
+    g.position.y = 0;
+    u.legL.rotation.x = u.legR.rotation.x = 0;
+    u.shL.rotation.x = -0.15 + Math.sin(t / 500) * 0.05; u.shR.rotation.x = -0.15 - Math.sin(t / 500) * 0.05;
+    u.shL.rotation.z = 0.15; u.shR.rotation.z = -0.15;
+    u.headG.rotation.y = Math.sin(t / 900) * 0.12; // looks at the other attendee now and then
+  }
+}
+
+/* ---------- holo work-screen (Image-2 style floating glass panel) ---------- */
+export function makeHolo(agentName, chip, lines) {
+  const c = document.createElement('canvas');
+  const W = 512, H = 320; c.width = W; c.height = H;
+  const x = c.getContext('2d');
+  const draw = (ls) => {
+    x.clearRect(0, 0, W, H);
+    // glass card
+    x.fillStyle = 'rgba(253,255,248,0.93)';
+    roundRect(x, 6, 6, W - 12, H - 12, 26); x.fill();
+    x.strokeStyle = chip; x.lineWidth = 5;
+    roundRect(x, 6, 6, W - 12, H - 12, 26); x.stroke();
+    // header
+    x.fillStyle = chip;
+    x.beginPath(); x.arc(40, 44, 11, 0, 7); x.fill();
+    x.fillStyle = '#151414'; x.font = '700 27px Georgia, serif';
+    x.fillText(agentName, 62, 54);
+    x.strokeStyle = 'rgba(21,20,20,0.12)'; x.lineWidth = 2;
+    x.beginPath(); x.moveTo(28, 76); x.lineTo(W - 28, 76); x.stroke();
+    // terminal lines
+    x.font = '20px Menlo, monospace';
+    ls.forEach((l, i) => {
+      x.fillStyle = i === ls.length - 1 ? '#1E9070' : 'rgba(21,20,20,0.72)';
+      x.fillText(l.length > 40 ? l.slice(0, 40) + '…' : l, 30, 116 + i * 36);
+    });
+    // blinking caret line
+    x.fillStyle = '#151414';
+    x.fillRect(30, 116 + ls.length * 36 - 16, 12, 20);
+  };
+  draw(lines);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  const m = new THREE.Mesh(
+    new THREE.PlaneGeometry(4.8, 3.0),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.96, depthWrite: false, side: THREE.DoubleSide })
+  );
+  m.userData.draw = draw;
+  m.userData.tex = tex;
+  return m;
+}
+
+function roundRect(x, a, b, w, h, r) {
+  x.beginPath();
+  x.moveTo(a + r, b);
+  x.arcTo(a + w, b, a + w, b + h, r);
+  x.arcTo(a + w, b + h, a, b + h, r);
+  x.arcTo(a, b + h, a, b, r);
+  x.arcTo(a, b, a + w, b, r);
+  x.closePath();
+}
+
+/* ---------- props ---------- */
+export function makePlant() {
+  const g = new THREE.Group();
+  const pot = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.38, 0.72, 16), mat('#A56B4E', { rough: 0.9 }));
+  pot.position.y = 0.36; pot.castShadow = true; g.add(pot);
+  const foliage = mat('#5A7F58', { rough: 0.95 });
+  const foliage2 = mat('#6A9164', { rough: 0.95 });
+  for (let i = 0; i < 5; i++) {
+    const s = new THREE.Mesh(new THREE.SphereGeometry(0.42 + Math.sin(i * 7) * 0.12, 10, 8), i % 2 ? foliage : foliage2);
+    s.position.set(Math.sin(i * 2.4) * 0.35, 1.15 + i * 0.28, Math.cos(i * 2.4) * 0.35);
+    s.castShadow = true; g.add(s);
+  }
+  return g;
+}
+
+/** Tall datacenter rack — dark chassis, bay doors, status LEDs */
+export function makeServerRack(chip = '#6B8CFF', { seed = 1, height = 4.35 } = {}) {
+  const g = new THREE.Group();
+  const w = 1.55, d = 1.35;
+  const frame = mat('#1C1E24', { rough: 0.55, metal: 0.35 });
+  const bay = mat('#2A2D36', { rough: 0.62, metal: 0.22 });
+  const face = mat('#242730', { rough: 0.48, metal: 0.28 });
+  const body = rbox(w, d, height, frame, 0.1);
+  body.position.y = 0.02; g.add(body);
+  // front face plate
+  const door = rbox(w - 0.18, 0.06, height - 0.28, face, 0.06);
+  door.position.set(0, 0.14, d / 2 - 0.02); g.add(door);
+  // top lip / cable tray
+  const lip = rbox(w + 0.08, d + 0.1, 0.12, mat('#15171C', { rough: 0.5, metal: 0.4 }), 0.05);
+  lip.position.y = height + 0.02; g.add(lip);
+  const bays = 7 + (seed % 2);
+  const span = height - 0.55;
+  for (let r = 0; r < bays; r++) {
+    const y = 0.38 + (r + 0.5) * (span / bays);
+    const slot = rbox(w - 0.38, 0.05, span / bays - 0.08, bay, 0.03);
+    slot.position.set(0, y, d / 2 + 0.01); g.add(slot);
+    // twin status LEDs
+    const on = ((seed + r * 3) % 5) !== 0;
+    const col = on ? (((seed + r) % 3 === 0) ? '#E69393' : chip) : '#3A3D48';
+    const led = new THREE.Mesh(
+      new THREE.SphereGeometry(0.045, 8, 8),
+      mat(col, { emissive: on ? col : '#000', ei: on ? 2.4 : 0, rough: 0.35, metal: 0.1 })
+    );
+    led.position.set(w / 2 - 0.28, y, d / 2 + 0.06); g.add(led);
+    const led2 = led.clone();
+    led2.position.x = w / 2 - 0.42;
+    led2.material = mat(
+      on ? '#7DDEA8' : '#3A3D48',
+      { emissive: on ? '#7DDEA8' : '#000', ei: on ? 1.8 : 0, rough: 0.35 }
+    );
+    g.add(led2);
+  }
+  // side vent grille strips
+  for (let i = 0; i < 4; i++) {
+    const vent = rbox(0.04, d - 0.35, 0.55, mat('#3A3E4A', { rough: 0.7, metal: 0.2 }), 0.02);
+    vent.position.set(-w / 2 + 0.06, 0.7 + i * 0.85, 0); g.add(vent);
+  }
+  return g;
+}
+
+/** Files pod = mini datacenter: server racks clustered next to the secretary desk */
+export function makeFilesArchiveFloor(L) {
+  const g = new THREE.Group();
+  g.position.set(L.pos[0], 0, L.pos[1]);
+  const chip = '#7A91C4';
+
+  // raised tile aisle under the rack hall (reads as datacenter flooring)
+  const tile = mat('#D5DAE3', { rough: 0.9 });
+  const hall = rbox(7.4, 11.2, 0.06, tile, 0.15);
+  hall.position.set(-3.6, 0.06, -0.6); hall.castShadow = false; g.add(hall);
+  const seam = mat('#C4CAD6', { rough: 0.92 });
+  for (let i = -4; i <= 4; i++) {
+    const line = rbox(7.2, 0.06, 0.02, seam, 0.02);
+    line.position.set(-3.6, 0.1, i * 1.15); line.castShadow = false; g.add(line);
+  }
+
+  // two parallel rack rows — tight aisle, next to secretary desk (desk sits ~+4.3, -7.4)
+  const rowZ = [-5.2, -3.55, -1.9, -0.25, 1.4, 3.05];
+  const rowX = [-6.15, -4.35];
+  let n = 0;
+  for (const x of rowX) {
+    for (const z of rowZ) {
+      // leave a clear gap near the desk / walk-in (front-right of hall)
+      if (x > -5 && z < -4.2) continue;
+      const rack = makeServerRack(chip, { seed: 2 + n * 3, height: 4.1 + (n % 3) * 0.12 });
+      rack.position.set(x, 0.08, z);
+      rack.rotation.y = x < -5 ? Math.PI / 2 : -Math.PI / 2;
+      g.add(rack);
+      n++;
+    }
+  }
+
+  // short end-cap row closing the hall toward the back wall
+  for (let i = 0; i < 3; i++) {
+    const rack = makeServerRack('#8FA3C8', { seed: 40 + i, height: 4.25 });
+    rack.position.set(-5.25 + i * 1.7, 0.08, -7.55);
+    g.add(rack);
+  }
+
+  // cable tray spine between the two rows
+  const tray = rbox(0.55, 10.4, 0.14, mat('#4A5160', { rough: 0.55, metal: 0.45 }), 0.06);
+  tray.position.set(-5.25, 4.55, -1.2); g.add(tray);
+  for (let i = 0; i < 5; i++) {
+    const drop = rbox(0.12, 0.12, 1.1, mat('#5A6578', { rough: 0.6, metal: 0.35 }), 0.04);
+    drop.position.set(-5.25, 3.9, -4.5 + i * 2.0); g.add(drop);
+  }
+
+  // cool under-glow strip along the aisle (subtle)
+  const glow = new THREE.Mesh(
+    new THREE.BoxGeometry(0.35, 0.04, 9.5),
+    mat('#7A91C4', { emissive: '#7A91C4', ei: 0.55, rough: 0.4 })
+  );
+  glow.position.set(-5.25, 0.12, -1.1); glow.castShadow = false; g.add(glow);
+
+  g.traverse(o => { if (o.isMesh) o.userData.dept = 'files'; });
+  return g;
+}
+
+export function makeMeetingTable() {
+  const g = new THREE.Group();
+  const top = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 2.4, 0.2, 28), mat('#EFEADF'));
+  top.position.y = 1.9; top.castShadow = true; top.receiveShadow = true; g.add(top);
+  const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.3, 1.9, 12), mat('#C9C4B8'));
+  leg.position.y = 0.95; g.add(leg);
+  return g;
+}
+
+/* ---------- the Brain: GALACTIC-CORE nebula + knowledge web + swirling outer band ----------
+   M4 "HERO BRAIN" (AJ chose A+D from the reference video — a dark galaxy-core map where the
+   centre is a dense multicolour particle nebula and departments light up one at a time):
+   A = the nebula — ~1100 particles in the nominal + chip palette, packed bright at the
+       centre, differential swirl (core spins faster, like a galaxy), per-particle shimmer,
+       periodic "thought flashes" where a random cluster blooms.
+   D = the thinking sweep — tick() accepts {theta, strength, col}: particles in that azimuth
+       window brighten toward the dept chip colour while main.js orbits a comet + glows the
+       dept billboard. The knowledge web stays as a compact hub lattice so the brain still
+       reads as a knowledge graph, not just dust. */
+export function makeNeuralBrain() {
+  const g = new THREE.Group();
+  const R = 5.2;
+  const PI2 = Math.PI * 2;
+  const gauss = () => (Math.random() + Math.random() + Math.random()) / 1.5 - 1;
+  const dummy = new THREE.Object3D();
+
+  /* the nebula — cylindrical coords so the swirl is a pure per-frame azimuth advance.
+     DUAL PALETTE (M5): every particle carries a CREAM colour (ink-dominant dust that reads
+     on the cream office with no dark backing — the M4 orb read as a storm-cloud shadow and
+     is gone) and a GALAXY colour (the M4 bright set) — tick lerps between them by gk. */
+  const N = 1100;
+  const parts = [];
+  const PAL_G = [ // galaxy mode: white-hot core + chip sparkle (needs a dark field)
+    ['#FFFFFF', .24], ['#B9B9B2', .13], ['#8B8B85', .10],
+    ['#5ADEB7', .12], ['#EADC8F', .12], ['#E69393', .09], ['#98A5EF', .09],
+    ['#4C7A57', .05], ['#D9A05B', .03], ['#151414', .03],
+  ];
+  const PAL_C = [ // cream mode: ink/graphite carries the mass, deep chip tones sparkle
+    ['#151414', .20], ['#3E3E3A', .16], ['#6E6E68', .15], ['#9A9A92', .08],
+    ['#2E8B57', .11], ['#C8A438', .10], ['#C2574F', .08], ['#5A6ACF', .08],
+    ['#4C7A57', .03], ['#D9A05B', .01],
+  ];
+  const pick = (PAL) => { let x = Math.random(); for (const [c, w] of PAL) { if ((x -= w) <= 0) return c; } return PAL[0][0]; };
+  for (let i = 0; i < N; i++) {
+    const rad = R * Math.pow(Math.random(), 0.62);              // clustered toward the core
+    parts.push({
+      rad, az: Math.random() * PI2,
+      y: gauss() * R * 0.34 * (0.35 + 0.65 * (rad / R)),        // thin bright plane, puffier rim
+      w: 0.00005 + 0.00013 * (1 - rad / R),                     // differential swirl speed
+      base: (0.6 + Math.random() * 0.7) * (1 + 0.55 * (1 - rad / R)), // bigger toward centre
+      colC: new THREE.Color(pick(PAL_C)),
+      colG: new THREE.Color(pick(PAL_G)),
+      phase: Math.random() * 7,
+    });
+  }
+  const inst = new THREE.InstancedMesh(
+    new THREE.SphereGeometry(0.10, 6, 5),
+    new THREE.MeshBasicMaterial({ color: 0xffffff }), N);
+  parts.forEach((p, i) => {
+    dummy.position.set(p.rad * Math.cos(p.az), p.y, p.rad * Math.sin(p.az));
+    dummy.scale.setScalar(p.base);
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
+    inst.setColorAt(i, p.colC);
+  });
+  g.add(inst);
+
+  /* knowledge web: a compact hub lattice INSIDE the nebula. Its nodes+edges live in their
+     own group that rotates as one (edges must stay attached), while the dust swirls past. */
+  const webG = new THREE.Group();
+  g.add(webG);
+  const NW = 90;
+  const wnodes = [];
+  for (let i = 0; i < NW; i++) {
+    const dir = new THREE.Vector3(gauss(), gauss(), gauss()).normalize();
+    const p = dir.multiplyScalar(R * (0.1 + 0.6 * Math.cbrt(Math.random())));
+    p.y *= 0.7;
+    const big = Math.random() < 0.3;
+    wnodes.push({ p, big });
+  }
+  const winst = new THREE.InstancedMesh(
+    new THREE.SphereGeometry(0.10, 6, 5),
+    new THREE.MeshBasicMaterial({ color: 0xffffff }), NW);
+  wnodes.forEach((n, i) => {
+    n.colC = new THREE.Color(n.big ? '#7A7A74' : '#454540'); // graphite on cream
+    n.colG = new THREE.Color(n.big ? '#A8A8A1' : '#FFFFFF'); // light on the night field
+    dummy.position.copy(n.p);
+    dummy.scale.setScalar(n.big ? 1.7 : 0.9);
+    dummy.updateMatrix();
+    winst.setMatrixAt(i, dummy.matrix);
+    winst.setColorAt(i, n.colC);
+  });
+  webG.add(winst);
+  const edges = [];
+  for (const n of wnodes) {
+    const near = wnodes
+      .filter(m => m !== n)
+      .sort((a, b) => a.p.distanceToSquared(n.p) - b.p.distanceToSquared(n.p));
+    for (let j = 0; j < (n.big ? 5 : 2); j++)
+      if (near[j]) edges.push([n.p, near[j].p]);
+  }
+  const epos = new Float32Array(edges.length * 6);
+  edges.forEach(([a, b], i) => epos.set([a.x, a.y, a.z, b.x, b.y, b.z], i * 6));
+  const egeo = new THREE.BufferGeometry();
+  egeo.setAttribute('position', new THREE.BufferAttribute(epos, 3));
+  const webLineMat = new THREE.LineBasicMaterial({ color: 0x3A3A38, transparent: true, opacity: 0.15 });
+  webG.add(new THREE.LineSegments(egeo, webLineMat)); // ink on cream, lerped light in galaxy mode
+  // signal pulses along the web
+  const pulses = [];
+  const pulseCols = ['#5ADEB7', '#E69393', '#98A5EF', '#D9A05B', '#FFF8EC', '#EADC8F', '#5ADEB7', '#4C7A57'];
+  for (let i = 0; i < 8; i++) {
+    const m = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 6),
+      new THREE.MeshBasicMaterial({ color: pulseCols[i] }));
+    webG.add(m);
+    pulses.push({ m, edge: edges[Math.floor(Math.random() * edges.length)], t: Math.random(), speed: 0.35 + Math.random() * 0.6 });
+  }
+
+  /* outer band: hundreds of loose dots in a swirling annulus (the "circle" read) */
+  const bandG = new THREE.Group();
+  g.add(bandG);
+  const bandPts = [];
+  let guard = 0;
+  while (bandPts.length < 320 && guard++ < 5000) {
+    // 3D shell: random direction, swirl gaps by azimuth, gently squashed vertically
+    const dir = new THREE.Vector3(gauss(), gauss(), gauss()).normalize();
+    const r = R * (1.35 + 0.75 * Math.random());
+    const az = Math.atan2(dir.z, dir.x);
+    if (Math.sin(az * 2.2 + r * 1.6) < -0.45) continue; // swirl gaps
+    const p = dir.multiplyScalar(r);
+    p.y *= 0.55;
+    const x = Math.random();
+    bandPts.push({
+      p,
+      colC: new THREE.Color(x < 0.32 ? '#C8A438' : x < 0.54 ? '#8B8B85' : x < 0.68 ? '#3E3E3A'
+        : x < 0.80 ? '#2E8B57' : x < 0.90 ? '#C2574F' : '#5A6ACF'),
+      colG: new THREE.Color(x < 0.32 ? '#EADC8F' : x < 0.54 ? '#8B8B85' : x < 0.68 ? '#FFFFFF'
+        : x < 0.80 ? '#5ADEB7' : x < 0.90 ? '#E69393' : '#98A5EF'),
+      phase: Math.random() * 7,
+    });
+  }
+  const NB = bandPts.length;
+  const band = new THREE.InstancedMesh(
+    new THREE.SphereGeometry(0.085, 6, 5),
+    new THREE.MeshBasicMaterial({ color: 0xffffff }), NB);
+  bandPts.forEach((n, i) => {
+    dummy.position.copy(n.p);
+    dummy.scale.setScalar(0.8 + Math.random() * 0.5);
+    dummy.updateMatrix();
+    band.setMatrixAt(i, dummy.matrix);
+    band.setColorAt(i, n.colC);
+  });
+  bandG.add(band);
+  /* links to the outer nodes (M5.5 per AJ — the band dots floated unconnected): local
+     nearest-neighbour edges so the ring reads as constellations, plus sparse inward spokes
+     tying the outer nodes back to the core. Lives INSIDE bandG so the lines rotate with
+     their endpoints (M3.4 lesson: edges must stay attached). */
+  const bandLineMat = new THREE.LineBasicMaterial({ color: 0x3A3A38, transparent: true, opacity: 0.12 });
+  {
+    const bedges = [];
+    bandPts.forEach((n, i) => {
+      const near = bandPts
+        .filter(m => m !== n)
+        .sort((a, b) => a.p.distanceToSquared(n.p) - b.p.distanceToSquared(n.p));
+      if (near[0] && near[0].p.distanceTo(n.p) < 3.0) bedges.push([n.p, near[0].p]);
+      if (near[1] && Math.random() < 0.45 && near[1].p.distanceTo(n.p) < 3.0) bedges.push([n.p, near[1].p]);
+      if (i % 7 === 0) bedges.push([n.p, n.p.clone().multiplyScalar(0.45)]); // inward spoke to the core
+    });
+    const bpos = new Float32Array(bedges.length * 6);
+    bedges.forEach(([a, b], i) => bpos.set([a.x, a.y, a.z, b.x, b.y, b.z], i * 6));
+    const bgeo = new THREE.BufferGeometry();
+    bgeo.setAttribute('position', new THREE.BufferAttribute(bpos, 3));
+    bandG.add(new THREE.LineSegments(bgeo, bandLineMat));
+  }
+
+  /* M5: the M4 "space orb" dark backing is DELETED — on the cream office it read as a
+     storm-cloud shadow (AJ). The cream palette above needs no backing; galaxy mode (gk→1)
+     supplies the dark field page-wide instead. */
+  /* tight warm-white glow at the very centre — near-invisible on cream, blooms in galaxy */
+  let coreMat;
+  {
+    const c = document.createElement('canvas'); c.width = c.height = 256;
+    const x = c.getContext('2d');
+    const rg = x.createRadialGradient(128, 128, 4, 128, 128, 126);
+    rg.addColorStop(0, 'rgba(255,252,240,0.95)');
+    rg.addColorStop(0.3, 'rgba(255,250,232,0.45)');
+    rg.addColorStop(1, 'rgba(255,250,232,0)');
+    x.fillStyle = rg; x.fillRect(0, 0, 256, 256);
+    const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+    coreMat = new THREE.SpriteMaterial({ map: t, transparent: true, depthWrite: false, opacity: 0.2 });
+    const core = new THREE.Sprite(coreMat);
+    core.scale.set(7.5, 7.5, 1);
+    core.renderOrder = -1;
+    g.add(core);
+  }
+
+  /* thought flashes: every few seconds a random cluster blooms bright — "having an idea" */
+  let flash = null, nextFlashAt = 2200;
+  const sweepCol = new THREE.Color('#FFFFFF');
+  const tmpCol = new THREE.Color();
+  const flashCol = new THREE.Color();
+  const FLASH_C = new THREE.Color('#D9A05B'); // amber bloom reads on cream…
+  const FLASH_G = new THREE.Color('#FFFFFF'); // …white bloom on the night field
+  const WEB_LINE_C = new THREE.Color(0x3A3A38), WEB_LINE_G = new THREE.Color(0xFFF8EC);
+  let lastGk = -1;
+
+  const tick = (t, dt, sw, gk = 0) => {
+    const swS = sw ? sw.strength : 0;
+    const swTheta = sw ? sw.theta : 0;
+    if (sw && sw.col) sweepCol.set(sw.col);
+    // galaxy-mode crossfades (skip the instanced recolours when gk hasn't moved)
+    coreMat.opacity = 0.2 + 0.8 * gk;
+    webLineMat.color.copy(WEB_LINE_C).lerp(WEB_LINE_G, gk);
+    webLineMat.opacity = 0.15 + 0.05 * gk;
+    bandLineMat.color.copy(webLineMat.color);
+    bandLineMat.opacity = 0.12 + 0.04 * gk;
+    flashCol.copy(FLASH_C).lerp(FLASH_G, gk);
+    if (Math.abs(gk - lastGk) > 0.004) {
+      lastGk = gk;
+      wnodes.forEach((n, i) => winst.setColorAt(i, tmpCol.copy(n.colC).lerp(n.colG, gk)));
+      winst.instanceColor.needsUpdate = true;
+      bandPts.forEach((n, i) => band.setColorAt(i, tmpCol.copy(n.colC).lerp(n.colG, gk)));
+      band.instanceColor.needsUpdate = true;
+    }
+    webG.rotation.y = t * 0.00008;
+    bandG.rotation.y = -t * 0.000035; // counter-rotating galaxy shear
+    if (t > nextFlashAt) {
+      flash = { az: Math.random() * PI2, rad: R * (0.15 + 0.55 * Math.random()), r: R * 0.38, t0: t };
+      nextFlashAt = t + 2600 + Math.random() * 2600;
+    }
+    let fk = 0, fx = 0, fz = 0;
+    if (flash) {
+      const k = (t - flash.t0) / 950;
+      if (k >= 1) flash = null;
+      else { fk = Math.sin(k * Math.PI); fx = flash.rad * Math.cos(flash.az); fz = flash.rad * Math.sin(flash.az); }
+    }
+    for (let i = 0; i < N; i++) {
+      const p = parts[i];
+      const az = p.az + t * p.w; // differential swirl
+      const x = p.rad * Math.cos(az), z = p.rad * Math.sin(az);
+      let s = p.base * (1 + 0.32 * Math.sin(t / 620 + p.phase)); // shimmer
+      tmpCol.copy(p.colC);
+      if (gk > 0.004) tmpCol.lerp(p.colG, gk);
+      if (swS > 0.01) { // the thinking sweep: this side of the brain leans toward the dept colour
+        const d = Math.atan2(Math.sin(az - swTheta), Math.cos(az - swTheta));
+        let sk = Math.max(0, 1 - Math.abs(d) / 0.62);
+        sk = sk * sk * (3 - 2 * sk) * swS;
+        if (sk > 0.01) { s *= 1 + 0.85 * sk; tmpCol.lerp(sweepCol, 0.6 * sk); }
+      }
+      if (fk > 0) { // thought flash bloom
+        const dx = x - fx, dz = z - fz;
+        const fb = fk * Math.max(0, 1 - Math.sqrt(dx * dx + dz * dz) / flash.r);
+        if (fb > 0.01) { s *= 1 + 0.9 * fb; tmpCol.lerp(flashCol, 0.5 * fb); }
+      }
+      dummy.position.set(x, p.y, z);
+      dummy.scale.setScalar(s);
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+      inst.setColorAt(i, tmpCol);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    inst.instanceColor.needsUpdate = true;
+    for (const p of pulses) {
+      p.t += dt * p.speed;
+      if (p.t >= 1) { p.t = 0; p.edge = edges[Math.floor(Math.random() * edges.length)]; }
+      p.m.position.lerpVectors(p.edge[0], p.edge[1], p.t);
+    }
+  };
+  return { group: g, tick };
+}
+
+/* ---------- pulsing ⚠ sprite for stuck agents (v1 rule) ---------- */
+export function makeWarnSprite() {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const x = c.getContext('2d');
+  x.beginPath(); x.moveTo(64, 12); x.lineTo(120, 112); x.lineTo(8, 112); x.closePath();
+  x.fillStyle = '#F2B84B'; x.fill();
+  x.lineWidth = 7; x.strokeStyle = '#151414'; x.lineJoin = 'round'; x.stroke();
+  x.fillStyle = '#151414'; x.font = '900 64px Inter, sans-serif';
+  x.textAlign = 'center'; x.fillText('!', 64, 98);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: false }));
+  s.scale.set(2.6, 2.6, 1);
+  return s;
+}
+
+/* ---------- walkway bridge between two XZ points ---------- */
+export function makeWalkway(from, to) {
+  const dx = to[0] - from[0], dz = to[1] - from[1];
+  const len = Math.hypot(dx, dz);
+  const g = rbox(len, 2.8, 0.22, mat('#D8D2C6', { rough: 0.94 }), 0.35);
+  g.position.set((from[0] + to[0]) / 2, -0.35, (from[1] + to[1]) / 2);
+  g.rotation.y = -Math.atan2(dz, dx);
+  return g;
+}

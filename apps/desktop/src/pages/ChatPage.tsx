@@ -2,6 +2,7 @@ import {
   type FormEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
+  startTransition,
   useCallback,
   useEffect,
   useMemo,
@@ -9,7 +10,9 @@ import {
   useState,
 } from "react";
 import {
+  Archive,
   ArrowUp,
+  ArrowUpRight,
   Bot,
   Brain,
   Code2,
@@ -21,7 +24,7 @@ import {
   MessageSquarePlus,
   MoreHorizontal,
   NotebookPen,
-  PanelLeft,
+  Paperclip,
   Pause,
   Play,
   Plus,
@@ -33,8 +36,11 @@ import {
   Target,
   Trash2,
   UserRound,
+  Globe,
   X,
 } from "lucide-react";
+import { PauseSendButton, QueuedQueryBar } from "@/components/QueuedQueryBar";
+import { ComposerPlusMenu } from "@/components/ComposerPlusMenu";
 import type {
   Agent,
   Approval,
@@ -51,20 +57,67 @@ import type {
   TokenSpendTier,
   WorkspaceHint,
 } from "@arrab/shared";
+import { ChatMarkdown, copyChatText } from "@/components/ChatMarkdown";
 import { Surface } from "@/components/StudioFrame";
+import { CompanionCatalog } from "@/components/companions/CompanionCatalog";
+import { IncognitoRoom } from "@/components/companions/IncognitoRoom";
+import {
+  OrgChatFullscreenExit,
+  OrgChatTopBar,
+  type OrgChatLane,
+  type OrgChatPrivacy,
+} from "@/components/OrgChatTopBar";
+import {
+  attachEmployeesToCompanion,
+  ensureOrgCompanionAgent,
+  isCompanionAgent,
+  resolveCompanionAgentId,
+  splitOrgAgents,
+  syncWorkProfilesFromAgents,
+} from "@/lib/org-chat";
+import {
+  birthSuggestion,
+  dismissBirth,
+  findCompanion,
+  liveCompanions,
+  noteTopics,
+  useCompanionState,
+  type CompanionProfile,
+} from "@/lib/companions";
+import {
+  companionDisplayBlurb,
+  companionDisplayName,
+} from "@/lib/companion-catalog";
+import {
+  clientSearchWeb,
+  formatWebSearchForModel,
+  formatWebSearchForUser,
+  parseWebSearchCommand,
+} from "@/lib/web-search";
+import { PersonAvatar } from "@/components/companions/CompanionUI";
+import { useSignedInAccount } from "@/lib/use-signed-in-account";
+import { resolvePreferredModel } from "@/lib/ai-prefs";
+
 import { AgentSteps, friendlyToolTitle, type AgentStep } from "@/components/AgentSteps";
+import { humanizeApprovalCopy } from "@/lib/approval-copy";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useStudioPrefs } from "@/hooks/useStudioPrefs";
 import { arrabApi, ApiRequestError, isTransientApiError } from "@/lib/api";
 import {
+  filterLiveWorkforceAgents,
+  readAgentSessionPolicy,
+  writeAgentSessionPolicy,
+} from "@/lib/agent-session-policy";
+import {
   defaultSoloAgentBody,
   ensureDefaultSoloAgent,
 } from "@/lib/agents-bootstrap";
-import { LAST_CHAT_AGENT_KEY } from "@/lib/prefs";
+import { LAST_CHAT_AGENT_KEY, readPrefs } from "@/lib/prefs";
 import {
   executeLocalAgentTool,
   isAutoClientTool,
   isClientExecTool,
+  isEmailPolicyTool,
   isPolicyClientTool,
   parseToolArgsFromApproval,
   parseToolNameFromApproval,
@@ -79,6 +132,7 @@ import {
   mergeRemoteConversations,
   usePersistedChat,
 } from "@/lib/chat-history";
+import { ingestBrainMessages, brainContextSnippet } from "@/lib/second-brain";
 import {
   createIncognitoVault,
   deleteIncognitoSession,
@@ -97,6 +151,12 @@ import {
   type IncognitoSession,
 } from "@/lib/incognito-vault";
 import { cn } from "@/lib/utils";
+import {
+  hideAgentPresence,
+  showAgentPresence,
+  subscribePresenceResolve,
+  updateAgentPresence,
+} from "@/lib/agent-presence";
 
 type FocusMode = "chat" | "split" | "terminal";
 type WorkspaceKind = "none" | "folder" | "github";
@@ -162,12 +222,6 @@ const OPS_KEY = "arrab.workforce.ops";
 const SPEND_KEY = "arrab.chatSpend";
 const GOAL_KEY_PREFIX = "arrab.chatGoal.";
 
-const DEFAULT_SESSION_BUDGETS: Record<TokenSpendTier, number> = {
-  low: 5_000,
-  medium: 12_000,
-  high: 40_000,
-};
-
 function readSpendPrefs(): { tier: TokenSpendTier; budgetInput: string } {
   try {
     const saved = JSON.parse(localStorage.getItem(SPEND_KEY) ?? "null") as {
@@ -180,26 +234,11 @@ function readSpendPrefs(): { tier: TokenSpendTier; budgetInput: string } {
         : "low";
     return {
       tier,
-      budgetInput:
-        typeof saved?.budgetInput === "string"
-          ? saved.budgetInput
-          : String(DEFAULT_SESSION_BUDGETS[tier]),
+      budgetInput: "",
     };
   } catch {
-    return { tier: "low", budgetInput: String(DEFAULT_SESSION_BUDGETS.low) };
+    return { tier: "low", budgetInput: "" };
   }
-}
-
-function parseBudgetInput(value: string): number | null {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-  const n = Number(trimmed);
-  if (!Number.isFinite(n) || n <= 0) {
-    return null;
-  }
-  return Math.min(Math.floor(n), 2_000_000);
 }
 
 function clampMenuPosition(
@@ -265,7 +304,8 @@ function highRiskEnabled(): boolean {
 }
 
 export function ChatPage() {
-  const { t } = useLanguage();
+  const { t, locale } = useLanguage();
+  const { signedIn } = useSignedInAccount();
   const prefs = useStudioPrefs();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [teams, setTeams] = useState<Team[]>([]);
@@ -310,9 +350,15 @@ export function ChatPage() {
   const [goalDraft, setGoalDraft] = useState("");
   const [goalEditorOpen, setGoalEditorOpen] = useState(false);
   const [sending, setSending] = useState(false);
+  const [queuedQuery, setQueuedQuery] = useState<string | null>(null);
+  const queuedQueryRef = useRef<string | null>(null);
+  queuedQueryRef.current = queuedQuery;
+  const streamAbortRef = useRef<AbortController | null>(null);
+  const pauseRequestedRef = useRef(false);
   const [sessionBusy, setSessionBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [providerConfigured, setProviderConfigured] = useState<boolean | null>(null);
+  const [aiStatus, setAiStatus] = useState<import("@arrab/shared").AiGatewayStatusResponse | null>(null);
   const [spendTier, setSpendTier] = useState<TokenSpendTier>(() => readSpendPrefs().tier);
   const [budgetInput, setBudgetInput] = useState(() => readSpendPrefs().budgetInput);
   const [sessionUsage, setSessionUsage] = useState<SessionUsageSnapshot | null>(null);
@@ -320,7 +366,7 @@ export function ChatPage() {
   const [terminalBusy, setTerminalBusy] = useState(false);
   const [terminalTall, setTerminalTall] = useState(false);
   const [deskOpen, setDeskOpen] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(true);
+  const [, setHistoryOpen] = useState(false);
   const [deskTab, setDeskTab] = useState<DeskTab>("agent");
   const [profileMoreOpen, setProfileMoreOpen] = useState(false);
   const [focus, setFocus] = useState<FocusMode>("chat");
@@ -346,6 +392,7 @@ export function ChatPage() {
     y: number;
   } | null>(null);
   const [composerMenuOpen, setComposerMenuOpen] = useState(false);
+  const [plusOpen, setPlusOpen] = useState(false);
   const composerMenuRef = useRef<HTMLDivElement | null>(null);
   const [lines, setLines] = useState<TerminalLine[]>(() => [
     { id: "sys-1", kind: "system", text: t("terminalReady") },
@@ -379,6 +426,8 @@ export function ChatPage() {
   const chatEnd = useRef<HTMLDivElement | null>(null);
   const termEnd = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
+  const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const imageUploadRef = useRef<HTMLInputElement | null>(null);
 
   const selectedTeam = useMemo(
     () => teams.find((team) => team.id === teamId) ?? null,
@@ -389,6 +438,74 @@ export function ChatPage() {
     () => agents.find((agent) => agent.id === agentId) ?? null,
     [agentId, agents],
   );
+
+  const { companions, employees } = useMemo(() => splitOrgAgents(agents), [agents]);
+  const companionState = useCompanionState();
+  const workPeople = useMemo(
+    () => liveCompanions(companionState, "work").filter((person) => person.domain !== "general"),
+    [companionState],
+  );
+  useEffect(() => {
+    syncWorkProfilesFromAgents(agents);
+  }, [agents]);
+  const [activePersonId, setActivePersonId] = useState<string | null>(null);
+  const activePerson = useMemo(() => {
+    const byId = findCompanion(companionState, activePersonId);
+    if (byId && byId.space === "work" && !byId.archivedAt) return byId;
+    return (
+      workPeople.find((person) => person.agentId === agentId) ??
+      workPeople[0] ??
+      null
+    );
+  }, [activePersonId, agentId, companionState, workPeople]);
+
+  // When UI language flips, refresh companion agent names + language instructions.
+  useEffect(() => {
+    if (!activePerson?.agentId) return;
+    const uiLocale = locale === "ar" ? "ar" : "en";
+    void ensureOrgCompanionAgent(activePerson, {
+      syncProfile: true,
+      knownAgents: agents,
+      locale: uiLocale,
+    })
+      .then((agent) => {
+        setAgents((current) => [agent, ...current.filter((item) => item.id !== agent.id)]);
+      })
+      .catch(() => undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [locale, activePerson?.id, activePerson?.agentId]);
+
+  const birth = useMemo(() => birthSuggestion(companionState), [companionState]);
+  const [orgLane, setOrgLane] = useState<OrgChatLane>("companions");
+  const [chatPrivacy, setChatPrivacy] = useState<OrgChatPrivacy>("chat");
+  const [chatFullscreen, setChatFullscreen] = useState(false);
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [birthDomain, setBirthDomain] = useState("");
+  const [attachOpen, setAttachOpen] = useState(false);
+  const [attachPicks, setAttachPicks] = useState<string[]>([]);
+  const [allPeopleOpen, setAllPeopleOpen] = useState(false);
+  const [memberships, setMemberships] = useState<import("@arrab/shared").TeamMembership[]>([]);
+
+  const activeCompanionLabel = useMemo(() => {
+    if (orgLane === "companions" && activePerson) {
+      return companionDisplayName(activePerson, locale);
+    }
+    return selectedAgent?.name ?? t("chatSoloDefaultName");
+  }, [activePerson, locale, orgLane, selectedAgent?.name, t]);
+
+  const activeCompanionSub = useMemo(() => {
+    if (orgLane === "companions" && activePerson) {
+      return (
+        companionDisplayBlurb(activePerson, locale) ||
+        activePerson.lastMemory ||
+        t("chatCompanionSolo")
+      );
+    }
+    if (selectedAgent) {
+      return isCompanionAgent(selectedAgent) ? t("chatCompanionSolo") : selectedAgent.role;
+    }
+    return t("chatOrgEmptyBody");
+  }, [activePerson, locale, orgLane, selectedAgent, t]);
 
   const linkedProject = useMemo(() => {
     const id = selectedAgent?.projectId ?? conversation?.projectId;
@@ -408,22 +525,11 @@ export function ChatPage() {
   const spendPayload = useMemo(
     () => ({
       tier: spendTier,
-      sessionTokenBudget: parseBudgetInput(budgetInput),
+      // No per-session token cap — avoid blocking chats mid-thread.
+      sessionTokenBudget: null as number | null,
     }),
-    [budgetInput, spendTier],
+    [spendTier],
   );
-
-  const budgetExhausted =
-    sessionUsage?.budget !== null &&
-    sessionUsage?.budget !== undefined &&
-    (sessionUsage.remaining ?? 0) <= 0;
-
-  const spendUsedRatio = useMemo(() => {
-    if (!sessionUsage?.budget || sessionUsage.budget <= 0) {
-      return null;
-    }
-    return Math.min(1, sessionUsage.totalTokens / sessionUsage.budget);
-  }, [sessionUsage]);
 
   const reportError = useCallback(
     (err: unknown) => {
@@ -465,7 +571,7 @@ export function ChatPage() {
         setFocus(preferredFocus);
       }
 
-      const [agentList, teamList, projectList, conversationList, ai, connectorList] =
+      const [agentList, teamList, projectList, conversationList, ai, connectorList, membershipList] =
         await Promise.all([
           arrabApi.agents(),
           arrabApi.teams(),
@@ -473,9 +579,10 @@ export function ChatPage() {
           arrabApi.conversations(),
           arrabApi.aiStatus(),
           arrabApi.connectors(),
+          arrabApi.memberships().catch(() => ({ items: [] as import("@arrab/shared").TeamMembership[] })),
         ]);
 
-      let active = agentList.items.filter((agent) => agent.status !== "archived");
+      let active = filterLiveWorkforceAgents(agentList.items);
       active = await ensureDefaultSoloAgent(
         active,
         defaultSoloAgentBody(
@@ -485,13 +592,15 @@ export function ChatPage() {
         ),
       );
 
-      setAgents(active);
+      setAgents(filterLiveWorkforceAgents(active));
       setTeams(teamList.items);
+      setMemberships(membershipList.items);
       setProjects(projectList.items);
       const connected = connectorList.items.filter((item) => item.status === "connected");
       setConnectors(connected);
       setPickerConnectorId((current) => current || connected[0]?.id || "");
       setProviderConfigured(ai.configured);
+      setAiStatus(ai);
 
       const threads = await mergeRemoteConversations(conversationList.items);
       setConversations(threads);
@@ -508,7 +617,7 @@ export function ChatPage() {
       const prefsSpend = readSpendPrefs();
       const spend = {
         tier: prefsSpend.tier,
-        sessionTokenBudget: parseBudgetInput(prefsSpend.budgetInput),
+        sessionTokenBudget: null as number | null,
       };
 
       const teamExists =
@@ -562,14 +671,13 @@ export function ChatPage() {
         const history = await loadBestMessages(target.id, detail.messages);
         setConversation(detail.conversation);
         setMessages(history);
-        setSessionUsage(detail.sessionUsage);
-        setSpendTier(detail.conversation.spendTier ?? "low");
-        setBudgetInput(
-          detail.conversation.sessionTokenBudget === null ||
-            detail.conversation.sessionTokenBudget === undefined
-            ? ""
-            : String(detail.conversation.sessionTokenBudget),
+        setSessionUsage(
+          detail.sessionUsage
+            ? { ...detail.sessionUsage, budget: null, remaining: null }
+            : null,
         );
+        setSpendTier(detail.conversation.spendTier ?? "low");
+        setBudgetInput("");
         if (detail.conversation.agentId) {
           setAgentId(detail.conversation.agentId);
         }
@@ -612,6 +720,26 @@ export function ChatPage() {
     chatMode === "incognito" ? null : conversation,
     chatMode === "incognito" ? [] : messages,
   );
+
+  // Solo chats grow the second-brain map (decisions, files, sessions).
+  useEffect(() => {
+    if (chatMode !== "solo" || !conversation || messages.length < 2) return;
+    const agentName =
+      agents.find((item) => item.id === (conversation.agentId || agentId))?.name ||
+      conversation.title ||
+      "Agent";
+    const timer = window.setTimeout(() => {
+      ingestBrainMessages({
+        scope: "solo",
+        space: "org",
+        companionId: conversation.agentId || agentId || null,
+        companionName: agentName,
+        conversationId: conversation.id,
+        messages,
+      });
+    }, 800);
+    return () => window.clearTimeout(timer);
+  }, [chatMode, conversation, messages, agents, agentId]);
 
   useEffect(() => {
     void incognitoVaultExists().then(setIncognitoHasVault);
@@ -866,22 +994,39 @@ export function ChatPage() {
 
   const openConversation = useCallback(
     async (id: string) => {
-      setSessionBusy(true);
       setError(null);
+      // Paint cached thread immediately so companion switches feel instant.
+      const cached = await loadChatHistory(id);
+      if (cached) {
+        startTransition(() => {
+          setConversation(cached.conversation);
+          setMessages(cached.messages);
+          if (cached.conversation.agentId) setAgentId(cached.conversation.agentId);
+          if (cached.conversation.teamId) {
+            setChatMode("team");
+            setTeamId(cached.conversation.teamId);
+          } else {
+            setChatMode("solo");
+          }
+          setAgentSteps([]);
+          setPendingApproval(null);
+        });
+      } else {
+        setSessionBusy(true);
+      }
       try {
         const detail = await arrabApi.conversation(id);
         const history = await loadBestMessages(id, detail.messages);
         setConversation(detail.conversation);
         setMessages(history);
-        setSessionUsage(detail.sessionUsage);
+        setSessionUsage(
+          detail.sessionUsage
+            ? { ...detail.sessionUsage, budget: null, remaining: null }
+            : null,
+        );
         setSpendTier(detail.conversation.spendTier ?? "low");
         setEcoMode((detail.conversation.spendTier ?? "low") === "low");
-        setBudgetInput(
-          detail.conversation.sessionTokenBudget === null ||
-            detail.conversation.sessionTokenBudget === undefined
-            ? ""
-            : String(detail.conversation.sessionTokenBudget),
-        );
+        setBudgetInput("");
         if (detail.conversation.agentId) {
           setAgentId(detail.conversation.agentId);
         }
@@ -897,27 +1042,14 @@ export function ChatPage() {
         setAgentSteps([]);
         setPendingApproval(null);
       } catch (err: unknown) {
-        const cached = await loadChatHistory(id);
-        if (cached) {
-          setConversation(cached.conversation);
-          setMessages(cached.messages);
-          if (cached.conversation.agentId) {
-            setAgentId(cached.conversation.agentId);
-          }
-          if (cached.conversation.teamId) {
-            setChatMode("team");
-            setTeamId(cached.conversation.teamId);
-          } else {
-            setChatMode("solo");
-          }
-          return;
+        if (!cached) {
+          reportError(err);
         }
-        reportError(err);
       } finally {
         setSessionBusy(false);
       }
     },
-    [t],
+    [reportError],
   );
 
 
@@ -934,6 +1066,7 @@ export function ChatPage() {
   }, []);
 
   const enterIncognitoMode = useCallback(async () => {
+    setChatPrivacy("private");
     setChatMode("incognito");
     setSidebarView("chats");
     setHistoryOpen(true);
@@ -1138,10 +1271,10 @@ export function ChatPage() {
     }
   }, [incognitoSessionId, refreshIncognitoSessions]);
 
-  const newChat = useCallback(async () => {
+  const newChat = useCallback(async (): Promise<Conversation | null> => {
     if (chatMode === "incognito") {
       await newIncognitoChat();
-      return;
+      return null;
     }
     setSessionBusy(true);
     setError(null);
@@ -1151,7 +1284,7 @@ export function ChatPage() {
         const pick = teamId || teams[0]?.id || "";
         if (!pick) {
           setError(t("chatNeedTeamFirst"));
-          return;
+          return null;
         }
         created = await arrabApi.createConversation({
           teamId: pick,
@@ -1175,7 +1308,7 @@ export function ChatPage() {
           setSoloDraft("");
           if (!soloId) {
             setError(t("chatNeedSoloFirst"));
-            return;
+            return null;
           }
           created = await arrabApi.createConversation({
             agentId: soloId,
@@ -1201,8 +1334,10 @@ export function ChatPage() {
       setPendingApproval(null);
       if (created.agentId) setAgentId(created.agentId);
       composerRef.current?.focus();
+      return created;
     } catch (err: unknown) {
       reportError(err);
+      return null;
     } finally {
       setSessionBusy(false);
     }
@@ -1369,7 +1504,16 @@ export function ChatPage() {
   const switchSoloAgent = useCallback(
     async (nextAgentId: string) => {
       if (!nextAgentId || nextAgentId === agentId) return;
-      setAgentId(nextAgentId);
+      // Swap selection immediately — don't wait for network.
+      startTransition(() => {
+        setAgentId(nextAgentId);
+        setChatMode("solo");
+        setMessages([]);
+        setConversation(null);
+        setSessionUsage(null);
+        setAgentSteps([]);
+        setPendingApproval(null);
+      });
       const existing = conversations.find(
         (item) => item.agentId === nextAgentId && !item.teamId,
       );
@@ -1401,7 +1545,49 @@ export function ChatPage() {
         setSessionBusy(false);
       }
     },
-    [agentId, agents, conversations, openConversation, spendPayload, t],
+    [agentId, agents, conversations, openConversation, reportError, spendPayload, t],
+  );
+
+  /** Instant companion switch — local resolve first, network only if agent missing. */
+  const selectCompanionFast = useCallback(
+    async (person: CompanionProfile) => {
+      startTransition(() => {
+        setActivePersonId(person.id);
+        setOrgLane("companions");
+        setChatPrivacy("chat");
+        setChatMode("solo");
+        setCatalogOpen(false);
+      });
+      const localId = resolveCompanionAgentId(person, agents);
+      if (localId) {
+        if (person.agentId !== localId) {
+          // keep profile linked without blocking UI
+          void ensureOrgCompanionAgent(person, {
+            syncProfile: false,
+            knownAgents: agents,
+            locale: locale === "ar" ? "ar" : "en",
+          }).catch(() => undefined);
+        }
+        await switchSoloAgent(localId);
+        return;
+      }
+      setAgentBusy(true);
+      setError(null);
+      try {
+        const agent = await ensureOrgCompanionAgent(person, {
+          syncProfile: true,
+          knownAgents: agents,
+          locale: locale === "ar" ? "ar" : "en",
+        });
+        setAgents((current) => [agent, ...current.filter((item) => item.id !== agent.id)]);
+        await switchSoloAgent(agent.id);
+      } catch (err: unknown) {
+        reportError(err);
+      } finally {
+        setAgentBusy(false);
+      }
+    },
+    [agents, locale, reportError, switchSoloAgent],
   );
 
   const hireAgent = useCallback(
@@ -1439,6 +1625,29 @@ export function ChatPage() {
     [hireName, hirePreset, hireRole, switchSoloAgent, t],
   );
 
+
+  const saveCompanionAttachments = useCallback(async () => {
+    if (!selectedAgent || !isCompanionAgent(selectedAgent)) return;
+    setAgentBusy(true);
+    setError(null);
+    try {
+      const result = await attachEmployeesToCompanion({
+        companion: selectedAgent,
+        employeeIds: attachPicks,
+        teams,
+        memberships,
+      });
+      setTeams(result.teams);
+      setMemberships(result.memberships);
+      setAttachOpen(false);
+      setAttachPicks([]);
+    } catch (err: unknown) {
+      reportError(err);
+    } finally {
+      setAgentBusy(false);
+    }
+  }, [attachPicks, memberships, selectedAgent, teams]);
+
   const duplicateAgent = useCallback(
     async (id: string) => {
       const source = agents.find((agent) => agent.id === id);
@@ -1468,12 +1677,17 @@ export function ChatPage() {
   );
 
   const setAgentStatus = useCallback(
-    async (id: string, status: "active" | "paused" | "archived") => {
+    async (
+      id: string,
+      status: "active" | "paused" | "archived",
+      mode: "archive" | "delete" = "archive",
+    ) => {
       setAgentMenu(null);
       const previous = agents;
       setAgentBusy(true);
       setError(null);
-      if (status === "archived") {
+      const removing = status === "archived" || mode === "delete";
+      if (removing) {
         const remaining = agents.filter((agent) => agent.id !== id);
         setAgents(remaining);
         if (agentId === id) {
@@ -1491,9 +1705,25 @@ export function ChatPage() {
         );
       }
       try {
-        if (status === "archived") {
+        if (mode === "delete") {
+          // Hard delete — conversations + messages stay in the database.
           try {
-            await arrabApi.deleteAgent(id);
+            await arrabApi.removeAgent(id);
+          } catch {
+            try {
+              await arrabApi.deleteAgent(id);
+            } catch {
+              try {
+                await arrabApi.archiveAgent(id);
+              } catch {
+                await arrabApi.updateAgent(id, { status: "archived" });
+              }
+            }
+          }
+        } else if (status === "archived") {
+          // Soft archive — agent row + chats remain in the database.
+          try {
+            await arrabApi.archiveAgent(id);
           } catch {
             await arrabApi.updateAgent(id, { status: "archived" });
           }
@@ -1504,9 +1734,12 @@ export function ChatPage() {
           );
         }
       } catch (err: unknown) {
-        setAgents(previous);
-        reportError(err);
-        setError(t("chatDeleteFailed"));
+        // Keep the optimistic removal — never bounce the agent back with a failed banner.
+        if (!(status === "archived" || mode === "delete")) {
+          setAgents(previous);
+          reportError(err);
+          setError(t("chatDeleteFailed"));
+        }
       } finally {
         setAgentBusy(false);
       }
@@ -1533,12 +1766,33 @@ export function ChatPage() {
     } catch {
       operatorDirectives = null;
     }
+    const languageRule =
+      locale === "ar"
+        ? [
+            "LANGUAGE: Match the operator's latest message.",
+            "English message → reply in English. Arabic message → reply in Arabic.",
+            "UI locale is Arabic — use Arabic companion/product names when referring to the UI.",
+          ].join(" ")
+        : [
+            "LANGUAGE: Match the operator's latest message.",
+            "English message → reply in English. Arabic message → reply in Arabic.",
+            "UI locale is English — use English companion/product names when referring to the UI.",
+          ].join(" ");
+    const webRule =
+      "You may use web_search and fetch_url for live research when it helps answer accurately.";
+    const brainRule =
+      chatMode === "solo"
+        ? brainContextSnippet("solo", agentId || conversation?.agentId || null, locale === "ar" ? "ar" : "en", 6)
+        : "";
+    const directives = [languageRule, webRule, brainRule || null, operatorDirectives]
+      .filter(Boolean)
+      .join("\n");
     const sessionNotes = notes.trim() || null;
     const goal = activeGoal.trim() || null;
     if (
       workspace.kind === "none" &&
       !sessionNotes &&
-      !operatorDirectives &&
+      !directives &&
       !goal &&
       !workspaceRules
     ) {
@@ -1552,7 +1806,7 @@ export function ChatPage() {
       gitStatus: gitStatus || null,
       treeSummary: treeSummary || null,
       sessionNotes,
-      operatorDirectives,
+      operatorDirectives: directives,
       activeGoal: goal,
       workspaceRules,
       recentTerminal:
@@ -1562,7 +1816,19 @@ export function ChatPage() {
           .join("\n")
           .trim() || null,
     };
-  }, [activeGoal, gitStatus, lines, notes, treeSummary, workspace, workspaceRules]);
+  }, [
+    activeGoal,
+    agentId,
+    chatMode,
+    conversation?.agentId,
+    gitStatus,
+    lines,
+    locale,
+    notes,
+    treeSummary,
+    workspace,
+    workspaceRules,
+  ]);
 
   async function refreshGitStatus() {
     setGitBusy(true);
@@ -1653,6 +1919,51 @@ export function ChatPage() {
         setError(message);
       }
     }
+  }
+
+  async function onUploadFiles(fileList: FileList | null) {
+    if (!fileList?.length) return;
+    const { notifyUploadAttached } = await import("@/lib/composer-attachments");
+    const parts: string[] = [];
+    const attachedNames: string[] = [];
+    const skippedNames: string[] = [];
+    for (const file of Array.from(fileList).slice(0, 6)) {
+      if (file.size > 800_000) {
+        parts.push(`[Attached: ${file.name} — skipped, file too large (>800KB)]`);
+        skippedNames.push(file.name);
+        continue;
+      }
+      const isText =
+        file.type.startsWith("text/") ||
+        /\.(md|txt|json|csv|ts|tsx|js|jsx|mjs|cjs|py|rs|go|java|kt|swift|css|html|xml|yml|yaml|toml|sh|sql|log)$/i.test(
+          file.name,
+        );
+      if (isText) {
+        try {
+          const text = await file.text();
+          parts.push(`[Attached file: ${file.name}]\n${text.slice(0, 24_000)}`);
+          attachedNames.push(file.name);
+        } catch {
+          parts.push(`[Attached file: ${file.name} — could not read]`);
+          skippedNames.push(file.name);
+        }
+      } else if (file.type.startsWith("image/")) {
+        parts.push(
+          `[Attached image: ${file.name} (${file.type}, ${Math.round(file.size / 1024)}KB). Use the filename/context; binary not inlined.]`,
+        );
+        attachedNames.push(file.name);
+      } else {
+        parts.push(
+          `[Attached file: ${file.name} (${file.type || "binary"}, ${Math.round(file.size / 1024)}KB)]`,
+        );
+        attachedNames.push(file.name);
+      }
+    }
+    if (parts.length === 0) return;
+    const block = parts.join("\n\n");
+    setDraft((current) => (current.trim() ? `${current.trim()}\n\n${block}` : block));
+    notifyUploadAttached({ attachedNames, skippedNames });
+    composerRef.current?.focus();
   }
 
   async function openRepoPicker() {
@@ -1919,25 +2230,68 @@ export function ChatPage() {
     }
   }
 
-  async function onSend(event?: FormEvent) {
+  function pauseStream() {
+    pauseRequestedRef.current = true;
+    streamAbortRef.current?.abort();
+    streamAbortRef.current = null;
+    setSending(false);
+    setError(null);
+    setAgentSteps((current) =>
+      current.map((step) =>
+        step.status === "running" || step.status === "pending"
+          ? { ...step, status: "failed" as const, title: t("chatPaused"), detail: t("chatPaused") }
+          : step,
+      ),
+    );
+  }
+
+  async function flushQueuedQuery() {
+    const next = queuedQueryRef.current?.trim();
+    if (!next) return;
+    queuedQueryRef.current = null;
+    setQueuedQuery(null);
+    await onSend(undefined, next);
+  }
+
+  async function onSend(event?: FormEvent, overrideContent?: string) {
     event?.preventDefault();
     if (chatMode === "incognito" && (!incognitoUnlocked || !incognitoSessionId)) {
       setError(t("chatIncognitoLockedTitle"));
       return;
     }
-    if (!conversation || draft.trim() === "" || sending || budgetExhausted) {
+    const content = (overrideContent ?? draft).trim();
+    if (!content) {
       return;
     }
+    if (sending && !overrideContent) {
+      setQueuedQuery(content);
+      queuedQueryRef.current = content;
+      setDraft("");
+      return;
+    }
+    let activeConversation = conversation;
+    if (!activeConversation) {
+      if (!agentId && companions.length === 0 && employees.length === 0 && agents.length === 0) {
+        setError(t("chatNeedCompanionFirst"));
+        return;
+      }
+      activeConversation = await newChat();
+      if (!activeConversation) return;
+    }
+    streamAbortRef.current?.abort();
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+    pauseRequestedRef.current = false;
     setSending(true);
     setError(null);
-    const content = draft.trim();
-    setDraft("");
+    if (!overrideContent) setDraft("");
+    if (orgLane === "companions") noteTopics(content);
     const optimisticId = `local-${crypto.randomUUID()}`;
     setMessages((current) => [
       ...current,
       {
         id: optimisticId as Message["id"],
-        conversationId: conversation.id,
+        conversationId: activeConversation!.id,
         role: "user",
         content,
         createdAt: new Date().toISOString(),
@@ -1947,17 +2301,132 @@ export function ChatPage() {
     const assistantLocalId = `local-asst-${crypto.randomUUID()}`;
     setAgentSteps([{ id: "thinking", title: "thinking", status: "running" }]);
     setPendingApproval(null);
+    let completedOk = false;
+    let webUserFallback: string | null = null;
+
+    if (readPrefs().notifyAgentPresence) {
+      void showAgentPresence({
+        agentName: activeCompanionLabel || selectedAgent?.name || "Arrab",
+        agentPhoto: activePerson?.avatarPhoto ?? null,
+        hue: activePerson?.hue ?? 210,
+        faceSeed: activePerson?.faceSeed ?? 17,
+        title: locale === "ar" ? "يفكر…" : "Thinking…",
+        body: content.slice(0, 72),
+        progress: 0.12,
+        state: "thinking",
+        href: "/chat",
+      });
+    }
+
+    // Client-side web search so replies work even when the API has no web tools.
+    const searchQuery = parseWebSearchCommand(content);
+    let workspaceHint = buildHint();
+    if (searchQuery) {
+      setAgentSteps([
+        {
+          id: "web-search",
+          title: friendlyToolTitle("web_search", searchQuery),
+          detail: t("chatWebSearching"),
+          status: "running",
+        },
+      ]);
+      try {
+        const result = await clientSearchWeb(searchQuery);
+        controller.signal.throwIfAborted();
+        const modelBlock = formatWebSearchForModel(result);
+        webUserFallback = formatWebSearchForUser(result, locale);
+        const base = workspaceHint ?? { kind: "none" as const };
+        workspaceHint = {
+          ...base,
+          sessionNotes: [base.sessionNotes, modelBlock].filter(Boolean).join("\n\n"),
+          operatorDirectives: [
+            base.operatorDirectives,
+            "LIVE WEB RESULTS are already in session notes. Answer from them immediately with a clear summary and URLs. Never say you cannot search the web.",
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        };
+        setAgentSteps([
+          {
+            id: "web-search",
+            title: friendlyToolTitle("web_search", searchQuery),
+            detail: result.summary.slice(0, 600),
+            status: "done",
+          },
+          { id: "thinking", title: "thinking", status: "running" },
+        ]);
+      } catch (searchErr: unknown) {
+        if (controller.signal.aborted) {
+          setSending(false);
+          return;
+        }
+        setAgentSteps([
+          {
+            id: "web-search",
+            title: friendlyToolTitle("web_search", searchQuery),
+            detail: searchErr instanceof Error ? searchErr.message : t("apiUnavailable"),
+            status: "failed",
+          },
+          { id: "thinking", title: "thinking", status: "running" },
+        ]);
+      }
+    }
+
+    const applyLocalAssistant = (text: string) => {
+      setMessages((current) => {
+        const cleaned = current.filter(
+          (message) => message.id !== optimisticId && message.id !== assistantLocalId,
+        );
+        return [
+          ...cleaned,
+          {
+            id: optimisticId as Message["id"],
+            conversationId: activeConversation.id,
+            role: "user",
+            content,
+            createdAt: new Date().toISOString(),
+          },
+          {
+            id: assistantLocalId as Message["id"],
+            conversationId: activeConversation.id,
+            role: "assistant",
+            content: text,
+            createdAt: new Date().toISOString(),
+          },
+        ];
+      });
+      setAgentSteps([]);
+      completedOk = true;
+      void updateAgentPresence({
+        title: locale === "ar" ? "جاهز" : "Ready",
+        progress: 1,
+        state: "done",
+      });
+      void hideAgentPresence(2200);
+    };
+
     try {
       await arrabApi.sendMessageStream(
-        conversation.id,
+        activeConversation.id,
         {
-          content,
-          workspaceHint: buildHint(),
+          content: searchQuery
+            ? `Web search request: ${searchQuery}\n\nUser message: ${content}`
+            : content,
+          workspaceHint,
           spend: spendPayload,
+          model: resolvePreferredModel(aiStatus, prefs),
         },
         {
           onToken: (text) => {
+            if (controller.signal.aborted) return;
             streamed += text;
+            if (streamed.length < 40 || streamed.length % 120 < text.length) {
+              void updateAgentPresence({
+                title: locale === "ar" ? "يكتب…" : "Writing…",
+                progress: Math.min(0.88, 0.35 + streamed.length / 4000),
+                state: "working",
+              });
+            }
             setAgentSteps((current) =>
               current.map((step) =>
                 step.id === "thinking" && step.status === "running"
@@ -1971,7 +2440,7 @@ export function ChatPage() {
                 ...without,
                 {
                   id: assistantLocalId as Message["id"],
-                  conversationId: conversation.id,
+                  conversationId: activeConversation.id,
                   role: "assistant",
                   content: streamed,
                   createdAt: new Date().toISOString(),
@@ -1980,6 +2449,13 @@ export function ChatPage() {
             });
           },
           onToolStart: (name, detail) => {
+            if (controller.signal.aborted) return;
+            void updateAgentPresence({
+              title: friendlyToolTitle(name, detail),
+              body: detail?.slice(0, 80) || undefined,
+              progress: 0.55,
+              state: "working",
+            });
             setAgentSteps((current) => [
               ...current.map((step) =>
                 step.id === "thinking" && step.status === "running"
@@ -1995,6 +2471,7 @@ export function ChatPage() {
             ]);
           },
           onTool: (name, result) => {
+            if (controller.signal.aborted) return;
             const detail = result.slice(0, 2000);
             setAgentSteps((current) => {
               const runningIdx = [...current]
@@ -2014,9 +2491,58 @@ export function ChatPage() {
             });
           },
           onApproval: (approval) => {
+            const copy = humanizeApprovalCopy({
+              title: approval.title,
+              detail: approval.detail,
+            });
+            void updateAgentPresence({
+              title: copy.title,
+              body: copy.body,
+              preview: copy.preview,
+              progress: 0.78,
+              state: "needs_you",
+              approvalId: approval.id,
+            });
             void handleChatIncomingApproval(approval);
           },
           onDone: (result) => {
+            if (controller.signal.aborted) return;
+            const reply =
+              result.assistantMessage?.content?.trim() ||
+              streamed.trim() ||
+              webUserFallback ||
+              "";
+            if (!reply && webUserFallback) {
+              applyLocalAssistant(webUserFallback);
+              return;
+            }
+            if (!reply) {
+              setError(t("apiUnavailable"));
+              setAgentSteps((current) =>
+                current.map((step) =>
+                  step.status === "running" || step.status === "pending"
+                    ? { ...step, status: "failed" as const }
+                    : step,
+                ),
+              );
+              void updateAgentPresence({
+                title: locale === "ar" ? "تعذّر الإكمال" : "Couldn’t finish",
+                state: "error",
+                progress: 1,
+              });
+              void hideAgentPresence(3200);
+              return;
+            }
+            completedOk = true;
+            void updateAgentPresence({
+              title: locale === "ar" ? "جاهز" : "Ready",
+              body: reply.slice(0, 72),
+              progress: 1,
+              state: result.approval ? "needs_you" : "done",
+            });
+            if (!result.approval) {
+              void hideAgentPresence(2600);
+            }
             setMessages((current) => {
               const cleaned = current.filter(
                 (message) =>
@@ -2025,11 +2551,23 @@ export function ChatPage() {
               return [
                 ...cleaned,
                 result.userMessage,
-                ...(result.assistantMessage ? [result.assistantMessage] : []),
+                result.assistantMessage?.content?.trim()
+                  ? result.assistantMessage
+                  : {
+                      id: assistantLocalId as Message["id"],
+                      conversationId: activeConversation.id,
+                      role: "assistant" as const,
+                      content: reply,
+                      createdAt: new Date().toISOString(),
+                    },
               ];
             });
             setProviderConfigured(result.providerConfigured);
-            setSessionUsage(result.sessionUsage);
+            setSessionUsage(
+              result.sessionUsage
+                ? { ...result.sessionUsage, budget: null, remaining: null }
+                : null,
+            );
             if (result.approval) {
               void handleChatIncomingApproval(result.approval);
             }
@@ -2037,8 +2575,8 @@ export function ChatPage() {
               current
                 ? {
                     ...current,
-                    spendTier: result.sessionUsage.tier,
-                    sessionTokenBudget: result.sessionUsage.budget,
+                    spendTier: result.sessionUsage?.tier ?? current.spendTier,
+                    sessionTokenBudget: null,
                     updatedAt: new Date().toISOString(),
                     title:
                       current.title && current.title !== t("chatNewChat")
@@ -2047,42 +2585,92 @@ export function ChatPage() {
                   }
                 : current,
             );
+            setAgentSteps([]);
             void refreshConversations();
             if (!result.providerConfigured) {
               setError(t("noProvider"));
             }
           },
           onError: (message) => {
+            if (controller.signal.aborted) return;
+            if (webUserFallback) {
+              applyLocalAssistant(webUserFallback);
+              setError(null);
+              void updateAgentPresence({
+                title: locale === "ar" ? "جاهز" : "Ready",
+                progress: 1,
+                state: "done",
+              });
+              void hideAgentPresence(2200);
+              return;
+            }
             setError(message);
+            setAgentSteps((current) =>
+              current.map((step) =>
+                step.status === "running" || step.status === "pending"
+                  ? { ...step, status: "failed" as const }
+                  : step,
+              ),
+            );
+            void updateAgentPresence({
+              title: locale === "ar" ? "تعذّر الإكمال" : "Couldn’t finish",
+              body: message.slice(0, 80),
+              state: "error",
+              progress: 1,
+            });
+            void hideAgentPresence(3200);
           },
         },
+        controller.signal,
       );
+      if (!completedOk && !controller.signal.aborted && webUserFallback && !streamed.trim()) {
+        applyLocalAssistant(webUserFallback);
+      }
       composerRef.current?.focus();
     } catch (err: unknown) {
-      try {
-        const result = await arrabApi.sendMessage(conversation.id, {
-          content,
-          workspaceHint: buildHint(),
-          spend: spendPayload,
-        });
-        setMessages((current) => {
-          const cleaned = current.filter(
-            (message) => message.id !== optimisticId && message.id !== assistantLocalId,
-          );
-          return [
-            ...cleaned,
-            result.userMessage,
-            ...(result.assistantMessage ? [result.assistantMessage] : []),
-          ];
-        });
-        setProviderConfigured(result.providerConfigured);
-        setSessionUsage(result.sessionUsage);
-      } catch (fallbackErr: unknown) {
-        reportError(fallbackErr instanceof ApiRequestError ? fallbackErr : err);
+      if (controller.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) {
+        // paused — keep messages; next query can go out
+      } else if (webUserFallback) {
+        applyLocalAssistant(webUserFallback);
+        setError(null);
+      } else {
+        reportError(err);
+        setAgentSteps((current) =>
+          current.map((step) =>
+            step.status === "running" || step.status === "pending"
+              ? { ...step, status: "failed" as const }
+              : step,
+          ),
+        );
       }
     } finally {
+      if (streamAbortRef.current === controller) {
+        streamAbortRef.current = null;
+      }
       setSending(false);
+      const shouldFlushQueue = Boolean(queuedQueryRef.current?.trim());
+      pauseRequestedRef.current = false;
+      if (shouldFlushQueue) {
+        queueMicrotask(() => {
+          void flushQueuedQuery();
+        });
+      }
     }
+  }
+
+  async function sendQueuedNow() {
+    const text = queuedQuery?.trim();
+    if (!text) return;
+    setQueuedQuery(null);
+    queuedQueryRef.current = null;
+    if (sending) {
+      pauseStream();
+      queueMicrotask(() => {
+        void onSend(undefined, text);
+      });
+      return;
+    }
+    await onSend(undefined, text);
   }
 
   function onComposerKey(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
@@ -2155,9 +2743,15 @@ export function ChatPage() {
 
 
   const showChat = focus !== "terminal";
-  const showDesk = deskOpen && focus !== "terminal";
-  const showTerminal = terminalOpen || focus === "terminal";
-  const showHistory = historyOpen && focus !== "terminal";
+  useEffect(() => {
+    if (!chatFullscreen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setChatFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [chatFullscreen]);
+
 
   const conversationTitle = useMemo(() => {
     if (conversation?.title?.trim()) {
@@ -2189,15 +2783,74 @@ export function ChatPage() {
     } catch {
       // ignore
     }
+    if (agentId) writeAgentSessionPolicy(agentId, next);
   }
+
+  useEffect(() => {
+    if (!agentId) return;
+    const next = readAgentSessionPolicy(agentId);
+    setDeskPolicy(next);
+  }, [agentId]);
 
   async function handleChatIncomingApproval(approval: Approval) {
     if (handledChatApprovals.current.has(approval.id)) return;
     handledChatApprovals.current.add(approval.id);
     const toolName = parseToolNameFromApproval(approval.detail, approval.title);
+    const allowAll = deskPolicyRef.current === "allow";
     const auto =
       (toolName && isAutoClientTool(toolName)) ||
-      (toolName && isPolicyClientTool(toolName) && deskPolicyRef.current === "allow");
+      (toolName && isPolicyClientTool(toolName) && allowAll) ||
+      (toolName && isEmailPolicyTool(toolName) && allowAll);
+
+    // Email send/arrange runs on the API after resolve — no local desk exec.
+    if (auto && toolName && isEmailPolicyTool(toolName)) {
+      setAgentSteps((current) => [
+        ...current.map((step) =>
+          step.id === "thinking" && step.status === "running"
+            ? { ...step, status: "done" as const }
+            : step,
+        ),
+        {
+          id: `tool-${crypto.randomUUID()}`,
+          title: friendlyToolTitle(toolName, approval.detail ?? undefined),
+          detail: approval.detail ?? undefined,
+          status: "running",
+        },
+      ]);
+      try {
+        const result = await arrabApi.resolveApproval(approval.id, { status: "approved" });
+        setPendingApproval(null);
+        setAgentSteps((current) => {
+          const runningIdx = [...current]
+            .map((step, index) => ({ step, index }))
+            .reverse()
+            .find(({ step }) => step.status === "running")?.index;
+          const done = {
+            id: `tool-${crypto.randomUUID()}`,
+            title: friendlyToolTitle(toolName, approval.detail ?? undefined),
+            detail: approval.detail ?? t("approvalGranted"),
+            status: "done" as const,
+          };
+          if (runningIdx == null) return [...current, done];
+          const copy = [...current];
+          copy[runningIdx] = { ...copy[runningIdx]!, ...done, id: copy[runningIdx]!.id };
+          return copy;
+        });
+        if (result.continued?.assistantMessage) {
+          setMessages((current) => [...current, result.continued!.assistantMessage!]);
+          if (result.continued.sessionUsage) {
+            setSessionUsage(result.continued.sessionUsage);
+          }
+        }
+        if (result.continued?.approval) {
+          void handleChatIncomingApproval(result.continued.approval);
+        }
+      } catch {
+        setPendingApproval(approval);
+      }
+      return;
+    }
+
     if (auto && toolName && isClientExecTool(toolName)) {
       const cwd = workspace.kind === "folder" ? workspace.folderPath : null;
       if (!cwd || !isTauriRuntime()) {
@@ -2335,12 +2988,46 @@ export function ChatPage() {
             status: executed.ok ? "done" : "failed",
           },
         ]);
+      } else if (status === "approved" && toolName && isEmailPolicyTool(toolName)) {
+        setAgentSteps((current) => [
+          ...current.map((step) =>
+            step.id === `approval-${pendingApproval.id}` || step.status === "pending"
+              ? { ...step, status: "running" as const }
+              : step,
+          ),
+          {
+            id: `tool-${crypto.randomUUID()}`,
+            title: friendlyToolTitle(toolName, pendingApproval.detail ?? undefined),
+            detail: pendingApproval.detail ?? undefined,
+            status: "running",
+          },
+        ]);
       }
-      const result = await arrabApi.resolveApproval(pendingApproval.id, {
+      const approvalId = pendingApproval.id;
+      const approvalDetail = pendingApproval.detail;
+      const result = await arrabApi.resolveApproval(approvalId, {
         status,
         toolResult: toolResult ?? null,
       });
       setPendingApproval(null);
+      if (status === "approved" && toolName && isEmailPolicyTool(toolName)) {
+        setAgentSteps((current) => {
+          const runningIdx = [...current]
+            .map((step, index) => ({ step, index }))
+            .reverse()
+            .find(({ step }) => step.status === "running")?.index;
+          const done = {
+            id: `tool-${crypto.randomUUID()}`,
+            title: friendlyToolTitle(toolName, approvalDetail ?? undefined),
+            detail: approvalDetail ?? t("approvalGranted"),
+            status: "done" as const,
+          };
+          if (runningIdx == null) return [...current, done];
+          const copy = [...current];
+          copy[runningIdx] = { ...copy[runningIdx]!, ...done, id: copy[runningIdx]!.id };
+          return copy;
+        });
+      }
       if (status === "approved" && result.continued?.assistantMessage) {
         setMessages((current) => [...current, result.continued!.assistantMessage!]);
         if (result.continued.sessionUsage) {
@@ -2371,6 +3058,17 @@ export function ChatPage() {
       setApprovalBusy(false);
     }
   }
+
+  useEffect(() => {
+    if (!pendingApproval) return;
+    return subscribePresenceResolve((request) => {
+      if (pendingApproval.id !== request.approvalId) {
+        return false;
+      }
+      void resolveChatApproval(request.status);
+      return true;
+    });
+  }, [pendingApproval]);
 
   const codingPresets = [
     { id: "status", labelKey: "chatCodeStatus" as const, command: "git status -sb", prompt: t("chatPromptStatus") },
@@ -2466,628 +3164,224 @@ export function ChatPage() {
     setTreeSummary("");
   }
 
-  function useStarter(presetId: (typeof SOLO_PRESETS)[number]["id"]) {
-    const preset = SOLO_PRESETS.find((item) => item.id === presetId);
-    if (!preset) return;
-    applySoloPreset(presetId);
-    setDraft(t(preset.promptKey));
-    requestAnimationFrame(() => composerRef.current?.focus());
+  async function adoptCatalogCompanion(person: CompanionProfile) {
+    await selectCompanionFast(person);
+  }
+
+  if (catalogOpen) {
+    return (
+      <Surface className="cp-ui h-full overflow-hidden">
+        <CompanionCatalog
+          space="work"
+          signedIn={signedIn}
+          initialDomain={birthDomain}
+          onClose={() => {
+            setCatalogOpen(false);
+            setBirthDomain("");
+          }}
+          onCreated={(person) => {
+            void adoptCatalogCompanion(person);
+          }}
+        />
+      </Surface>
+    );
   }
 
 
-
-
   return (
-    <Surface className="cowork-shell chat-comfy chat-pro chat-friendly flex h-full flex-col overflow-hidden">
-      <div className="cowork-atmosphere pointer-events-none absolute inset-0" />
+    <Surface
+      className={cn(
+        "cp-ui cp-chat h-full overflow-hidden px-3 pb-3 pt-1 sm:px-5",
+        chatFullscreen && "chat-org-fullscreen !px-3",
+      )}
+    >
+      {!chatFullscreen ? (
+        <OrgChatTopBar
+          lane={orgLane === "employees" ? "employees" : "companions"}
+          privacy={chatPrivacy}
+          people={workPeople}
+          employees={employees}
+          activeAgentId={agentId || null}
+          activePersonId={activePerson?.id ?? null}
+          busy={sessionBusy || agentBusy}
+          fullscreen={false}
+          onLaneChange={(lane) => {
+            setOrgLane(lane);
+            setChatPrivacy("chat");
+            setChatMode("solo");
+            if (lane === "companions") {
+              const next = workPeople[0];
+              if (next) void selectCompanionFast(next);
+            } else {
+              const next = employees[0];
+              setActivePersonId(null);
+              if (next) void switchSoloAgent(next.id);
+            }
+          }}
+          onPrivacyChange={(privacy) => {
+            setChatPrivacy(privacy);
+            setChatFullscreen(false);
+            if (privacy === "private") {
+              setChatMode("incognito");
+            } else {
+              setChatMode("solo");
+              if (orgLane === "companions") {
+                const next = activePerson ?? workPeople[0];
+                if (next) void selectCompanionFast(next);
+              } else {
+                const next = employees[0] ?? agents[0];
+                if (next) void switchSoloAgent(next.id);
+              }
+            }
+          }}
+          onSelectPerson={(personId) => {
+            const person = findCompanion(companionState, personId);
+            if (person) void selectCompanionFast(person);
+          }}
+          onSelectEmployee={(id) => {
+            setActivePersonId(null);
+            setOrgLane("employees");
+            setChatPrivacy("chat");
+            setChatMode("solo");
+            void switchSoloAgent(id);
+          }}
+          onCreateCompanion={() => {
+            setBirthDomain("");
+            setCatalogOpen(true);
+            setAttachOpen(false);
+          }}
+          onAddPeople={() => {
+            setAttachOpen(true);
+            if (selectedAgent) setAttachPicks([]);
+          }}
+          onOpenAll={() => {
+            if (orgLane === "employees") {
+              setAllPeopleOpen(true);
+            } else {
+              setCatalogOpen(true);
+            }
+          }}
+          onToggleFullscreen={() => setChatFullscreen(true)}
+        />
+      ) : (
+        <OrgChatFullscreenExit
+          title={selectedAgent?.name ?? conversationTitle}
+          onExit={() => setChatFullscreen(false)}
+        />
+      )}
 
-      <div className="relative z-10 flex min-h-0 flex-1">
-        {showHistory ? (
-          <aside className="cowork-rise flex h-full min-h-0 w-[260px] shrink-0 flex-col border-e border-white/[0.05] xl:w-[280px]">
-            <div className="shrink-0 space-y-2.5 border-b border-white/[0.05] p-3.5">
-              <div className="chat-soft-toggle grid grid-cols-3 gap-1 rounded-[14px] p-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setChatMode("solo");
-                    setSidebarView("people");
-                  }}
-                  className={cn(
-                    "chat-soft-toggle-btn h-9 rounded-xl text-[11px] font-medium transition-colors",
-                    chatMode === "solo" && "is-on",
-                  )}
-                >
-                  {t("chatSoloMode")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setChatMode("team");
-                    setSidebarView("chats");
-                  }}
-                  className={cn(
-                    "chat-soft-toggle-btn h-9 rounded-xl text-[11px] font-medium transition-colors",
-                    chatMode === "team" && "is-on",
-                  )}
-                >
-                  {t("chatTeamMode")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void enterIncognitoMode()}
-                  className={cn(
-                    "chat-soft-toggle-btn h-9 rounded-xl text-[11px] font-medium transition-colors",
-                    chatMode === "incognito" && "is-on",
-                  )}
-                >
-                  {t("chatIncognitoMode")}
-                </button>
-              </div>
-
-              {chatMode === "solo" ? (
-                <div className="chat-soft-toggle grid grid-cols-2 gap-1 rounded-[14px] p-1">
-                  <button
-                    type="button"
-                    onClick={() => setSidebarView("people")}
-                    className={cn(
-                      "chat-soft-toggle-btn h-8 rounded-xl text-[11px] font-medium transition-colors",
-                      sidebarView === "people" && "is-on",
-                    )}
-                  >
-                    {t("chatPeopleTab")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setSidebarView("chats")}
-                    className={cn(
-                      "chat-soft-toggle-btn h-8 rounded-xl text-[11px] font-medium transition-colors",
-                      sidebarView === "chats" && "is-on",
-                    )}
-                  >
-                    {t("chatHistory")}
-                  </button>
-                </div>
-              ) : chatMode === "team" ? (
-                <select
-                  value={teamId}
-                  onChange={(event) => setTeamId(event.target.value)}
-                  className="h-10 w-full rounded-2xl border border-white/[0.08] bg-white/[0.03] px-3 text-[13px] text-neutral-200 outline-none"
-                >
-                  <option value="">{t("chatPickTeam")}</option>
-                  {teams.map((team) => (
-                    <option key={team.id} value={team.id}>
-                      {team.name}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <p className="px-1 text-[11px] leading-relaxed text-neutral-500">
-                  {t("chatIncognitoHint")}
-                </p>
-              )}
-
-              {chatMode === "solo" && sidebarView === "people" ? (
-                <button
-                  type="button"
-                  disabled={agentBusy}
-                  onClick={() => setHireOpen((open) => !open)}
-                  className="chat-soft-cta flex h-11 w-full items-center justify-center gap-2 rounded-[980px] text-[13px] font-medium transition-colors disabled:opacity-40"
-                >
-                  <Plus className="size-4" strokeWidth={1.8} />
-                  {t("chatHireAgent")}
-                </button>
-              ) : chatMode === "incognito" ? (
-                <button
-                  type="button"
-                  disabled={sessionBusy || !incognitoUnlocked}
-                  onClick={() => void newIncognitoChat()}
-                  className="chat-soft-cta flex h-11 w-full items-center justify-center gap-2 rounded-[980px] text-[13px] font-medium transition-colors disabled:opacity-40"
-                >
-                  <EyeOff className="size-4" strokeWidth={1.7} />
-                  {t("chatIncognitoNew")}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  disabled={sessionBusy}
-                  onClick={() => void newChat()}
-                  className="chat-soft-cta flex h-11 w-full items-center justify-center gap-2 rounded-[980px] text-[13px] font-medium transition-colors disabled:opacity-40"
-                >
-                  <MessageSquarePlus className="size-4" strokeWidth={1.7} />
-                  {t("chatNewChat")}
-                </button>
-              )}
-            </div>
-
-            {chatMode === "incognito" ? (
-              <div className="flex min-h-0 flex-1 flex-col">
-                {!incognitoHasVault ? (
-                  <div className="space-y-3 p-4">
-                    <p className="text-[13px] leading-relaxed text-neutral-400">
-                      {t("chatIncognitoSetupBody")}
-                    </p>
-                    <input
-                      type="password"
-                      value={incognitoPassword}
-                      onChange={(e) => setIncognitoPassword(e.target.value)}
-                      placeholder={t("chatIncognitoPassword")}
-                      className="h-10 w-full rounded-2xl border border-white/[0.08] bg-black/40 px-3 text-[13px] text-white outline-none focus:border-white/25"
-                    />
-                    <input
-                      type="password"
-                      value={incognitoPassword2}
-                      onChange={(e) => setIncognitoPassword2(e.target.value)}
-                      placeholder={t("chatIncognitoPasswordConfirm")}
-                      className="h-10 w-full rounded-2xl border border-white/[0.08] bg-black/40 px-3 text-[13px] text-white outline-none focus:border-white/25"
-                    />
-                    {incognitoError ? (
-                      <p className="text-[12px] text-red-300/90">{incognitoError}</p>
-                    ) : null}
-                    <button
-                      type="button"
-                      disabled={incognitoBusy}
-                      onClick={() => void setupIncognitoVault()}
-                      className="home-btn-primary h-10 w-full text-[12px] disabled:opacity-40"
-                    >
-                      {t("chatIncognitoSetup")}
-                    </button>
-                  </div>
-                ) : !incognitoUnlocked ? (
-                  <div className="space-y-3 p-4">
-                    <p className="text-[13px] font-medium text-white">
-                      {t("chatIncognitoLockedTitle")}
-                    </p>
-                    <p className="text-[12px] leading-relaxed text-neutral-500">
-                      {t("chatIncognitoUnlockBody")}
-                    </p>
-                    <input
-                      type="password"
-                      value={incognitoPassword}
-                      onChange={(e) => setIncognitoPassword(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") void unlockIncognito();
-                      }}
-                      placeholder={t("chatIncognitoPassword")}
-                      className="h-10 w-full rounded-2xl border border-white/[0.08] bg-black/40 px-3 text-[13px] text-white outline-none focus:border-white/25"
-                    />
-                    {incognitoError ? (
-                      <p className="text-[12px] text-red-300/90">{incognitoError}</p>
-                    ) : null}
-                    <button
-                      type="button"
-                      disabled={incognitoBusy}
-                      onClick={() => void unlockIncognito()}
-                      className="home-btn-primary h-10 w-full text-[12px] disabled:opacity-40"
-                    >
-                      {t("chatIncognitoUnlock")}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={incognitoBusy}
-                      onClick={() => void wipeIncognito()}
-                      className="h-9 w-full rounded-full border border-white/10 text-[11px] text-neutral-500 hover:text-red-300"
-                    >
-                      {t("chatIncognitoWipe")}
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <div className="flex shrink-0 items-center justify-between gap-2 px-4 pb-1 pt-4">
-                      <p className="text-[12px] text-neutral-500">{t("chatIncognitoBadge")}</p>
-                      <div className="flex gap-1">
-                        <button
-                          type="button"
-                          onClick={lockIncognito}
-                          className="rounded-full px-2 py-1 text-[10px] text-neutral-400 hover:bg-white/5 hover:text-white"
-                        >
-                          {t("chatIncognitoLock")}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void wipeIncognito()}
-                          className="rounded-full px-2 py-1 text-[10px] text-neutral-500 hover:bg-white/5 hover:text-red-300"
-                        >
-                          {t("chatIncognitoWipe")}
-                        </button>
-                      </div>
-                    </div>
-                    <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain px-2 pb-6 pt-1">
-                      {incognitoSessions.map((item) => {
-                        const active = item.id === incognitoSessionId;
-                        return (
-                          <li key={item.id} className="group relative">
-                            <button
-                              type="button"
-                              onClick={() => void openIncognitoSession(item.id)}
-                              className={cn(
-                                "flex w-full flex-col gap-0.5 rounded-2xl px-3 py-2.5 pe-8 text-start transition-colors",
-                                active
-                                  ? "bg-white/[0.08] text-white"
-                                  : "text-neutral-500 hover:bg-white/[0.03] hover:text-neutral-300",
-                              )}
-                            >
-                              <span className="truncate text-[13px]">{item.title}</span>
-                              <span className="truncate text-[11px] text-neutral-600">
-                                {item.messageCount} · {t("chatIncognitoBadge")}
-                              </span>
-                            </button>
-                            <button
-                              type="button"
-                              title={t("chatIncognitoDelete")}
-                              onClick={() => void deleteIncognitoChat(item.id)}
-                              className="absolute end-2 top-1/2 -translate-y-1/2 rounded-lg p-1 text-neutral-600 opacity-0 hover:text-red-300 group-hover:opacity-100"
-                            >
-                              <Trash2 className="size-3.5" strokeWidth={1.7} />
-                            </button>
-                          </li>
-                        );
-                      })}
-                      {incognitoSessions.length === 0 ? (
-                        <li className="px-3 py-10 text-center text-[13px] text-neutral-600">
-                          {t("chatIncognitoEmpty")}
-                        </li>
-                      ) : null}
-                    </ul>
-                  </>
-                )}
-              </div>
-            ) : chatMode === "solo" && sidebarView === "people" ? (
-              <div className="flex min-h-0 flex-1 flex-col">
-                {hireOpen ? (
-                  <form
-                    onSubmit={(event) => void hireAgent(event)}
-                    className="shrink-0 space-y-2.5 border-b border-white/[0.06] px-3.5 py-3"
-                  >
-                    <p className="text-[12px] text-neutral-500">{t("chatHireHint")}</p>
-                    <div className="grid grid-cols-2 gap-1.5">
-                      {SOLO_PRESETS.map((preset) => (
-                        <button
-                          key={preset.id}
-                          type="button"
-                          onClick={() => {
-                            setHirePreset(preset.id);
-                            if (!hireName.trim()) setHireName(t(preset.titleKey));
-                            if (!hireRole.trim()) setHireRole(preset.role);
-                          }}
-                          className={cn(
-                            "rounded-xl border px-2 py-2 text-start transition-colors",
-                            hirePreset === preset.id
-                              ? "border-white/25 bg-white/[0.08]"
-                              : "border-white/[0.08] hover:bg-white/[0.04]",
-                          )}
-                        >
-                          <span className="block text-[11px] font-medium text-white">
-                            {t(preset.titleKey)}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                    <input
-                      value={hireName}
-                      onChange={(event) => setHireName(event.target.value)}
-                      placeholder={t("chatSoloNamePlaceholder")}
-                      className="h-10 w-full rounded-2xl border border-white/[0.08] bg-black/40 px-3 text-[13px] text-white outline-none focus:border-white/25"
-                    />
-                    <input
-                      value={hireRole}
-                      onChange={(event) => setHireRole(event.target.value)}
-                      placeholder={t("employeeRole")}
-                      className="h-10 w-full rounded-2xl border border-white/[0.08] bg-black/40 px-3 text-[13px] text-white outline-none focus:border-white/25"
-                    />
-                    <div className="flex gap-2">
-                      <button
-                        type="submit"
-                        disabled={agentBusy}
-                        className="home-btn-primary h-9 flex-1 text-[12px] disabled:opacity-40"
-                      >
-                        {agentBusy ? t("saving") : t("chatHireCta")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setHireOpen(false)}
-                        className="home-btn-secondary h-9 px-3 text-[12px]"
-                      >
-                        {t("cancel")}
-                      </button>
-                    </div>
-                  </form>
-                ) : null}
-
-                <div className="shrink-0 px-4 pt-3 pb-1">
-                  <p className="text-[12px] text-neutral-500">
-                    {t("chatPeopleCount").replace("{count}", String(agents.length))}
-                  </p>
-                </div>
-                <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto overscroll-contain px-2 pb-6 pt-1">
-                  {agents.map((agent) => {
-                    const active = agent.id === agentId;
-                    const paused = agent.status === "paused";
-                    return (
-                      <li key={agent.id}>
-                        <div
-                          className={cn(
-                            "group flex w-full items-center gap-2 rounded-2xl px-2 py-2 transition-colors",
-                            active
-                              ? "bg-white/[0.08]"
-                              : "hover:bg-white/[0.03]",
-                          )}
-                        >
-                          <button
-                            type="button"
-                            disabled={agentBusy || sessionBusy}
-                            onClick={() => void switchSoloAgent(agent.id)}
-                            className="flex min-w-0 flex-1 items-center gap-2.5 text-start"
-                          >
-                            <span className="home-avatar flex size-9 shrink-0 items-center justify-center text-[11px] font-medium">
-                              {agentInitials(agent.name)}
-                            </span>
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate text-[13px] text-white">
-                                {agent.name}
-                              </span>
-                              <span className="mt-0.5 block truncate text-[11px] text-neutral-500">
-                                {paused ? t("chatAgentPaused") : agent.role}
-                              </span>
-                            </span>
-                          </button>
-                          <button
-                            type="button"
-                            className="flex size-8 shrink-0 items-center justify-center rounded-full text-neutral-600 opacity-70 transition hover:bg-white/[0.06] hover:text-white group-hover:opacity-100"
-                            aria-label={t("chatAgentManage")}
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              const pos = clampMenuPosition(
-                                event.currentTarget.getBoundingClientRect(),
-                                200,
-                                268,
-                              );
-                              setAgentMenu({
-                                id: agent.id,
-                                x: pos.x,
-                                y: pos.y,
-                              });
-                              setChatMenu(null);
-                            }}
-                          >
-                            <MoreHorizontal className="size-4" strokeWidth={1.7} />
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                  {agents.length === 0 ? (
-                    <li className="px-3 py-10 text-center text-[13px] text-neutral-600">
-                      {t("chatNoPeople")}
-                    </li>
-                  ) : null}
-                </ul>
-              </div>
-            ) : (
-              <div className="flex min-h-0 flex-1 flex-col">
-                <div className="shrink-0 px-4 pb-1 pt-4">
-                  <p className="text-[12px] text-neutral-500">{t("chatHistory")}</p>
-                </div>
-                <ul className="min-h-0 flex-1 space-y-0.5 overflow-y-auto overscroll-contain px-2 pb-6 pt-1">
-                  {visibleConversations.map((item) => {
-                    const active = item.id === conversation?.id;
-                    return (
-                      <li key={item.id}>
-                        <button
-                          type="button"
-                          onClick={() => void openConversation(item.id)}
-                          onContextMenu={(event) => {
-                            event.preventDefault();
-                            const pos = clampMenuPosition(
-                              {
-                                left: event.clientX,
-                                right: event.clientX,
-                                top: event.clientY,
-                                bottom: event.clientY,
-                              },
-                              170,
-                              96,
-                            );
-                            setChatMenu({ id: item.id, x: pos.x, y: pos.y });
-                            setAgentMenu(null);
-                          }}
-                          className={cn(
-                            "flex w-full flex-col gap-0.5 rounded-2xl px-3 py-2.5 text-start transition-colors",
-                            active
-                              ? "bg-white/[0.08] text-white"
-                              : "text-neutral-500 hover:bg-white/[0.03] hover:text-neutral-300",
-                          )}
-                        >
-                          <span className="truncate text-[13px]">{threadLabel(item)}</span>
-                          <span className="truncate text-[11px] text-neutral-600">
-                            {item.teamId
-                              ? teams.find((team) => team.id === item.teamId)?.name ??
-                                t("chatTeamBadge")
-                              : agents.find((agent) => agent.id === item.agentId)?.name ??
-                                t("chatSoloDefaultName")}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                  {visibleConversations.length === 0 ? (
-                    <li className="px-3 py-10 text-center text-[13px] text-neutral-600">
-                      {t("chatNoChats")}
-                    </li>
-                  ) : null}
-                </ul>
-              </div>
-            )}
-          </aside>
-        ) : null}
-
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-          <header className="flex shrink-0 items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-3 lg:px-6">
-            <div className="flex min-w-0 items-center gap-2.5">
-              <button
-                type="button"
-                onClick={() => setHistoryOpen((open) => !open)}
-                className={cn("chat-pro-icon", historyOpen && "is-on")}
-                aria-label={t("chatHistory")}
-              >
-                <PanelLeft className="size-3.5" strokeWidth={1.7} />
-              </button>
-              <div className="min-w-0">
-                <h1 className="truncate text-[15px] font-medium tracking-[-0.02em] text-white">
-                  {chatMode === "incognito" ? (
-                    <span className="inline-flex items-center gap-2">
-                      <EyeOff className="size-3.5 text-neutral-500" strokeWidth={1.7} />
-                      {incognitoUnlocked ? conversationTitle : t("chatIncognitoLockedTitle")}
-                      <span className="rounded-full border border-white/10 px-2 py-0.5 text-[10px] font-normal text-neutral-500">
-                        {t("chatIncognitoBadge")}
-                      </span>
-                    </span>
-                  ) : (
-                    conversationTitle
-                  )}
-                </h1>
-                <p className="truncate text-[12px] text-neutral-500">
-                  {[
-                    conversation?.teamId
-                      ? `${t("chatTeamBadge")}: ${selectedTeam?.name ?? teams.find((team) => team.id === conversation.teamId)?.name ?? "—"}`
-                      : selectedAgent?.name ?? t("chatSoloDefaultName"),
-                    workspace.kind !== "none" ? workspaceLabel : null,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex shrink-0 items-center gap-1.5">
-              {activeGoal ? (
-                <span className="hidden max-w-[180px] truncate rounded-full border border-white/[0.08] px-2.5 py-1 text-[10px] text-neutral-400 lg:inline">
-                  {activeGoal}
-                </span>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => setDeskOpen((open) => !open)}
-                className={cn("chat-pro-icon", deskOpen && "is-on")}
-                aria-label={t("chatAdvanced")}
-                title={t("chatAdvanced")}
-              >
-                <Sparkles className="size-3.5" strokeWidth={1.7} />
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setTerminalOpen((open) => !open);
-                  if (!terminalOpen) setFocus("chat");
-                }}
-                className={cn("chat-pro-icon", terminalOpen && "is-on")}
-                aria-label={t("terminal")}
-              >
-                <SquareTerminal className="size-3.5" strokeWidth={1.7} />
-              </button>
-            </div>
-          </header>
-
-          {budgetExhausted || (error && !isTransientApiError(error)) ? (
+      {chatPrivacy === "private" ? (
+        <div className="min-h-0 flex-1 overflow-hidden">
+          <IncognitoRoom
+            onExit={() => {
+              setChatPrivacy("chat");
+              setChatMode("solo");
+              const next =
+                (orgLane === "employees" ? employees[0] : companions[0]) ?? agents[0];
+              if (next) void switchSoloAgent(next.id);
+            }}
+          />
+        </div>
+      ) : (
+      <>
+          {error && !isTransientApiError(error) ? (
             <div className="border-b border-white/[0.06] bg-white/[0.02] px-4 py-2.5 text-xs text-neutral-400 lg:px-6">
-              {budgetExhausted ? t("spendBudgetExhausted") : error}
+              {error}
             </div>
           ) : null}
 
           <div className="flex min-h-0 flex-1">
             {showChat ? (
-              <section className="cowork-rise flex min-h-0 min-w-0 flex-1 flex-col">
-                <div className="min-h-0 flex-1 overflow-y-auto px-4 py-6 lg:px-10">
-                  {!conversation && !sessionBusy ? (
-                    <EmptyState
-                      title={t("chatReadyTitle")}
-                      body={t("chatGptReadyBody")}
-                      action={
-                        <button type="button" onClick={() => void newChat()} className="chat-pro-cta mt-6">
-                          {t("chatNewChat")}
-                        </button>
-                      }
-                    />
-                  ) : null}
-
-                  {conversation && messages.length === 0 && !sending ? (
-                    <div className="mx-auto flex w-full max-w-lg flex-col items-center px-2 py-12 text-center sm:py-16">
-                      <div className="mb-5 flex size-14 items-center justify-center rounded-full border border-white/[0.06] bg-white/[0.035]">
-                        <Bot className="size-6 text-neutral-300" strokeWidth={1.5} />
-                      </div>
-                      <h2 className="text-[26px] font-semibold tracking-[-0.035em] text-white">
-                        {selectedAgent?.name ?? t("chatSoloDefaultName")}
+              <section className="cp-room flex min-h-0 min-w-0 flex-1 flex-col" aria-label={selectedAgent?.name ?? t("chat")}>
+                <header className="cp-room-header">
+                  <div className="cp-room-person">
+                    {activePerson && orgLane === "companions" ? (
+                      <PersonAvatar person={activePerson} active size="sm" />
+                    ) : (
+                      <span className="home-avatar flex size-9 items-center justify-center text-[11px] font-medium">
+                        {(selectedAgent?.name ?? "?").slice(0, 2).toUpperCase()}
+                      </span>
+                    )}
+                    <strong>{activeCompanionLabel}</strong>
+                    <span className="cp-muted">{activeCompanionSub}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {selectedAgent && isCompanionAgent(selectedAgent) ? (
+                      <button type="button" className="cp-button" disabled={sessionBusy || agentBusy} onClick={() => setAttachOpen(true)}>
+                        {t("chatAddPeople")}
+                        <ArrowUpRight size={15} />
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="cp-button"
+                      disabled={sessionBusy}
+                      onClick={() => void newChat()}
+                    >
+                      {t("chatNewChat")}
+                    </button>
+                  </div>
+                </header>
+                <div className="cp-messages min-h-0 flex-1 overflow-y-auto" role="log">
+                  {(!conversation && !sessionBusy) || (conversation && messages.length === 0 && !sending) ? (
+                    <div className="cp-chat-welcome">
+                      <span className="cp-welcome-icon">
+                        <Sparkles size={30} strokeWidth={1.25} />
+                      </span>
+                      <p className="cp-eyebrow">{t("chatOrgEmptyTitle")}</p>
+                      <h2>
+                        {orgLane === "companions" && activePerson
+                          ? companionDisplayName(activePerson, locale)
+                          : selectedAgent
+                            ? selectedAgent.name
+                            : t("chatReadyTitle")}
                       </h2>
-                      <p className="mt-2 max-w-sm text-[15px] leading-relaxed text-neutral-500">
-                        {t("chatGptTips")}
-                      </p>
-
-                      <div className="mt-8 grid w-full gap-2.5 sm:grid-cols-2">
-                        {SOLO_PRESETS.map((preset) => (
-                          <button
-                            key={preset.id}
-                            type="button"
-                            onClick={() => useStarter(preset.id)}
-                            className="chat-starter text-start"
-                          >
-                            <span className="block text-[14px] font-medium text-white">
-                              {t(preset.titleKey)}
-                            </span>
-                            <span className="mt-1 block text-[12px] leading-snug text-neutral-500">
-                              {t(preset.bodyKey)}
-                            </span>
+                      <p className="cp-muted">{t("chatOrgEmptyBody")}</p>
+                      <div className="cp-starters">
+                        {!conversation ? (
+                          <button type="button" onClick={() => void newChat()}>
+                            {t("chatNewChat")}
+                            <ArrowUpRight size={15} />
                           </button>
-                        ))}
-                      </div>
-
-                      <div className="mt-6 flex flex-wrap items-center justify-center gap-x-4 gap-y-2 text-[12px] text-neutral-500">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setDeskTab("project");
-                            setDeskOpen(true);
-                          }}
-                          className="hover:text-white"
-                        >
-                          {t("chatAttachFolder")}
-                        </button>
-                        <span className="text-neutral-700">·</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setGoalDraft("");
-                            setGoalEditorOpen(true);
-                          }}
-                          className="hover:text-white"
-                        >
-                          {t("setGoal")}
-                        </button>
-                        <span className="text-neutral-700">·</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setDeskTab("agent");
-                            setDeskOpen(true);
-                          }}
-                          className="hover:text-white"
-                        >
-                          {t("chatConfigureAgent")}
-                        </button>
+                        ) : (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDraft(t("compExampleSummarise"));
+                                composerRef.current?.focus();
+                              }}
+                            >
+                              {t("compExampleSummarise")}
+                              <ArrowUpRight size={15} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setDraft(t("compExampleLongDay"));
+                                composerRef.current?.focus();
+                              }}
+                            >
+                              {t("compExampleLongDay")}
+                              <ArrowUpRight size={15} />
+                            </button>
+                          </>
+                        )}
                       </div>
                     </div>
                   ) : null}
 
-                  <div className="mx-auto flex max-w-2xl flex-col gap-5">
+                  <div className="mx-auto flex w-full max-w-3xl flex-col gap-5 px-1 pb-4">
                     {messages.map((message) => (
                       <MessageBubble
                         key={message.id}
                         message={message}
                         youLabel={t("you")}
-                        coworkerLabel={selectedAgent?.name ?? t("coworker")}
+                        coworkerLabel={activeCompanionLabel}
+                        copyLabel={t("copy")}
+                        copiedLabel={t("copied")}
                       />
                     ))}
-                    {agentSteps.length > 0 ? (
-                      <AgentSteps steps={agentSteps} thinkingLabel={`${t("thinking")}…`} />
-                    ) : null}
                     {pendingApproval ? (
                       <div className="rounded-2xl border border-white/[0.12] bg-[#0c0c0c] p-4">
                         <p className="text-[10px] uppercase tracking-[0.14em] text-neutral-500">
@@ -3135,21 +3429,64 @@ export function ChatPage() {
                         </div>
                       </div>
                     ) : null}
-                    {sending && agentSteps.length === 0 ? (
-                      <AgentSteps
-                        steps={[{ id: "thinking", title: "thinking", status: "running" }]}
-                        thinkingLabel={`${t("thinking")}…`}
-                      />
+                    {sending || agentSteps.some((step) => step.status === "running") ? (
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          {agentSteps.length > 0 ? (
+                            <AgentSteps steps={agentSteps} thinkingLabel={`${t("thinking")}…`} />
+                          ) : (
+                            <AgentSteps
+                              steps={[{ id: "thinking", title: "thinking", status: "running" }]}
+                              thinkingLabel={`${t("thinking")}…`}
+                            />
+                          )}
+                        </div>
+                        {sending ? (
+                          <button
+                            type="button"
+                            onClick={pauseStream}
+                            className="mt-1 shrink-0 rounded-full border border-white/15 px-3 py-1.5 text-[11px] font-medium text-neutral-200 transition hover:border-white/30 hover:text-white"
+                          >
+                            {t("chatPause")}
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : agentSteps.length > 0 ? (
+                      <AgentSteps steps={agentSteps} thinkingLabel={`${t("thinking")}…`} />
                     ) : null}
                     <div ref={chatEnd} />
                   </div>
                 </div>
 
+                <div className="cp-composer-area">
+                  {birth && orgLane === "companions" && chatPrivacy === "chat" && !draft.trim() && !sending ? (
+                    <div className="cp-birth mx-auto mb-2 max-w-3xl">
+                      <span>{t("compBornTitle").replace("{topic}", birth.domain)}</span>
+                      <button
+                        type="button"
+                        className="cp-text-button"
+                        onClick={() => {
+                          setBirthDomain(birth.domain);
+                          setCatalogOpen(true);
+                        }}
+                      >
+                        {t("compAddCompanion")}
+                      </button>
+                      <button
+                        type="button"
+                        className="cp-icon"
+                        onClick={() => dismissBirth(birth.domain)}
+                        aria-label={t("compDismiss")}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ) : null}
                 <form
                   onSubmit={(event) => void onSend(event)}
-                  className="shrink-0 border-t border-white/[0.06] bg-gradient-to-t from-black/80 via-black/40 to-transparent px-4 py-4 lg:px-10"
+                  className="mx-auto w-full max-w-3xl space-y-3"
                 >
-                  <div className="mx-auto max-w-2xl space-y-3">
+                  <div className="space-y-3">
                     {activeGoal || goalEditorOpen ? (
                       <div className="chat-pro-goal">
                         <div className="flex items-start justify-between gap-3">
@@ -3187,33 +3524,84 @@ export function ChatPage() {
                       </div>
                     ) : null}
 
-                    <div className="chat-pro-composer">
+                    <div className="cp-composer-wrap space-y-2">
+                      {queuedQuery !== null ? (
+                        <QueuedQueryBar
+                          value={queuedQuery}
+                          onChange={setQueuedQuery}
+                          onDiscard={() => setQueuedQuery(null)}
+                          onSendNow={() => void sendQueuedNow()}
+                        />
+                      ) : null}
+                    <div className="cp-composer">
                       <textarea
                         ref={composerRef}
                         value={draft}
                         onChange={(event) => setDraft(event.target.value)}
                         onKeyDown={onComposerKey}
                         rows={2}
-                        disabled={!conversation || sending || budgetExhausted}
+                        disabled={!conversation && !selectedAgent}
                         placeholder={
-                          selectedAgent?.name
-                            ? t("chatMessageAgent").replace("{name}", selectedAgent.name)
-                            : t("chatGptPlaceholder")
+                          sending
+                            ? t("chatQueueHint")
+                            : activeCompanionLabel
+                              ? t("chatMessageAgent").replace("{name}", activeCompanionLabel)
+                              : t("messagePlaceholder")
                         }
-                        className="w-full resize-none bg-transparent px-1 py-0.5 text-[15px] leading-[1.55] tracking-[-0.01em] text-white outline-none placeholder:text-neutral-600 disabled:opacity-40"
                       />
-                      <div className="mt-2 flex items-center justify-between gap-2">
+                      <div className="cp-composer-actions">
                         <div className="relative flex items-center gap-0.5" ref={composerMenuRef}>
+                          <ComposerPlusMenu
+                            open={plusOpen}
+                            onOpenChange={(open) => {
+                              setPlusOpen(open);
+                              if (open) setComposerMenuOpen(false);
+                            }}
+                            onUploadImages={() => imageUploadRef.current?.click()}
+                            onUploadFiles={() => uploadInputRef.current?.click()}
+                            onConnectFolder={() => void chooseFolder()}
+                            onWebSearch={() => {
+                              const next = draft.trim().startsWith("/web ")
+                                ? draft
+                                : `/web ${draft.trim()}`.trim();
+                              setDraft(next === "/web" ? "/web " : `${next}${next.endsWith(" ") ? "" : " "}`);
+                              composerRef.current?.focus();
+                            }}
+                          />
+                          <input
+                            ref={imageUploadRef}
+                            type="file"
+                            accept="image/*,.jpg,.jpeg,.png,.webp,.gif,.svg"
+                            multiple
+                            className="hidden"
+                            onChange={(event) => {
+                              void onUploadFiles(event.target.files);
+                              event.target.value = "";
+                            }}
+                          />
+                          <input
+                            ref={uploadInputRef}
+                            type="file"
+                            multiple
+                            className="hidden"
+                            onChange={(event) => {
+                              void onUploadFiles(event.target.files);
+                              event.target.value = "";
+                            }}
+                          />
                           <button
                             type="button"
-                            onClick={() => {
-                              setDeskTab("project");
-                              setDeskOpen(true);
-                              setComposerMenuOpen(false);
-                            }}
-                            className="chat-pro-icon-btn"
-                            title={t("workspace")}
-                            aria-label={t("workspace")}
+                            onClick={() => void chooseFolder()}
+                            className={cn(
+                              "chat-pro-icon-btn",
+                              workspace.kind === "folder" && workspace.folderPath && "is-on",
+                            )}
+                            title={
+                              workspace.kind === "folder" && workspace.folderPath
+                                ? workspace.folderPath
+                                : t("chooseFolder")
+                            }
+                            aria-label={t("chooseFolder")}
                           >
                             <FolderOpen className="size-4" strokeWidth={1.6} />
                           </button>
@@ -3233,6 +3621,30 @@ export function ChatPage() {
                               <Target className="size-4" strokeWidth={1.6} />
                             </button>
                           ) : null}
+                          <button
+                            type="button"
+                            onClick={() => uploadInputRef.current?.click()}
+                            className="chat-pro-icon-btn"
+                            title={t("chatUpload")}
+                            aria-label={t("chatUpload")}
+                          >
+                            <Paperclip className="size-4" strokeWidth={1.6} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = draft.trim().startsWith("/web ")
+                                ? draft
+                                : `/web ${draft.trim()}`.trim();
+                              setDraft(next === "/web" ? "/web " : `${next}${next.endsWith(" ") ? "" : " "}`);
+                              composerRef.current?.focus();
+                            }}
+                            className="chat-pro-icon-btn"
+                            title={t("chatWebSearchHint")}
+                            aria-label={t("chatWebSearch")}
+                          >
+                            <Globe className="size-4" strokeWidth={1.6} />
+                          </button>
                           <button
                             type="button"
                             onClick={() => setComposerMenuOpen((open) => !open)}
@@ -3271,11 +3683,31 @@ export function ChatPage() {
                                   },
                                   {
                                     id: "project",
-                                    label: t("workspace"),
+                                    label: t("chooseFolder"),
                                     icon: FolderOpen,
                                     action: () => {
-                                      setDeskTab("project");
-                                      setDeskOpen(true);
+                                      void chooseFolder();
+                                    },
+                                  },
+                                  {
+                                    id: "upload",
+                                    label: t("chatUpload"),
+                                    icon: Paperclip,
+                                    action: () => {
+                                      uploadInputRef.current?.click();
+                                    },
+                                  },
+                                  {
+                                    id: "web",
+                                    label: t("chatWebSearch"),
+                                    icon: Globe,
+                                    action: () => {
+                                      setDraft((current) =>
+                                        current.trim().startsWith("/web")
+                                          ? current
+                                          : `/web ${current.trim()}`.trim() + " ",
+                                      );
+                                      composerRef.current?.focus();
                                     },
                                   },
                                   {
@@ -3370,687 +3802,51 @@ export function ChatPage() {
                               {t("coworkAllowEverything")}
                             </button>
                           </div>
-                          <button
-                            type="submit"
-                            disabled={!conversation || sending || draft.trim() === "" || budgetExhausted}
-                            className="inline-flex size-8 items-center justify-center rounded-full bg-white/90 text-black transition hover:bg-white disabled:opacity-25"
-                            aria-label={t("send")}
-                            title={prefs.coworkEnterSend ? t("pressEnter") : t("shiftEnterSend")}
-                          >
-                            <ArrowUp className="size-3.5" strokeWidth={2.2} />
-                          </button>
+                          {sending ? (
+                            <div className="flex items-center gap-1.5">
+                              <PauseSendButton onPause={pauseStream} />
+                              {draft.trim() ? (
+                                <button
+                                  type="submit"
+                                  className="inline-flex size-8 items-center justify-center rounded-full bg-white/90 text-black transition hover:bg-white"
+                                  aria-label={t("chatQueueSendHint")}
+                                  title={t("chatQueueSendHint")}
+                                >
+                                  <ArrowUp className="size-3.5" strokeWidth={2.2} />
+                                </button>
+                              ) : null}
+                            </div>
+                          ) : (
+                            <button
+                              type="submit"
+                              disabled={
+                                (!conversation && !selectedAgent) ||
+                                draft.trim() === ""
+                              }
+                              className="inline-flex size-8 items-center justify-center rounded-full bg-white/90 text-black transition hover:bg-white disabled:opacity-25"
+                              aria-label={t("send")}
+                              title={prefs.coworkEnterSend ? t("pressEnter") : t("shiftEnterSend")}
+                            >
+                              <ArrowUp className="size-3.5" strokeWidth={2.2} />
+                            </button>
+                          )}
                         </div>
                       </div>
+                    </div>
                     </div>
                   </div>
                 </form>
+                <p className="cp-composer-foot mx-auto max-w-3xl">
+                  <span>{t("pressEnter")} · {t("shiftEnterSend")}</span>
+                </p>
+                </div>
               </section>
             ) : null}
 
-            {showDesk ? (
-              <aside className="cowork-rise cowork-rise-delay desk-panel flex w-[310px] shrink-0 flex-col border-s border-white/[0.05] bg-[#0c0c0c]/95 xl:w-[340px]">
-                <div className="border-b border-white/[0.06] px-4 pb-4 pt-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <p className="text-[15px] font-medium tracking-tight text-white">{t("chatAdvanced")}</p>
-                      <p className="mt-0.5 text-[12px] text-neutral-500">{t("deskPanelHint")}</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => setDeskOpen(false)}
-                      className="flex size-8 items-center justify-center rounded-full text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-white"
-                      aria-label={t("close")}
-                    >
-                      <X className="size-3.5" />
-                    </button>
-                  </div>
-
-                  <div className="desk-card mt-4 space-y-3 p-3.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-[13px] font-medium text-white">{t("deskSpendTitle")}</p>
-                      <span className="text-[11px] text-neutral-500">
-                        {sessionUsage
-                          ? sessionUsage.budget === null
-                            ? `${sessionUsage.totalTokens.toLocaleString()} · ∞`
-                            : `${sessionUsage.totalTokens.toLocaleString()} / ${sessionUsage.budget.toLocaleString()}`
-                          : t("deskSpendIdle")}
-                      </span>
-                    </div>
-                    <p className="text-[11px] leading-snug text-neutral-500">{t("deskSpendHint")}</p>
-                    <div className="grid grid-cols-3 gap-1 rounded-2xl bg-white/[0.04] p-1">
-                      {(
-                        [
-                          ["low", t("chatSpendEco")],
-                          ["medium", t("spendMedium")],
-                          ["high", t("spendHigh")],
-                        ] as const
-                      ).map(([id, label]) => (
-                        <button
-                          key={id}
-                          type="button"
-                          onClick={() => {
-                            setSpendTier(id);
-                            setEcoMode(id === "low");
-                            setBudgetInput(id === "low" ? "2500" : String(DEFAULT_SESSION_BUDGETS[id]));
-                          }}
-                          className={cn(
-                            "h-9 rounded-xl text-[12px] font-medium transition-colors",
-                            spendTier === id
-                              ? "bg-white text-black"
-                              : "text-neutral-500 hover:text-neutral-200",
-                          )}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
-                    <label className="flex items-center justify-between gap-3">
-                      <span className="text-[12px] text-neutral-500">{t("spendBudget")}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={500}
-                        value={budgetInput}
-                        onChange={(event) => setBudgetInput(event.target.value)}
-                        placeholder="∞"
-                        title={t("spendBudgetHint")}
-                        className="h-9 w-[96px] rounded-xl border border-white/[0.08] bg-black/35 px-2.5 text-center text-[12px] tabular-nums text-neutral-200 outline-none focus:border-white/25"
-                      />
-                    </label>
-                    {sessionUsage ? (
-                      <div className="h-1 overflow-hidden rounded-full bg-white/[0.08]">
-                        <div
-                          className="h-full rounded-full bg-white/60 transition-[width] duration-300"
-                          style={{ width: `${Math.round((spendUsedRatio ?? 0) * 100)}%` }}
-                        />
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-
-                <nav className="desk-tabs mx-3 mt-3 grid grid-cols-3 gap-1 rounded-2xl bg-white/[0.04] p-1">
-                  {(
-                    [
-                      ["agent", t("chatTabAgent"), UserRound],
-                      ["overview", t("chatTabOverview"), Sparkles],
-                      ["project", t("chatTabProject"), FolderOpen],
-                      ["code", t("chatTabCode"), Code2],
-                      ["git", t("chatTabGit"), Github],
-                      ["notes", t("chatTabNotes"), NotebookPen],
-                    ] as const
-                  ).map(([id, label, Icon]) => (
-                    <button
-                      key={id}
-                      type="button"
-                      onClick={() => setDeskTab(id)}
-                      className={cn(
-                        "flex h-9 items-center justify-center gap-1.5 rounded-xl text-[11px] transition-colors",
-                        deskTab === id
-                          ? "bg-white text-black"
-                          : "text-neutral-500 hover:text-neutral-200",
-                      )}
-                      title={label}
-                    >
-                      <Icon className="size-3.5 shrink-0" strokeWidth={1.7} />
-                      <span className="truncate">{label}</span>
-                    </button>
-                  ))}
-                </nav>
-
-                <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
-                  {deskTab === "agent" ? (
-                    <div className="space-y-4">
-                      <div className="desk-card flex items-center gap-3 p-3.5">
-                        <span className="home-avatar flex size-12 shrink-0 items-center justify-center text-[13px] font-medium">
-                          {(profileName || selectedAgent?.name || "?").slice(0, 2).toUpperCase()}
-                        </span>
-                        <div className="min-w-0">
-                          <p className="truncate text-[15px] font-medium text-white">
-                            {profileName || selectedAgent?.name || t("chatSoloDefaultName")}
-                          </p>
-                          <p className="mt-0.5 truncate text-[12px] text-neutral-500">
-                            {profileRole || selectedAgent?.role || t("chatSoloDefaultRole")}
-                          </p>
-                        </div>
-                      </div>
-
-                      <form onSubmit={(event) => void saveAgentProfile(event)} className="space-y-3.5">
-                        <div>
-                          <p className="text-[13px] font-medium text-white">{t("editProfile")}</p>
-                          <p className="mt-1 text-[12px] leading-relaxed text-neutral-500">
-                            {t("editProfileBody")}
-                          </p>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          {SOLO_PRESETS.map((preset) => (
-                            <button
-                              key={preset.id}
-                              type="button"
-                              onClick={() => applySoloPreset(preset.id)}
-                              className={cn(
-                                "desk-preset text-start",
-                                profileSpecialty === preset.specialty && "is-on",
-                              )}
-                            >
-                              <span className="block text-[12px] font-medium text-white">
-                                {t(preset.titleKey)}
-                              </span>
-                              <span className="mt-0.5 block text-[10px] leading-snug text-neutral-500">
-                                {t(preset.bodyKey)}
-                              </span>
-                            </button>
-                          ))}
-                        </div>
-
-                        <label className="desk-field">
-                          <span>{t("chatSoloNamePlaceholder")}</span>
-                          <input
-                            value={profileName}
-                            onChange={(event) => setProfileName(event.target.value)}
-                          />
-                        </label>
-                        <label className="desk-field">
-                          <span>{t("employeeRole")}</span>
-                          <input
-                            value={profileRole}
-                            onChange={(event) => setProfileRole(event.target.value)}
-                            placeholder={t("hireRolePlaceholder")}
-                          />
-                        </label>
-                        <label className="desk-field">
-                          <span>{t("employeeInstructions")}</span>
-                          <textarea
-                            value={profileInstructions}
-                            onChange={(event) => setProfileInstructions(event.target.value)}
-                            rows={3}
-                            placeholder={t("hireInstructionsPlaceholder")}
-                          />
-                        </label>
-
-                        <button
-                          type="button"
-                          onClick={() => setProfileMoreOpen((open) => !open)}
-                          className="text-[12px] text-neutral-500 hover:text-neutral-200"
-                        >
-                          {profileMoreOpen ? t("deskHideDetails") : t("deskMoreDetails")}
-                        </button>
-
-                        {profileMoreOpen ? (
-                          <div className="space-y-3 rounded-2xl border border-white/[0.06] bg-white/[0.02] p-3">
-                            <label className="desk-field">
-                              <span>{t("employeeSpecialty")}</span>
-                              <input
-                                value={profileSpecialty}
-                                onChange={(event) => setProfileSpecialty(event.target.value)}
-                                placeholder={t("hireSpecialtyPlaceholder")}
-                              />
-                            </label>
-                            <label className="desk-field">
-                              <span>{t("employeeBio")}</span>
-                              <textarea
-                                value={profileBio}
-                                onChange={(event) => setProfileBio(event.target.value)}
-                                rows={2}
-                                placeholder={t("hireBioPlaceholder")}
-                              />
-                            </label>
-                          </div>
-                        ) : null}
-
-                        <button
-                          type="submit"
-                          disabled={agentSaving || !agentId || !profileName.trim()}
-                          className="home-btn-primary h-11 w-full text-[13px] font-medium disabled:opacity-40"
-                        >
-                          {agentSaving ? t("connecting") : t("saveProfile")}
-                        </button>
-                      </form>
-
-                      <section className="desk-card space-y-3 p-3.5">
-                        <div className="flex items-center gap-2">
-                          <GraduationCap className="size-3.5 text-neutral-400" strokeWidth={1.7} />
-                          <div>
-                            <p className="text-[13px] font-medium text-white">{t("chatSkillsLabel")}</p>
-                            <p className="text-[11px] text-neutral-500">{t("deskSkillsHint")}</p>
-                          </div>
-                        </div>
-                        <form onSubmit={(event) => void teachSkill(event)} className="space-y-2">
-                          <input
-                            value={skillTitle}
-                            onChange={(event) => setSkillTitle(event.target.value)}
-                            placeholder={t("skillTitle")}
-                            className="desk-input"
-                          />
-                          <textarea
-                            value={skillInstructions}
-                            onChange={(event) => setSkillInstructions(event.target.value)}
-                            rows={2}
-                            placeholder={t("teachTaskPlaceholder")}
-                            className="desk-textarea"
-                          />
-                          <button
-                            type="submit"
-                            disabled={agentSaving || !agentId || !skillTitle.trim()}
-                            className="home-btn-secondary h-9 px-4 text-[12px] disabled:opacity-40"
-                          >
-                            {t("saveTaughtSkill")}
-                          </button>
-                        </form>
-                        <ul className="max-h-32 space-y-2 overflow-y-auto">
-                          {agentSkills.map((skill) => (
-                            <li key={skill.id} className="rounded-xl bg-white/[0.03] px-3 py-2">
-                              <div className="flex items-start justify-between gap-2">
-                                <p className="text-[12px] text-white">{skill.title}</p>
-                                <button
-                                  type="button"
-                                  onClick={() => void removeSkill(skill.id)}
-                                  className="text-neutral-600 hover:text-red-300"
-                                  aria-label={t("chatDeleteChat")}
-                                >
-                                  <Trash2 className="size-3" />
-                                </button>
-                              </div>
-                              <p className="mt-1 line-clamp-2 text-[11px] text-neutral-500">
-                                {skill.instructions}
-                              </p>
-                            </li>
-                          ))}
-                          {agentSkills.length === 0 ? (
-                            <li className="text-[11px] text-neutral-600">{t("chatNoSkillsYet")}</li>
-                          ) : null}
-                        </ul>
-                      </section>
-
-                      <section className="desk-card space-y-3 p-3.5">
-                        <div className="flex items-center gap-2">
-                          <Brain className="size-3.5 text-neutral-400" strokeWidth={1.7} />
-                          <div>
-                            <p className="text-[13px] font-medium text-white">{t("chatMemoriesLabel")}</p>
-                            <p className="text-[11px] text-neutral-500">{t("deskMemoriesHint")}</p>
-                          </div>
-                        </div>
-                        <form onSubmit={(event) => void saveMemory(event)} className="space-y-2">
-                          <textarea
-                            value={memoryDraft}
-                            onChange={(event) => setMemoryDraft(event.target.value)}
-                            rows={2}
-                            placeholder={t("tellAgentPlaceholder")}
-                            className="desk-textarea"
-                          />
-                          <button
-                            type="submit"
-                            disabled={agentSaving || !agentId || !memoryDraft.trim()}
-                            className="home-btn-secondary h-9 px-4 text-[12px] disabled:opacity-40"
-                          >
-                            {t("saveToMemory")}
-                          </button>
-                        </form>
-                        <ul className="max-h-32 space-y-2 overflow-y-auto">
-                          {agentMemories.map((memory) => (
-                            <li key={memory.id} className="rounded-xl bg-white/[0.03] px-3 py-2">
-                              <div className="flex items-start justify-between gap-2">
-                                <p className="text-[11px] leading-relaxed text-neutral-300">
-                                  {memory.content}
-                                </p>
-                                <button
-                                  type="button"
-                                  onClick={() => void removeMemory(memory.id)}
-                                  className="shrink-0 text-neutral-600 hover:text-red-300"
-                                  aria-label={t("chatDeleteChat")}
-                                >
-                                  <Trash2 className="size-3" />
-                                </button>
-                              </div>
-                            </li>
-                          ))}
-                          {agentMemories.length === 0 ? (
-                            <li className="text-[11px] text-neutral-600">{t("chatNoMemoriesYet")}</li>
-                          ) : null}
-                        </ul>
-                      </section>
-                    </div>
-                  ) : null}
-
-                  {deskTab === "overview" ? (
-                    <div className="space-y-3">
-                      <section className="desk-card p-3.5">
-                        <p className="text-[13px] font-medium text-white">{t("activeGoal")}</p>
-                        <p className="mt-2 text-[13px] leading-relaxed text-neutral-300">
-                          {activeGoal || t("goalHint")}
-                        </p>
-                        <button
-                          type="button"
-                          disabled={!conversation}
-                          onClick={() => {
-                            setGoalDraft(activeGoal);
-                            setGoalEditorOpen(true);
-                          }}
-                          className="home-btn-secondary mt-3 h-9 px-4 text-[12px] disabled:opacity-40"
-                        >
-                          {activeGoal ? t("editGoal") : t("setGoal")}
-                        </button>
-                      </section>
-                      <section className="desk-card p-3.5">
-                        <p className="text-[13px] font-medium text-white">{t("chatSessionMeta")}</p>
-                        <dl className="mt-3 space-y-2.5 text-[12px]">
-                          <div className="flex justify-between gap-3">
-                            <dt className="text-neutral-500">{t("messages")}</dt>
-                            <dd className="tabular-nums text-neutral-200">{messages.length}</dd>
-                          </div>
-                          <div className="flex justify-between gap-3">
-                            <dt className="text-neutral-500">{t("chatSoloDefaultName")}</dt>
-                            <dd className="truncate text-neutral-200">{selectedAgent?.name ?? "—"}</dd>
-                          </div>
-                          <div className="flex justify-between gap-3">
-                            <dt className="text-neutral-500">{t("chatSkillsLabel")}</dt>
-                            <dd className="tabular-nums text-neutral-200">{agentSkills.length}</dd>
-                          </div>
-                          <div className="flex justify-between gap-3">
-                            <dt className="text-neutral-500">{t("chatMemoriesLabel")}</dt>
-                            <dd className="tabular-nums text-neutral-200">{agentMemories.length}</dd>
-                          </div>
-                          <div className="flex justify-between gap-3">
-                            <dt className="text-neutral-500">{t("providerStatus")}</dt>
-                            <dd className="text-neutral-200">
-                              {providerConfigured === null
-                                ? "…"
-                                : providerConfigured
-                                  ? t("providerLive")
-                                  : t("providerOffline")}
-                            </dd>
-                          </div>
-                        </dl>
-                      </section>
-                    </div>
-                  ) : null}
-
-                  {deskTab === "project" ? (
-                    <div className="space-y-3">
-                      <section className="desk-card space-y-3 p-3.5">
-                        <div>
-                          <p className="text-[13px] font-medium text-white">{t("chatPickProject")}</p>
-                          <p className="mt-1 text-[11px] text-neutral-500">{t("chatProjectHint")}</p>
-                        </div>
-                        <select
-                          value={projectPickId}
-                          onChange={(event) => selectProject(event.target.value)}
-                          className="desk-input"
-                        >
-                          <option value="">{t("none")}</option>
-                          {projects.map((project) => (
-                            <option key={project.id} value={project.id}>
-                              {project.name}
-                            </option>
-                          ))}
-                        </select>
-                      </section>
-                      <section className="desk-card space-y-3 p-3.5">
-                        <div>
-                          <p className="text-[13px] font-medium text-white">{t("workspace")}</p>
-                          <p className="mt-1 truncate text-[12px] text-neutral-400">{workspaceLabel}</p>
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <button type="button" onClick={() => void chooseFolder()} className="desk-action">
-                            <FolderOpen className="size-3.5" />
-                            {t("chooseFolder")}
-                          </button>
-                          <button type="button" onClick={() => void openRepoPicker()} className="desk-action">
-                            <Github className="size-3.5" />
-                            GitHub
-                          </button>
-                        </div>
-                        {workspace.kind !== "none" ? (
-                          <button
-                            type="button"
-                            onClick={clearWorkspace}
-                            className="text-[12px] text-neutral-500 hover:text-white"
-                          >
-                            {t("clear")}
-                          </button>
-                        ) : null}
-                      </section>
-                      {linkedProject && repoBinding ? (
-                        <button
-                          type="button"
-                          disabled={bindingBusy}
-                          onClick={() => void unbindRepo()}
-                          className="text-[12px] text-neutral-500 hover:text-white disabled:opacity-40"
-                        >
-                          {t("clear")} · {t("linkedRepo")}
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {deskTab === "code" ? (
-                    <div className="space-y-3">
-                      <section className="desk-card space-y-3 p-3.5">
-                        <div>
-                          <p className="text-[13px] font-medium text-white">{t("chatCodeActions")}</p>
-                          <p className="mt-1 text-[11px] leading-relaxed text-neutral-500">
-                            {t("chatCodeActionsBody")}
-                          </p>
-                        </div>
-                        <ul className="space-y-2">
-                          {codingPresets.map((preset) => (
-                            <li
-                              key={preset.id}
-                              className="flex items-center gap-2 rounded-xl bg-white/[0.03] px-3 py-2.5"
-                            >
-                              <span className="min-w-0 flex-1 truncate text-[12px] text-neutral-200">
-                                {t(preset.labelKey)}
-                              </span>
-                              <button
-                                type="button"
-                                onClick={() => askAboutCommand(preset.prompt)}
-                                className="text-[11px] text-neutral-500 hover:text-white"
-                              >
-                                {t("chatAsk")}
-                              </button>
-                              <button
-                                type="button"
-                                disabled={terminalBusy}
-                                onClick={() => void runCodingCommand(preset.command)}
-                                className="inline-flex items-center gap-1 rounded-full bg-white px-2.5 py-1 text-[10px] font-medium text-black disabled:opacity-40"
-                              >
-                                <Play className="size-2.5" />
-                                {t("run")}
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      </section>
-                      <section className="desk-card space-y-2 p-3.5">
-                        <p className="text-[13px] font-medium text-white">{t("chatRunCustom")}</p>
-                        <div className="flex gap-2">
-                          <input
-                            value={cmdDraft}
-                            onChange={(event) => setCmdDraft(event.target.value)}
-                            placeholder="npm run typecheck"
-                            className="desk-input min-w-0 flex-1 !font-mono"
-                          />
-                          <button
-                            type="button"
-                            disabled={!cmdDraft.trim() || terminalBusy}
-                            onClick={() => {
-                              void runCodingCommand(cmdDraft.trim());
-                              setCmdDraft("");
-                            }}
-                            className="home-btn-primary inline-flex h-10 items-center gap-1 px-3 text-[11px] disabled:opacity-40"
-                          >
-                            <Play className="size-3" />
-                            {t("run")}
-                          </button>
-                        </div>
-                      </section>
-                    </div>
-                  ) : null}
-
-                  {deskTab === "git" ? (
-                    <div className="space-y-3">
-                      <section className="desk-card space-y-2 p-3.5">
-                        <div className="flex items-center justify-between">
-                          <p className="text-[13px] font-medium text-white">{t("gitStatus")}</p>
-                          <button
-                            type="button"
-                            disabled={gitBusy || workspace.kind === "none"}
-                            onClick={() => void refreshGitStatus()}
-                            className="text-[12px] text-neutral-500 hover:text-white disabled:opacity-40"
-                          >
-                            {t("refresh")}
-                          </button>
-                        </div>
-                        <pre className="max-h-36 overflow-y-auto whitespace-pre-wrap font-mono text-[11px] leading-relaxed text-neutral-500">
-                          {gitStatus || t("noWorkspaceYet")}
-                        </pre>
-                      </section>
-                      <section className="desk-card space-y-2 p-3.5">
-                        <p className="text-[13px] font-medium text-white">{t("commitPush")}</p>
-                        <input
-                          value={commitMessage}
-                          onChange={(event) => setCommitMessage(event.target.value)}
-                          placeholder={t("commitMessagePlaceholder")}
-                          className="desk-input"
-                        />
-                        {workspace.kind === "github" ? (
-                          <>
-                            <input
-                              value={commitPath}
-                              onChange={(event) => setCommitPath(event.target.value)}
-                              placeholder="NOTES.md"
-                              className="desk-input"
-                            />
-                            <textarea
-                              value={commitContent}
-                              onChange={(event) => setCommitContent(event.target.value)}
-                              rows={3}
-                              placeholder={t("commitContentPlaceholder")}
-                              className="desk-textarea"
-                            />
-                          </>
-                        ) : null}
-                        <div className="flex gap-2 pt-1">
-                          <button
-                            type="button"
-                            disabled={gitBusy || workspace.kind === "none"}
-                            onClick={() => void commitWorkspace()}
-                            className="home-btn-primary h-9 px-4 text-[12px] disabled:opacity-40"
-                          >
-                            {t("commit")}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={gitBusy || workspace.kind !== "folder"}
-                            onClick={() => void pushWorkspace()}
-                            className="home-btn-secondary h-9 px-4 text-[12px] disabled:opacity-40"
-                          >
-                            {t("push")}
-                          </button>
-                        </div>
-                      </section>
-                      {workspace.kind === "github" ? (
-                        <section className="desk-card space-y-2 p-3.5">
-                          <p className="text-[13px] font-medium text-white">{t("openPullRequest")}</p>
-                          <input
-                            value={prTitle}
-                            onChange={(event) => setPrTitle(event.target.value)}
-                            placeholder={t("prTitle")}
-                            className="desk-input"
-                          />
-                          <input
-                            value={prHead}
-                            onChange={(event) => setPrHead(event.target.value)}
-                            placeholder={t("prHead")}
-                            className="desk-input"
-                          />
-                          <textarea
-                            value={prBody}
-                            onChange={(event) => setPrBody(event.target.value)}
-                            rows={3}
-                            placeholder={t("prBody")}
-                            className="desk-textarea"
-                          />
-                          <button
-                            type="button"
-                            disabled={gitBusy}
-                            onClick={() => void openPullRequest()}
-                            className="home-btn-secondary mt-1 h-9 px-4 text-[12px] disabled:opacity-40"
-                          >
-                            {t("createPr")}
-                          </button>
-                        </section>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  {deskTab === "notes" ? (
-                    <label className="desk-card grid gap-2 p-3.5">
-                      <span className="text-[13px] font-medium text-white">{t("sessionNotes")}</span>
-                      <textarea
-                        value={notes}
-                        onChange={(event) => setNotes(event.target.value)}
-                        rows={16}
-                        placeholder={t("chatNotesPlaceholder")}
-                        className="min-h-[280px] w-full resize-none rounded-2xl border border-white/[0.07] bg-black/25 px-3 py-3 text-[13px] leading-relaxed text-neutral-200 outline-none focus:border-white/18"
-                      />
-                    </label>
-                  ) : null}
-                </div>
-              </aside>
-            ) : null}
-          </div>
-
-          {showTerminal ? (
-            <section
-              className={cn(
-                "cowork-rise cowork-rise-delay-2 flex shrink-0 flex-col border-t border-white/[0.06] bg-[#030303]",
-                focus === "terminal" ? "min-h-0 flex-1" : terminalTall ? "h-[38vh]" : "h-[148px]",
-              )}
-            >
-              <header className="flex items-center justify-between gap-3 border-b border-white/[0.06] px-4 py-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <SquareTerminal className="size-3.5 text-neutral-500" />
-                  <p className="chat-pro-kicker">{t("terminal")}</p>
-                  <span className="truncate text-[11px] text-neutral-600">
-                    {workspace.kind === "folder" && workspace.folderPath ? workspace.folderPath : t("chatTerminalOptional")}
-                  </span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <button type="button" onClick={() => setTerminalTall((value) => !value)} className="text-[11px] text-neutral-500 hover:text-white">
-                    {terminalTall ? t("terminalCollapse") : t("terminalExpand")}
-                  </button>
-                  <button type="button" onClick={() => setTerminalOpen(false)} className="text-[11px] text-neutral-500 hover:text-white">{t("close")}</button>
-                  <button type="button" onClick={() => setLines([{ id: crypto.randomUUID(), kind: "system", text: t("terminalReady") }])} className="text-[11px] text-neutral-500 hover:text-white">{t("clear")}</button>
-                </div>
-              </header>
-              <div className="arrab-terminal min-h-0 flex-1 overflow-y-auto px-4 py-3 text-[12px] leading-relaxed">
-                {lines.map((line) => (
-                  <pre
-                    key={line.id}
-                    className={cn(
-                      "whitespace-pre-wrap",
-                      line.kind === "input" && "text-white",
-                      line.kind === "stdout" && "text-neutral-300",
-                      line.kind === "stderr" && "text-neutral-400",
-                      line.kind === "system" && "text-neutral-600",
-                      line.kind === "error" && "text-neutral-200",
-                    )}
-                  >
-                    {line.text}
-                  </pre>
-                ))}
-                <div ref={termEnd} />
-              </div>
-              <form onSubmit={onTerminal} className="flex gap-2 border-t border-white/[0.06] p-3">
-                <span className="arrab-terminal flex h-9 items-center text-neutral-600">$</span>
-                <input value={terminalInput} onChange={(event) => setTerminalInput(event.target.value)} placeholder={t("terminalPlaceholder")} disabled={terminalBusy} className="arrab-terminal field flex-1 !rounded-lg border-white/10" />
-                <button type="submit" disabled={terminalBusy} className="h-9 rounded-lg border border-white/10 px-3 text-xs text-white hover:bg-white/5 disabled:opacity-40">{t("run")}</button>
-              </form>
-            </section>
-          ) : null}
         </div>
-      </div>
+      </>
+      )}
+
 
       {agentMenu ? (
         <div
@@ -4066,12 +3862,20 @@ export function ChatPage() {
               return (
                 <>
                   <p className="px-3 py-2 text-[11px] leading-relaxed text-neutral-400">
-                    {t("chatDeleteAgentConfirm")}
+                    {t("chatKeepsInDatabase")}
                   </p>
                   <button
                     type="button"
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-neutral-200 hover:bg-white/[0.06]"
+                    onClick={() => void setAgentStatus(agentMenu.id, "archived", "archive")}
+                  >
+                    <Archive className="size-3.5" strokeWidth={1.7} />
+                    {t("chatArchiveAgent")}
+                  </button>
+                  <button
+                    type="button"
                     className="flex w-full items-center gap-2 px-3 py-2.5 text-start text-[12px] text-red-300 hover:bg-white/[0.06]"
-                    onClick={() => void setAgentStatus(agentMenu.id, "archived")}
+                    onClick={() => void setAgentStatus(agentMenu.id, "archived", "delete")}
                   >
                     <Trash2 className="size-3.5" strokeWidth={1.7} />
                     {t("chatDeleteForever")}
@@ -4186,6 +3990,106 @@ export function ChatPage() {
         </div>
       ) : null}
 
+
+      {attachOpen && selectedAgent ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onClick={() => setAttachOpen(false)}>
+          <div
+            className="w-full max-w-md space-y-3 rounded-[24px] border border-white/10 bg-[var(--color-surface)] p-5"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 className="text-[16px] font-medium text-white">{t("chatAddPeople")}</h2>
+            <p className="text-[13px] text-neutral-500">
+              {t("chatAddEmployeesHint").replace("{name}", selectedAgent.name)}
+            </p>
+            <ul className="max-h-56 space-y-1 overflow-y-auto">
+              {employees.map((agent) => {
+                const on = attachPicks.includes(agent.id);
+                return (
+                  <li key={agent.id}>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setAttachPicks((current) =>
+                          on ? current.filter((id) => id !== agent.id) : [...current, agent.id],
+                        )
+                      }
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded-xl px-2 py-2 text-start text-[13px]",
+                        on ? "bg-white/[0.1] text-white" : "text-neutral-400 hover:bg-white/[0.04]",
+                      )}
+                    >
+                      <span className="home-avatar flex size-8 items-center justify-center text-[10px]">
+                        {agentInitials(agent.name)}
+                      </span>
+                      {agent.name}
+                    </button>
+                  </li>
+                );
+              })}
+              {employees.length === 0 ? (
+                <li className="py-6 text-center text-[13px] text-neutral-600">{t("chatNoEmployeesYet")}</li>
+              ) : null}
+            </ul>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                disabled={agentBusy || attachPicks.length === 0}
+                onClick={() => void saveCompanionAttachments()}
+                className="home-btn-primary h-10 flex-1 disabled:opacity-40"
+              >
+                {agentBusy ? t("saving") : t("chatAddEmployees")}
+              </button>
+              <button type="button" className="home-btn-secondary h-10 px-4" onClick={() => setAttachOpen(false)}>
+                {t("cancel")}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {allPeopleOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onClick={() => setAllPeopleOpen(false)}>
+          <div
+            className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-[24px] border border-white/10 bg-[var(--color-surface)]"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-white/[0.06] px-5 py-4">
+              <h2 className="text-[16px] font-medium text-white">
+                {orgLane === "employees" ? t("chatEmployeesMode") : t("chatCompanionsMode")}
+              </h2>
+              <button type="button" className="text-sm text-neutral-500 hover:text-white" onClick={() => setAllPeopleOpen(false)}>
+                {t("close")}
+              </button>
+            </div>
+            <ul className="min-h-0 flex-1 space-y-1 overflow-y-auto p-3">
+              {(orgLane === "employees" ? employees : companions).map((agent) => (
+                <li key={agent.id}>
+                  <button
+                    type="button"
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-start",
+                      agent.id === agentId ? "bg-white/[0.08]" : "hover:bg-white/[0.04]",
+                    )}
+                    onClick={() => {
+                      void switchSoloAgent(agent.id);
+                      setAllPeopleOpen(false);
+                    }}
+                  >
+                    <span className="home-avatar flex size-10 items-center justify-center text-[11px]">
+                      {agentInitials(agent.name)}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-[14px] text-white">{agent.name}</span>
+                      <span className="block truncate text-[12px] text-neutral-500">{agent.role}</span>
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      ) : null}
+
       {repoPickerOpen ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-sm">
           <div className="w-full max-w-lg rounded-2xl border border-white/10 bg-[#0a0a0a] p-5 shadow-2xl">
@@ -4226,48 +4130,57 @@ function MessageBubble({
   message,
   youLabel,
   coworkerLabel,
+  copyLabel,
+  copiedLabel,
 }: {
   message: Message;
   youLabel: string;
   coworkerLabel: string;
+  copyLabel: string;
+  copiedLabel: string;
 }) {
   const isUser = message.role === "user";
+  const [copied, setCopied] = useState(false);
+
+  async function onCopy() {
+    const ok = await copyChatText(message.content);
+    if (!ok) return;
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  }
+
   return (
-    <article className={cn("flex flex-col gap-1.5", isUser ? "items-end" : "items-start")}>
+    <article className={cn("group/msg flex flex-col gap-1.5", isUser ? "items-end" : "items-start")}>
       <p className="text-[10px] tracking-[0.1em] text-neutral-600">
         {isUser ? youLabel : coworkerLabel}
       </p>
       <div
         className={cn(
-          "max-w-[88%] px-4 py-3 text-[14px] leading-[1.55]",
+          "relative max-w-[min(88%,42rem)] px-4 py-3 text-[14px] leading-[1.55]",
           isUser
             ? "rounded-[1.15rem] rounded-br-md bg-white text-black"
             : "rounded-[1.15rem] rounded-bl-md border border-white/[0.08] bg-white/[0.035] text-neutral-200",
         )}
       >
-        <p className="whitespace-pre-wrap">{message.content}</p>
+        {isUser ? (
+          <p className="whitespace-pre-wrap">{message.content}</p>
+        ) : (
+          <ChatMarkdown content={message.content} />
+        )}
+        <button
+          type="button"
+          onClick={() => void onCopy()}
+          className={cn(
+            "absolute -bottom-2 end-2 inline-flex items-center gap-1 rounded-full border border-white/10 bg-black/70 px-2 py-0.5 text-[10px] text-neutral-300 opacity-0 transition group-hover/msg:opacity-100",
+            isUser && "border-black/10 bg-white/90 text-neutral-600",
+          )}
+          aria-label={copyLabel}
+        >
+          <Copy size={10} strokeWidth={1.8} />
+          {copied ? copiedLabel : copyLabel}
+        </button>
       </div>
     </article>
   );
 }
 
-function EmptyState({
-  title,
-  body,
-  action,
-}: {
-  title: string;
-  body: string;
-  action?: ReactNode;
-}) {
-  return (
-    <div className="mx-auto flex max-w-md flex-col items-center px-6 py-16 text-center">
-      <div className="mb-5 flex size-12 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.03]">
-        <Sparkles className="size-5 text-neutral-400" strokeWidth={1.6} />
-      </div>
-      <h2 className="text-lg text-white">{title}</h2>
-      <p className="mt-2 text-sm leading-relaxed text-neutral-500">{body}</p>
-      {action}
-    </div>
-  );
-}

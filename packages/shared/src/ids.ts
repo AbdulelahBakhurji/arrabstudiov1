@@ -21,6 +21,7 @@ export type ApprovalId = Brand<string, "ApprovalId">;
 export type GoalId = Brand<string, "GoalId">;
 export type OrgDepartmentId = Brand<string, "OrgDepartmentId">;
 export type OrgEmployeeId = Brand<string, "OrgEmployeeId">;
+export type FamilyMemberId = Brand<string, "FamilyMemberId">;
 
 export function brandId<T extends string>(value: string): T {
   if (value.trim().length === 0) {

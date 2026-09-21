@@ -203,7 +203,7 @@ export function MentionComposer({
         className={cn("field min-h-[72px] resize-none", className)}
       />
       {open && options.length > 0 ? (
-        <ul className="absolute bottom-[calc(100%+6px)] left-0 z-20 max-h-56 w-full overflow-y-auto rounded-2xl border border-white/12 bg-[#0c0c0c] p-1.5 shadow-2xl">
+        <ul className="absolute bottom-[calc(100%+6px)] start-0 z-20 max-h-56 w-full overflow-y-auto rounded-2xl border border-white/12 bg-[var(--color-surface)] p-1.5 shadow-2xl">
           {options.map((option, index) => (
             <li key={option.id}>
               <button

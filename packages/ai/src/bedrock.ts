@@ -61,7 +61,7 @@ export function parseBedrockModels(raw: string | null | undefined): string[] {
     .map((item) => item.trim())
     .filter(Boolean);
   if (fromEnv.length > 0) {
-    return fromEnv.slice(0, 12).map((id) => normalizeBedrockModelId(id));
+    return [...new Set(fromEnv.map((id) => normalizeBedrockModelId(id)))];
   }
   return [...BEDROCK_DEFAULT_MODELS];
 }

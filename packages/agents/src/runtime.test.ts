@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  AiGatewayError,
   RegistryAiGateway,
   type AiCompletion,
   type AiCompletionRequest,
@@ -72,8 +71,38 @@ describe("GatewayChatRuntime", () => {
     expect(capturedSystem).toContain("Standing instructions");
     expect(capturedSystem).toContain("cite assumptions");
     expect(capturedSystem).toContain("market research");
+    expect(capturedSystem).not.toContain("CALL_TOOL");
   });
 
+  it("keeps CALL_TOOL hints when a desk folder is attached", async () => {
+    const gateway = new RegistryAiGateway();
+    let capturedSystem = "";
+    gateway.register({
+      id: "openai",
+      kind: "openai_compatible",
+      supportsTools: false,
+      async complete(request: AiCompletionRequest): Promise<AiCompletion> {
+        capturedSystem = request.messages.find((message) => message.role === "system")?.content ?? "";
+        return {
+          id: "cmpl_desk",
+          model: { providerId: "openai", model: "gpt-4o-mini" },
+          message: { role: "assistant", content: "ok" },
+          finishReason: "stop",
+          usage: null,
+        };
+      },
+    });
+    await new GatewayChatRuntime().run(
+      {
+        agent,
+        conversationId: null,
+        input: "hello",
+        tools: { workspaceSummary: "mode=folder\nLocal folder: /tmp/app" },
+      },
+      gateway,
+    );
+    expect(capturedSystem).toContain("CALL_TOOL");
+  });
   it("runs safe CALL_TOOL loop and returns final answer", async () => {
     const gateway = new RegistryAiGateway();
     let round = 0;
@@ -226,6 +255,78 @@ describe("GatewayChatRuntime", () => {
     expect(sawTools).toBe(true);
     expect(result.status).toBe("completed");
     expect(result.output).toBe("Continuing on the desk");
+  });
+
+  it("offers and runs Gmail arrange_email without a desk folder", async () => {
+    const gateway = new RegistryAiGateway();
+    let toolNames: string[] = [];
+    let round = 0;
+    const arranged: Array<Record<string, string>> = [];
+    gateway.register({
+      id: "openai",
+      kind: "openai_compatible",
+      supportsTools: true,
+      async complete(request: AiCompletionRequest): Promise<AiCompletion> {
+        toolNames = (request.tools ?? []).map((tool) => tool.name);
+        round += 1;
+        if (round === 1) {
+          return {
+            id: "cmpl_mail_1",
+            model: { providerId: "openai", model: "gpt-4o-mini" },
+            message: { role: "assistant", content: "" },
+            finishReason: "tool_calls",
+            usage: null,
+            toolCalls: [
+              {
+                id: "call_arrange",
+                name: "arrange_email",
+                arguments: JSON.stringify({
+                  action: "archive",
+                  message_ids: "msg_a,msg_b",
+                }),
+              },
+            ],
+          };
+        }
+        return {
+          id: "cmpl_mail_2",
+          model: { providerId: "openai", model: "gpt-4o-mini" },
+          message: { role: "assistant", content: "Archived 2 messages." },
+          finishReason: "stop",
+          usage: null,
+        };
+      },
+    });
+    const result = await new GatewayChatRuntime().run(
+      {
+        agent,
+        conversationId: null,
+        input: "Archive those two emails",
+        tools: {
+          emailAccountLabel: "ops@arrabai.com",
+          email: {
+            listMessages: async () => "[]",
+            readMessage: async () => "{}",
+            sendMessage: async () => "{}",
+            arrangeMessages: async (args) => {
+              arranged.push(args);
+              return JSON.stringify({ ok: true, modified: 2 });
+            },
+          },
+        },
+      },
+      gateway,
+    );
+    expect(toolNames).toEqual(
+      expect.arrayContaining(["list_email", "read_email", "send_email", "arrange_email"]),
+    );
+    expect(toolNames.some((name) => name.startsWith("list_files") || name === "run_terminal")).toBe(
+      false,
+    );
+    expect(arranged).toEqual([{ action: "archive", message_ids: "msg_a,msg_b" }]);
+    expect(result.toolsUsed).toContain("arrange_email");
+    expect(result.status).toBe("completed");
+    expect(result.output).toBe("Archived 2 messages.");
   });
 
   it("streams tokens live from streamComplete", async () => {

@@ -8,7 +8,6 @@ import {
   type ModelProviderAdapter,
 } from "./types.js";
 import {
-  BEDROCK_DEFAULT_MODEL,
   BEDROCK_DEFAULT_REGION,
   BEDROCK_PROVIDER_ID,
   bedrockOpenAiBaseUrl,

@@ -1,0 +1,9 @@
+{
+  "version": "Before the user requested the final design improvement",
+  "verified_original_files": {
+    "apps/desktop/src/styles/companions.css": "41fb0c5b2d43fd6333f60182f87186abeb0773441f6a08555e5a8f85a69ae45e",
+    "apps/desktop/src/pages/CompanionsPage.tsx": "81b38a62abfeca78d20701a5e5af0f3d3991c5a9bf96651c64cc85230c560f40",
+    "apps/desktop/src/components/StudioFrame.tsx": "25999b9cbf9ec9c8070f76773651d7f390d070e88d1c855be1981761ac659a6d",
+    "apps/desktop/src/components/companions/CompanionUI.tsx": "da493e92fdfd137dc1fc1b6f11c020ffbaeab410ced5f6c36a8cd6c409255a08"
+  }
+}

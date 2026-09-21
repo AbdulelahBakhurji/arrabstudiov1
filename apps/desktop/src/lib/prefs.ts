@@ -1,8 +1,16 @@
+export type MonthlySpendLimit = "disabled" | "unlimited" | "25" | "50" | "100" | "200" | "500";
+
 export type StudioPrefs = {
   notifyApprovals: boolean;
   notifyTeamLaunch: boolean;
   notifyConnector: boolean;
   notifyCowork: boolean;
+  /** Floating macOS-style agent presence HUD with photo + progress. */
+  notifyAgentPresence: boolean;
+  /** Toast / OS banner when a new desktop build is published. */
+  notifyAppUpdates: boolean;
+  /** Check GitHub releases for a newer Arrab Studio on launch. */
+  autoCheckUpdates: boolean;
   privacyLocalNotes: boolean;
   privacyAnalytics: boolean;
   privacyCrash: boolean;
@@ -11,6 +19,18 @@ export type StudioPrefs = {
   coworkTerminalDock: boolean;
   desktopAlwaysOnTop: boolean;
   onDemandEnabled: boolean;
+  /** Soft monthly on-demand spend ceiling in USD, or disabled/unlimited. */
+  monthlySpendLimit: MonthlySpendLimit;
+  /** Preferred assistant family in Settings → AI. */
+  aiPreferredFamily: "auto" | "chatgpt" | "claude";
+  /** Exact model id when set (OpenRouter slash id or provider-native). */
+  aiPreferredModel: string;
+  /** Prefer on-device Ollama models (works offline after download). */
+  aiLocalEnabled: boolean;
+  /** Ollama model tag, e.g. llama3.2:3b */
+  aiLocalModel: string;
+  /** Ollama base URL */
+  aiLocalBaseUrl: string;
 };
 
 export const PREFS_KEY = "arrab.settings.prefs";
@@ -25,6 +45,9 @@ export const defaultPrefs = (): StudioPrefs => ({
   notifyTeamLaunch: true,
   notifyConnector: true,
   notifyCowork: false,
+  notifyAgentPresence: true,
+  notifyAppUpdates: true,
+  autoCheckUpdates: true,
   privacyLocalNotes: true,
   privacyAnalytics: false,
   privacyCrash: true,
@@ -33,6 +56,12 @@ export const defaultPrefs = (): StudioPrefs => ({
   coworkTerminalDock: true,
   desktopAlwaysOnTop: false,
   onDemandEnabled: false,
+  monthlySpendLimit: "disabled",
+  aiPreferredFamily: "auto",
+  aiPreferredModel: "",
+  aiLocalEnabled: false,
+  aiLocalModel: "llama3.2:3b",
+  aiLocalBaseUrl: "http://127.0.0.1:11434",
 });
 
 export function readPrefs(): StudioPrefs {
@@ -137,6 +166,8 @@ export const CLEARABLE_LOCAL_KEYS = [
   "arrab.workforce.directives",
   "arrab.workforce.teamMeta",
   "arrab.incognito.apiIds",
+  "arrab.profile.photo",
+  "arrab.firstLaunchSetup",
 ] as const;
 
 export function clearLocalStudioData(options?: { keepAppearance?: boolean }): void {

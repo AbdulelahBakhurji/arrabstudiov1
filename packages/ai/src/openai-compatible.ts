@@ -355,10 +355,16 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
   }
 
   private headers(): Record<string, string> {
-    return {
+    const headers: Record<string, string> = {
       Authorization: `Bearer ${this.apiKey}`,
       "Content-Type": "application/json",
     };
+    // OpenRouter uses these for app attribution and better routing.
+    if (this.id === "openrouter" || this.baseUrl.includes("openrouter.ai")) {
+      headers["HTTP-Referer"] = "https://arrabai.com";
+      headers["X-Title"] = "Arrab Studio";
+    }
+    return headers;
   }
 
   async complete(request: AiCompletionRequest): Promise<AiCompletion> {

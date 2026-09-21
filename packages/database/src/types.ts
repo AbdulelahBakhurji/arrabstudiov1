@@ -25,12 +25,19 @@ import type {
   OrgDepartment,
   OrgEmployeeRecord,
   OrgSecurityEvent,
+  FamilyMemberRecord,
+  FamilyGuidanceRecord,
 } from "@arrab/shared";
 import type {
   OrgDepartmentRepository,
   OrgEmployeeRepository,
   OrgSecurityEventRepository,
 } from "./org-workforce-repos.js";
+import type {
+  FamilyGuidanceRepository,
+  FamilyHouseholdMetaRepository,
+  FamilyMemberRepository,
+} from "./family-repos.js";
 
 export interface DatabaseConfig {
   connectionString: string;
@@ -188,6 +195,9 @@ export interface Persistence {
   orgDepartments: OrgDepartmentRepository;
   orgEmployees: OrgEmployeeRepository;
   orgSecurityEvents: OrgSecurityEventRepository;
+  familyMembers: FamilyMemberRepository;
+  familyGuidance: FamilyGuidanceRepository;
+  familyHouseholdMeta: FamilyHouseholdMetaRepository;
 }
 
 export const LOCAL_ORGANIZATION_ID = "org_local_studio";

@@ -1,20 +1,64 @@
+# Dependencies & build
 node_modules
 dist
 build
 *.tsbuildinfo
 coverage
-.DS_Store
-.env
-.env.local
-.env.*.local
-*.log
 .turbo
 .vite
+.pnpm-store
+
+# Environment & secrets — never ship these
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*credentials*.json
+*service-account*.json
+secrets/
+.secrets/
+
+# Logs & OS
+*.log
+.DS_Store
+Thumbs.db
+
+# iOS / Xcode
+apps/ios/**/xcuserdata/
+apps/ios/**/DerivedData/
+apps/ios/*.xcuserstate
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Editors
 .idea
 .vscode/*
 !.vscode/extensions.json
+
+# Tauri / native
 apps/desktop/src-tauri/target
 apps/desktop/src-tauri/gen
 apps/desktop/src-tauri/WixTools
 *.pdb
-.pnpm-store
+
+# Design preview build scratch
+docs/design/desktop/preview-tools/.build
+
+# Packaged desktop installers & local release dumps
+release/artifacts/
+*.dmg
+*.msi
+*.exe
+*.AppImage
+!docs/**/*.dmg
+
+# Local scratch / oversized design dumps
+the-studio.html
+*.local.html
+Arrab Studio IOS/

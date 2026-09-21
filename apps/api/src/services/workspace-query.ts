@@ -2,6 +2,7 @@ import type { Persistence } from "@arrab/database";
 import type {
   Activity,
   Agent,
+  Approval,
   Conversation,
   DashboardResponse,
   Knowledge,
@@ -10,6 +11,7 @@ import type {
   Project,
   ProjectRepoBinding,
   ReportSummaryResponse,
+  Skill,
   Task,
   TaskRun,
   Team,
@@ -17,6 +19,8 @@ import type {
   UsageSummaryResponse,
   Workspace,
 } from "@arrab/shared";
+import { decryptField, openMaybeJson } from "../lib/field-crypto.js";
+import type { AccountService } from "./account-service.js";
 import type { WorkspaceCommandService } from "./workspace-commands.js";
 
 export class WorkspaceQueryService {
@@ -105,11 +109,43 @@ export class WorkspaceQueryService {
     });
   }
 
-  async usageSummary(accounts?: import("./account-service.js").AccountService): Promise<UsageSummaryResponse> {
-    const events = await this.persistence.usage.listAll();
+  async getCompanionState(): Promise<{ updatedAt: string | null; state: unknown | null }> {
+    const doc = await this.persistence.companionState.get();
+    if (!doc) return { updatedAt: null, state: null };
+    return { updatedAt: doc.updatedAt, state: openMaybeJson(doc.state) };
+  }
+
+  async usageSummary(
+    accounts?: AccountService,
+    options?: { allowedAgentIds?: Set<string> | null; includeEntitlements?: boolean },
+  ): Promise<UsageSummaryResponse> {
+    const allowed = options?.allowedAgentIds ?? null;
+    const includeEntitlements = options?.includeEntitlements !== false;
+    // Match Settings plan meter: scope totals to the active billing period so
+    // switching accounts (or periods) never shows another user's lifetime tokens.
+    const entitlements = accounts
+      ? await accounts.buildEntitlements(await this.persistence.accounts.get())
+      : undefined;
+    const periodStart = entitlements?.periodStart ?? null;
+    const periodEnd = entitlements?.periodEnd ?? null;
+    const inCurrentPeriod = (createdAt: string): boolean => {
+      if (!periodStart || !periodEnd) return true;
+      return createdAt >= periodStart && createdAt < periodEnd;
+    };
+
+    const allEvents = await this.persistence.usage.listAll();
+    const events = allEvents.filter((event) => {
+      if (!inCurrentPeriod(event.createdAt)) return false;
+      if (allowed == null) return true;
+      return event.agentId != null && allowed.has(event.agentId);
+    });
     const byProviderMap = new Map<
       string,
       { providerId: string; inputTokens: number; outputTokens: number; events: number }
+    >();
+    const byAgentMap = new Map<
+      string,
+      { agentId: string | null; inputTokens: number; outputTokens: number; events: number }
     >();
     let inputTokens = 0;
     let outputTokens = 0;
@@ -126,9 +162,25 @@ export class WorkspaceQueryService {
       current.outputTokens += event.outputTokens;
       current.events += 1;
       byProviderMap.set(event.providerId, current);
+
+      const agentKey = event.agentId ?? "__unassigned__";
+      const agentRow = byAgentMap.get(agentKey) ?? {
+        agentId: event.agentId,
+        inputTokens: 0,
+        outputTokens: 0,
+        events: 0,
+      };
+      agentRow.inputTokens += event.inputTokens;
+      agentRow.outputTokens += event.outputTokens;
+      agentRow.events += 1;
+      byAgentMap.set(agentKey, agentRow);
     }
-    const recent = await this.persistence.usage.listRecent(20);
-    const entitlements = accounts ? await accounts.buildEntitlements(await this.persistence.accounts.get()) : undefined;
+    const recentSource = await this.persistence.usage.listRecent(40);
+    const recent = recentSource.filter((event) => {
+      if (!inCurrentPeriod(event.createdAt)) return false;
+      if (allowed == null) return true;
+      return event.agentId != null && allowed.has(event.agentId);
+    });
     return {
       totals: {
         inputTokens,
@@ -136,6 +188,9 @@ export class WorkspaceQueryService {
         events: events.length,
       },
       byProvider: [...byProviderMap.values()].sort((a, b) => b.events - a.events),
+      byAgent: [...byAgentMap.values()].sort(
+        (a, b) => b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens),
+      ),
       recent: recent.map((event) => ({
         id: event.id,
         providerId: event.providerId,
@@ -145,29 +200,35 @@ export class WorkspaceQueryService {
         createdAt: event.createdAt,
         agentId: event.agentId,
       })),
-      entitlements,
+      entitlements: includeEntitlements ? entitlements : undefined,
     };
   }
 
-  listKnowledge(): Promise<Knowledge[]> {
-    return this.persistence.knowledge.list();
+  async listKnowledge(): Promise<Knowledge[]> {
+    return (await this.persistence.knowledge.list()).map((item) => ({
+      ...item,
+      content: decryptField(item.content),
+    }));
   }
 
-  listMemories(): Promise<Memory[]> {
-    return this.persistence.memories.list();
+  async listMemories(): Promise<Memory[]> {
+    return (await this.persistence.memories.list()).map((item) => ({
+      ...item,
+      content: decryptField(item.content),
+    }));
   }
 
-  listSkills(agentId?: string): Promise<import("@arrab/shared").Skill[]> {
+  listSkills(agentId?: string): Promise<Skill[]> {
     return agentId
       ? this.persistence.skills.listByAgent(agentId)
       : this.persistence.skills.list();
   }
 
-  listApprovals(): Promise<import("@arrab/shared").Approval[]> {
+  listApprovals(): Promise<Approval[]> {
     return this.persistence.approvals.list();
   }
 
-  listPendingApprovals(): Promise<import("@arrab/shared").Approval[]> {
+  listPendingApprovals(): Promise<Approval[]> {
     return this.persistence.approvals.listPending();
   }
 
@@ -239,7 +300,7 @@ export class WorkspaceQueryService {
         outputTokens: usage.totals.outputTokens,
         events: usage.totals.events,
       },
-      recentActivity: activity.slice(0, 12),
+      recentActivity: activity.slice(0, 40),
       knowledgeCount: knowledge.length,
       memoryCount: memories.length,
       skillCount: skills.length,

@@ -37,6 +37,7 @@ import { createMoyasarClient } from "./services/moyasar.js";
 import { GoalService } from "./services/goal-service.js";
 import { TaskExecutionService } from "./services/task-execution-service.js";
 import { OrgWorkforceService } from "./services/org-workforce-service.js";
+import { FamilyHouseholdService } from "./services/family-household-service.js";
 import { WorkspaceCommandService } from "./services/workspace-commands.js";
 import { WorkspaceQueryService } from "./services/workspace-query.js";
 
@@ -57,6 +58,7 @@ export interface ApiContext {
   goals: GoalService;
   taskExecution: TaskExecutionService;
   orgWorkforce: OrgWorkforceService;
+  familyHousehold: FamilyHouseholdService;
 }
 
 export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
@@ -184,6 +186,119 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
   const githubRedirect =
     env.githubOAuthRedirectUri?.trim() ||
     `${env.publicBaseUrl.replace(/\/$/, "")}/v1/connectors/github/oauth/callback`;
+  const base = env.publicBaseUrl.replace(/\/$/, "");
+  const genericOAuth = {
+    ...(env.gitlabClientId?.trim() && env.gitlabClientSecret?.trim()
+      ? {
+          gitlab: {
+            clientId: env.gitlabClientId.trim(),
+            clientSecret: env.gitlabClientSecret.trim(),
+            redirectUri:
+              env.gitlabOAuthRedirectUri?.trim() ||
+              `${base}/v1/connectors/gitlab/oauth/callback`,
+          },
+        }
+      : {}),
+    ...(env.bitbucketClientId?.trim() && env.bitbucketClientSecret?.trim()
+      ? {
+          bitbucket: {
+            clientId: env.bitbucketClientId.trim(),
+            clientSecret: env.bitbucketClientSecret.trim(),
+            redirectUri:
+              env.bitbucketOAuthRedirectUri?.trim() ||
+              `${base}/v1/connectors/bitbucket/oauth/callback`,
+          },
+        }
+      : {}),
+    ...(env.linearClientId?.trim() && env.linearClientSecret?.trim()
+      ? {
+          linear: {
+            clientId: env.linearClientId.trim(),
+            clientSecret: env.linearClientSecret.trim(),
+            redirectUri:
+              env.linearOAuthRedirectUri?.trim() ||
+              `${base}/v1/connectors/linear/oauth/callback`,
+          },
+        }
+      : {}),
+    ...(env.slackClientId?.trim() && env.slackClientSecret?.trim()
+      ? {
+          slack: {
+            clientId: env.slackClientId.trim(),
+            clientSecret: env.slackClientSecret.trim(),
+            redirectUri:
+              env.slackOAuthRedirectUri?.trim() ||
+              `${base}/v1/connectors/slack/oauth/callback`,
+          },
+        }
+      : {}),
+    ...(env.notionClientId?.trim() && env.notionClientSecret?.trim()
+      ? {
+          notion: {
+            clientId: env.notionClientId.trim(),
+            clientSecret: env.notionClientSecret.trim(),
+            redirectUri:
+              env.notionOAuthRedirectUri?.trim() ||
+              `${base}/v1/connectors/notion/oauth/callback`,
+          },
+        }
+      : {}),
+    ...(env.whoopClientId?.trim() && env.whoopClientSecret?.trim()
+      ? {
+          whoop: {
+            clientId: env.whoopClientId.trim(),
+            clientSecret: env.whoopClientSecret.trim(),
+            redirectUri:
+              env.whoopOAuthRedirectUri?.trim() ||
+              `${base}/v1/connectors/whoop/oauth/callback`,
+          },
+        }
+      : {}),
+    ...(env.fitbitClientId?.trim() && env.fitbitClientSecret?.trim()
+      ? {
+          fitbit: {
+            clientId: env.fitbitClientId.trim(),
+            clientSecret: env.fitbitClientSecret.trim(),
+            redirectUri:
+              env.fitbitOAuthRedirectUri?.trim() ||
+              `${base}/v1/connectors/fitbit/oauth/callback`,
+          },
+        }
+      : {}),
+    ...(env.googleDriveClientId?.trim() && env.googleDriveClientSecret?.trim()
+      ? {
+          google_drive: {
+            clientId: env.googleDriveClientId.trim(),
+            clientSecret: env.googleDriveClientSecret.trim(),
+            redirectUri:
+              env.googleDriveOAuthRedirectUri?.trim() ||
+              `${base}/v1/connectors/google_drive/oauth/callback`,
+          },
+        }
+      : {}),
+    ...(env.googleCalendarClientId?.trim() && env.googleCalendarClientSecret?.trim()
+      ? {
+          google_calendar: {
+            clientId: env.googleCalendarClientId.trim(),
+            clientSecret: env.googleCalendarClientSecret.trim(),
+            redirectUri:
+              env.googleCalendarOAuthRedirectUri?.trim() ||
+              `${base}/v1/connectors/google_calendar/oauth/callback`,
+          },
+        }
+      : {}),
+    ...(env.figmaClientId?.trim() && env.figmaClientSecret?.trim()
+      ? {
+          figma: {
+            clientId: env.figmaClientId.trim(),
+            clientSecret: env.figmaClientSecret.trim(),
+            redirectUri:
+              env.figmaOAuthRedirectUri?.trim() ||
+              `${base}/v1/connectors/figma/oauth/callback`,
+          },
+        }
+      : {}),
+  };
   const connectors = new ConnectorService(
     persistence,
     commands,
@@ -210,6 +325,11 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
           appSlug: env.githubAppSlug?.trim() || undefined,
         }
       : null,
+    env.whatsappWebhookVerifyToken?.trim() || null,
+    env.whatsappAppSecret?.trim() || null,
+    env.finnhubApiKey?.trim() || null,
+    env.finnhubWebhookSecret?.trim() || null,
+    genericOAuth,
   );
   const accounts = new AccountService(
     persistence,
@@ -221,6 +341,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     createMoyasarClient(env.moyasarSecretKey),
     env.siteUrl,
   );
+  const familyHousehold = new FamilyHouseholdService(persistence, accounts);
   const conversations = new ConversationService(
     persistence,
     aiGateway,
@@ -228,6 +349,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     resolvedDefaultModel,
     connectors,
     accounts,
+    familyHousehold,
   );
   const goals = new GoalService(persistence);
   const taskExecution = new TaskExecutionService(
@@ -255,6 +377,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     goals,
     taskExecution,
     orgWorkforce,
+    familyHousehold,
   };
 }
 
@@ -285,6 +408,7 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
       "Accept",
       "X-Arrab-Account-Session",
       "X-Arrab-Employee-Session",
+      "X-Arrab-Family-Member",
       "X-Requested-With",
     ],
   });
@@ -292,6 +416,21 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     context.orgWorkforce.resolveSession(token),
   );
   registerErrorHandler(app);
+
+  // Capture raw body for Meta WhatsApp webhook HMAC (X-Hub-Signature-256).
+  app.addHook("preParsing", async (request, _reply, payload) => {
+    if (request.method !== "POST" || !request.url.startsWith("/v1/connectors/whatsapp/webhook")) {
+      return payload;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of payload) {
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk));
+    }
+    const buf = Buffer.concat(chunks);
+    (request as { rawBody?: string }).rawBody = buf.toString("utf8");
+    const { Readable } = await import("node:stream");
+    return Readable.from(buf);
+  });
 
   app.get("/health", async () => ({
     status: "ok" as const,
@@ -309,6 +448,7 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     goals: context.goals,
     taskExecution: context.taskExecution,
     orgWorkforce: context.orgWorkforce,
+    familyHousehold: context.familyHousehold,
     gateway: context.aiGateway,
     persistence: context.persistence.kind,
     workspaceId: context.persistence.workspaceId,

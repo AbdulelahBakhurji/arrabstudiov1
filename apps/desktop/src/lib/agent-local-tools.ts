@@ -27,6 +27,9 @@ export const CLIENT_EXEC_TOOLS = new Set([
   "git_status",
   "git_diff",
   "open_path",
+  "preview_html",
+  "generate_pdf",
+  "export_csv",
 ]);
 
 /** Read-only / low-risk tools — auto-run without an approval card. */
@@ -37,6 +40,9 @@ export const AUTO_CLIENT_TOOLS = new Set([
   "git_status",
   "git_diff",
   "open_path",
+  "preview_html",
+  "generate_pdf",
+  "export_csv",
 ]);
 
 /** Mutating tools — respect Ask / Allow everything policy. */
@@ -48,6 +54,9 @@ export const POLICY_CLIENT_TOOLS = new Set([
   "rename_file",
   "create_dir",
 ]);
+
+/** Email mutating tools — Ask-first shows approval; Allow all auto-runs on the API. */
+export const EMAIL_POLICY_TOOLS = new Set(["send_email", "arrange_email"]);
 
 export function isClientExecTool(name: string): boolean {
   return CLIENT_EXEC_TOOLS.has(name);
@@ -61,13 +70,29 @@ export function isPolicyClientTool(name: string): boolean {
   return POLICY_CLIENT_TOOLS.has(name);
 }
 
+export function isEmailPolicyTool(name: string): boolean {
+  return EMAIL_POLICY_TOOLS.has(name);
+}
+
 export type LocalToolArgs = Record<string, string>;
+
+export type LocalToolArtifact = {
+  kind: "html" | "pdf" | "csv";
+  folderPath: string;
+  relativePath: string;
+  /** Absolute path when known (for OS open / convertFileSrc). */
+  absolutePath?: string;
+  /** Inline HTML for in-app iframe preview. */
+  previewHtml?: string;
+  title?: string;
+};
 
 export type LocalToolExecResult = {
   ok: boolean;
   summary: string;
   /** Full text returned to the model as TOOL_RESULT. */
   toolResult: string;
+  artifact?: LocalToolArtifact;
 };
 
 export type EditCheckpoint = {
@@ -355,6 +380,132 @@ export async function executeLocalAgentTool(
         const toolResult = `OPENED ${path || "."} in the OS file browser / default app`;
         return { ok: true, summary: toolResult, toolResult };
       }
+      case "preview_html": {
+        let path = normalizeRel(args.path || "");
+        const content = args.content ?? args.html ?? "";
+        if (!path) path = "arrab-preview.html";
+        if (!path.toLowerCase().endsWith(".html") && !path.toLowerCase().endsWith(".htm")) {
+          path = `${path}.html`;
+        }
+        const wrapped = content
+          ? /<html[\s>]/i.test(content)
+            ? content
+            : `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Arrab preview</title><style>body{font-family:ui-sans-serif,system-ui,sans-serif;margin:2rem;line-height:1.5;color:#111}img{max-width:100%}</style></head><body>${content}</body></html>`
+          : "";
+        if (wrapped) {
+          await pushCheckpoint(folderPath, path, "write_file");
+          await writeTextFile(folderPath, path, wrapped);
+        }
+        await openPath(folderPath, path);
+        const previewHtml =
+          wrapped ||
+          (await readTextFile(folderPath, path).then((file) => file.content).catch(() => ""));
+        const toolResult = content
+          ? `WROTE and opened HTML preview ${path} in the default browser (also available in-app)`
+          : `Opened HTML preview ${path} in the default browser (also available in-app)`;
+        return {
+          ok: true,
+          summary: toolResult,
+          toolResult,
+          artifact: {
+            kind: "html",
+            folderPath,
+            relativePath: path,
+            absolutePath: `${folderPath.replace(/\/$/, "")}/${path}`,
+            previewHtml: previewHtml || undefined,
+            title: path,
+          },
+        };
+      }
+      case "generate_pdf": {
+        const content = args.content ?? args.html ?? "";
+        if (!content.trim()) {
+          const msg = "ERROR: generate_pdf requires content.";
+          return { ok: false, summary: msg, toolResult: msg };
+        }
+        let pdfPath = normalizeRel(args.path || "arrab-report.pdf");
+        if (!pdfPath.toLowerCase().endsWith(".pdf")) pdfPath = `${pdfPath}.pdf`;
+        const htmlPath = pdfPath.replace(/\.pdf$/i, ".html");
+        const title = (args.title || "Arrab report").replace(/[<>&]/g, "");
+        const html = /<html[\s>]/i.test(content)
+          ? content
+          : `<!doctype html><html><head><meta charset="utf-8"><title>${title}</title><style>@page{margin:18mm}body{font-family:Georgia,serif;margin:24px;line-height:1.45;color:#111}h1,h2,h3{font-family:ui-sans-serif,system-ui,sans-serif}pre,code{font-family:ui-monospace,Menlo,monospace;font-size:12px}table{border-collapse:collapse;width:100%}td,th{border:1px solid #ddd;padding:6px 8px;text-align:start}</style></head><body>${content.includes("<") ? content : `<pre>${content.replace(/[&<>]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[ch]!)}</pre>`}</body></html>`;
+        await writeTextFile(folderPath, htmlPath, html);
+        const chromeBins = [
+          "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+          "/Applications/Chromium.app/Contents/MacOS/Chromium",
+          "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+          "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+          "C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe",
+          "C:\\\\Program Files (x86)\\\\Microsoft\\\\Edge\\\\Application\\\\msedge.exe",
+        ];
+        const printCmd = [
+          "set -e",
+          'ROOT="$(pwd)"',
+          `HTML="$ROOT/${htmlPath.replace(/"/g, '\\"')}"`,
+          `PDF="$ROOT/${pdfPath.replace(/"/g, '\\"')}"`,
+          "BIN=\"\"",
+          ...chromeBins.map(
+            (bin) => `if [ -z "$BIN" ] && [ -x ${JSON.stringify(bin)} ]; then BIN=${JSON.stringify(bin)}; fi`,
+          ),
+          'if [ -z "$BIN" ]; then echo "NO_CHROME"; exit 42; fi',
+          '"$BIN" --headless --disable-gpu --no-pdf-header-footer --print-to-pdf="$PDF" "file://$HTML"',
+          'ls -la "$PDF"',
+        ].join("\n");
+        const printed = await runLocalCommand(printCmd, folderPath);
+        const root = folderPath.replace(/\/$/, "");
+        if (printed.code === 0) {
+          await openPath(folderPath, pdfPath);
+          const toolResult = `GENERATED PDF ${pdfPath} (source HTML ${htmlPath}) — preview available in-app`;
+          return {
+            ok: true,
+            summary: toolResult,
+            toolResult,
+            artifact: {
+              kind: "pdf",
+              folderPath,
+              relativePath: pdfPath,
+              absolutePath: `${root}/${pdfPath}`,
+              previewHtml: html,
+              title,
+            },
+          };
+        }
+        await openPath(folderPath, htmlPath);
+        const toolResult = [
+          `PDF conversion needed Chrome/Edge/Brave (exit ${printed.code}).`,
+          `Wrote HTML ${htmlPath} — showing HTML preview in-app; Print → Save as PDF if needed.`,
+          printed.stderr.trim() || printed.stdout.trim() || "",
+        ]
+          .filter(Boolean)
+          .join("\n");
+        return {
+          ok: false,
+          summary: `HTML ready at ${htmlPath} (print to PDF)`,
+          toolResult,
+          artifact: {
+            kind: "html",
+            folderPath,
+            relativePath: htmlPath,
+            absolutePath: `${root}/${htmlPath}`,
+            previewHtml: html,
+            title,
+          },
+        };
+      }
+      case "export_csv": {
+        let path = normalizeRel(args.path || "arrab-export.csv");
+        const content = args.content ?? "";
+        if (!content.trim()) {
+          const msg = "ERROR: export_csv requires content.";
+          return { ok: false, summary: msg, toolResult: msg };
+        }
+        if (!path.toLowerCase().endsWith(".csv")) path = `${path}.csv`;
+        await writeTextFile(folderPath, path, content);
+        await openPath(folderPath, path);
+        const toolResult = `WROTE CSV ${path} (${content.length} chars) and opened it`;
+        return { ok: true, summary: toolResult, toolResult };
+      }
       default: {
         const msg = `ERROR: Unknown local tool '${toolName}'.`;
         return { ok: false, summary: msg, toolResult: msg };
@@ -389,6 +540,9 @@ export function parseToolNameFromApproval(detail: string | null, title: string):
   if (title.startsWith("Git status")) return "git_status";
   if (title.startsWith("Git diff")) return "git_diff";
   if (title.startsWith("Open:")) return "open_path";
+  if (title.startsWith("HTML preview:")) return "preview_html";
+  if (title.startsWith("PDF:")) return "generate_pdf";
+  if (title.startsWith("CSV:")) return "export_csv";
   return null;
 }
 

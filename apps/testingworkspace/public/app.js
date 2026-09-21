@@ -86,14 +86,20 @@
     success.hidden = false;
     const email = payload?.account?.email || "";
     const name = payload?.account?.displayName || "";
-    document.getElementById("success-title").textContent =
-      kind === "create" ? "Account created" : kind === "desktop" ? "Studio linked" : "Signed in";
+    const created = Boolean(payload?.accountCreated) || kind === "create";
+    document.getElementById("success-title").textContent = created
+      ? "Account created"
+      : kind === "desktop"
+        ? "Studio linked"
+        : "Signed in";
     document.getElementById("success-body").textContent = name
       ? `${name} · ${email}`
       : email;
 
     const tokenBox = document.getElementById("token-box");
     tokenBox.hidden = true;
+    const openStudio = document.getElementById("open-studio");
+    const successFine = document.getElementById("success-fine");
 
     const token = payload?.sessionToken;
     if (state) {
@@ -101,6 +107,26 @@
         tokenBox.hidden = false;
         document.getElementById("session-token").textContent = token;
       }
+      const deepLink = token
+        ? "arrab://auth/complete?session=" +
+          encodeURIComponent(token) +
+          (created ? "&setup=plan" : "")
+        : created
+          ? "arrab://auth/complete?setup=plan"
+          : "arrab://auth/complete";
+      if (openStudio) {
+        openStudio.hidden = false;
+        openStudio.setAttribute("href", deepLink);
+        openStudio.textContent = created ? "Continue to choose a plan" : "Open Arrab Studio";
+      }
+      if (successFine) {
+        successFine.textContent = created
+          ? "Opening Arrab Studio so you can choose a plan…"
+          : "Opening Arrab Studio…";
+      }
+      window.setTimeout(() => {
+        window.location.href = deepLink;
+      }, 250);
       return;
     }
 
@@ -119,9 +145,11 @@
     }
 
     statusEl.className = "status is-ok";
-    statusEl.textContent = "Opening your workspace…";
+    statusEl.textContent = created
+      ? "Opening plan setup…"
+      : "Opening your workspace…";
     setTimeout(() => {
-      window.location.assign("/app");
+      window.location.assign(created ? "/app?view=plans" : "/app");
     }, 450);
   }
 

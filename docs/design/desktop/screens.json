@@ -1,0 +1,85 @@
+[
+  [
+    "الأفراد",
+    [
+      [
+        "المحادثة والرفاق",
+        "/individuals"
+      ],
+      [
+        "اللوحة",
+        "/individuals/board"
+      ],
+      [
+        "المهام والمواضيع",
+        "/individuals/work"
+      ],
+      [
+        "أنا والذاكرة",
+        "/individuals/me"
+      ],
+      [
+        "الاتصالات",
+        "/individuals/connectors"
+      ],
+      [
+        "الحساب",
+        "/individuals/account"
+      ],
+      [
+        "الإعدادات",
+        "/individuals/settings"
+      ]
+    ]
+  ],
+  [
+    "المنظمات",
+    [
+      [
+        "الاستوديو",
+        "/organizations"
+      ],
+      [
+        "المحادثة",
+        "/organizations/chat"
+      ],
+      [
+        "العمل المشترك",
+        "/organizations/cowork"
+      ],
+      [
+        "القوى العاملة",
+        "/organizations/workforce"
+      ],
+      [
+        "مكتب الموظف",
+        "/organizations/desk/design-agent"
+      ],
+      [
+        "الاتصالات",
+        "/organizations/connectors"
+      ],
+      [
+        "النشاط",
+        "/organizations/activity"
+      ],
+      [
+        "الحساب",
+        "/organizations/account"
+      ],
+      [
+        "الإعدادات",
+        "/organizations/settings"
+      ]
+    ]
+  ],
+  [
+    "الدخول",
+    [
+      [
+        "تسجيل الدخول",
+        "sign-in"
+      ]
+    ]
+  ]
+]

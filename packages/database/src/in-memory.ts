@@ -26,6 +26,8 @@ import {
   type OrgDepartment,
   type OrgEmployeeRecord,
   type OrgSecurityEvent,
+  type FamilyMemberRecord,
+  type FamilyGuidanceRecord,
 } from "@arrab/shared";
 import {
   LOCAL_ORGANIZATION_ID,
@@ -554,6 +556,10 @@ export type MemorySnapshot = {
   orgDepartments: OrgDepartment[];
   orgEmployees: OrgEmployeeRecord[];
   orgSecurityEvents: OrgSecurityEvent[];
+  familyMembers: FamilyMemberRecord[];
+  familyGuidance: FamilyGuidanceRecord[];
+  familyExtraSeats: number;
+  familyActiveMemberId: string | null;
 };
 
 export type MemoryPersistenceOptions = {
@@ -636,6 +642,10 @@ export function emptyMemorySnapshot(now = new Date().toISOString()): MemorySnaps
     orgDepartments: [],
     orgEmployees: [],
     orgSecurityEvents: [],
+    familyMembers: [],
+    familyGuidance: [],
+    familyExtraSeats: 0,
+    familyActiveMemberId: null,
   };
 }
 
@@ -671,6 +681,21 @@ export function normalizeMemorySnapshot(
     const snapshot = raw as MemorySnapshot;
     snapshot.operator = snapshot.operator ?? null;
     snapshot.account = snapshot.account ?? null;
+    snapshot.orgDepartments = Array.isArray(snapshot.orgDepartments) ? snapshot.orgDepartments : [];
+    snapshot.orgEmployees = Array.isArray(snapshot.orgEmployees) ? snapshot.orgEmployees : [];
+    snapshot.orgSecurityEvents = Array.isArray(snapshot.orgSecurityEvents)
+      ? snapshot.orgSecurityEvents
+      : [];
+    snapshot.familyMembers = Array.isArray(snapshot.familyMembers) ? snapshot.familyMembers : [];
+    snapshot.familyGuidance = Array.isArray(snapshot.familyGuidance) ? snapshot.familyGuidance : [];
+    snapshot.familyExtraSeats =
+      typeof snapshot.familyExtraSeats === "number" ? snapshot.familyExtraSeats : 0;
+    snapshot.familyActiveMemberId =
+      typeof snapshot.familyActiveMemberId === "string" ? snapshot.familyActiveMemberId : null;
+    for (const member of snapshot.familyMembers) {
+      member.tokenAllowance = member.tokenAllowance ?? 0;
+      member.tokensUsed = member.tokensUsed ?? 0;
+    }
     return snapshot;
   }
   return {
@@ -699,6 +724,15 @@ export function normalizeMemorySnapshot(
     orgDepartments: Array.isArray(raw.orgDepartments) ? raw.orgDepartments : [],
     orgEmployees: Array.isArray(raw.orgEmployees) ? raw.orgEmployees : [],
     orgSecurityEvents: Array.isArray(raw.orgSecurityEvents) ? raw.orgSecurityEvents : [],
+    familyMembers: (Array.isArray(raw.familyMembers) ? raw.familyMembers : []).map((member) => ({
+      ...member,
+      tokenAllowance: member.tokenAllowance ?? 0,
+      tokensUsed: member.tokensUsed ?? 0,
+    })),
+    familyGuidance: Array.isArray(raw.familyGuidance) ? raw.familyGuidance : [],
+    familyExtraSeats: typeof raw.familyExtraSeats === "number" ? raw.familyExtraSeats : 0,
+    familyActiveMemberId:
+      typeof raw.familyActiveMemberId === "string" ? raw.familyActiveMemberId : null,
   };
 }
 
@@ -776,6 +810,77 @@ class MemoryOrgSecurityEventRepository {
   async append(event: OrgSecurityEvent): Promise<OrgSecurityEvent> {
     this.items.unshift(event);
     return event;
+  }
+}
+
+class MemoryFamilyMemberRepository {
+  private readonly items: FamilyMemberRecord[];
+  constructor(items: FamilyMemberRecord[] = []) {
+    this.items = Array.isArray(items) ? items : [];
+  }
+  async list(): Promise<FamilyMemberRecord[]> {
+    return [...this.items].sort((a, b) => {
+      if (a.isOwner !== b.isOwner) return a.isOwner ? -1 : 1;
+      return a.displayName.localeCompare(b.displayName);
+    });
+  }
+  async getById(id: string): Promise<FamilyMemberRecord | null> {
+    return this.items.find((item) => item.id === id) ?? null;
+  }
+  async create(entity: FamilyMemberRecord): Promise<FamilyMemberRecord> {
+    this.items.push(entity);
+    return entity;
+  }
+  async update(entity: FamilyMemberRecord): Promise<FamilyMemberRecord> {
+    const index = this.items.findIndex((item) => item.id === entity.id);
+    if (index >= 0) this.items[index] = entity;
+    return entity;
+  }
+  async delete(id: string): Promise<void> {
+    const index = this.items.findIndex((item) => item.id === id);
+    if (index >= 0) this.items.splice(index, 1);
+  }
+}
+
+class MemoryFamilyGuidanceRepository {
+  private readonly items: FamilyGuidanceRecord[];
+  constructor(items: FamilyGuidanceRecord[] = []) {
+    this.items = Array.isArray(items) ? items : [];
+  }
+  async listRecent(limit = 40): Promise<FamilyGuidanceRecord[]> {
+    return [...this.items]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, Math.min(100, Math.max(1, limit)));
+  }
+  async listByCompanion(companionId: string): Promise<FamilyGuidanceRecord[]> {
+    return this.items
+      .filter((item) => item.companionId === companionId)
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }
+  async create(entity: FamilyGuidanceRecord): Promise<FamilyGuidanceRecord> {
+    this.items.unshift(entity);
+    return entity;
+  }
+  async delete(id: string): Promise<void> {
+    const index = this.items.findIndex((item) => item.id === id);
+    if (index >= 0) this.items.splice(index, 1);
+  }
+}
+
+class MemoryFamilyHouseholdMetaRepository {
+  constructor(private readonly snapshot: MemorySnapshot) {}
+  async getExtraSeats(): Promise<number> {
+    return this.snapshot.familyExtraSeats ?? 0;
+  }
+  async setExtraSeats(seats: number): Promise<number> {
+    this.snapshot.familyExtraSeats = Math.max(0, Math.floor(seats));
+    return this.snapshot.familyExtraSeats;
+  }
+  async getActiveMemberId(): Promise<string | null> {
+    return this.snapshot.familyActiveMemberId ?? null;
+  }
+  async setActiveMemberId(id: string | null): Promise<void> {
+    this.snapshot.familyActiveMemberId = id;
   }
 }
 
@@ -868,6 +973,62 @@ export function createInMemoryPersistence(
           const created = await repo.append(event);
           touch();
           return created;
+        },
+      };
+    })(),
+    familyMembers: (() => {
+      const repo = new MemoryFamilyMemberRepository(snapshot.familyMembers);
+      if (!touch) return repo;
+      return {
+        list: () => repo.list(),
+        getById: (id: string) => repo.getById(id),
+        create: async (entity: FamilyMemberRecord) => {
+          const created = await repo.create(entity);
+          touch();
+          return created;
+        },
+        update: async (entity: FamilyMemberRecord) => {
+          const updated = await repo.update(entity);
+          touch();
+          return updated;
+        },
+        delete: async (id: string) => {
+          await repo.delete(id);
+          touch();
+        },
+      };
+    })(),
+    familyGuidance: (() => {
+      const repo = new MemoryFamilyGuidanceRepository(snapshot.familyGuidance);
+      if (!touch) return repo;
+      return {
+        listRecent: (limit?: number) => repo.listRecent(limit),
+        listByCompanion: (companionId: string) => repo.listByCompanion(companionId),
+        create: async (entity: FamilyGuidanceRecord) => {
+          const created = await repo.create(entity);
+          touch();
+          return created;
+        },
+        delete: async (id: string) => {
+          await repo.delete(id);
+          touch();
+        },
+      };
+    })(),
+    familyHouseholdMeta: (() => {
+      const repo = new MemoryFamilyHouseholdMetaRepository(snapshot);
+      if (!touch) return repo;
+      return {
+        getExtraSeats: () => repo.getExtraSeats(),
+        setExtraSeats: async (seats: number) => {
+          const next = await repo.setExtraSeats(seats);
+          touch();
+          return next;
+        },
+        getActiveMemberId: () => repo.getActiveMemberId(),
+        setActiveMemberId: async (id: string | null) => {
+          await repo.setActiveMemberId(id);
+          touch();
         },
       };
     })(),

@@ -5,7 +5,7 @@
  * Rings carry meaning: gold means this person is speaking or is about to,
  * a faint ring means they contributed, and nothing means they are quiet.
  */
-import { useId } from "react";
+import { useId, useState } from "react";
 import { cn } from "@/lib/utils";
 
 export type FaceState = "quiet" | "lit" | "speaking" | "contributing";
@@ -36,15 +36,31 @@ export function CompanionFace({
   // Ids must be unique per rendered face — seeds can repeat.
   const clipId = useId();
   const px = SIZES[size];
-  const skin = `hsl(${hue} 34% 66%)`;
-  const skinShade = `hsl(${hue} 32% 54%)`;
-  const hair = `hsl(${(hue + 205) % 360} 26% 16%)`;
+  // Skin tone varies in lightness too, not just hue — two companions with the
+  // same accent color still don't look like the same person.
+  const skinLightness = pick([54, 60, 66, 72, 78] as const, seed, 5);
+  const skin = `hsl(${hue} 34% ${skinLightness}%)`;
+  const skinShade = `hsl(${hue} 32% ${skinLightness - 12}%)`;
+  // Hair color is its own choice, independent of the accent hue — dark,
+  // warm brown, and ash/grey all show up, again the way real hair does.
+  const hairHsl = pick(
+    [
+      [(hue + 205) % 360, 26, 16],
+      [28, 42, 30],
+      [18, 55, 42],
+      [0, 0, 88],
+      [(hue + 40) % 360, 20, 22],
+    ] as const,
+    seed,
+    13,
+  );
+  const hair = `hsl(${hairHsl[0]} ${hairHsl[1]}% ${hairHsl[2]}%)`;
   const garment = `hsl(${hue} 30% 30%)`;
   const backdrop = `hsl(${hue} 40% 20%)`;
 
-  const hairStyle = pick(["crop", "wave", "bun", "curls", "hood"] as const, seed, 3);
-  const eyeStyle = pick(["round", "calm", "wide"] as const, seed, 7);
-  const mouthStyle = pick(["soft", "line", "half"] as const, seed, 11);
+  const hairStyle = pick(["crop", "wave", "bun", "curls", "hood", "shave", "part"] as const, seed, 3);
+  const eyeStyle = pick(["round", "calm", "wide", "sharp"] as const, seed, 7);
+  const mouthStyle = pick(["soft", "line", "half", "grin"] as const, seed, 11);
   const glasses = seed % 5 === 0;
 
   return (
@@ -103,6 +119,17 @@ export function CompanionFace({
               <path d="M18 22c3-7 8-11 14-11s11 4 14 11c-4-5-8-7-14-7s-10 2-14 7z" fill={hair} />
             </>
           ) : null}
+          {/* Close-cropped, almost buzzed — just a thin line of color at the crown. */}
+          {hairStyle === "shave" ? (
+            <path d="M18 21.5c3-6.5 8-10 14-10s11 3.5 14 10c-4-3-9-4.5-14-4.5s-10 1.5-14 4.5z" fill={hair} />
+          ) : null}
+          {/* Side part — the crop silhouette with a parting line cut through it. */}
+          {hairStyle === "part" ? (
+            <>
+              <path d="M17 26c0-9 7-14 15-14s15 5 15 14c-3-6-8-8-15-8s-12 2-15 8z" fill={hair} />
+              <path d="M23 13.5 22 22" stroke={backdrop} strokeWidth="1.3" strokeLinecap="round" />
+            </>
+          ) : null}
 
           {/* brows */}
           <path d="M23 24.5c2-1.4 4-1.4 6 0" stroke={hair} strokeWidth="1.4" fill="none" strokeLinecap="round" />
@@ -126,6 +153,12 @@ export function CompanionFace({
               <ellipse cx="38" cy="29" rx="2.4" ry="2.8" fill="#101013" />
             </>
           ) : null}
+          {eyeStyle === "sharp" ? (
+            <>
+              <path d="M23.6 28.6h4.8" stroke="#101013" strokeWidth="2" fill="none" strokeLinecap="round" />
+              <path d="M35.6 28.6h4.8" stroke="#101013" strokeWidth="2" fill="none" strokeLinecap="round" />
+            </>
+          ) : null}
 
           {glasses ? (
             <g stroke="#0f0f12" strokeWidth="1.2" fill="none" opacity="0.75">
@@ -144,8 +177,92 @@ export function CompanionFace({
           {mouthStyle === "half" ? (
             <path d="M29 36.4c2 1.8 4 2 6 .4" stroke="#2a1a1a" strokeWidth="1.6" fill="none" strokeLinecap="round" />
           ) : null}
+          {mouthStyle === "grin" ? (
+            <path
+              d="M27.5 36c3 3 6 3 9 0"
+              stroke="#2a1a1a"
+              strokeWidth="1.6"
+              fill={skinShade}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          ) : null}
         </g>
       </svg>
+    </span>
+  );
+}
+
+/**
+ * The same circular frame as CompanionFace, but for a photo — uploaded, camera,
+ * or photoreal portrait. Shows a soft placeholder while loading; falls back to
+ * the drawn face only if the image fails.
+ */
+export function PhotoAvatar({
+  src,
+  name,
+  size = "md",
+  state = "quiet",
+  className,
+  fallbackHue = 220,
+  fallbackSeed = 41,
+}: {
+  src: string;
+  name: string;
+  size?: FaceSize;
+  state?: FaceState;
+  className?: string;
+  fallbackHue?: number;
+  fallbackSeed?: number;
+}) {
+  const px = SIZES[size];
+  const [failed, setFailed] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [loadedSrc, setLoadedSrc] = useState(src);
+  if (loadedSrc !== src) {
+    setLoadedSrc(src);
+    setFailed(false);
+    setLoaded(false);
+  }
+
+  if (failed) {
+    return (
+      <CompanionFace
+        name={name}
+        hue={fallbackHue}
+        seed={fallbackSeed}
+        size={size}
+        state={state}
+        className={className}
+      />
+    );
+  }
+
+  return (
+    <span
+      className={cn("companion-face relative inline-flex shrink-0", className)}
+      style={{
+        width: px,
+        height: px,
+        background: loaded
+          ? undefined
+          : `linear-gradient(145deg, hsl(${fallbackHue} 28% 42%), hsl(${fallbackHue} 32% 28%))`,
+      }}
+      data-state={state}
+      title={name}
+    >
+      <img
+        src={src}
+        width={px}
+        height={px}
+        alt={name}
+        loading="lazy"
+        decoding="async"
+        referrerPolicy="no-referrer"
+        style={{ opacity: loaded ? 1 : 0, transition: "opacity 0.2s ease" }}
+        onLoad={() => setLoaded(true)}
+        onError={() => setFailed(true)}
+      />
     </span>
   );
 }

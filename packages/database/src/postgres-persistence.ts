@@ -53,6 +53,11 @@ import {
   type OrgDepartmentId,
   type OrgEmployeeId,
   type OrgSecurityEvent,
+  type FamilyMemberRecord,
+  type FamilyMemberId,
+  type FamilyMemberRole,
+  type FamilyAgeTier,
+  type FamilyGuidanceRecord,
 } from "@arrab/shared";
 import type { Pool } from "pg";
 import {
@@ -84,6 +89,7 @@ import type {
   OrgEmployeeRepository,
   OrgSecurityEventRepository,
 } from "./org-workforce-repos.js";
+import type { FamilyMemberRepository, FamilyGuidanceRepository, FamilyHouseholdMetaRepository } from "./family-repos.js";
 
 type ProjectRow = {
   id: string;
@@ -1821,6 +1827,9 @@ export async function createPostgresPersistence(pool: Pool): Promise<Persistence
     orgDepartments: new PostgresOrgDepartmentRepository(pool, context.workspace.id),
     orgEmployees: new PostgresOrgEmployeeRepository(pool, context.workspace.id),
     orgSecurityEvents: new PostgresOrgSecurityEventRepository(pool, context.workspace.id),
+    familyMembers: new PostgresFamilyMemberRepository(pool, context.workspace.id),
+    familyGuidance: new PostgresFamilyGuidanceRepository(pool, context.workspace.id),
+    familyHouseholdMeta: new PostgresFamilyHouseholdMetaRepository(pool, context.workspace.id),
   };
 }
 
@@ -2121,4 +2130,249 @@ function mapOrgSecurityEvent(row: {
     ipHash: row.ip_hash,
     createdAt: iso(row.created_at),
   };
+}
+
+class PostgresFamilyMemberRepository implements FamilyMemberRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async list(): Promise<FamilyMemberRecord[]> {
+    const result = await this.pool.query(
+      `select * from family_members
+       where workspace_id = $1
+       order by is_owner desc, display_name asc`,
+      [this.workspaceId],
+    );
+    return result.rows.map(mapFamilyMember);
+  }
+
+  async getById(id: string): Promise<FamilyMemberRecord | null> {
+    const result = await this.pool.query(
+      `select * from family_members where id = $1 and workspace_id = $2`,
+      [id, this.workspaceId],
+    );
+    const row = result.rows[0];
+    return row ? mapFamilyMember(row) : null;
+  }
+
+  async create(entity: FamilyMemberRecord): Promise<FamilyMemberRecord> {
+    await this.pool.query(
+      `insert into family_members
+       (id, workspace_id, display_name, role, age_tier, color, pin_hash, is_owner, is_paused, token_allowance, tokens_used, last_active_at, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      [
+        entity.id,
+        entity.workspaceId,
+        entity.displayName,
+        entity.role,
+        entity.ageTier,
+        entity.color,
+        entity.pinHash,
+        entity.isOwner,
+        entity.isPaused,
+        entity.tokenAllowance,
+        entity.tokensUsed,
+        entity.lastActiveAt,
+        entity.createdAt,
+        entity.updatedAt,
+      ],
+    );
+    return entity;
+  }
+
+  async update(entity: FamilyMemberRecord): Promise<FamilyMemberRecord> {
+    await this.pool.query(
+      `update family_members set
+         display_name = $3,
+         role = $4,
+         age_tier = $5,
+         color = $6,
+         pin_hash = $7,
+         is_owner = $8,
+         is_paused = $9,
+         token_allowance = $10,
+         tokens_used = $11,
+         last_active_at = $12,
+         updated_at = $13
+       where id = $1 and workspace_id = $2`,
+      [
+        entity.id,
+        entity.workspaceId,
+        entity.displayName,
+        entity.role,
+        entity.ageTier,
+        entity.color,
+        entity.pinHash,
+        entity.isOwner,
+        entity.isPaused,
+        entity.tokenAllowance,
+        entity.tokensUsed,
+        entity.lastActiveAt,
+        entity.updatedAt,
+      ],
+    );
+    return entity;
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.pool.query(`delete from family_members where id = $1 and workspace_id = $2`, [
+      id,
+      this.workspaceId,
+    ]);
+  }
+}
+
+function mapFamilyMember(row: {
+  id: string;
+  workspace_id: string;
+  display_name: string;
+  role: FamilyMemberRole;
+  age_tier: FamilyAgeTier | null;
+  color: string;
+  pin_hash: string | null;
+  is_owner: boolean;
+  is_paused: boolean;
+  token_allowance?: number | null;
+  tokens_used?: number | null;
+  last_active_at: Date | null;
+  created_at: Date;
+  updated_at: Date;
+}): FamilyMemberRecord {
+  return {
+    id: brandId<FamilyMemberId>(row.id),
+    workspaceId: brandId<WorkspaceId>(row.workspace_id),
+    displayName: row.display_name,
+    role: row.role,
+    ageTier: row.age_tier,
+    color: row.color,
+    pinHash: row.pin_hash,
+    isOwner: row.is_owner,
+    isPaused: row.is_paused,
+    tokenAllowance: row.token_allowance ?? 0,
+    tokensUsed: row.tokens_used ?? 0,
+    lastActiveAt: row.last_active_at ? iso(row.last_active_at) : null,
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+  };
+}
+
+class PostgresFamilyGuidanceRepository implements FamilyGuidanceRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async listRecent(limit = 40): Promise<FamilyGuidanceRecord[]> {
+    const result = await this.pool.query(
+      `select * from family_guidance where workspace_id = $1 order by created_at desc limit $2`,
+      [this.workspaceId, Math.min(100, Math.max(1, limit))],
+    );
+    return result.rows.map(mapFamilyGuidance);
+  }
+
+  async listByCompanion(companionId: string): Promise<FamilyGuidanceRecord[]> {
+    const result = await this.pool.query(
+      `select * from family_guidance
+       where workspace_id = $1 and companion_id = $2
+       order by created_at desc`,
+      [this.workspaceId, companionId],
+    );
+    return result.rows.map(mapFamilyGuidance);
+  }
+
+  async create(entity: FamilyGuidanceRecord): Promise<FamilyGuidanceRecord> {
+    await this.pool.query(
+      `insert into family_guidance
+       (id, workspace_id, companion_id, child_member_id, author_member_id, author_name, content, created_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [
+        entity.id,
+        entity.workspaceId,
+        entity.companionId,
+        entity.childMemberId,
+        entity.authorMemberId,
+        entity.authorName,
+        entity.content,
+        entity.createdAt,
+      ],
+    );
+    return entity;
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.pool.query(`delete from family_guidance where id = $1 and workspace_id = $2`, [
+      id,
+      this.workspaceId,
+    ]);
+  }
+}
+
+function mapFamilyGuidance(row: {
+  id: string;
+  workspace_id: string;
+  companion_id: string;
+  child_member_id: string;
+  author_member_id: string;
+  author_name: string;
+  content: string;
+  created_at: Date;
+}): FamilyGuidanceRecord {
+  return {
+    id: row.id,
+    workspaceId: brandId<WorkspaceId>(row.workspace_id),
+    companionId: row.companion_id,
+    childMemberId: brandId<FamilyMemberId>(row.child_member_id),
+    authorMemberId: brandId<FamilyMemberId>(row.author_member_id),
+    authorName: row.author_name,
+    content: row.content,
+    createdAt: iso(row.created_at),
+  };
+}
+
+class PostgresFamilyHouseholdMetaRepository implements FamilyHouseholdMetaRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async getExtraSeats(): Promise<number> {
+    const result = await this.pool.query(
+      `select extra_seats from family_household where workspace_id = $1`,
+      [this.workspaceId],
+    );
+    return Number(result.rows[0]?.extra_seats ?? 0);
+  }
+
+  async setExtraSeats(seats: number): Promise<number> {
+    const next = Math.max(0, Math.floor(seats));
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into family_household (workspace_id, extra_seats, active_member_id, updated_at)
+       values ($1, $2, null, $3)
+       on conflict (workspace_id) do update set extra_seats = $2, updated_at = $3`,
+      [this.workspaceId, next, now],
+    );
+    return next;
+  }
+
+  async getActiveMemberId(): Promise<string | null> {
+    const result = await this.pool.query(
+      `select active_member_id from family_household where workspace_id = $1`,
+      [this.workspaceId],
+    );
+    const value = result.rows[0]?.active_member_id;
+    return typeof value === "string" && value ? value : null;
+  }
+
+  async setActiveMemberId(id: string | null): Promise<void> {
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into family_household (workspace_id, extra_seats, active_member_id, updated_at)
+       values ($1, 0, $2, $3)
+       on conflict (workspace_id) do update set active_member_id = $2, updated_at = $3`,
+      [this.workspaceId, id, now],
+    );
+  }
 }

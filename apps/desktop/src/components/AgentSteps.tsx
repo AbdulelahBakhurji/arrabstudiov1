@@ -22,8 +22,11 @@ function statusIcon(status: AgentStepStatus) {
 }
 
 export function friendlyToolTitle(name: string, detail?: string): string {
-  const pathMatch = detail?.match(/(?:^|\n)(?:File: |path[=:] ?|query: )?([^\n]+)/i);
-  const hint = pathMatch?.[1]?.trim();
+  const rawHint = detail?.split("\n")[0]?.trim() ?? "";
+  const hint =
+    rawHint && !rawHint.startsWith("{") && !rawHint.startsWith("[") && !rawHint.includes('"conversationId"')
+      ? rawHint.replace(/^(?:File: |path[=:] ?|query: )/i, "").trim()
+      : "";
   switch (name) {
     case "read_file":
       return hint ? `Reading ${hint}` : "Reading file";
@@ -53,6 +56,26 @@ export function friendlyToolTitle(name: string, detail?: string): string {
       return hint ? `Git diff ${hint}` : "Checking git diff";
     case "open_path":
       return hint ? `Opening ${hint}` : "Opening path";
+    case "preview_html":
+      return hint ? `HTML preview ${hint}` : "HTML preview";
+    case "generate_pdf":
+      return hint ? `Generating PDF ${hint}` : "Generating PDF";
+    case "export_csv":
+      return hint ? `Exporting CSV ${hint}` : "Exporting CSV";
+    case "fetch_url":
+      return hint ? `Fetching ${hint}` : "Fetching URL";
+    case "scrape_page":
+      return hint ? `Scraping ${hint}` : "Scraping page";
+    case "web_search":
+      return hint ? `Searching web ${hint}` : "Searching the web";
+    case "list_email":
+      return "Listing inbox";
+    case "read_email":
+      return "Reading email";
+    case "send_email":
+      return hint ? `Send email · ${hint.slice(0, 48)}` : "Send email";
+    case "arrange_email":
+      return hint ? `Arrange mail · ${hint.slice(0, 48)}` : "Arrange mail";
     default:
       return name.replace(/_/g, " ");
   }

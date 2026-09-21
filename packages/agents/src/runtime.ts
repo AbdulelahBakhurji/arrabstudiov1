@@ -13,7 +13,7 @@ import {
 } from "@arrab/ai";
 import { AppError } from "@arrab/core";
 import type { Agent, ConversationId } from "@arrab/shared";
-import { searchWeb } from "./web-search.js";
+import { fetchUrl, scrapePage, searchWeb } from "./web-search.js";
 
 export class AgentRuntimeError extends AppError {
   constructor(code: string, message: string, statusCode = 501) {
@@ -22,10 +22,38 @@ export class AgentRuntimeError extends AppError {
   }
 }
 
+export interface AgentEmailTools {
+  listMessages: (args: Record<string, string>) => Promise<string>;
+  readMessage: (args: Record<string, string>) => Promise<string>;
+  sendMessage: (args: Record<string, string>) => Promise<string>;
+  arrangeMessages: (args: Record<string, string>) => Promise<string>;
+}
+
+export interface AgentSshTools {
+  execCommand: (args: Record<string, string>) => Promise<string>;
+  listHome: (args: Record<string, string>) => Promise<string>;
+}
+
+export interface AgentFinnhubTools {
+  getQuote: (args: Record<string, string>) => Promise<string>;
+  getNews: (args: Record<string, string>) => Promise<string>;
+}
+
 export interface AgentToolContext {
   workspaceSummary?: string | null;
   activeGoal?: string | null;
   teamRoster?: string | null;
+  /** When present, Gmail/email tools are offered and executed server-side. */
+  email?: AgentEmailTools | null;
+  emailAccountLabel?: string | null;
+  /** When present, remote SSH tools are offered and executed server-side. */
+  ssh?: AgentSshTools | null;
+  sshAccountLabel?: string | null;
+  /** When present, Finnhub quote/news tools are offered (no desk folder required). */
+  finnhub?: AgentFinnhubTools | null;
+  finnhubAccountLabel?: string | null;
+  /** When true, add Trader market-tool + no-financial-advice system hints. */
+  traderMode?: boolean;
 }
 
 export interface AgentPendingTool {
@@ -272,6 +300,77 @@ const NATIVE_TOOLS: AiToolDefinition[] = [
     },
   },
   {
+    name: "preview_html",
+    description:
+      "Write an HTML page (optional) into the open folder and open it in the default browser for a live preview. Use for dashboards, docs, landing pages, reports.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Relative .html path (default: arrab-preview.html)",
+        },
+        content: {
+          type: "string",
+          description: "Full HTML document to write before opening. Omit to open an existing file.",
+        },
+        html: {
+          type: "string",
+          description: "Alias for content",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "generate_pdf",
+    description:
+      "Generate a PDF in the open folder from HTML (or markdown-ish text wrapped as HTML), then open it. Prefer for reports, invoices, proposals, one-pagers.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Relative output .pdf path (default: arrab-report.pdf)",
+        },
+        content: {
+          type: "string",
+          description: "HTML or plain text body to convert into a PDF",
+        },
+        html: {
+          type: "string",
+          description: "Alias for content (HTML preferred)",
+        },
+        title: {
+          type: "string",
+          description: "Document title used in the HTML head",
+        },
+      },
+      required: ["content"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "export_csv",
+    description:
+      "Write a CSV spreadsheet file into the open folder (for tables, exports, data dumps).",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Relative .csv path (default: arrab-export.csv)",
+        },
+        content: {
+          type: "string",
+          description: "CSV text including a header row",
+        },
+      },
+      required: ["content"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "web_search",
     description:
       "Search the live web for up-to-date facts, docs, errors, or news (Grok-style realtime lookup). Use when the answer may have changed or is outside the repo.",
@@ -284,6 +383,42 @@ const NATIVE_TOOLS: AiToolDefinition[] = [
         },
       },
       required: ["query"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "fetch_url",
+    description:
+      "Fetch a public URL and return readable text/HTML (docs, raw files, API JSON). Use after web_search when you need the page body.",
+    parameters: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "https URL to fetch",
+        },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "scrape_page",
+    description:
+      "Scrape a public web page into structured content: title, description, headings, main text, and outbound links. Prefer over fetch_url for research, competitive pages, docs, and articles.",
+    parameters: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "https URL to scrape",
+        },
+        max_chars: {
+          type: "string",
+          description: "Optional max main-text characters (default 14000)",
+        },
+      },
+      required: ["url"],
       additionalProperties: false,
     },
   },
@@ -309,6 +444,190 @@ const NATIVE_TOOLS: AiToolDefinition[] = [
   },
 ];
 
+const EMAIL_NATIVE_TOOLS: AiToolDefinition[] = [
+  {
+    name: "list_email",
+    description:
+      "List recent messages from the connected Gmail/Outlook/email inbox. Use for triage, unread checks, and finding threads to arrange. Optional mailbox/label (default INBOX) and limit.",
+    parameters: {
+      type: "object",
+      properties: {
+        mailbox: {
+          type: "string",
+          description: "Mailbox or Gmail label id (default INBOX)",
+        },
+        limit: {
+          type: "string",
+          description: "Max messages to return (1-30)",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "read_email",
+    description:
+      "Read a full email by id. Use before drafting a reply or arranging that message.",
+    parameters: {
+      type: "object",
+      properties: {
+        message_id: {
+          type: "string",
+          description: "Message id from list_email",
+        },
+        mailbox: {
+          type: "string",
+          description: "Mailbox (IMAP only; ignored for Gmail OAuth)",
+        },
+      },
+      required: ["message_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "send_email",
+    description:
+      "Send exactly one email from the connected account. Requires operator Ask-first approval. Never call twice for the same send.",
+    parameters: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "Recipient email address" },
+        subject: { type: "string", description: "Subject line" },
+        text: { type: "string", description: "Plain-text body" },
+        cc: { type: "string", description: "Optional CC addresses" },
+      },
+      required: ["to", "subject", "text"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "arrange_email",
+    description:
+      "Arrange inbox mail in any useful way: archive, trash, untrash, mark_read, mark_unread, star, unstar, label, or move. Use after list/read. Mutating — requires Ask-first approval. Call once per batch of ids.",
+    parameters: {
+      type: "object",
+      properties: {
+        action: {
+          type: "string",
+          description:
+            "archive | trash | untrash | mark_read | mark_unread | star | unstar | label | move",
+        },
+        message_ids: {
+          type: "string",
+          description: "Comma-separated message ids, or JSON array string",
+        },
+        mailbox: { type: "string", description: "Source mailbox/label (for move)" },
+        target_mailbox: { type: "string", description: "Destination label for move" },
+        add_label_ids: { type: "string", description: "Comma-separated labels to add (label action)" },
+        remove_label_ids: {
+          type: "string",
+          description: "Comma-separated labels to remove (label action)",
+        },
+      },
+      required: ["action", "message_ids"],
+      additionalProperties: false,
+    },
+  },
+];
+
+const EMAIL_TOOL_NAMES = new Set(EMAIL_NATIVE_TOOLS.map((tool) => tool.name));
+const EMAIL_APPROVAL_TOOLS = new Set(["send_email", "arrange_email"]);
+
+const SSH_NATIVE_TOOLS: AiToolDefinition[] = [
+  {
+    name: "ssh_exec",
+    description:
+      "Run a command on the operator's connected SSH host. Prefer short, non-interactive commands.",
+    parameters: {
+      type: "object",
+      properties: {
+        command: {
+          type: "string",
+          description: "Shell command to run remotely (e.g. uname -a, ls -la)",
+        },
+      },
+      required: ["command"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "ssh_list_home",
+    description: "List files and directories in the SSH user's home directory.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: {
+          type: "string",
+          description: "Optional filter substring for names",
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+];
+
+const SSH_TOOL_NAMES = new Set(SSH_NATIVE_TOOLS.map((tool) => tool.name));
+
+const FINNHUB_NATIVE_TOOLS: AiToolDefinition[] = [
+  {
+    name: "get_quote",
+    description:
+      "Fetch a live stock/ETF quote from Finnhub (price, change %, day range). Use before giving market perspective. Prices may be delayed.",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol: {
+          type: "string",
+          description: "Ticker symbol (e.g. AAPL, MSFT, TSLA)",
+        },
+      },
+      required: ["symbol"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "get_news",
+    description:
+      "Fetch recent company news headlines from Finnhub for a symbol. Use for catalysts before opinion.",
+    parameters: {
+      type: "object",
+      properties: {
+        symbol: {
+          type: "string",
+          description: "Ticker symbol (e.g. AAPL)",
+        },
+        days: {
+          type: "string",
+          description: "Lookback window in days (1-30, default 7)",
+        },
+      },
+      required: ["symbol"],
+      additionalProperties: false,
+    },
+  },
+];
+
+const FINNHUB_TOOL_NAMES = new Set(FINNHUB_NATIVE_TOOLS.map((tool) => tool.name));
+
+/** Plain chat — keep this short so OpenRouter first-token latency stays low. */
+const CHAT_HINT = [
+  "Answer clearly and helpfully. Prefer short, direct replies unless standing instructions ask for more depth or a different tone.",
+  "Language: match the operator's latest message — English in → English out; Arabic in → Arabic out.",
+  "Live web is available via web_search, scrape_page, and fetch_url when facts may be outside your knowledge or need a current check.",
+  "PDF/HTML deliverables (generate_pdf, preview_html, export_csv) are available even without a project folder.",
+  "Do not invent tool results or claim access to local files, shell, email, or SSH unless those tools are offered in this turn.",
+].join("\n");
+
+const TOOL_HINT_WEB = [
+  "Live web tools are always available: web_search, scrape_page, and fetch_url.",
+  "Use web_search for current facts, docs, errors, news, and research.",
+  "Use scrape_page for structured page content (title, headings, links, body).",
+  "Use fetch_url for raw/JSON/plain bodies when scrape is unnecessary.",
+  "Deliverables always available: preview_html, generate_pdf, export_csv.",
+  'Example: CALL_TOOL web_search {"query":"..."} then CALL_TOOL scrape_page {"url":"https://..."}',
+  'Example: CALL_TOOL generate_pdf {"path":"report.pdf","title":"Report","content":"<h1>Hello</h1>"}',
+].join("\n");
+
 const TOOL_HINT = [
   "Tools (optional). Reply with ONLY one of:",
   "CALL_TOOL summarize_workspace",
@@ -327,21 +646,59 @@ const TOOL_HINT = [
   'CALL_TOOL open_path {"path":"."}',
   'CALL_TOOL run_terminal {"command":"npm test"}',
   'CALL_TOOL web_search {"query":"React 19 useEffectEvent"}',
+  'CALL_TOOL scrape_page {"url":"https://example.com/docs"}',
+  'CALL_TOOL fetch_url {"url":"https://example.com/api.json"}',
+  'CALL_TOOL preview_html {"path":"preview.html","content":"<!doctype html><html>..."}',
+  'CALL_TOOL generate_pdf {"path":"report.pdf","title":"Report","content":"<h1>Hello</h1>"}',
+  'CALL_TOOL export_csv {"path":"data.csv","content":"name,value\\na,1"}',
   'CALL_TOOL propose_action {"title":"...","detail":"..."}',
-  "Coding workflow: search_code → read_file → edit → verify with run_terminal. Be precise; do not invent file contents.",
+  "Coding workflow: search_code → read_file → edit → verify with run_terminal. Deliverables: preview_html, generate_pdf, export_csv. Be precise; do not invent file contents.",
   "Do not invent tool output — wait for TOOL_RESULT.",
 ].join("\n");
 
 const TOOL_HINT_NATIVE = [
-  "You may call tools for workspace facts, codebase search, files, patches, local shell, and live web search.",
+  "You may call tools for workspace facts, codebase search, files, patches, local shell, live web, HTML preview, PDF, and CSV export.",
   "Coding workflow (mandatory when a folder is attached):",
   "1) Ground yourself with search_code / list_files / read_file (and attached open file / git / terminal / @mentions / rules).",
   "2) Make concrete edits with apply_patch (preferred) or write_file.",
   "3) Verify with run_terminal (typecheck, lint, or tests). Fix from real output. Do not claim done until verified or blocked.",
-  "4) Use web_search for docs, errors, or facts outside the repo.",
+  "4) Use web_search + scrape_page (or fetch_url) for docs, errors, or facts outside the repo.",
+  "5) For operator deliverables use preview_html (live preview), generate_pdf (reports/proposals), export_csv (tables).",
   "Be precise and reproducible — prefer exact paths, commands, and outcomes over personality.",
   "Never claim you lack shell/file access when a local folder is open.",
   "State clearly what you fetched, changed, or what failed.",
+].join("\n");
+
+const TOOL_HINT_EMAIL = [
+  "Gmail/Outlook/email tools are available — use them for inbox, triage, archive, trash, labels, stars, moves, drafts, and sending.",
+  "Tools: list_email (scan), read_email (open), arrange_email (organize any way), send_email (send once).",
+  "Clear steps every time:",
+  "1) list_email to see what needs attention",
+  "2) read_email when you need the full body before acting",
+  "3) arrange_email for archive/trash/read/unread/star/label/move — batch ids in one call",
+  "4) send_email only when the operator asked to send — exactly once per message; never retry the same send",
+  "send_email and arrange_email pause for Ask-first approval. After TOOL_RESULT, do not call the same send/arrange again.",
+  'Text protocol examples: CALL_TOOL list_email {"limit":"10"}',
+  'CALL_TOOL arrange_email {"action":"archive","message_ids":"msg_1,msg_2"}',
+  'CALL_TOOL send_email {"to":"a@b.com","subject":"Hi","text":"Hello"}',
+].join("\n");
+
+const TOOL_HINT_SSH = [
+  "SSH tools are available: ssh_exec, ssh_list_home.",
+  "Use them for the operator's connected remote host — list home first when exploring, then run short non-interactive commands.",
+  "Never request passwords or private keys in chat; credentials are already stored on the Arrab API.",
+].join("\n");
+
+const TOOL_HINT_FINNHUB = [
+  "Market data tools are available: get_quote, get_news (Finnhub).",
+  "Prefer live quote/news before opinion. Cite source and that prices may be delayed.",
+  'Example: CALL_TOOL get_quote {"symbol":"AAPL"} then CALL_TOOL get_news {"symbol":"AAPL"}',
+].join("\n");
+
+const TOOL_HINT_TRADER = [
+  "You are in Trader mode. This is NOT financial advice and NEVER a guarantee to buy or sell.",
+  "Use cautious language (bias / watch / invalidation). Ask horizon and risk tolerance when giving perspective.",
+  "If quote/news tools are available, call them before opinion. If data is missing, say so — do not invent prices.",
 ].join("\n");
 
 const CLIENT_EXEC_TOOLS = new Set([
@@ -357,6 +714,9 @@ const CLIENT_EXEC_TOOLS = new Set([
   "git_status",
   "git_diff",
   "open_path",
+  "preview_html",
+  "generate_pdf",
+  "export_csv",
 ]);
 
 const MAX_TOOL_ROUNDS = 12;
@@ -385,6 +745,9 @@ function runSafeTool(
     case "git_status":
     case "git_diff":
     case "open_path":
+    case "preview_html":
+    case "generate_pdf":
+    case "export_csv":
       return (
         args._clientResult?.trim() ||
         "This tool runs on the desktop client after approval/auto-exec. No result was provided."
@@ -395,7 +758,7 @@ function runSafeTool(
       return `Operator approved: ${title}${detail ? `\n${detail}` : ""}`;
     }
     default:
-      return `Unknown tool '${name}'. Available: summarize_workspace, recall_goal, list_team, list_files, search_code, read_file, write_file, apply_patch, delete_file, rename_file, create_dir, git_status, git_diff, open_path, run_terminal, web_search, propose_action.`;
+      return `Unknown tool '${name}'. Available: summarize_workspace, recall_goal, list_team, list_files, search_code, read_file, write_file, apply_patch, delete_file, rename_file, create_dir, git_status, git_diff, open_path, preview_html, generate_pdf, export_csv, run_terminal, web_search, scrape_page, fetch_url, propose_action.`;
   }
 }
 
@@ -407,15 +770,70 @@ async function runTool(
   if (name === "web_search") {
     return searchWeb(args.query || args.q || "");
   }
+  if (name === "fetch_url") {
+    return fetchUrl(args.url || args.href || "");
+  }
+  if (name === "scrape_page") {
+    const max = Number(args.max_chars || args.maxChars || "");
+    return scrapePage(args.url || args.href || "", {
+      maxChars: Number.isFinite(max) && max > 0 ? max : undefined,
+    });
+  }
+  if (EMAIL_TOOL_NAMES.has(name)) {
+    const email = tools?.email;
+    if (!email) {
+      return "No email/Gmail connector is linked. Ask the operator to Connect Gmail in Connectors.";
+    }
+    try {
+      if (name === "list_email") return await email.listMessages(args);
+      if (name === "read_email") return await email.readMessage(args);
+      if (name === "send_email") return await email.sendMessage(args);
+      if (name === "arrange_email") return await email.arrangeMessages(args);
+    } catch (error: unknown) {
+      return `FAILED ${name}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+  if (SSH_TOOL_NAMES.has(name)) {
+    const ssh = tools?.ssh;
+    if (!ssh) {
+      return "No SSH connector is linked. Ask the operator to Connect SSH in Connectors.";
+    }
+    try {
+      if (name === "ssh_exec") return await ssh.execCommand(args);
+      if (name === "ssh_list_home") return await ssh.listHome(args);
+    } catch (error: unknown) {
+      return `FAILED ${name}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
+  if (FINNHUB_TOOL_NAMES.has(name)) {
+    const finnhub = tools?.finnhub;
+    if (!finnhub) {
+      return "Finnhub is not configured. Set FINNHUB_API_KEY on the API or Connect Finnhub in Connectors.";
+    }
+    try {
+      if (name === "get_quote") return await finnhub.getQuote(args);
+      if (name === "get_news") return await finnhub.getNews(args);
+    } catch (error: unknown) {
+      return `FAILED ${name}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
   return runSafeTool(name, args, tools);
 }
 
 function requiresApproval(name: string): boolean {
-  return name === "propose_action" || CLIENT_EXEC_TOOLS.has(name);
+  return (
+    name === "propose_action" ||
+    CLIENT_EXEC_TOOLS.has(name) ||
+    EMAIL_APPROVAL_TOOLS.has(name)
+  );
 }
 
 export function isClientExecTool(name: string): boolean {
   return CLIENT_EXEC_TOOLS.has(name);
+}
+
+export function isEmailApprovalTool(name: string): boolean {
+  return EMAIL_APPROVAL_TOOLS.has(name);
 }
 
 function parseArgsObject(raw: string | undefined): Record<string, string> {
@@ -547,7 +965,29 @@ export class GatewayChatRuntime implements AgentRuntime {
     return { provider, modelName: request.model ?? defaultModel };
   }
 
-  private buildSystem(request: AgentRunRequest, useNativeTools: boolean): AiMessage {
+  private buildSystem(
+    request: AgentRunRequest,
+    options: { hasDesk: boolean; useNativeDeskTools: boolean },
+  ): AiMessage {
+    const hasEmail = Boolean(request.tools?.email);
+    const emailLine = hasEmail
+      ? `Connected mail: ${request.tools?.emailAccountLabel?.trim() || "Gmail/email"}.\n${TOOL_HINT_EMAIL}`
+      : null;
+    const hasSsh = Boolean(request.tools?.ssh);
+    const sshLine = hasSsh
+      ? `Connected SSH: ${request.tools?.sshAccountLabel?.trim() || "remote host"}.\n${TOOL_HINT_SSH}`
+      : null;
+    const hasFinnhub = Boolean(request.tools?.finnhub);
+    const finnhubLine = hasFinnhub
+      ? `Market data: ${request.tools?.finnhubAccountLabel?.trim() || "Finnhub"}.\n${TOOL_HINT_FINNHUB}`
+      : null;
+    const traderLine = request.tools?.traderMode ? TOOL_HINT_TRADER : null;
+    const deskHint = options.hasDesk
+      ? options.useNativeDeskTools
+        ? TOOL_HINT_NATIVE
+        : TOOL_HINT
+      : null;
+    const webHint = options.hasDesk ? null : TOOL_HINT_WEB;
     const baseSystem = [
       `You are ${request.agent.name}, an AI employee at Arrab Studio.`,
       `Your role is: ${request.agent.role}.`,
@@ -556,8 +996,15 @@ export class GatewayChatRuntime implements AgentRuntime {
       request.agent.instructions
         ? `Standing instructions from your operator (follow carefully when anyone writes to you):\n${request.agent.instructions}`
         : null,
-      "Work like a precise engineering teammate: obey standing instructions, use tools for real context, verify with commands, and never claim system access you do not have.",
-      useNativeTools ? TOOL_HINT_NATIVE : TOOL_HINT,
+      options.hasDesk
+        ? "Work like a precise engineering teammate: obey standing instructions, use tools for real context, verify with commands, and never claim system access you do not have."
+        : CHAT_HINT,
+      deskHint,
+      webHint,
+      emailLine,
+      sshLine,
+      finnhubLine,
+      traderLine,
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -581,9 +1028,31 @@ export class GatewayChatRuntime implements AgentRuntime {
       /(^|\n)mode=(folder|github)\b/.test(workspaceSummary) ||
       /(^|\n)desk=local\b/.test(workspaceSummary) ||
       /Local folder:/i.test(workspaceSummary);
-    // Don't attach the full tool catalog on a plain chat — keeps first-token latency low.
-    const useNativeTools = provider.supportsTools === true && hasDesk;
-    const system = this.buildSystem(request, useNativeTools);
+    const hasEmail = Boolean(request.tools?.email);
+    const hasSsh = Boolean(request.tools?.ssh);
+    const hasFinnhub = Boolean(request.tools?.finnhub);
+    const webToolNames = new Set(["web_search", "fetch_url", "scrape_page"]);
+    const deliverableToolNames = new Set(["preview_html", "generate_pdf", "export_csv"]);
+    const webTools = NATIVE_TOOLS.filter((tool) => webToolNames.has(tool.name));
+    const deliverableTools = NATIVE_TOOLS.filter((tool) => deliverableToolNames.has(tool.name));
+    const deskTools = NATIVE_TOOLS.filter(
+      (tool) => !webToolNames.has(tool.name) && !deliverableToolNames.has(tool.name),
+    );
+    const activeTools = [
+      ...(hasDesk ? deskTools : []),
+      // PDF / HTML / CSV deliverables are always offered; desktop runs them on a desk folder.
+      ...deliverableTools,
+      ...webTools,
+      ...(hasEmail ? EMAIL_NATIVE_TOOLS : []),
+      ...(hasSsh ? SSH_NATIVE_TOOLS : []),
+      ...(hasFinnhub ? FINNHUB_NATIVE_TOOLS : []),
+    ];
+    // Web tools alone are enough to enable native tooling on plain chat.
+    const useNativeTools = provider.supportsTools === true && activeTools.length > 0;
+    const system = this.buildSystem(request, {
+      hasDesk,
+      useNativeDeskTools: hasDesk && provider.supportsTools === true,
+    });
     let working: AiMessage[] = [
       system,
       ...(request.history ?? []).filter((message) => message.role !== "system"),
@@ -600,7 +1069,7 @@ export class GatewayChatRuntime implements AgentRuntime {
         messages: working,
         maxOutputTokens: request.maxOutputTokens ?? 280,
         temperature: request.temperature ?? 0.4,
-        tools: useNativeTools ? NATIVE_TOOLS : undefined,
+        tools: useNativeTools ? activeTools : undefined,
       };
       let completion = null as Awaited<ReturnType<AiGateway["complete"]>> | null;
       let streamedThisRound = false;
@@ -836,6 +1305,115 @@ export class GatewayChatRuntime implements AgentRuntime {
           pendingArgs.path = path === "." ? "" : path;
           pendingArgs.title = `Open: ${path}`;
           pendingArgs.detail = path;
+        } else if (pendingName === "preview_html") {
+          const path =
+            (pendingArgs.path || "").trim() ||
+            (pendingArgs.content || pendingArgs.html ? "arrab-preview.html" : "");
+          if (!path && !(pendingArgs.content || pendingArgs.html)) {
+            const missing = "FAILED preview_html: requires path or content.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.path = path || "arrab-preview.html";
+          if (pendingArgs.html && !pendingArgs.content) pendingArgs.content = pendingArgs.html;
+          pendingArgs.title = `HTML preview: ${pendingArgs.path}`;
+          pendingArgs.detail = pendingArgs.path;
+        } else if (pendingName === "generate_pdf") {
+          const content = pendingArgs.content || pendingArgs.html || "";
+          if (!content.trim()) {
+            const missing = "FAILED generate_pdf: requires content.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.path = (pendingArgs.path || "").trim() || "arrab-report.pdf";
+          pendingArgs.content = content;
+          pendingArgs.title = `PDF: ${pendingArgs.path}`;
+          pendingArgs.detail = pendingArgs.path;
+        } else if (pendingName === "export_csv") {
+          const content = pendingArgs.content || "";
+          if (!content.trim()) {
+            const missing = "FAILED export_csv: requires content.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.path = (pendingArgs.path || "").trim() || "arrab-export.csv";
+          pendingArgs.content = content;
+          pendingArgs.title = `CSV: ${pendingArgs.path}`;
+          pendingArgs.detail = pendingArgs.path;
+        } else if (pendingName === "send_email") {
+          const to = pendingArgs.to?.trim() || "";
+          const subject = pendingArgs.subject?.trim() || "";
+          const text = pendingArgs.text ?? "";
+          if (!to.includes("@") || !subject) {
+            const missing = "FAILED send_email: requires to and subject.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.to = to;
+          pendingArgs.subject = subject;
+          pendingArgs.text = text;
+          pendingArgs.title = `Send email: ${subject.slice(0, 64)}`;
+          pendingArgs.detail = `To: ${to}${pendingArgs.cc ? `\nCc: ${pendingArgs.cc}` : ""}\nSubject: ${subject}\n\n${text.slice(0, 1200)}`;
+        } else if (pendingName === "arrange_email") {
+          const action = pendingArgs.action?.trim() || "";
+          const messageIds = pendingArgs.message_ids?.trim() || "";
+          if (!action || !messageIds) {
+            const missing = "FAILED arrange_email: requires action and message_ids.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.action = action;
+          pendingArgs.message_ids = messageIds;
+          const idCount = messageIds.startsWith("[")
+            ? Math.max(1, messageIds.split(",").length)
+            : messageIds.split(",").filter(Boolean).length;
+          pendingArgs.title = `Arrange mail: ${action} (${idCount})`;
+          pendingArgs.detail = `Action: ${action}\nMessages: ${messageIds.slice(0, 400)}`;
         } else {
           if (!pendingArgs.title) pendingArgs.title = "Proposed action";
           if (!pendingArgs.detail) pendingArgs.detail = "Proceed as discussed.";
@@ -854,12 +1432,16 @@ export class GatewayChatRuntime implements AgentRuntime {
             pendingArgs.query ||
             pendingArgs.command ||
             pendingArgs.relative ||
+            pendingArgs.subject ||
+            pendingArgs.action ||
             undefined,
         };
         yield { type: "approval_needed", tool: pendingTool };
         const awaitLabel = CLIENT_EXEC_TOOLS.has(pendingName)
           ? `Local tool awaiting desktop execution: ${pendingArgs.title}`
-          : `Proposed action awaiting approval: ${pendingArgs.title}`;
+          : EMAIL_APPROVAL_TOOLS.has(pendingName)
+            ? `Email action awaiting approval: ${pendingArgs.title}`
+            : `Proposed action awaiting approval: ${pendingArgs.title}`;
         yield {
           type: "done",
           result: {
@@ -976,17 +1558,27 @@ export class GatewayChatRuntime implements AgentRuntime {
 }
 
 /** Execute an approved tool and return the result text (for resume after approval). */
-export function executeApprovedTool(
+export async function executeApprovedTool(
   name: string,
   args: Record<string, string>,
   tools?: AgentToolContext | null,
   clientResult?: string | null,
-): string {
+): Promise<string> {
   if (CLIENT_EXEC_TOOLS.has(name)) {
     return (
       clientResult?.trim() ||
       "This tool runs on the desktop client after approval/auto-exec. No result was provided."
     );
+  }
+  if (
+    EMAIL_TOOL_NAMES.has(name) ||
+    SSH_TOOL_NAMES.has(name) ||
+    FINNHUB_TOOL_NAMES.has(name) ||
+    name === "web_search" ||
+    name === "fetch_url" ||
+    name === "scrape_page"
+  ) {
+    return runTool(name, args, tools);
   }
   return runSafeTool(name, args, tools);
 }

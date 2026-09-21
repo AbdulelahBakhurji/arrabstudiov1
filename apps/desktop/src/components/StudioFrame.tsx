@@ -1,55 +1,143 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Building2, Languages, Moon, Sun, User, UserRound } from "lucide-react";
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Languages, Moon, Sun, User } from "lucide-react";
 import { ToastHost } from "@/components/ToastHost";
+import { AppUpdateWatcher } from "@/components/AppUpdateWatcher";
+import { AgentPresenceHost } from "@/components/AgentPresenceHost";
+import { PresenceApprovalBridge } from "@/components/PresenceApprovalBridge";
+import { GettingStartedRailHelp } from "@/components/GettingStartedDock";
+import { QuotaPauseScreen } from "@/components/QuotaPauseScreen";
+import { FirstLaunchSetup } from "@/components/FirstLaunchSetup";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import logoTall from "@/assets/logotall.png";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useTheme } from "@/theme/ThemeProvider";
 import { arrabApi } from "@/lib/api";
 import { initialsFromName, subscribeAccountSession } from "@/lib/account-session";
-import { setAlwaysOnTop } from "@/lib/desktop";
+import { syncCompanionsFromCloud } from "@/lib/companions";
+import { useProfilePhoto } from "@/lib/profile-photo";
+import { setAlwaysOnTop, openExternalUrl } from "@/lib/desktop";
 import { notifyStudio } from "@/lib/notify";
-import { ROLE_PATH, navForRole } from "@/roles/catalog";
+import { useSignedInAccount } from "@/lib/use-signed-in-account";
+import { audienceFromPlanId, homePathForPlanId, navForRole, studioModeFromPlanId } from "@/roles/catalog";
 import { useRole } from "@/roles/RoleProvider";
 import { readPrefs } from "@/lib/prefs";
+import {
+  shouldShowFirstLaunchSetup,
+  subscribeFirstLaunchSetup,
+} from "@/lib/first-launch-setup";
 import { isTauriRuntime } from "@/lib/terminal";
+import { FamilyProfileSwitcher } from "@/components/FamilyProfileSwitcher";
+import { useFamilyProfile } from "@/lib/use-family-profile";
 import { cn } from "@/lib/utils";
 import type { AccountPublic } from "@arrab/shared";
+
+function isQuotaEscapePath(pathname: string): boolean {
+  return /\/(settings|account)(\/|$)/.test(pathname);
+}
+
+function pathForMenuAction(
+  id: string,
+  opts: {
+    href: (path: string) => string;
+    isOrganization: boolean;
+  },
+): string | null {
+  const { href, isOrganization } = opts;
+  switch (id) {
+    case "nav-hq":
+      return href("/");
+    case "nav-workplace":
+      return isOrganization ? href("/workplace") : href("/studio");
+    case "nav-chat":
+      return isOrganization ? href("/chat") : href("/");
+    case "nav-workforce":
+      return isOrganization ? href("/workforce") : href("/work");
+    case "nav-connectors":
+      return href("/connectors");
+    case "nav-activity":
+      return isOrganization ? href("/activity") : href("/board");
+    case "nav-settings":
+      return href("/settings");
+    case "file-new-chat":
+      return isOrganization ? href("/chat") : href("/");
+    case "file-connect-folder":
+      return isOrganization ? href("/workplace") : href("/studio");
+    case "help-getting-started":
+      return href("/settings");
+    default:
+      return null;
+  }
+}
 
 export function StudioFrame() {
   const { t, toggleLocale, locale, dir } = useLanguage();
   const { theme, toggleTheme } = useTheme();
-  const { role, href, isIndividual, isOrganization } = useRole();
+  const { role, href, isOrganization, isFamily, setRole } = useRole();
+  const { isChild: isFamilyChild, isPaused: familyPaused } = useFamilyProfile();
   const navigate = useNavigate();
+  const location = useLocation();
+  const { account, status, refresh: refreshSignedIn } = useSignedInAccount();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [accountUser, setAccountUser] = useState<AccountPublic | null>(null);
+  const profilePhoto = useProfilePhoto();
   const [pendingCount, setPendingCount] = useState(0);
   const lastPendingRef = useRef<number | null>(null);
+  const [setupReady, setSetupReady] = useState(false);
+  const [needsFirstLaunch, setNeedsFirstLaunch] = useState(false);
+  const entitlements = status?.entitlements;
+  const paused =
+    Boolean(entitlements?.overLimit) && !isQuotaEscapePath(location.pathname);
 
   const modes = useMemo(
-    () =>
-      navForRole(role).map((item) => ({
+    () => {
+      let items = navForRole(role).map((item) => ({
         to: href(item.path || "/"),
         key: item.key,
         icon: item.icon,
         end: Boolean(item.end),
-      })),
-    [href, role],
+      }));
+      if (isFamily && isFamilyChild) {
+        items = items.filter((item) =>
+          ["chat", "compBoard", "compWork", "studio"].includes(item.key),
+        );
+      }
+      return items;
+    },
+    [href, role, isFamily, isFamilyChild],
   );
 
   const paletteItems = useMemo(
-    () => [
-      ...modes,
-      { to: href("/account"), key: "amTitle" as const, icon: User, end: false },
-      { to: ROLE_PATH.individual, key: "plansIndividuals" as const, icon: UserRound, end: false },
-      {
-        to: ROLE_PATH.organization,
-        key: "plansOrganizations" as const, icon: Building2, end: false,
-      },
-    ],
+    () => [...modes, { to: href("/account"), key: "amTitle" as const, icon: User, end: false }],
     [modes, href],
   );
+
+  // Mode follows subscription / free-trial plan — locked to that audience only.
+  useEffect(() => {
+    const planId = account?.planId ?? status?.entitlements?.planId ?? null;
+    if (!planId && !account) return;
+    const expectedAudience = audienceFromPlanId(planId);
+    if (expectedAudience !== role) {
+      setRole(expectedAudience);
+    }
+    const expectedShell = studioModeFromPlanId(planId);
+    const expectedHome = homePathForPlanId(planId);
+    const onWrongShell =
+      (expectedShell === "organization" && location.pathname.includes("/individuals")) ||
+      (expectedShell === "individual" && location.pathname.includes("/organizations"));
+    if (onWrongShell) {
+      navigate(expectedHome, { replace: true });
+    }
+  }, [
+    account,
+    account?.planId,
+    location.pathname,
+    navigate,
+    role,
+    setRole,
+    status?.entitlements?.planId,
+  ]);
 
   const refreshAccount = () => {
     void arrabApi
@@ -64,7 +152,36 @@ export function StudioFrame() {
 
   useEffect(() => {
     refreshAccount();
-    return subscribeAccountSession(() => refreshAccount());
+    void syncCompanionsFromCloud();
+    return subscribeAccountSession(() => {
+      refreshAccount();
+      void syncCompanionsFromCloud();
+    });
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      let hasConnector = false;
+      try {
+        const res = await arrabApi.connectors();
+        hasConnector = (res.items ?? []).some((item) => item.status === "connected");
+      } catch {
+        hasConnector = false;
+      }
+      if (cancelled) return;
+      setNeedsFirstLaunch(shouldShowFirstLaunchSetup(hasConnector));
+      setSetupReady(true);
+    })();
+    return subscribeFirstLaunchSetup(() => {
+      void arrabApi
+        .connectors()
+        .then((res) => {
+          const hasConnector = (res.items ?? []).some((item) => item.status === "connected");
+          setNeedsFirstLaunch(shouldShowFirstLaunchSetup(hasConnector));
+        })
+        .catch(() => setNeedsFirstLaunch(shouldShowFirstLaunchSetup(false)));
+    });
   }, []);
 
   useEffect(() => {
@@ -116,6 +233,43 @@ export function StudioFrame() {
   }, []);
 
   useEffect(() => {
+    if (!isTauriRuntime()) return;
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+
+    void import("@tauri-apps/api/event").then(({ listen }) => {
+      if (cancelled) return;
+      return listen<string>("arrab:menu", (event) => {
+        const id = event.payload;
+        if (id === "view-reload") {
+          window.location.reload();
+          return;
+        }
+        if (id === "help-website") {
+          void openExternalUrl("https://arrabai.com");
+          return;
+        }
+        if (id === "file-connect-folder") {
+          window.dispatchEvent(new CustomEvent("arrab:connect-folder"));
+        }
+        const path = pathForMenuAction(id, { href, isOrganization });
+        if (path) {
+          navigate(path);
+          setPaletteOpen(false);
+        }
+      }).then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      });
+    });
+
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [href, isOrganization, navigate]);
+
+  useEffect(() => {
     let cancelled = false;
     const poll = async () => {
       try {
@@ -126,11 +280,16 @@ export function StudioFrame() {
         const count = pending.items.length;
         setPendingCount(count);
         if (lastPendingRef.current !== null && count > lastPendingRef.current) {
+          const first = pending.items[0];
           void notifyStudio({
             kind: "approvals",
-            title: t("pendingApprovals"),
-            body: t("approvalNotifyBody").replace("{count}", String(count)),
+            title: first?.title ?? t("pendingApprovals"),
+            body: first?.detail ?? t("approvalNotifyBody").replace("{count}", String(count)),
             href: href("/workforce"),
+            agentName: "Arrab",
+            presenceState: "needs_you",
+            progress: 0.8,
+            approvalId: first?.id ?? null,
           });
         }
         lastPendingRef.current = count;
@@ -156,40 +315,45 @@ export function StudioFrame() {
     );
   }, [paletteItems, query, t]);
 
+  if (!setupReady) {
+    return (
+      <div
+        dir={dir}
+        className="flex h-full w-full items-center justify-center bg-[var(--color-background)] text-foreground"
+      >
+        <div className="arrab-fade flex flex-col items-center gap-3 px-6 text-center">
+          <img src={logoTall} alt={t("brand")} className="brand-mark h-10 w-auto opacity-90" />
+          <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-500">
+            {t("flsPreparing")}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (needsFirstLaunch) {
+    return (
+      <div className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground" dir={dir}>
+        <FirstLaunchSetup onFinished={() => setNeedsFirstLaunch(false)} />
+      </div>
+    );
+  }
+
   return (
-    <div className="app-shell flex h-full max-h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-background text-foreground" dir={dir}>
+    <div className={cn("app-shell companion-app flex h-full max-h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-background text-foreground")} dir={dir}>
       <header
         data-tauri-drag-region
         dir="ltr"
-        className="app-toolbar relative z-40 flex h-11 shrink-0 items-center border-b border-white/[0.08] bg-[#0a0a0a] px-3"
+        className="app-toolbar relative z-40 flex h-11 shrink-0 items-center border-b border-white/[0.08] bg-[var(--color-surface)] px-3"
       >
         <div className="w-[76px] shrink-0" aria-hidden="true" />
+        <img
+          src={logoTall}
+          alt={t("brand")}
+          className="brand-mark h-[26px] w-auto max-w-[150px] object-contain object-left"
+        />
         <div className="no-drag ml-auto flex items-center gap-2">
-          <div className="me-1 hidden items-center rounded-full border border-white/10 p-0.5 sm:inline-flex">
-            <button
-              type="button"
-              onClick={() => navigate(ROLE_PATH.individual)}
-              className={cn(
-                "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px]",
-                isIndividual ? "bg-white text-black" : "text-neutral-400 hover:text-white",
-              )}
-            >
-              <UserRound className="size-3" strokeWidth={1.8} />
-              {t("plansIndividuals")}
-            </button>
-            <button
-              type="button"
-              onClick={() => navigate(ROLE_PATH.organization)}
-              className={cn(
-                "inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px]",
-                isOrganization ? "bg-white text-black" : "text-neutral-400 hover:text-white",
-              )}
-            >
-              <Building2 className="size-3" strokeWidth={1.8} />
-              {t("plansOrganizations")}
-            </button>
-          </div>
-
+          {isFamily ? <FamilyProfileSwitcher /> : null}
           <Tooltip delayDuration={120}>
             <TooltipTrigger asChild>
               <button
@@ -236,11 +400,13 @@ export function StudioFrame() {
                 }}
                 aria-label={t("amTitle")}
                 className={cn(
-                  "inline-flex size-8 items-center justify-center rounded-md border border-white/10 text-white hover:bg-white/5",
+                  "inline-flex size-8 items-center justify-center overflow-hidden rounded-md border border-white/10 text-white hover:bg-white/5",
                   accountUser && "border-emerald-400/30",
                 )}
               >
-                {accountUser ? (
+                {profilePhoto ? (
+                  <img src={profilePhoto} alt="" className="size-full object-cover" />
+                ) : accountUser ? (
                   <span className="text-[10px] font-semibold tracking-wide">
                     {initialsFromName(accountUser.displayName, accountUser.email)}
                   </span>
@@ -259,8 +425,11 @@ export function StudioFrame() {
       <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
         <nav
           aria-label={t("brand")}
-          className="no-drag absolute top-1/2 z-30 flex -translate-y-1/2 flex-col items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/60 p-2 shadow-2xl backdrop-blur-md"
-          style={{ insetInlineStart: "20px" }}
+          className="studio-rail no-drag absolute top-1/2 z-30 flex -translate-y-1/2 flex-col items-center justify-center gap-2 rounded-2xl border border-white/10 bg-black/60 p-2 shadow-2xl backdrop-blur-md"
+          // Aligned so the rail's icon column sits directly under the header's
+          // account avatar (measured empirically — the two containers use
+          // different padding models, so equal insets don't equal centers).
+          style={{ insetInlineStart: "8px" }}
         >
           {modes.map((mode) => {
             const Icon = mode.icon;
@@ -273,7 +442,8 @@ export function StudioFrame() {
                     aria-label={t(mode.key)}
                     className={({ isActive }) =>
                       cn(
-                        "mx-auto flex size-10 items-center justify-center rounded-xl transition-colors",
+                        "mx-auto flex flex-col items-center justify-center rounded-xl transition-colors",
+                        "h-10 w-10 shrink-0",
                         isActive
                           ? "bg-white text-black"
                           : "text-neutral-500 hover:bg-white/5 hover:text-white",
@@ -286,6 +456,7 @@ export function StudioFrame() {
                         <span className="absolute -end-1 -top-1 size-2 rounded-full bg-amber-300" />
                       ) : null}
                     </span>
+                    <span className="cp-nav-label">{t(mode.key)}</span>
                   </NavLink>
                 </TooltipTrigger>
                 <TooltipContent side={dir === "rtl" ? "left" : "right"} sideOffset={12}>
@@ -294,10 +465,24 @@ export function StudioFrame() {
               </Tooltip>
             );
           })}
+          <div className="gs-rail-help-wrap">
+            <GettingStartedRailHelp tooltipSide={dir === "rtl" ? "left" : "right"} />
+          </div>
         </nav>
 
         <main className="h-full min-h-0 min-w-0 overflow-hidden ps-[96px] pe-3 pb-3">
-          <Outlet />
+          {familyPaused ? (
+            <div className="grid h-full place-items-center rounded-2xl border border-white/10 bg-black/40 p-8 text-center text-white">
+              <div className="max-w-md space-y-2">
+                <h2 className="text-xl font-semibold">{t("familyProfilePaused")}</h2>
+                <p className="text-sm text-white/70">{t("familyPausedBody")}</p>
+              </div>
+            </div>
+          ) : paused && entitlements ? (
+            <QuotaPauseScreen entitlements={entitlements} onRefresh={refreshSignedIn} />
+          ) : (
+            <Outlet />
+          )}
         </main>
       </div>
 
@@ -307,7 +492,7 @@ export function StudioFrame() {
           onClick={() => setPaletteOpen(false)}
         >
           <div
-            className="w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-[#0a0a0a] shadow-2xl"
+            className="w-full max-w-lg overflow-hidden rounded-2xl border border-white/10 bg-[var(--color-surface)] shadow-2xl"
             onClick={(event) => event.stopPropagation()}
           >
             <div className="border-b border-white/8 px-4 py-3">
@@ -326,7 +511,7 @@ export function StudioFrame() {
                   <li key={`${mode.to}-${mode.key}`}>
                     <button
                       type="button"
-                      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-neutral-300 hover:bg-white/5 hover:text-white"
+                      className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-start text-sm text-neutral-300 hover:bg-white/5 hover:text-white"
                       onClick={() => {
                         navigate(mode.to);
                         setPaletteOpen(false);
@@ -347,13 +532,23 @@ export function StudioFrame() {
         </div>
       ) : null}
       <ToastHost />
+      <AppUpdateWatcher />
+      <PresenceApprovalBridge />
+      <AgentPresenceHost />
     </div>
   );
 }
 
 export function Surface({ children, className }: { children: ReactNode; className?: string }) {
+  const hideYScroll = Boolean(className?.includes("overflow-hidden"));
   return (
-    <div className={cn("h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto", className)}>
+    <div
+      className={cn(
+        "h-full min-h-0 min-w-0 overflow-x-hidden",
+        hideYScroll ? "overflow-y-hidden" : "overflow-y-auto",
+        className,
+      )}
+    >
       {children}
     </div>
   );

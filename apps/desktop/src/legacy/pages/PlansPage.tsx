@@ -8,11 +8,13 @@ import { subscribeAccountSession } from "@/lib/account-session";
 
 export const PLAN_PATH = {
   individual: "/plans/individuals",
+  family: "/plans/families",
   organization: "/plans/organizations",
 } as const;
 
 function audienceFromParam(value: string | undefined): PlanAudience | null {
   if (value === "individuals" || value === "individual") return "individual";
+  if (value === "families" || value === "family") return "family";
   if (value === "organizations" || value === "organization") return "organization";
   return null;
 }

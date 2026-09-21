@@ -16,6 +16,7 @@ type RoleContextValue = {
   basePath: string;
   href: (path?: string) => string;
   isIndividual: boolean;
+  isFamily: boolean;
   isOrganization: boolean;
 };
 
@@ -24,7 +25,7 @@ const RoleContext = createContext<RoleContextValue | null>(null);
 export function readStoredRole(): PlanAudience {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved === "organization" || saved === "individual") {
+    if (saved === "organization" || saved === "individual" || saved === "family") {
       return saved;
     }
   } catch {
@@ -46,7 +47,9 @@ function roleFromPath(pathname: string): PlanAudience {
     return "organization";
   }
   if (pathname.includes("/individuals")) {
-    return "individual";
+    const stored = readStoredRole();
+    // Family shares /individuals routes but keeps family nav/gating.
+    return stored === "family" ? "family" : "individual";
   }
   return readStoredRole();
 }
@@ -95,6 +98,7 @@ export function RoleProvider({
       basePath,
       href: (path = "") => joinRolePath(basePath, path),
       isIndividual: activeRole === "individual",
+      isFamily: activeRole === "family",
       isOrganization: activeRole === "organization",
     };
   }, [activeRole, setRole]);
@@ -124,6 +128,7 @@ export function useRole(): RoleContextValue {
       basePath,
       href: (path = "") => joinRolePath(basePath, path),
       isIndividual: role === "individual",
+      isFamily: role === "family",
       isOrganization: role === "organization",
     };
   }

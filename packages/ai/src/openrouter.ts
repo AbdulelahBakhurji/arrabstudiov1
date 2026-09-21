@@ -1,15 +1,16 @@
 /** OpenRouter — OpenAI-compatible multi-model gateway. */
 export const OPENROUTER_PROVIDER_ID = "openrouter";
 export const OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
-/** Fast, cheap default while Bedrock is unavailable. */
-export const OPENROUTER_DEFAULT_MODEL = "openai/gpt-4o-mini";
+/** Fast default for chat — Flash-class models keep TTFT low on OpenRouter. */
+export const OPENROUTER_DEFAULT_MODEL = "deepseek/deepseek-v4.1-flash";
 
 export const OPENROUTER_DEFAULT_MODELS = [
-  "openai/gpt-4o-mini",
-  "openai/gpt-4o",
+  "deepseek/deepseek-v4.1-flash",
+  "deepseek/deepseek-chat",
   "google/gemini-2.5-flash",
   "anthropic/claude-3.5-haiku",
-  "deepseek/deepseek-chat",
+  "openai/gpt-4o-mini",
+  "openai/gpt-4o",
 ] as const;
 
 /** OpenRouter model IDs use org/model (slash). */
@@ -27,7 +28,8 @@ export function parseOpenRouterModels(raw: string | null | undefined): string[] 
     .map((item) => item.trim())
     .filter(Boolean);
   if (fromEnv.length > 0) {
-    return fromEnv.slice(0, 12);
+    // Preserve order; drop duplicates so OPENROUTER_MODELS can grow freely.
+    return [...new Set(fromEnv)];
   }
   return [...OPENROUTER_DEFAULT_MODELS];
 }

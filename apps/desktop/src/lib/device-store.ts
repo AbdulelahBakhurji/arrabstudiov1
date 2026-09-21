@@ -1,12 +1,35 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "./terminal";
 
-export type DeviceStoreNamespace = "cache" | "chats" | "incognito";
+export type DeviceStoreNamespace = "cache" | "chats" | "incognito" | "secure";
 
 const LS_PREFIX = "arrab.device.";
+const INVOKE_TIMEOUT_MS = 1200;
 
 function memoryKey(namespace: DeviceStoreNamespace, key: string): string {
   return `${LS_PREFIX}${namespace}.${key}`;
+}
+
+async function invokeWithTimeout<T>(
+  command: string,
+  args: Record<string, unknown>,
+): Promise<T> {
+  let timer: number | undefined;
+  try {
+    return await Promise.race([
+      invoke<T>(command, args),
+      new Promise<T>((_resolve, reject) => {
+        timer = window.setTimeout(
+          () => reject(new Error(`Tauri invoke timed out: ${command}`)),
+          INVOKE_TIMEOUT_MS,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+    }
+  }
 }
 
 export async function deviceStoreGet(
@@ -15,7 +38,10 @@ export async function deviceStoreGet(
 ): Promise<string | null> {
   if (isTauriRuntime()) {
     try {
-      const value = await invoke<string | null>("device_store_get", { namespace, key });
+      const value = await invokeWithTimeout<string | null>("device_store_get", {
+        namespace,
+        key,
+      });
       if (value != null) {
         return value;
       }
@@ -44,7 +70,7 @@ export async function deviceStoreSet(
     return;
   }
   try {
-    await invoke("device_store_set", { namespace, key, value });
+    await invokeWithTimeout("device_store_set", { namespace, key, value });
   } catch {
     // Native store is best-effort; localStorage still holds a copy.
   }
@@ -63,7 +89,7 @@ export async function deviceStoreRemove(
     return;
   }
   try {
-    await invoke("device_store_remove", { namespace, key });
+    await invokeWithTimeout("device_store_remove", { namespace, key });
   } catch {
     // ignore
   }
@@ -76,7 +102,7 @@ export async function deviceStoreKeys(
   const keys = new Set<string>();
   if (isTauriRuntime()) {
     try {
-      const native = await invoke<string[]>("device_store_keys", {
+      const native = await invokeWithTimeout<string[]>("device_store_keys", {
         namespace,
         prefix: prefix || null,
       });
@@ -118,7 +144,7 @@ export async function deviceStoreClear(namespace: DeviceStoreNamespace): Promise
     return;
   }
   try {
-    await invoke("device_store_clear", { namespace });
+    await invokeWithTimeout("device_store_clear", { namespace });
   } catch {
     // ignore
   }

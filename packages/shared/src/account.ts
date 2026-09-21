@@ -3,6 +3,7 @@ import type { Brand } from "./ids.js";
 export type SubscriptionPlanId =
   | "free"
   | "pro"
+  | "family_free"
   | "family"
   | "family_plus"
   | "team"
@@ -15,8 +16,8 @@ export interface SubscriptionPlan {
   id: SubscriptionPlanId;
   name: string;
   audience: PlanAudience;
-  /** Monthly token budget (input + output). null = unlimited. */
-  monthlyTokenLimit: number | null;
+  /** Monthly token budget (input + output). Always a positive limit. */
+  monthlyTokenLimit: number;
   description: string;
   /** Price in halalas (1 SAR = 100). 0 = free. */
   monthlyPriceHalalas: number;
@@ -42,10 +43,9 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionPlanId, SubscriptionPlan> = 
     interval: "month",
     badge: null,
     features: [
-      "100,000 tokens every month",
+      "1× included usage",
       "1 AI employee desk",
       "Web workspace + macOS Studio",
-      "Moyasar-ready billing later",
     ],
   },
   pro: {
@@ -60,11 +60,29 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionPlanId, SubscriptionPlan> = 
     highlight: true,
     badge: "Most chosen",
     features: [
-      "2,000,000 tokens every month",
+      "20× included usage",
       "Unlimited employees & projects",
       "Priority model routing",
       "Desktop Studio + testing workspace",
-      "Mada, Visa, Apple Pay, STC Pay",
+    ],
+  },
+  family_free: {
+    id: "family_free",
+    name: "Family Free",
+    audience: "family",
+    monthlyTokenLimit: 100_000,
+    description: "Free family trial — share seats at home and try household companions together.",
+    monthlyPriceHalalas: 0,
+    currency: "SAR",
+    interval: "month",
+    badge: "Trial",
+    seatLimit: 6,
+    features: [
+      "1× shared household usage",
+      "Up to 6 family seats",
+      "Add parents, partners, and kids",
+      "PIN profiles + parental pause",
+      "macOS Studio on every home Mac",
     ],
   },
   family: {
@@ -79,7 +97,7 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionPlanId, SubscriptionPlan> = 
     badge: "Household",
     seatLimit: 6,
     features: [
-      "4,000,000 tokens shared every month",
+      "40× shared household usage",
       "Up to 6 family seats",
       "Shared companions & chat history",
       "Parental-friendly usage overview",
@@ -99,7 +117,7 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionPlanId, SubscriptionPlan> = 
     badge: "Family pick",
     seatLimit: 10,
     features: [
-      "8,000,000 tokens shared every month",
+      "80× shared household usage",
       "Up to 10 family seats",
       "Priority routing for every member",
       "Shared knowledge & memories",
@@ -117,29 +135,31 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionPlanId, SubscriptionPlan> = 
     interval: "month",
     badge: null,
     features: [
-      "10,000,000 tokens every month",
+      "100× studio usage",
       "Shared goals, tasks, and memory",
       "Team chat & cowork rooms",
       "Usage controls per session",
       "Priority support",
     ],
   },
+  /** Legacy plan id kept for existing accounts — always capped (no unlimited SKUs). */
   unlimited: {
     id: "unlimited",
-    name: "Unlimited",
+    name: "Scale",
     audience: "organization",
-    monthlyTokenLimit: null,
-    description: "No monthly token cap for production studios.",
+    monthlyTokenLimit: 50_000_000,
+    description: "Highest monthly pool for production studios shipping at volume.",
     monthlyPriceHalalas: 39_900,
     currency: "SAR",
     interval: "month",
+    highlight: true,
     badge: "Scale",
     features: [
-      "No monthly token cap",
+      "500× studio usage",
       "Highest throughput routing",
       "Dedicated onboarding",
       "Custom workforce playbooks",
-      "Invoice + card via Moyasar",
+      "Usage controls per session",
     ],
   },
 };
@@ -148,11 +168,20 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionPlanId, SubscriptionPlan> = 
 export const SUBSCRIPTION_REDEEM_CODES: Record<string, SubscriptionPlanId> = {
   "FREE-ARRAB": "free",
   "PRO-ARRAB": "pro",
+  "FAMILY-FREE-ARRAB": "family_free",
   "FAMILY-ARRAB": "family",
   "FAMILY-PLUS-ARRAB": "family_plus",
   "TEAM-ARRAB": "team",
-  "UNLIMITED-ARRAB": "unlimited",
+  "UNLIMITED-ARRAB": "unlimited", // legacy alias → capped Scale
+  "SCALE-ARRAB": "unlimited",
 };
+
+/** True for any household plan (Family Free trial, Family, Family Plus). */
+export function isFamilyPlanId(
+  planId: string | null | undefined,
+): planId is "family_free" | "family" | "family_plus" {
+  return planId === "family_free" || planId === "family" || planId === "family_plus";
+}
 
 /** Soft local allowance when no account is connected. */
 export const LOCAL_UNCONNECTED_TOKEN_LIMIT = 25_000;

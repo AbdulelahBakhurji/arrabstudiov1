@@ -1,0 +1,790 @@
+{
+  "file_count": 157,
+  "files": [
+    {
+      "path": "Arrab-Design.html",
+      "bytes": 1539213,
+      "sha256": "4751f43cc6029f7bf514af3daffd6734f09f4adfc902ee875cc08408b35dc355"
+    },
+    {
+      "path": "README-AR.md",
+      "bytes": 5761,
+      "sha256": "18e2ad929b19ed9c973fd3abde6093e99c5ab1a8a15dfb5219a2253bfa1cc2ea"
+    },
+    {
+      "path": "preview-tools/build-preview.mjs",
+      "bytes": 4995,
+      "sha256": "e59323c3234a709d7277e1892088fde61a664faedfce71ead6f7af996f49cac5"
+    },
+    {
+      "path": "preview-tools/offline-preview.js",
+      "bytes": 9320,
+      "sha256": "588298c1ac4a2490a2a8efeae475f182dc0e53fa58063c8e73a110864c99f392"
+    },
+    {
+      "path": "reference/previous-design.png",
+      "bytes": 38508,
+      "sha256": "5041d8463633e45401205675acdb930e03b16226ddf8c7e32edc1d6879722f77"
+    },
+    {
+      "path": "screens.json",
+      "bytes": 1491,
+      "sha256": "aa751715d4500bb8bb2f033974d3e34e9b151bf41217e771e249d11dee2f79f5"
+    },
+    {
+      "path": "source/.gitignore",
+      "bytes": 54,
+      "sha256": "96246bf75f8da9e86c2017f49a8c3285653e84fa734b1aeaf7c99d6d1a0a70bc"
+    },
+    {
+      "path": "source/apps/desktop/.env.example",
+      "bytes": 41,
+      "sha256": "1c604f08fd1580f12c527bdf976e976c7157feb0f839df00221ed08cde4ffb15"
+    },
+    {
+      "path": "source/apps/desktop/index.html",
+      "bytes": 372,
+      "sha256": "3980f90bff26073134e4f147b7f75c280cd8a6f84536741cb6d4c0acbfe409c9"
+    },
+    {
+      "path": "source/apps/desktop/package.json",
+      "bytes": 1067,
+      "sha256": "e890f4b5a45a28a8e46cbf50375ed45a57360dbb016cb309df4050af3d1b2b17"
+    },
+    {
+      "path": "source/apps/desktop/public/logotall.png",
+      "bytes": 377247,
+      "sha256": "a87a600abdd90d59fb51ba7846ae80900f1aa2e0b2402f1d143938989e42e107"
+    },
+    {
+      "path": "source/apps/desktop/public/symbol.png",
+      "bytes": 20350,
+      "sha256": "ff6afc912f2ffad9c3cbea332d59743999ce559e67e796151ad06875926690e6"
+    },
+    {
+      "path": "source/apps/desktop/src/App.tsx",
+      "bytes": 5715,
+      "sha256": "b4df763cd6f8c1db34400ff66a719fb5c191d30353795e6bc1fe9d04c8244049"
+    },
+    {
+      "path": "source/apps/desktop/src/assets/logotall.png",
+      "bytes": 377247,
+      "sha256": "a87a600abdd90d59fb51ba7846ae80900f1aa2e0b2402f1d143938989e42e107"
+    },
+    {
+      "path": "source/apps/desktop/src/assets/symbol.png",
+      "bytes": 20350,
+      "sha256": "ff6afc912f2ffad9c3cbea332d59743999ce559e67e796151ad06875926690e6"
+    },
+    {
+      "path": "source/apps/desktop/src/components/AgentSteps.tsx",
+      "bytes": 4391,
+      "sha256": "f4521a75c269c609961f63c88b1890bd105a2784699c08a25b0e995f8edd0469"
+    },
+    {
+      "path": "source/apps/desktop/src/components/AppShell.tsx",
+      "bytes": 3877,
+      "sha256": "d36cdb8e680b54af7aa9fbf45231c17d579105a457262fd010513b6713035c21"
+    },
+    {
+      "path": "source/apps/desktop/src/components/ArtifactsPanel.tsx",
+      "bytes": 3717,
+      "sha256": "80bd7318bd12f5ea22d2ae947bf3e2533fc408b0331a954d66f20b8d1c0f71b7"
+    },
+    {
+      "path": "source/apps/desktop/src/components/AuthGate.tsx",
+      "bytes": 983,
+      "sha256": "f292df2d218d0755eb47f4df42a064a1767ef8de750a3f10488ce5a7a51337d1"
+    },
+    {
+      "path": "source/apps/desktop/src/components/EmptyState.tsx",
+      "bytes": 3664,
+      "sha256": "7fa2dbf6fa5fd7757b20ad57992796183bba018aa792191868a7cece67fe0665"
+    },
+    {
+      "path": "source/apps/desktop/src/components/MentionComposer.tsx",
+      "bytes": 7047,
+      "sha256": "9e9c1fdd736642b83d6d8516323e30707da5dacc0e70863e68eb63b5a5586fdf"
+    },
+    {
+      "path": "source/apps/desktop/src/components/PlansCatalog.tsx",
+      "bytes": 11002,
+      "sha256": "54ea2e422f5b47799a7b0927d6dd9f8526a78afbda32282d204cdc4f6ea207e8"
+    },
+    {
+      "path": "source/apps/desktop/src/components/StudioFrame.tsx",
+      "bytes": 13630,
+      "sha256": "25999b9cbf9ec9c8070f76773651d7f390d070e88d1c855be1981761ac659a6d"
+    },
+    {
+      "path": "source/apps/desktop/src/components/TitleBar.tsx",
+      "bytes": 3226,
+      "sha256": "d5d129a23abf26d9cb028bc1924b83a99e6a76bcf4a25630d4542c1dcd0c2fb6"
+    },
+    {
+      "path": "source/apps/desktop/src/components/ToastHost.tsx",
+      "bytes": 1707,
+      "sha256": "eb3d33a5b7f63bc2cedc057b4730379eabef80db56ca72fa2236f5f653ae445d"
+    },
+    {
+      "path": "source/apps/desktop/src/components/companions/AddCompanionDialog.tsx",
+      "bytes": 3839,
+      "sha256": "fd89b74d722cbd7bb9c28e976d7c44b72e6471bafd87e18ac6dce5263e180215"
+    },
+    {
+      "path": "source/apps/desktop/src/components/companions/CompanionDetails.tsx",
+      "bytes": 8358,
+      "sha256": "c93fa33b9ed8e1c492be3e829b08f5b4edc4a61af9e00c7d5f4a1d2189217b26"
+    },
+    {
+      "path": "source/apps/desktop/src/components/companions/CompanionFace.tsx",
+      "bytes": 6186,
+      "sha256": "58746b608f24b801904fddd445d3841cdaabec3a09b7c2b84b4588c1c14520cf"
+    },
+    {
+      "path": "source/apps/desktop/src/components/companions/CompanionUI.tsx",
+      "bytes": 4257,
+      "sha256": "da493e92fdfd137dc1fc1b6f11c020ffbaeab410ced5f6c36a8cd6c409255a08"
+    },
+    {
+      "path": "source/apps/desktop/src/components/companions/useCompanionRoom.ts",
+      "bytes": 9765,
+      "sha256": "6cef5404e68a92b062adacc9223a41b46e660d10b878111c6783ea18ecdbea82"
+    },
+    {
+      "path": "source/apps/desktop/src/components/ui/button.tsx",
+      "bytes": 1297,
+      "sha256": "e672d0bf8d24c87f869ccd00c8b0f1e687455217e675614d1f0e37d29c4b2b49"
+    },
+    {
+      "path": "source/apps/desktop/src/components/ui/separator.tsx",
+      "bytes": 532,
+      "sha256": "c2dfb1c347ab1e14c9ec79fb8e4040b37d0bcedb3a63c179b90d1367c74a59fd"
+    },
+    {
+      "path": "source/apps/desktop/src/components/ui/tooltip.tsx",
+      "bytes": 657,
+      "sha256": "1e594809c7473e87d92618be949bb1ba4b1af72ae3cd6a63abf01056566913fb"
+    },
+    {
+      "path": "source/apps/desktop/src/hooks/useStudioPrefs.ts",
+      "bytes": 308,
+      "sha256": "2a830d3cef45eacf286e353a7129c66436d80fdada06ec0fb5f821dca394e288"
+    },
+    {
+      "path": "source/apps/desktop/src/i18n/LanguageProvider.tsx",
+      "bytes": 1802,
+      "sha256": "3f19f39e0a90225c0804d71e60bcad8744185403d27440efc0b77651dcb74b32"
+    },
+    {
+      "path": "source/apps/desktop/src/i18n/messages.ts",
+      "bytes": 118372,
+      "sha256": "fa7643104b02ca0a5d9e4fa6b79a7a2162cdb3cb18ca586dc1326967848fbd0b"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/account-session.ts",
+      "bytes": 1263,
+      "sha256": "89b42426162b7a96625a02851933afab6182d3545ed5762e06376e2eb04a185f"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/agent-local-tools.ts",
+      "bytes": 15266,
+      "sha256": "e0cca3260013e0ca9ce5b1dcebc08667ae253755fcc29fd4f6fc2f2a083fa6ab"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/agents-bootstrap.ts",
+      "bytes": 2530,
+      "sha256": "ec2165d33acc2d9a3c96ab2075b54365a19298ee0944140844ae976e6aeee144"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/api.ts",
+      "bytes": 20644,
+      "sha256": "3b46401e3bcfabc912b4cd67023901ae5b1b1ec9d15e7aaf85902cd475c096f6"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/chat-history.ts",
+      "bytes": 2779,
+      "sha256": "6419c7c4705f297e18ec091ef23e007b8caeb1a73e06f1a72c81509b4dad26a2"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/companions.ts",
+      "bytes": 32244,
+      "sha256": "3cb15f73a807d5195ba4b2083c74d8435fb9bc59b39dbca95701911fa0d2d25b"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/desktop.ts",
+      "bytes": 507,
+      "sha256": "99a381de21e5311787317cb565847e5e0a3fd0a09269d59f008fba5bb8ffc2b4"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/device-cache.ts",
+      "bytes": 1942,
+      "sha256": "ee73afdf375b20542cceead164976e5048707d37a12d02f16725d2d9c3012aaa"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/device-store.ts",
+      "bytes": 3412,
+      "sha256": "a8df17afeb8365eeb0ff192c4c6a9988fa673b7272556a3f462dc26ce2c79818"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/fs.ts",
+      "bytes": 2784,
+      "sha256": "b92dc6ac6fe2d0de0d31aa2f169202b5a02918d6db51f2257368bff88d062b03"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/incognito-vault.ts",
+      "bytes": 9426,
+      "sha256": "ede1d648dd9570b5f353fe5e85bca3e49297ec8b42db5904625887a855f221b4"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/lock-browser-chrome.ts",
+      "bytes": 937,
+      "sha256": "2218517b991344d7d6716440ec9e6e8cf6a22da560358326d7cefff64e9c15f5"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/notify.ts",
+      "bytes": 2068,
+      "sha256": "74db0c3490e42020afbd8e806e69bcd0923c35c733a39c8aa2fcdfce2002ffed"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/prefs.ts",
+      "bytes": 4724,
+      "sha256": "93acad5e3dc5fe50457ebf32f61ac2abf5af43d7af6f5fa0e63b5acb4a84cd94"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/terminal.ts",
+      "bytes": 720,
+      "sha256": "bb51e23e84aae79929717c97465c93389b600fc35f8159011742ef00d46c0f80"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/use-signed-in-account.ts",
+      "bytes": 1863,
+      "sha256": "95a4052c7b1ad200a1ebb3da47c51eb63039c172a02fc1a3ab655a8df2a36664"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/utils.ts",
+      "bytes": 177,
+      "sha256": "53f3d3d070f0a9082934da25b875f9499855c2b0693868dd28be8c23d8730f68"
+    },
+    {
+      "path": "source/apps/desktop/src/lib/workspace-rules.ts",
+      "bytes": 756,
+      "sha256": "c1a24263cdb3085e6f68b38fa8c50e0e310bf29bc9284cef802084437ec916d3"
+    },
+    {
+      "path": "source/apps/desktop/src/main.tsx",
+      "bytes": 582,
+      "sha256": "eae064db6ebd99463ff48c97b154f2dbb9b7b85a650f970b7b082474749d44b0"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/AccountManagementPage.tsx",
+      "bytes": 32537,
+      "sha256": "e82525a87e69fc61c1eeec6a77260e9da467a41e479bece7b840039cf23ef3eb"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/ActivityPage.tsx",
+      "bytes": 2773,
+      "sha256": "b7afc970e3a00d7829d72d6f9f1c258a39f48a505ccd96132acf7de0b4283c1b"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/ChatPage.tsx",
+      "bytes": 170797,
+      "sha256": "77d4444007ebd0f48523d78756bf06dcec9567ec0b5c8726196263b730747078"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/CompanionMePage.tsx",
+      "bytes": 4248,
+      "sha256": "9546c3fa982dbd17ebada4ee8696176c9d7064bab92a825d2f5af2574de13f60"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/CompanionWorkPage.tsx",
+      "bytes": 10624,
+      "sha256": "5c5c8a86998ece3198cc273297dd86ae85fc0d9db417ba049a69b9a1891b4b94"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/CompanionsPage.tsx",
+      "bytes": 20517,
+      "sha256": "81b38a62abfeca78d20701a5e5af0f3d3991c5a9bf96651c64cc85230c560f40"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/ConnectorsPage.tsx",
+      "bytes": 32488,
+      "sha256": "a026084625cb949f7497bcd173ec1e7e4692f400b99fee19619e36ef9647581e"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/ConversationsPage.tsx",
+      "bytes": 12182,
+      "sha256": "5bde18f6019eb40ff7ef1787dd5da2e33ef8e3a6a390ed0bf71e89018cf41bec"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/CoworkPage.tsx",
+      "bytes": 108595,
+      "sha256": "a1c339dba6e34a47c7670377d883eb7f47e6386f4de4996bcabf4cfd1b387ed9"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/EmployeeDeskPage.tsx",
+      "bytes": 36227,
+      "sha256": "67b6cc2c3a007a96d54149ba195788dde0e82ba9e9e122c5082e84aba215ce39"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/EmployeesPage.tsx",
+      "bytes": 5109,
+      "sha256": "7096645a527a5a6b2558a494b15fb1df31960fdae3acbcaee063c98e7eecfe9a"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/HomePage.tsx",
+      "bytes": 20888,
+      "sha256": "4809d783f279150ca98ace772132b039a9f36acf059241880804218b1a4ad811"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/IndividualHomePage.tsx",
+      "bytes": 5095,
+      "sha256": "339de54d626e4670e0da887c79a020e6c9ff9c07a06cc998ce8d8e135f21d4bc"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/PlansPage.tsx",
+      "bytes": 2075,
+      "sha256": "574ccc126fb2b408c51c9b2c8fe7e54a9a3b85bec4ee7b0e35d33e9084f713b5"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/ProjectsPage.tsx",
+      "bytes": 3784,
+      "sha256": "0107735711f042a96a8aa5ca6de4c8d014bc8a0dd89c267495c9a2e19e4c97e5"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/SettingsPage.tsx",
+      "bytes": 68313,
+      "sha256": "e4504b6efa193af4a2f718151c542e79f4560d6abbdcefa8251dd3d301286fef"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/SignInPage.tsx",
+      "bytes": 12065,
+      "sha256": "bb98a7afe487802eabf855a0f302a4781009d9af7dc08f30be354423fdb5d1bc"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/TeamsPage.tsx",
+      "bytes": 3825,
+      "sha256": "0ebfafa8cd711b3073e16fd96a76fe00cb561aee8584889a2534553a047705eb"
+    },
+    {
+      "path": "source/apps/desktop/src/pages/WorkforcePage.tsx",
+      "bytes": 126383,
+      "sha256": "5c3693cb701c2249a558b1e9270077d60876ada2083f473164bed6e7665f0c4d"
+    },
+    {
+      "path": "source/apps/desktop/src/roles/RoleProvider.tsx",
+      "bytes": 3352,
+      "sha256": "a1ac4bab10aa9926291732e69712241ef97c497b47e02843c2171083c43a5a9f"
+    },
+    {
+      "path": "source/apps/desktop/src/roles/catalog.ts",
+      "bytes": 1731,
+      "sha256": "f91f2a006586775a266a606d464e425e8455a8fe5409156275c1b05dd805fbf0"
+    },
+    {
+      "path": "source/apps/desktop/src/styles/companions.css",
+      "bytes": 24682,
+      "sha256": "41fb0c5b2d43fd6333f60182f87186abeb0773441f6a08555e5a8f85a69ae45e"
+    },
+    {
+      "path": "source/apps/desktop/src/styles/globals.css",
+      "bytes": 37070,
+      "sha256": "ab0574af1596f296342afd79f45f1060920a7f6466c8b1f0b668a673a27dc7c7"
+    },
+    {
+      "path": "source/apps/desktop/src/theme/ThemeProvider.tsx",
+      "bytes": 1615,
+      "sha256": "636dbb01c71ba798664106920040f73eec7824dd16fa654dfbd20b2db21ca333"
+    },
+    {
+      "path": "source/apps/desktop/src/vite-env.d.ts",
+      "bytes": 234,
+      "sha256": "f409c73ef9dc853eed3c44aaa51bdc91fdd2f7a93baadd6bf9f65407d237f920"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/.gitignore",
+      "bytes": 20,
+      "sha256": "584210e90917d738ff61af9962ef1717d5ae7cc0549ffb80907731acd22e6cd6"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/Cargo.lock",
+      "bytes": 126217,
+      "sha256": "d95606db60f062ac99b41dad8bdecfbba0f2ec1ed1cef24c0c96bf932b72bf13"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/Cargo.toml",
+      "bytes": 421,
+      "sha256": "bae4f81a4f745aa9eb8d32607e4ba503f91bbc0df59251a623b3da866fba5127"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/app-icon.png",
+      "bytes": 16205,
+      "sha256": "6f920f02c72255ca503928db452612f43276cc95ec64da6d0b3c4fddb6e1fada"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/build.rs",
+      "bytes": 39,
+      "sha256": "487059eaf8a947b80f20a9aacac038a5047b2ad69d2401b827376c67d6fe847f"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/capabilities/default.json",
+      "bytes": 306,
+      "sha256": "8e86e483d9be945720b63a2a328cfe4494b08e3822a9920e24bbe4a6e941d04e"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/128x128.png",
+      "bytes": 3685,
+      "sha256": "28ff2793cc2683b777b569775bf66b76909abbfb3d2bf61c18a533925d506dd3"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/128x128@2x.png",
+      "bytes": 7654,
+      "sha256": "4625df762f0ba6390d329a0d733c486456f1b009a285490942038a8a91fb0dcb"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/32x32.png",
+      "bytes": 903,
+      "sha256": "3a706ee4362eb29e6142c4ecb14755f97e4335c32bed78d503fc9985c9cef6f5"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/64x64.png",
+      "bytes": 1853,
+      "sha256": "fc320785a1d7fecb8b343318fc116f8d56ec068b7aa1ad19d41f63a013ce3986"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/Square107x107Logo.png",
+      "bytes": 3080,
+      "sha256": "617e801ba2a8e77150a65bd8abcf433776a77bbb87e5635b6a1db729b94225eb"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/Square142x142Logo.png",
+      "bytes": 4087,
+      "sha256": "2dfaf75fe8bdde570ff31c797196a6736039c63087a701a36f4aa2b716e9dd3e"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/Square150x150Logo.png",
+      "bytes": 4296,
+      "sha256": "ff70af0498c57d1a8da4f39da9729e1bd47e033cdc972d84b8bd284186b03cfd"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/Square284x284Logo.png",
+      "bytes": 8550,
+      "sha256": "f3fc0d42de83678e44d748b542ae74d315f3bf2a058cd9ce341101f2bc7bfffd"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/Square30x30Logo.png",
+      "bytes": 847,
+      "sha256": "ccae16d26ed77bd1bd7dbd5f1ff91ebdfa13096a8715925ffaa6dc22d03f29b2"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/Square310x310Logo.png",
+      "bytes": 9450,
+      "sha256": "0aff47644f81c995ece7a8c188f50cb7533e2644bc5717c0b9210f879095c325"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/Square44x44Logo.png",
+      "bytes": 1243,
+      "sha256": "f9c6a2a406b4c21a823a4c184da2fec8c7c019f2ccd83c97a0c935c83e201e45"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/Square71x71Logo.png",
+      "bytes": 2085,
+      "sha256": "051cd4b858e2a2818e580823e972d364c7c478dc37a8f6b365e145d2c832f409"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/Square89x89Logo.png",
+      "bytes": 2563,
+      "sha256": "4fe48d05d3781fc06facaba1e6472d0ef813e1e66757cd2e65ad8cdd4d1b8fb2"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/StoreLogo.png",
+      "bytes": 1456,
+      "sha256": "47a70b575df435913a6333ea5cbeb255fdac369ca145c02f07c079554d0ae1e3"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-anydpi-v26/ic_launcher.xml",
+      "bytes": 261,
+      "sha256": "760d4b8a06bf7163dd010c33ad2cac9e4a75fa0177afaba042f83e311eef0c3e"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-hdpi/ic_launcher.png",
+      "bytes": 1319,
+      "sha256": "7d58e1c210a1099832fa965cfece864d15101a9d65778b6fe5918ec37d7ca007"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-hdpi/ic_launcher_foreground.png",
+      "bytes": 4691,
+      "sha256": "86f67bb08e0c2ea6d25672d0221f3fdf68285ec7e56b72c629ac5a1a21681d72"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-hdpi/ic_launcher_round.png",
+      "bytes": 1518,
+      "sha256": "9325787af19da92cbab72c603cc57e15357700e04cc67d7a622ec51901962282"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-mdpi/ic_launcher.png",
+      "bytes": 1269,
+      "sha256": "4dedea34079f65235a308f1ee28c10dbf242c7c288c7bd2204108017ac68eb53"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-mdpi/ic_launcher_foreground.png",
+      "bytes": 3077,
+      "sha256": "a802acb03402bc64406fdd9a758cffb545343a9b87aec63d9a7c9eedbbf68bd2"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-mdpi/ic_launcher_round.png",
+      "bytes": 1477,
+      "sha256": "70f43b9be64971940e6de63676b91202e707f2b5394e3c9962cfcb9d334ce638"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-xhdpi/ic_launcher.png",
+      "bytes": 2652,
+      "sha256": "07ef93ef52efcadbfd0ca0e36587b6601fe2376dd4191e86c8bad71e9575bbc2"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-xhdpi/ic_launcher_foreground.png",
+      "bytes": 6344,
+      "sha256": "0bcf0cac07c04374ad651c7522b998e0a8afe2fe7cd0229c1ae9798cdb023760"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-xhdpi/ic_launcher_round.png",
+      "bytes": 3064,
+      "sha256": "e9418744058254b4b17408c48a70459ba39afab08ce08ca9d4a4c02c4d32cbe3"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-xxhdpi/ic_launcher.png",
+      "bytes": 4014,
+      "sha256": "2713ba9185388e47c666cee1202a7e79b2bc88bfae0e25a2d409b406098017d7"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-xxhdpi/ic_launcher_foreground.png",
+      "bytes": 9972,
+      "sha256": "7ad8ed22af7ab1646662cfc245abeed994559b4983211ef18fb89caf6eb289fc"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-xxhdpi/ic_launcher_round.png",
+      "bytes": 4673,
+      "sha256": "270160a3ed3f1b19b0bdabea8355f6b82b24c0cd508fe376b001d13db588bfd5"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-xxxhdpi/ic_launcher.png",
+      "bytes": 5422,
+      "sha256": "82911c804e8fe0d386a1200f64a58b071b4f783e3d01595c7e6ff6814956e179"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-xxxhdpi/ic_launcher_foreground.png",
+      "bytes": 13833,
+      "sha256": "69a5819cc461d8ffef4fa920c4684f8247f2e62c29dc9f6ec5db5d1661278761"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/mipmap-xxxhdpi/ic_launcher_round.png",
+      "bytes": 6283,
+      "sha256": "b3813a1800c676b309303d94773420e2bf8bdbfd096d15c5c22d1d0b88d42571"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/android/values/ic_launcher_background.xml",
+      "bytes": 115,
+      "sha256": "0687336f0ccc6f7ee09c7c95110667c63b75931238df779a21af401fb864cd34"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/icon.icns",
+      "bytes": 79013,
+      "sha256": "a12fbbb2a04ae3b40502c849adf82d9f4b49981155158f610a1d2710c8f602b7"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/icon.ico",
+      "bytes": 14428,
+      "sha256": "6c21618c76a40d3a5151cfee5015bc31d25ebe142171eae070109d0c3323bd34"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/icon.png",
+      "bytes": 17014,
+      "sha256": "76f922aeb99e0d516edf7faffef7bf4a0f3f416933f7ff32bcf55cbb5877dfdb"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-20x20@1x.png",
+      "bytes": 545,
+      "sha256": "a35b449efc308e8a47240a5f868c40cdeada4c9e57104b04e0aed8462dffbd94"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-20x20@2x-1.png",
+      "bytes": 1134,
+      "sha256": "23f279a5975112e3c4bf7472f3b3110c2df04d5023421ca48343c4afc1219978"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-20x20@2x.png",
+      "bytes": 1134,
+      "sha256": "23f279a5975112e3c4bf7472f3b3110c2df04d5023421ca48343c4afc1219978"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-20x20@3x.png",
+      "bytes": 1713,
+      "sha256": "72c1959ffa105e3dd876803e6f6c8691b0fef2129329b0004180131d9af101fa"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-29x29@1x.png",
+      "bytes": 799,
+      "sha256": "d080435cfa6e7d4aed5cc18f2b89bfb254681d50a9daf3d6f9b6ebbf19dd89f5"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-29x29@2x-1.png",
+      "bytes": 1631,
+      "sha256": "8d2707b5e1a69ee8991a89b400ca8dfcc2518fbb55aca04eb7fa3fc5c6a6c401"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-29x29@2x.png",
+      "bytes": 1631,
+      "sha256": "8d2707b5e1a69ee8991a89b400ca8dfcc2518fbb55aca04eb7fa3fc5c6a6c401"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-29x29@3x.png",
+      "bytes": 2524,
+      "sha256": "3f45ffe3ecf288ff71f680baef6b451f152198f4750d87ed4b529772354aa5de"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-40x40@1x.png",
+      "bytes": 1134,
+      "sha256": "23f279a5975112e3c4bf7472f3b3110c2df04d5023421ca48343c4afc1219978"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-40x40@2x-1.png",
+      "bytes": 2314,
+      "sha256": "634fbbfe69ad1271b6222cb0d27e0b915d17723ebe21285e7d057bfef19b3f45"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-40x40@2x.png",
+      "bytes": 2314,
+      "sha256": "634fbbfe69ad1271b6222cb0d27e0b915d17723ebe21285e7d057bfef19b3f45"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-40x40@3x.png",
+      "bytes": 3481,
+      "sha256": "cbf70b81f6dce3a2409b562a17b00e3654a04c9dda1fcf863fc35a89fec6739d"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-512@2x.png",
+      "bytes": 20265,
+      "sha256": "842ebd6e9149bce22402a3cedfa8edea5aeada910ba0446ea630f1b18642f416"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-60x60@2x.png",
+      "bytes": 3481,
+      "sha256": "cbf70b81f6dce3a2409b562a17b00e3654a04c9dda1fcf863fc35a89fec6739d"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-60x60@3x.png",
+      "bytes": 5201,
+      "sha256": "17d289bd0bcfa12e7d1449db5e6dbd1099734a24c2a1ef8e9c5036523eac8fc7"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-76x76@1x.png",
+      "bytes": 2201,
+      "sha256": "2f0880be01c5129bdae32086c9617dc5a4a563c796ab4a590da6438357e4dae2"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-76x76@2x.png",
+      "bytes": 4389,
+      "sha256": "5b52b0cb191baba3c4ee8d405da01e0aec0e3d3222f3ea2f846b5026fca55434"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/icons/ios/AppIcon-83.5x83.5@2x.png",
+      "bytes": 4841,
+      "sha256": "f8a3d79499ca30872b8dcc79b6b15178424fa924e00349d10030d0207ffda7ac"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/src/lib.rs",
+      "bytes": 19705,
+      "sha256": "628161849341123a8e1c1fd55a75c64279d13efa4e5596de710c791417d101ee"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/src/main.rs",
+      "bytes": 111,
+      "sha256": "ad143243c45d3ec938b0626e7e6ebb72c96aa38c80962291a7d53ecbfd0fa0e2"
+    },
+    {
+      "path": "source/apps/desktop/src-tauri/tauri.conf.json",
+      "bytes": 1443,
+      "sha256": "bfa0122b86535521e90f6a00113489a6bcbb1a21c52d34ca90658aaf64ee6a18"
+    },
+    {
+      "path": "source/apps/desktop/tsconfig.json",
+      "bytes": 740,
+      "sha256": "0ed954d196d2a4583a9d2077621e43b2179ccc08c58809216204781a064788d0"
+    },
+    {
+      "path": "source/apps/desktop/tsconfig.node.json",
+      "bytes": 292,
+      "sha256": "26aa294203e465b1928644cf442ed4e6dc1ece1090978d857830016b226646a1"
+    },
+    {
+      "path": "source/apps/desktop/vite.config.ts",
+      "bytes": 685,
+      "sha256": "5098611634c2e202759120ff658b9190a7573628fa701e99f43892068ddd649a"
+    },
+    {
+      "path": "source/package.json",
+      "bytes": 869,
+      "sha256": "f8667950999ed8a5a04e2ca10d71cf86a9a8c2cf3f91f8a3652ec3d748fe2c30"
+    },
+    {
+      "path": "source/packages/shared/package.json",
+      "bytes": 430,
+      "sha256": "0da1cb90bc5792acede9f1d5c96197ac470c70aa40cd1ea82deb12e42fe9eded"
+    },
+    {
+      "path": "source/packages/shared/src/account.ts",
+      "bytes": 4342,
+      "sha256": "f73135c14528d2ed29a2f03e0dc236248f57e836a5f49b0b5d44a55c7cfbc6cb"
+    },
+    {
+      "path": "source/packages/shared/src/api-contract.ts",
+      "bytes": 13902,
+      "sha256": "eed73047d0b6485ee375a70b99a1df723785316ac7b2d5af2830c28402d1936e"
+    },
+    {
+      "path": "source/packages/shared/src/entities.ts",
+      "bytes": 6944,
+      "sha256": "ca872e7629ab1dfd4c07ed4b0ac7f767fdecf3f89053b5d308f94ef40373ed91"
+    },
+    {
+      "path": "source/packages/shared/src/ids.test.ts",
+      "bytes": 365,
+      "sha256": "dc8fb9524d3b87a34243676eb4aadc54768196b10cb4d8e248abd22d90928087"
+    },
+    {
+      "path": "source/packages/shared/src/ids.ts",
+      "bytes": 1256,
+      "sha256": "8d38f077cb1d365cf4f432b8b581c4c191cf8bdf25b6e5ef5b7261d8cefe72df"
+    },
+    {
+      "path": "source/packages/shared/src/index.ts",
+      "bytes": 3565,
+      "sha256": "7834b63a39a9b9e195a93c2777480a2396f2fc8521725cf25e3e3496dd64fec5"
+    },
+    {
+      "path": "source/packages/shared/tsconfig.json",
+      "bytes": 203,
+      "sha256": "116c2b8e3c0f4a24267b56e02c8b8b532e6716e210f113cbe6fce6e3ddd51f1e"
+    },
+    {
+      "path": "source/pnpm-lock.yaml",
+      "bytes": 135194,
+      "sha256": "67f98473f44a7708dcf78df333a8f0cd9043a33dfe6fd973974a8b346e819715"
+    },
+    {
+      "path": "source/pnpm-workspace.yaml",
+      "bytes": 51,
+      "sha256": "394e0a64bd19036910fca1a27f8c5598e903ae982b63d0b5419b1dffb4fb5631"
+    },
+    {
+      "path": "source/tsconfig.base.json",
+      "bytes": 540,
+      "sha256": "ce8d88563e4ac51c57fccd2e7a21a716d34162b05c1165a0dd781e36c8e7ba9b"
+    },
+    {
+      "path": "version-checksums.json",
+      "bytes": 589,
+      "sha256": "1b9b758b0e7870dd0fe81c30124d78f52fb3a58ae9186af30efb3d5362fb2468"
+    }
+  ]
+}

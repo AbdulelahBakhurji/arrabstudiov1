@@ -1,12 +1,28 @@
 {
   "identifier": "default",
   "description": "Main window capabilities",
-  "windows": ["main"],
+  "windows": ["main", "agent-presence", "companion-panel"],
   "permissions": [
     "core:default",
+    "core:event:default",
+    "core:tray:default",
+    "core:menu:default",
     "core:window:allow-start-dragging",
     "core:window:allow-maximize",
     "core:window:allow-toggle-maximize",
-    "core:webview:deny-internal-toggle-devtools"
+    "core:window:allow-create",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-outer-position",
+    "core:window:allow-outer-size",
+    "core:window:allow-current-monitor",
+    "core:webview:deny-internal-toggle-devtools",
+    "deep-link:default",
+    "notification:default"
   ]
 }

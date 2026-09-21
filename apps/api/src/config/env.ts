@@ -71,6 +71,50 @@ export interface ApiEnv {
   githubAppSlug: string | undefined;
   /** Override GitHub OAuth redirect URI. */
   githubOAuthRedirectUri: string | undefined;
+  /** GitLab / Bitbucket / Linear / Slack / Notion OAuth clients (optional). */
+  gitlabClientId: string | undefined;
+  gitlabClientSecret: string | undefined;
+  gitlabOAuthRedirectUri: string | undefined;
+  bitbucketClientId: string | undefined;
+  bitbucketClientSecret: string | undefined;
+  bitbucketOAuthRedirectUri: string | undefined;
+  linearClientId: string | undefined;
+  linearClientSecret: string | undefined;
+  linearOAuthRedirectUri: string | undefined;
+  slackClientId: string | undefined;
+  slackClientSecret: string | undefined;
+  slackOAuthRedirectUri: string | undefined;
+  notionClientId: string | undefined;
+  notionClientSecret: string | undefined;
+  notionOAuthRedirectUri: string | undefined;
+  /** WHOOP OAuth client (optional). */
+  whoopClientId: string | undefined;
+  whoopClientSecret: string | undefined;
+  whoopOAuthRedirectUri: string | undefined;
+  /** Fitbit OAuth client (optional). */
+  fitbitClientId: string | undefined;
+  fitbitClientSecret: string | undefined;
+  fitbitOAuthRedirectUri: string | undefined;
+  /** Google Drive OAuth (falls back to GOOGLE_CLIENT_*). */
+  googleDriveClientId: string | undefined;
+  googleDriveClientSecret: string | undefined;
+  googleDriveOAuthRedirectUri: string | undefined;
+  /** Google Calendar OAuth (falls back to GOOGLE_CLIENT_*). */
+  googleCalendarClientId: string | undefined;
+  googleCalendarClientSecret: string | undefined;
+  googleCalendarOAuthRedirectUri: string | undefined;
+  /** Figma OAuth client (optional). */
+  figmaClientId: string | undefined;
+  figmaClientSecret: string | undefined;
+  figmaOAuthRedirectUri: string | undefined;
+  /** Meta WhatsApp Cloud API webhook verify token (must match Meta App Dashboard). */
+  whatsappWebhookVerifyToken: string | undefined;
+  /** Meta App Secret — used to validate X-Hub-Signature-256 on inbound webhooks. */
+  whatsappAppSecret: string | undefined;
+  /** Platform Finnhub API key (used when no per-workspace Finnhub connector). */
+  finnhubApiKey: string | undefined;
+  /** Shared secret for POST /v1/connectors/finnhub/webhook (X-Finnhub-Secret). */
+  finnhubWebhookSecret: string | undefined;
 }
 
 const LOG_LEVELS = new Set(["fatal", "error", "warn", "info", "debug", "trace"]);
@@ -238,6 +282,51 @@ export function loadApiEnv(): ApiEnv {
       readOptionalEnv("GITHUB_APP_CLIENT_SECRET") ?? readOptionalEnv("GITHUB_CLIENT_SECRET"),
     githubAppSlug: readOptionalEnv("GITHUB_APP_SLUG"),
     githubOAuthRedirectUri: readOptionalEnv("GITHUB_OAUTH_REDIRECT_URI"),
+    gitlabClientId: readOptionalEnv("GITLAB_CLIENT_ID"),
+    gitlabClientSecret: readOptionalEnv("GITLAB_CLIENT_SECRET"),
+    gitlabOAuthRedirectUri: readOptionalEnv("GITLAB_OAUTH_REDIRECT_URI"),
+    bitbucketClientId: readOptionalEnv("BITBUCKET_CLIENT_ID"),
+    bitbucketClientSecret: readOptionalEnv("BITBUCKET_CLIENT_SECRET"),
+    bitbucketOAuthRedirectUri: readOptionalEnv("BITBUCKET_OAUTH_REDIRECT_URI"),
+    linearClientId: readOptionalEnv("LINEAR_CLIENT_ID"),
+    linearClientSecret: readOptionalEnv("LINEAR_CLIENT_SECRET"),
+    linearOAuthRedirectUri: readOptionalEnv("LINEAR_OAUTH_REDIRECT_URI"),
+    slackClientId: readOptionalEnv("SLACK_CLIENT_ID"),
+    slackClientSecret: readOptionalEnv("SLACK_CLIENT_SECRET"),
+    slackOAuthRedirectUri: readOptionalEnv("SLACK_OAUTH_REDIRECT_URI"),
+    notionClientId: readOptionalEnv("NOTION_CLIENT_ID"),
+    notionClientSecret: readOptionalEnv("NOTION_CLIENT_SECRET"),
+    notionOAuthRedirectUri: readOptionalEnv("NOTION_OAUTH_REDIRECT_URI"),
+    whoopClientId: readOptionalEnv("WHOOP_CLIENT_ID"),
+    whoopClientSecret: readOptionalEnv("WHOOP_CLIENT_SECRET"),
+    whoopOAuthRedirectUri: readOptionalEnv("WHOOP_REDIRECT_URI") ?? readOptionalEnv("WHOOP_OAUTH_REDIRECT_URI"),
+    fitbitClientId: readOptionalEnv("FITBIT_CLIENT_ID"),
+    fitbitClientSecret: readOptionalEnv("FITBIT_CLIENT_SECRET"),
+    fitbitOAuthRedirectUri:
+      readOptionalEnv("FITBIT_REDIRECT_URI") ?? readOptionalEnv("FITBIT_OAUTH_REDIRECT_URI"),
+    googleDriveClientId:
+      readOptionalEnv("GOOGLE_DRIVE_CLIENT_ID") ?? readOptionalEnv("GOOGLE_CLIENT_ID"),
+    googleDriveClientSecret:
+      readOptionalEnv("GOOGLE_DRIVE_CLIENT_SECRET") ?? readOptionalEnv("GOOGLE_CLIENT_SECRET"),
+    googleDriveOAuthRedirectUri:
+      readOptionalEnv("GOOGLE_DRIVE_REDIRECT_URI") ??
+      readOptionalEnv("GOOGLE_DRIVE_OAUTH_REDIRECT_URI"),
+    googleCalendarClientId:
+      readOptionalEnv("GOOGLE_CALENDAR_CLIENT_ID") ?? readOptionalEnv("GOOGLE_CLIENT_ID"),
+    googleCalendarClientSecret:
+      readOptionalEnv("GOOGLE_CALENDAR_CLIENT_SECRET") ?? readOptionalEnv("GOOGLE_CLIENT_SECRET"),
+    googleCalendarOAuthRedirectUri:
+      readOptionalEnv("GOOGLE_CALENDAR_REDIRECT_URI") ??
+      readOptionalEnv("GOOGLE_CALENDAR_OAUTH_REDIRECT_URI"),
+    figmaClientId: readOptionalEnv("FIGMA_CLIENT_ID"),
+    figmaClientSecret: readOptionalEnv("FIGMA_CLIENT_SECRET"),
+    figmaOAuthRedirectUri:
+      readOptionalEnv("FIGMA_REDIRECT_URI") ?? readOptionalEnv("FIGMA_OAUTH_REDIRECT_URI"),
+    whatsappWebhookVerifyToken: readOptionalEnv("WHATSAPP_WEBHOOK_VERIFY_TOKEN"),
+    whatsappAppSecret:
+      readOptionalEnv("WHATSAPP_APP_SECRET") ?? readOptionalEnv("META_APP_SECRET"),
+    finnhubApiKey: readOptionalEnv("FINNHUB_API_KEY"),
+    finnhubWebhookSecret: readOptionalEnv("FINNHUB_WEBHOOK_SECRET"),
   };
 }
 

@@ -17,17 +17,42 @@ import type {
   GithubRepoMetaResponse,
   GithubTreeResponse,
   ListEmailMessagesResponse,
+  ListWhatsAppMessagesResponse,
   SendEmailRequest,
   SendEmailResponse,
+  SendWhatsAppRequest,
+  SendWhatsAppResponse,
   SshExecRequest,
   SshExecResponse,
   StartGmailOAuthResponse,
   WorkspaceId,
 } from "@arrab/shared";
 import { brandId } from "@arrab/shared";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { decryptField, encryptField } from "../lib/field-crypto.js";
 import type { WorkspaceCommandService } from "./workspace-commands.js";
+
+/** Prevent accidental double-sends when a stream falls back mid-turn. */
+const RECENT_EMAIL_SENDS = new Map<string, { at: number; response: SendEmailResponse }>();
+const EMAIL_SEND_DEDUP_MS = 90_000;
+
+function emailSendFingerprint(
+  connectorId: string,
+  body: SendEmailRequest,
+): string {
+  return createHash("sha256")
+    .update(
+      [
+        connectorId,
+        body.to.trim().toLowerCase(),
+        (body.cc ?? "").trim().toLowerCase(),
+        body.subject.trim(),
+        (body.text ?? "").trim(),
+        (body.html ?? "").trim(),
+      ].join("\n"),
+    )
+    .digest("hex");
+}
 import {
   buildEmailSecret,
   listEmailMailboxes,
@@ -81,6 +106,31 @@ import {
   parseSshSecret,
   verifySshSecret,
 } from "./ssh-connector.js";
+import {
+  buildWhatsAppSecret,
+  extractWhatsAppInbound,
+  parseWhatsAppSecret,
+  sendWhatsAppText,
+  verifyWhatsAppSecret,
+  verifyWhatsAppWebhookSignature,
+  type WhatsAppInboundMessage as WhatsAppInboundStored,
+} from "./whatsapp-connector.js";
+import {
+  fetchFinnhubNews,
+  fetchFinnhubQuote,
+  verifyFinnhubApiKey,
+  verifyFinnhubWebhookSecret,
+} from "./finnhub-connector.js";
+import {
+  buildGenericAuthUrl,
+  exchangeGenericAuthCode,
+  genericAccessTokenFromSecret,
+  isGenericOAuthProvider,
+  newGenericOAuthState,
+  parseGenericOAuthSecret,
+  type GenericOAuthConfig,
+  type GenericOAuthProvider,
+} from "./generic-oauth.js";
 
 const AVAILABLE = new Set<ConnectorProvider>([
   "github",
@@ -93,7 +143,16 @@ const AVAILABLE = new Set<ConnectorProvider>([
   "outlook",
   "email",
   "ssh",
+  "whatsapp",
+  "finnhub",
+  "whoop",
+  "fitbit",
+  "google_drive",
+  "google_calendar",
+  "figma",
 ]);
+
+const WHATSAPP_INBOUND_MAX = 200;
 
 type PendingOAuth = {
   state: string;
@@ -113,6 +172,9 @@ export class ConnectorService {
   private readonly pendingGmailOAuth = new Map<string, PendingOAuth>();
   private readonly pendingOutlookOAuth = new Map<string, PendingOAuth>();
   private readonly pendingGithubOAuth = new Map<string, PendingOAuth>();
+  private readonly pendingGenericOAuth = new Map<string, PendingOAuth & { provider: GenericOAuthProvider }>();
+  /** Recent inbound WhatsApp messages keyed by phone_number_id. */
+  private readonly whatsappInbound = new Map<string, WhatsAppInboundStored[]>();
 
   constructor(
     private readonly persistence: Persistence,
@@ -121,6 +183,11 @@ export class ConnectorService {
     private readonly siteUrl = "http://127.0.0.1:8787",
     private readonly microsoft?: MicrosoftOAuthConfig | null,
     private readonly githubOAuth?: GithubOAuthConfig | null,
+    private readonly whatsappWebhookVerifyToken?: string | null,
+    private readonly whatsappAppSecret?: string | null,
+    private readonly finnhubApiKey?: string | null,
+    private readonly finnhubWebhookSecret?: string | null,
+    private readonly genericOAuth: Partial<Record<GenericOAuthProvider, GenericOAuthConfig>> = {},
   ) {}
 
   private openConnector(record: ConnectorSecretRecord): ConnectorSecretRecord {
@@ -145,12 +212,45 @@ export class ConnectorService {
     }
   }
 
+  /** Create or replace the workspace connector for an OAuth provider (reconnect-safe). */
+  private async upsertOAuthConnector(
+    record: Omit<ConnectorSecretRecord, "id"> & { id?: string },
+  ): Promise<void> {
+    const existing = (await this.persistence.connectors.list()).find(
+      (item) => item.provider === record.provider,
+    );
+    if (existing) {
+      await this.saveConnector(
+        {
+          ...this.openConnector(existing),
+          ...record,
+          id: existing.id,
+          connectedAt: existing.connectedAt || record.connectedAt,
+        },
+        "update",
+      );
+      return;
+    }
+    await this.saveConnector(
+      {
+        ...record,
+        id: record.id ?? randomUUID(),
+      } as ConnectorSecretRecord,
+      "create",
+    );
+  }
+
   async list(): Promise<ConnectorPublic[]> {
     const items = await this.persistence.connectors.list();
     return items.map(toPublic);
   }
 
-  catalog(): Array<{ provider: ConnectorProvider; available: boolean; description: string }> {
+  catalog(): Array<{
+    provider: ConnectorProvider;
+    available: boolean;
+    description: string;
+    webhook?: boolean;
+  }> {
     const providers: Array<{ provider: ConnectorProvider; description: string }> = [
       {
         provider: "github",
@@ -193,10 +293,46 @@ export class ConnectorService {
         provider: "ssh",
         description: "Connect a remote SSH host with password or private key — list files and run commands.",
       },
+      {
+        provider: "whatsapp",
+        description:
+          "WhatsApp Business Cloud API — connect a Business number; agents can receive webhooks and send replies.",
+      },
+      {
+        provider: "finnhub",
+        description:
+          "Finnhub market data — quotes and company news for Trader companions (platform key or workspace API key).",
+      },
+      {
+        provider: "whoop",
+        description:
+          "WHOOP recovery, sleep, strain, and workouts via browser OAuth — connect your band for health companions.",
+      },
+      {
+        provider: "fitbit",
+        description:
+          "Fitbit activity, heart rate, sleep, and weight via browser OAuth — connect your tracker for health companions.",
+      },
+      {
+        provider: "google_drive",
+        description:
+          "Google Drive files via browser OAuth — browse and work with docs your agents create or open.",
+      },
+      {
+        provider: "google_calendar",
+        description:
+          "Google Calendar via browser OAuth — list, create, and update events for scheduling companions.",
+      },
+      {
+        provider: "figma",
+        description:
+          "Figma files via browser OAuth — read designs, metadata, and comments for design companions.",
+      },
     ];
     return providers.map((item) => ({
       ...item,
       available: AVAILABLE.has(item.provider),
+      webhook: item.provider === "whatsapp" || item.provider === "finnhub",
     }));
   }
 
@@ -268,7 +404,7 @@ export class ConnectorService {
         error: null,
         secret: JSON.stringify(secret),
       };
-      await this.saveConnector(record, "create");
+      await this.upsertOAuthConnector(record);
       return {
         redirectUrl: `${site}/app?view=connectors&github=connected`,
       };
@@ -318,7 +454,7 @@ export class ConnectorService {
         error: null,
         secret: JSON.stringify(secret),
       };
-      await this.saveConnector(record, "create");
+      await this.upsertOAuthConnector(record);
       return {
         redirectUrl: `${site}/app?view=connectors&gmail=connected`,
       };
@@ -381,12 +517,80 @@ export class ConnectorService {
         error: null,
         secret: JSON.stringify(secret),
       };
-      await this.saveConnector(record, "create");
+      await this.upsertOAuthConnector(record);
       return {
         redirectUrl: `${site}/app?view=connectors&outlook=connected`,
       };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Outlook connect failed";
+      return fail(message);
+    }
+  }
+
+  startGenericOAuth(provider: GenericOAuthProvider): StartGmailOAuthResponse {
+    const config = this.requireGenericOAuthConfig(provider);
+    this.prunePendingGenericOAuth();
+    const state = newGenericOAuthState();
+    const now = Date.now();
+    this.pendingGenericOAuth.set(`${provider}:${state}`, {
+      provider,
+      state,
+      createdAt: now,
+      expiresAt: now + 15 * 60_000,
+    });
+    return buildGenericAuthUrl(provider, config, state);
+  }
+
+  async completeGenericOAuth(
+    provider: GenericOAuthProvider,
+    input: {
+      code?: string | null;
+      state?: string | null;
+      error?: string | null;
+      errorDescription?: string | null;
+    },
+  ): Promise<{ redirectUrl: string }> {
+    const site = this.siteUrl.replace(/\/$/, "");
+    const fail = (message: string) => ({
+      redirectUrl: `${site}/app?view=connectors&${provider}=error&message=${encodeURIComponent(message)}`,
+    });
+    if (input.error?.trim()) {
+      return fail(input.errorDescription?.trim() || input.error.trim());
+    }
+    const state = input.state?.trim() ?? "";
+    const code = input.code?.trim() ?? "";
+    this.prunePendingGenericOAuth();
+    const pending = this.pendingGenericOAuth.get(`${provider}:${state}`);
+    if (!pending || pending.expiresAt < Date.now()) {
+      this.pendingGenericOAuth.delete(`${provider}:${state}`);
+      return fail(`OAuth session expired — start Connect ${provider} again`);
+    }
+    this.pendingGenericOAuth.delete(`${provider}:${state}`);
+    if (!code) {
+      return fail(`Missing ${provider} authorization code`);
+    }
+    try {
+      const config = this.requireGenericOAuthConfig(provider);
+      const secret = await exchangeGenericAuthCode(provider, config, code);
+      const now = new Date().toISOString();
+      const record: ConnectorSecretRecord = {
+        id: randomUUID(),
+        workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
+        provider,
+        status: "connected",
+        accountLabel: secret.accountLabel,
+        scopes: secret.scopes,
+        connectedAt: now,
+        lastVerifiedAt: now,
+        error: null,
+        secret: JSON.stringify(secret),
+      };
+      await this.upsertOAuthConnector(record);
+      return {
+        redirectUrl: `${site}/app?view=connectors&${provider}=connected`,
+      };
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : `${provider} connect failed`;
       return fail(message);
     }
   }
@@ -404,6 +608,11 @@ export class ConnectorService {
     }
     if (provider === "github" && this.githubOAuth?.clientId && this.githubOAuth?.clientSecret) {
       throw new ValidationError("Use GitHub OAuth to connect GitHub (Connect GitHub button)");
+    }
+    if (isGenericOAuthProvider(provider) && this.genericOAuth[provider]?.clientId) {
+      throw new ValidationError(
+        `Use ${provider} OAuth to connect ${provider} (Connect ${provider} button)`,
+      );
     }
     if (!AVAILABLE.has(provider)) {
       throw new ValidationError(`Connector ${provider} is not available yet`);
@@ -463,12 +672,15 @@ export class ConnectorService {
         return listGitlabProjects(existing.secret, query);
       case "bitbucket":
         return listBitbucketRepos(existing.secret, query);
-      case "linear":
-        return listLinearTeams(existing.secret);
+      case "linear": {
+        const oauth = parseGenericOAuthSecret("linear", existing.secret);
+        const token = oauth ? `Bearer ${oauth.accessToken}` : existing.secret;
+        return listLinearTeams(token);
+      }
       case "slack":
-        return listSlackChannels(existing.secret);
+        return listSlackChannels(genericAccessTokenFromSecret("slack", existing.secret));
       case "notion":
-        return listNotionPages(existing.secret, query);
+        return listNotionPages(genericAccessTokenFromSecret("notion", existing.secret), query);
       case "email": {
         const secret = parseEmailSecret(existing.secret);
         if (!secret) throw new ValidationError("Invalid email connector secret");
@@ -489,6 +701,120 @@ export class ConnectorService {
         if (!secret) throw new ValidationError("Invalid SSH connector secret");
         return listSshHomeEntries(secret, query);
       }
+      case "whatsapp": {
+        const secret = parseWhatsAppSecret(existing.secret);
+        if (!secret) throw new ValidationError("Invalid WhatsApp connector secret");
+        return [
+          {
+            id: secret.phoneNumberId,
+            name: secret.displayPhoneNumber || secret.verifiedName || "WhatsApp Business",
+            url: null,
+            kind: "whatsapp_phone",
+          },
+          {
+            id: secret.wabaId,
+            name: `WABA ${secret.wabaId}`,
+            url: null,
+            kind: "whatsapp_waba",
+          },
+        ];
+      }
+      case "finnhub":
+        return [
+          {
+            id: "quote",
+            name: "Quotes (get_quote)",
+            url: "https://finnhub.io/docs/api/quote",
+            kind: "market_quote",
+          },
+          {
+            id: "news",
+            name: "Company news (get_news)",
+            url: "https://finnhub.io/docs/api/company-news",
+            kind: "market_news",
+          },
+        ];
+      case "whoop":
+        return [
+          {
+            id: "recovery",
+            name: "Recovery",
+            url: "https://developer.whoop.com/api#tag/Recovery",
+            kind: "whoop_recovery",
+          },
+          {
+            id: "sleep",
+            name: "Sleep",
+            url: "https://developer.whoop.com/api#tag/Sleep",
+            kind: "whoop_sleep",
+          },
+          {
+            id: "workout",
+            name: "Workouts",
+            url: "https://developer.whoop.com/api#tag/Workout",
+            kind: "whoop_workout",
+          },
+          {
+            id: "cycle",
+            name: "Cycles / Strain",
+            url: "https://developer.whoop.com/api#tag/Cycle",
+            kind: "whoop_cycle",
+          },
+        ];
+      case "fitbit":
+        return [
+          {
+            id: "activity",
+            name: "Activity",
+            url: "https://dev.fitbit.com/build/reference/web-api/activity/",
+            kind: "fitbit_activity",
+          },
+          {
+            id: "heartrate",
+            name: "Heart rate",
+            url: "https://dev.fitbit.com/build/reference/web-api/heartrate-timeseries/",
+            kind: "fitbit_heartrate",
+          },
+          {
+            id: "sleep",
+            name: "Sleep",
+            url: "https://dev.fitbit.com/build/reference/web-api/sleep/",
+            kind: "fitbit_sleep",
+          },
+          {
+            id: "profile",
+            name: "Profile",
+            url: "https://dev.fitbit.com/build/reference/web-api/user/",
+            kind: "fitbit_profile",
+          },
+        ];
+      case "google_drive":
+        return [
+          {
+            id: "files",
+            name: "My Drive files",
+            url: "https://developers.google.com/drive/api/guides/about-sdk",
+            kind: "google_drive_files",
+          },
+        ];
+      case "google_calendar":
+        return [
+          {
+            id: "primary",
+            name: "Primary calendar",
+            url: "https://developers.google.com/calendar/api/guides/overview",
+            kind: "google_calendar",
+          },
+        ];
+      case "figma":
+        return [
+          {
+            id: "files",
+            name: "Figma files",
+            url: "https://developers.figma.com/docs/rest-api/",
+            kind: "figma_files",
+          },
+        ];
       default:
         return [];
     }
@@ -512,6 +838,51 @@ export class ConnectorService {
     const items = await this.persistence.connectors.list();
     const match = items.find((item) => item.provider === "ssh" && item.status === "connected");
     return match ? toPublic(match) : null;
+  }
+
+  /**
+   * Resolve Finnhub access: workspace connector first, then platform FINNHUB_API_KEY.
+   */
+  async resolveFinnhubAccess(): Promise<{ apiKey: string; accountLabel: string } | null> {
+    const items = await this.persistence.connectors.list();
+    const match = items.find((item) => item.provider === "finnhub" && item.status === "connected");
+    const workspaceKey = match?.secret?.trim();
+    if (workspaceKey) {
+      return {
+        apiKey: workspaceKey,
+        accountLabel: match?.accountLabel?.trim() || "Finnhub",
+      };
+    }
+    const platform = this.finnhubApiKey?.trim();
+    if (platform) {
+      return { apiKey: platform, accountLabel: "Finnhub (platform)" };
+    }
+    return null;
+  }
+
+  async getFinnhubQuote(symbol: string) {
+    const access = await this.resolveFinnhubAccess();
+    if (!access) {
+      throw new ValidationError("Finnhub is not configured — set FINNHUB_API_KEY or Connect Finnhub");
+    }
+    return fetchFinnhubQuote(access.apiKey, symbol);
+  }
+
+  async getFinnhubNews(symbol: string, days = 7) {
+    const access = await this.resolveFinnhubAccess();
+    if (!access) {
+      throw new ValidationError("Finnhub is not configured — set FINNHUB_API_KEY or Connect Finnhub");
+    }
+    return fetchFinnhubNews(access.apiKey, symbol, days);
+  }
+
+  handleFinnhubWebhook(input: {
+    secretHeader?: string | null;
+    payload?: unknown;
+  }): { ok: true; accepted: number } {
+    verifyFinnhubWebhookSecret(this.finnhubWebhookSecret, input.secretHeader);
+    const accepted = input.payload == null ? 0 : 1;
+    return { ok: true, accepted };
   }
 
   async listEmailMessages(
@@ -567,19 +938,35 @@ export class ConnectorService {
 
   async sendEmail(id: string, body: SendEmailRequest): Promise<SendEmailResponse> {
     const connector = await this.requireMailConnector(id);
+    const fingerprint = emailSendFingerprint(connector.id, body);
+    const cached = RECENT_EMAIL_SENDS.get(fingerprint);
+    const now = Date.now();
+    if (cached && now - cached.at < EMAIL_SEND_DEDUP_MS) {
+      return cached.response;
+    }
+    // Drop stale entries occasionally.
+    if (RECENT_EMAIL_SENDS.size > 200) {
+      for (const [key, value] of RECENT_EMAIL_SENDS) {
+        if (now - value.at >= EMAIL_SEND_DEDUP_MS) RECENT_EMAIL_SENDS.delete(key);
+      }
+    }
+
+    let response: SendEmailResponse;
     if (connector.provider === "gmail") {
       const secret = parseGmailSecret(connector.secret);
       if (!secret) throw new ValidationError("Invalid Gmail connector secret");
-      return sendGmailMessage(this.requireGoogleConfig(), secret, body);
-    }
-    if (connector.provider === "outlook") {
+      response = await sendGmailMessage(this.requireGoogleConfig(), secret, body);
+    } else if (connector.provider === "outlook") {
       const secret = parseOutlookSecret(connector.secret);
       if (!secret) throw new ValidationError("Invalid Outlook connector secret");
-      return sendOutlookMessage(this.requireMicrosoftConfig(), secret, body);
+      response = await sendOutlookMessage(this.requireMicrosoftConfig(), secret, body);
+    } else {
+      const secret = parseEmailSecret(connector.secret);
+      if (!secret) throw new ValidationError("Invalid email connector secret");
+      response = await sendEmailMessage(secret, body);
     }
-    const secret = parseEmailSecret(connector.secret);
-    if (!secret) throw new ValidationError("Invalid email connector secret");
-    return sendEmailMessage(secret, body);
+    RECENT_EMAIL_SENDS.set(fingerprint, { at: now, response });
+    return response;
   }
 
   async arrangeEmail(id: string, body: ArrangeEmailRequest): Promise<ArrangeEmailResponse> {
@@ -607,6 +994,97 @@ export class ConnectorService {
       connected.find((item) => item.provider === "email") ??
       null
     );
+  }
+
+  async sendWhatsApp(id: string, body: SendWhatsAppRequest): Promise<SendWhatsAppResponse> {
+    const connector = await this.loadConnector(id);
+    if (!connector) throw new NotFoundError("Connector", id);
+    if (connector.provider !== "whatsapp") {
+      throw new ValidationError("Connector is not WhatsApp");
+    }
+    const secret = parseWhatsAppSecret(connector.secret);
+    if (!secret) throw new ValidationError("Invalid WhatsApp connector secret");
+    return sendWhatsAppText(secret, body);
+  }
+
+  async listWhatsAppMessages(
+    id: string,
+    limit = 40,
+  ): Promise<ListWhatsAppMessagesResponse> {
+    const connector = await this.loadConnector(id);
+    if (!connector) throw new NotFoundError("Connector", id);
+    if (connector.provider !== "whatsapp") {
+      throw new ValidationError("Connector is not WhatsApp");
+    }
+    const secret = parseWhatsAppSecret(connector.secret);
+    if (!secret) throw new ValidationError("Invalid WhatsApp connector secret");
+    const items = this.whatsappInbound.get(secret.phoneNumberId) ?? [];
+    const capped = Math.max(1, Math.min(100, limit));
+    return { items: items.slice(0, capped) };
+  }
+
+  verifyWhatsAppWebhookChallenge(query: {
+    "hub.mode"?: string;
+    "hub.verify_token"?: string;
+    "hub.challenge"?: string;
+  }): string {
+    const mode = query["hub.mode"];
+    const token = query["hub.verify_token"];
+    const challenge = query["hub.challenge"];
+    const expected = this.whatsappWebhookVerifyToken?.trim();
+    if (!expected) {
+      throw new ValidationError("WHATSAPP_WEBHOOK_VERIFY_TOKEN is not configured on the API");
+    }
+    if (mode !== "subscribe" || token !== expected || !challenge) {
+      throw new ValidationError("WhatsApp webhook verification failed");
+    }
+    return challenge;
+  }
+
+  async handleWhatsAppWebhook(input: {
+    rawBody: string;
+    signatureHeader: string | undefined;
+    payload: unknown;
+  }): Promise<{ ok: true; accepted: number }> {
+    const appSecret = this.whatsappAppSecret?.trim();
+    if (appSecret) {
+      const ok = verifyWhatsAppWebhookSignature(input.rawBody, input.signatureHeader, appSecret);
+      if (!ok) {
+        throw new ValidationError("Invalid WhatsApp webhook signature");
+      }
+    }
+
+    const phoneIds = new Set(
+      extractWhatsAppInbound(input.payload)
+        .map((item) => item.phoneNumberId)
+        .filter(Boolean),
+    );
+    const connectors = await this.persistence.connectors.list();
+    const byPhone = new Map<string, string>();
+    for (const record of connectors) {
+      if (record.provider !== "whatsapp") continue;
+      const opened = this.openConnector(record);
+      const secret = parseWhatsAppSecret(opened.secret);
+      if (secret?.phoneNumberId) {
+        byPhone.set(secret.phoneNumberId, record.id);
+      }
+    }
+
+    let accepted = 0;
+    for (const phoneNumberId of phoneIds.size ? phoneIds : [""]) {
+      const connectorId = phoneNumberId ? byPhone.get(phoneNumberId) ?? null : null;
+      const inbound = extractWhatsAppInbound(input.payload, connectorId);
+      for (const message of inbound) {
+        const key = message.phoneNumberId || phoneNumberId;
+        if (!key) continue;
+        const list = this.whatsappInbound.get(key) ?? [];
+        if (list.some((item) => item.id === message.id)) continue;
+        list.unshift(message);
+        this.whatsappInbound.set(key, list.slice(0, WHATSAPP_INBOUND_MAX));
+        accepted += 1;
+      }
+    }
+    return { ok: true, accepted };
   }
 
   async getSecret(id: string): Promise<string | null> {
@@ -690,6 +1168,20 @@ export class ConnectorService {
     };
   }
 
+  private requireGenericOAuthConfig(provider: GenericOAuthProvider): GenericOAuthConfig {
+    const config = this.genericOAuth[provider];
+    const clientId = config?.clientId?.trim() ?? "";
+    const clientSecret = config?.clientSecret?.trim() ?? "";
+    const redirectUri = config?.redirectUri?.trim() ?? "";
+    if (!clientId || !clientSecret || !redirectUri) {
+      const envPrefix = provider.toUpperCase();
+      throw new ValidationError(
+        `${provider} OAuth is not configured. Set ${envPrefix}_CLIENT_ID and ${envPrefix}_CLIENT_SECRET on the API.`,
+      );
+    }
+    return { clientId, clientSecret, redirectUri };
+  }
+
   private prunePendingGmailOAuth(): void {
     const now = Date.now();
     for (const [state, pending] of this.pendingGmailOAuth) {
@@ -713,6 +1205,15 @@ export class ConnectorService {
     for (const [state, pending] of this.pendingOutlookOAuth) {
       if (pending.expiresAt < now) {
         this.pendingOutlookOAuth.delete(state);
+      }
+    }
+  }
+
+  private prunePendingGenericOAuth(): void {
+    const now = Date.now();
+    for (const [key, pending] of this.pendingGenericOAuth) {
+      if (pending.expiresAt < now) {
+        this.pendingGenericOAuth.delete(key);
       }
     }
   }
@@ -792,6 +1293,20 @@ export class ConnectorService {
       };
     }
 
+    if (provider === "whatsapp") {
+      const secret = buildWhatsAppSecret({
+        accessToken: token,
+        phoneNumberId: config.phone_number_id || config.phoneNumberId || "",
+        wabaId: config.waba_id || config.wabaId || "",
+      });
+      const verified = await verifyWhatsAppSecret(secret);
+      return {
+        login: input.label?.trim() || verified.label,
+        scopes: verified.scopes,
+        secret: JSON.stringify(verified.secret),
+      };
+    }
+
     if (token.length < 8) {
       throw new ValidationError("A valid access token is required");
     }
@@ -834,6 +1349,10 @@ export class ConnectorService {
         const verified = await verifyNotion(token);
         return { login: verified.login, scopes: verified.scopes, secret: token };
       }
+      case "finnhub": {
+        const verified = await verifyFinnhubApiKey(token);
+        return { login: verified.login, scopes: verified.scopes, secret: token };
+      }
       default:
         throw new ValidationError(`Unsupported provider ${provider}`);
     }
@@ -852,6 +1371,16 @@ export class ConnectorService {
       if (!secret) throw new ValidationError("Invalid SSH connector secret");
       const verified = await verifySshSecret(secret);
       return { login: verified.label, scopes: verified.scopes, secret: existing.secret };
+    }
+    if (provider === "whatsapp") {
+      const secret = parseWhatsAppSecret(existing.secret);
+      if (!secret) throw new ValidationError("Invalid WhatsApp connector secret");
+      const verified = await verifyWhatsAppSecret(secret);
+      return {
+        login: verified.label,
+        scopes: verified.scopes,
+        secret: JSON.stringify(verified.secret),
+      };
     }
     if (provider === "gmail") {
       const secret = parseGmailSecret(existing.secret);
@@ -874,6 +1403,15 @@ export class ConnectorService {
       };
     }
     if (provider === "gitlab") {
+      const oauth = parseGenericOAuthSecret("gitlab", existing.secret);
+      if (oauth) {
+        const verified = await verifyGitlabOAuth(oauth.accessToken);
+        return {
+          login: verified.login,
+          scopes: oauth.scopes.length ? oauth.scopes : verified.scopes,
+          secret: existing.secret,
+        };
+      }
       const parsed = parseJsonSecret(existing.secret);
       const token = parsed?.token || existing.secret;
       const baseUrl = parsed?.baseUrl || "https://gitlab.com";
@@ -885,6 +1423,15 @@ export class ConnectorService {
       };
     }
     if (provider === "bitbucket") {
+      const oauth = parseGenericOAuthSecret("bitbucket", existing.secret);
+      if (oauth) {
+        const verified = await verifyBitbucketOAuth(oauth.accessToken);
+        return {
+          login: verified.login,
+          scopes: oauth.scopes.length ? oauth.scopes : verified.scopes,
+          secret: existing.secret,
+        };
+      }
       const parsed = parseJsonSecret(existing.secret);
       const username = parsed?.username || existing.accountLabel || "";
       const token = parsed?.token || existing.secret;
@@ -909,16 +1456,64 @@ export class ConnectorService {
       return { login: verified.login, scopes: verified.scopes, secret: existing.secret };
     }
     if (provider === "linear") {
-      const verified = await verifyLinear(existing.secret);
+      const oauth = parseGenericOAuthSecret("linear", existing.secret);
+      const token = oauth ? `Bearer ${oauth.accessToken}` : existing.secret;
+      const verified = await verifyLinear(token);
       return { login: verified.login, scopes: verified.scopes, secret: existing.secret };
     }
     if (provider === "slack") {
-      const verified = await verifySlack(existing.secret);
+      const token = genericAccessTokenFromSecret("slack", existing.secret);
+      const verified = await verifySlack(token);
       return { login: verified.login, scopes: verified.scopes, secret: existing.secret };
     }
     if (provider === "notion") {
-      const verified = await verifyNotion(existing.secret);
+      const token = genericAccessTokenFromSecret("notion", existing.secret);
+      const verified = await verifyNotion(token);
       return { login: verified.login, scopes: verified.scopes, secret: existing.secret };
+    }
+    if (provider === "finnhub") {
+      const verified = await verifyFinnhubApiKey(existing.secret);
+      return { login: verified.login, scopes: verified.scopes, secret: existing.secret };
+    }
+    if (provider === "whoop") {
+      const oauth = parseGenericOAuthSecret("whoop", existing.secret);
+      if (!oauth) throw new ValidationError("Invalid WHOOP connector secret");
+      const verified = await verifyWhoopOAuth(oauth.accessToken);
+      return {
+        login: verified.login,
+        scopes: oauth.scopes.length ? oauth.scopes : verified.scopes,
+        secret: existing.secret,
+      };
+    }
+    if (provider === "fitbit") {
+      const oauth = parseGenericOAuthSecret("fitbit", existing.secret);
+      if (!oauth) throw new ValidationError("Invalid Fitbit connector secret");
+      const verified = await verifyFitbitOAuth(oauth.accessToken);
+      return {
+        login: verified.login,
+        scopes: oauth.scopes.length ? oauth.scopes : verified.scopes,
+        secret: existing.secret,
+      };
+    }
+    if (provider === "google_drive" || provider === "google_calendar") {
+      const oauth = parseGenericOAuthSecret(provider, existing.secret);
+      if (!oauth) throw new ValidationError(`Invalid ${provider} connector secret`);
+      const verified = await verifyGoogleUserinfo(oauth.accessToken, provider);
+      return {
+        login: verified.login,
+        scopes: oauth.scopes.length ? oauth.scopes : verified.scopes,
+        secret: existing.secret,
+      };
+    }
+    if (provider === "figma") {
+      const oauth = parseGenericOAuthSecret("figma", existing.secret);
+      if (!oauth) throw new ValidationError("Invalid Figma connector secret");
+      const verified = await verifyFigmaOAuth(oauth.accessToken);
+      return {
+        login: verified.login,
+        scopes: oauth.scopes.length ? oauth.scopes : verified.scopes,
+        secret: existing.secret,
+      };
     }
     throw new ValidationError(`Unsupported provider ${provider}`);
   }
@@ -1368,6 +1963,20 @@ async function verifyGitlab(
   };
 }
 
+async function verifyGitlabOAuth(accessToken: string): Promise<{ login: string; scopes: string[] }> {
+  const response = await fetch("https://gitlab.com/api/v4/user", {
+    headers: { Authorization: `Bearer ${accessToken}`, "User-Agent": "Arrab-Studio" },
+  });
+  if (!response.ok) {
+    throw new ValidationError("GitLab rejected this OAuth token.");
+  }
+  const payload = (await response.json()) as { username?: string; name?: string };
+  return {
+    login: payload.username || payload.name || "gitlab-user",
+    scopes: ["api"],
+  };
+}
+
 async function verifyBitbucket(
   username: string,
   appPassword: string,
@@ -1382,6 +1991,22 @@ async function verifyBitbucket(
   const payload = (await response.json()) as { username?: string; display_name?: string };
   return {
     login: payload.username || payload.display_name || username,
+    scopes: ["account", "repository"],
+  };
+}
+
+async function verifyBitbucketOAuth(
+  accessToken: string,
+): Promise<{ login: string; scopes: string[] }> {
+  const response = await fetch("https://api.bitbucket.org/2.0/user", {
+    headers: { Authorization: `Bearer ${accessToken}`, "User-Agent": "Arrab-Studio" },
+  });
+  if (!response.ok) {
+    throw new ValidationError("Bitbucket rejected this OAuth token.");
+  }
+  const payload = (await response.json()) as { username?: string; display_name?: string };
+  return {
+    login: payload.username || payload.display_name || "bitbucket-user",
     scopes: ["account", "repository"],
   };
 }
@@ -1457,14 +2082,129 @@ async function verifyNotion(token: string): Promise<{ login: string; scopes: str
   };
 }
 
+async function verifyWhoopOAuth(accessToken: string): Promise<{ login: string; scopes: string[] }> {
+  const response = await fetch("https://api.prod.whoop.com/developer/v1/user/profile/basic", {
+    headers: { Authorization: `Bearer ${accessToken}`, "User-Agent": "Arrab-Studio" },
+  });
+  if (!response.ok) {
+    throw new ValidationError("WHOOP rejected this OAuth token.");
+  }
+  const payload = (await response.json()) as {
+    user_id?: number;
+    email?: string;
+    first_name?: string;
+    last_name?: string;
+  };
+  const name = [payload.first_name, payload.last_name].filter(Boolean).join(" ").trim();
+  return {
+    login: payload.email || name || (payload.user_id ? `WHOOP ${payload.user_id}` : "whoop-user"),
+    scopes: [
+      "read:recovery",
+      "read:cycles",
+      "read:workout",
+      "read:sleep",
+      "read:profile",
+      "read:body_measurement",
+      "offline",
+    ],
+  };
+}
+
+async function verifyFitbitOAuth(accessToken: string): Promise<{ login: string; scopes: string[] }> {
+  const response = await fetch("https://api.fitbit.com/1/user/-/profile.json", {
+    headers: { Authorization: `Bearer ${accessToken}`, "User-Agent": "Arrab-Studio" },
+  });
+  if (!response.ok) {
+    throw new ValidationError("Fitbit rejected this OAuth token.");
+  }
+  const payload = (await response.json()) as {
+    user?: { displayName?: string; fullName?: string; encodedId?: string };
+  };
+  return {
+    login:
+      payload.user?.displayName ||
+      payload.user?.fullName ||
+      (payload.user?.encodedId ? `Fitbit ${payload.user.encodedId}` : "fitbit-user"),
+    scopes: [
+      "activity",
+      "heartrate",
+      "sleep",
+      "profile",
+      "weight",
+      "nutrition",
+      "oxygen_saturation",
+      "respiratory_rate",
+      "temperature",
+    ],
+  };
+}
+
+async function verifyGoogleUserinfo(
+  accessToken: string,
+  provider: "google_drive" | "google_calendar",
+): Promise<{ login: string; scopes: string[] }> {
+  const response = await fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+    headers: { Authorization: `Bearer ${accessToken}`, "User-Agent": "Arrab-Studio" },
+  });
+  if (!response.ok) {
+    throw new ValidationError("Google rejected this OAuth token.");
+  }
+  const payload = (await response.json()) as { email?: string; name?: string };
+  return {
+    login: payload.email || payload.name || provider,
+    scopes:
+      provider === "google_drive"
+        ? [
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/drive.metadata.readonly",
+          ]
+        : [
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/calendar.events",
+          ],
+  };
+}
+
+async function verifyFigmaOAuth(accessToken: string): Promise<{ login: string; scopes: string[] }> {
+  const response = await fetch("https://api.figma.com/v1/me", {
+    headers: { Authorization: `Bearer ${accessToken}`, "User-Agent": "Arrab-Studio" },
+  });
+  if (!response.ok) {
+    throw new ValidationError("Figma rejected this OAuth token.");
+  }
+  const payload = (await response.json()) as { email?: string; handle?: string; id?: string };
+  return {
+    login: payload.email || payload.handle || (payload.id ? `Figma ${payload.id}` : "figma-user"),
+    scopes: [
+      "current_user:read",
+      "file_content:read",
+      "file_metadata:read",
+      "file_comments:read",
+    ],
+  };
+}
+
 async function listGitlabProjects(secret: string, query?: string): Promise<ConnectorResource[]> {
-  const parsed = parseJsonSecret(secret);
-  const token = parsed?.token || secret;
+  const oauth = parseGenericOAuthSecret("gitlab", secret);
+  const parsed = oauth ? null : parseJsonSecret(secret);
+  const token = oauth?.accessToken || parsed?.token || secret;
   const baseUrl = (parsed?.baseUrl || "https://gitlab.com").replace(/\/$/, "");
   const q = query?.trim() ? `&search=${encodeURIComponent(query.trim())}` : "";
+  const headers: Record<string, string> = { "User-Agent": "Arrab-Studio" };
+  if (oauth) {
+    headers.Authorization = `Bearer ${token}`;
+  } else {
+    headers["PRIVATE-TOKEN"] = token;
+  }
   const response = await fetch(
     `${baseUrl}/api/v4/projects?membership=true&simple=true&per_page=50${q}`,
-    { headers: { "PRIVATE-TOKEN": token, "User-Agent": "Arrab-Studio" } },
+    { headers },
   );
   if (!response.ok) throw new ValidationError("Could not list GitLab projects.");
   const payload = (await response.json()) as Array<{
@@ -1481,12 +2221,18 @@ async function listGitlabProjects(secret: string, query?: string): Promise<Conne
 }
 
 async function listBitbucketRepos(secret: string, query?: string): Promise<ConnectorResource[]> {
-  const parsed = parseJsonSecret(secret);
-  const username = parsed?.username || "";
-  const token = parsed?.token || secret;
-  const auth = Buffer.from(`${username}:${token}`).toString("base64");
+  const oauth = parseGenericOAuthSecret("bitbucket", secret);
+  const parsed = oauth ? null : parseJsonSecret(secret);
+  const headers: Record<string, string> = { "User-Agent": "Arrab-Studio" };
+  if (oauth) {
+    headers.Authorization = `Bearer ${oauth.accessToken}`;
+  } else {
+    const username = parsed?.username || "";
+    const token = parsed?.token || secret;
+    headers.Authorization = `Basic ${Buffer.from(`${username}:${token}`).toString("base64")}`;
+  }
   const response = await fetch("https://api.bitbucket.org/2.0/repositories?role=member&pagelen=50", {
-    headers: { Authorization: `Basic ${auth}`, "User-Agent": "Arrab-Studio" },
+    headers,
   });
   if (!response.ok) throw new ValidationError("Could not list Bitbucket repositories.");
   const payload = (await response.json()) as {

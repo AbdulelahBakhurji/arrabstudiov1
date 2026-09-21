@@ -41,11 +41,30 @@ import {
   fetchGithubRepoContext,
 } from "./connector-service.js";
 import type { AccountService } from "./account-service.js";
+import type { FamilyHouseholdService } from "./family-household-service.js";
 import {
   normalizeSessionBudget,
   normalizeSpendTier,
   resolveSpendProfile,
 } from "./token-spend.js";
+
+function isTraderCompanion(agent: {
+  name?: string | null;
+  role?: string | null;
+  specialty?: string | null;
+  instructions?: string | null;
+}): boolean {
+  const hay = [agent.name, agent.role, agent.specialty, agent.instructions]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return (
+    /\btrader\b/.test(hay) ||
+    hay.includes("متداول") ||
+    hay.includes("المتداول") ||
+    hay.includes("trading")
+  );
+}
 
 export class ConversationService {
   constructor(
@@ -55,9 +74,19 @@ export class ConversationService {
     private readonly defaultModel: string,
     private readonly connectors: ConnectorService,
     private readonly accounts: AccountService,
+    private readonly familyHousehold: FamilyHouseholdService | null = null,
     private readonly ids: IdGenerator = randomIdGenerator,
     private readonly clock: Clock = systemClock,
   ) {}
+
+  private async trackFamilyUsage(tokens: number): Promise<void> {
+    if (!this.familyHousehold || tokens <= 0) return;
+    try {
+      await this.familyHousehold.recordUsage(tokens);
+    } catch {
+      // Family metering must never block a reply.
+    }
+  }
 
   private async record(
     verb: Activity["verb"],
@@ -576,9 +605,9 @@ export class ConversationService {
                       "A local folder is attached on the operator's PC.",
                       "You have real desk tools: search_code, list_files, read_file, apply_patch, write_file,",
                       "delete_file, rename_file, create_dir, run_terminal, git_status, git_diff, open_path,",
-                      "preview_html, generate_pdf, export_csv, web_search, fetch_url.",
+                      "preview_html, generate_pdf, export_csv, web_search, scrape_page, fetch_url.",
                       "Workflow: search → read → edit → verify with run_terminal. Prefer apply_patch for surgical edits.",
-                      "Deliverables: preview_html for live browser preview, generate_pdf for reports/proposals, export_csv for tables.",
+                      "Research: web_search → scrape_page (or fetch_url). Deliverables: preview_html, generate_pdf, export_csv.",
                       "Do not claim you lack shell or file access. Be precise and reproducible; skip fluff.",
                     ].join(" ")
                   : "The operator runs Commit / Push / Open PR from the workspace panel.",
@@ -719,6 +748,24 @@ export class ConversationService {
             },
           }
         : null;
+      const finnhubAccess = await this.connectors.resolveFinnhubAccess();
+      const finnhubTools = finnhubAccess
+        ? {
+            getQuote: async (args: Record<string, string>) => {
+              const symbol = args.symbol?.trim() || "";
+              if (!symbol) return "FAILED get_quote: symbol is required";
+              const quote = await this.connectors.getFinnhubQuote(symbol);
+              return JSON.stringify({ source: "Finnhub", ...quote }, null, 2);
+            },
+            getNews: async (args: Record<string, string>) => {
+              const symbol = args.symbol?.trim() || "";
+              if (!symbol) return "FAILED get_news: symbol is required";
+              const days = Math.min(30, Math.max(1, Number(args.days) || 7));
+              const items = await this.connectors.getFinnhubNews(symbol, days);
+              return JSON.stringify({ source: "Finnhub", symbol, items }, null, 2);
+            },
+          }
+        : null;
       const runRequest = {
         agent,
         conversationId: conversation.id,
@@ -738,6 +785,9 @@ export class ConversationService {
           emailAccountLabel: mailConnector?.accountLabel ?? null,
           ssh: sshTools,
           sshAccountLabel: sshConnector?.accountLabel ?? null,
+          finnhub: finnhubTools,
+          finnhubAccountLabel: finnhubAccess?.accountLabel ?? null,
+          traderMode: isTraderCompanion(agent),
         },
       };
 
@@ -810,8 +860,32 @@ export class ConversationService {
           createdAt: this.clock.isoNow(),
         };
         await this.persistMessage(assistantMessage);
-      } else if (result.status !== "completed" || !result.output) {
-        throw new ValidationError(result.error ?? "Employee did not return a reply");
+      } else if (result.status !== "completed" || !result.output?.trim()) {
+        // Prefer a soft completion over a hard failure when tools already ran
+        // or the model returned an empty final string (common after web_search).
+        const soft =
+          (result.toolsUsed?.length ?? toolsUsed.length) > 0
+            ? `I finished ${[...(result.toolsUsed ?? toolsUsed)].slice(0, 4).join(", ")}. Ask if you need more detail.`
+            : result.output?.trim() || result.error || null;
+        if (!soft) {
+          throw new ValidationError(result.error ?? "Employee did not return a reply");
+        }
+        assistantMessage = {
+          id: brandId<MessageId>(this.ids.next("msg")),
+          conversationId: conversation.id,
+          role: "assistant",
+          content: soft,
+          createdAt: this.clock.isoNow(),
+        };
+        await this.persistMessage(assistantMessage);
+        await this.record(
+          "ran",
+          "conversation",
+          conversation.id,
+          `${agent.name} replied in conversation`,
+          "agent",
+          agent.id,
+        );
       } else {
         assistantMessage = {
           id: brandId<MessageId>(this.ids.next("msg")),
@@ -845,6 +919,7 @@ export class ConversationService {
           createdAt: this.clock.isoNow(),
         };
         await this.persistence.usage.append(event);
+        await this.trackFamilyUsage(event.inputTokens + event.outputTokens);
       }
     }
 
@@ -908,6 +983,9 @@ export class ConversationService {
         "git_status",
         "git_diff",
         "open_path",
+        "preview_html",
+        "generate_pdf",
+        "export_csv",
       ].includes(detail.toolName) &&
       !options?.toolResult?.trim()
     ) {
@@ -915,71 +993,6 @@ export class ConversationService {
         `${detail.toolName} requires toolResult from the desktop after local execution`,
       );
     }
-
-    const toolResult = executeApprovedTool(
-      detail.toolName,
-      detail.arguments,
-      null,
-      options?.toolResult,
-    );
-    const profile = resolveSpendProfile(conversation.spendTier ?? "low");
-    const historyMessages = (
-      await this.loadPlainMessages(conversation.id)
-    )
-      .filter((message) => message.role === "user" || message.role === "assistant")
-      .slice(-profile.historyMessages);
-
-    const history = historyMessages.map((message) => ({
-      role: message.role as "user" | "assistant",
-      content: message.content,
-    }));
-
-    const localTools = [
-      "run_terminal",
-      "list_files",
-      "search_code",
-      "read_file",
-      "write_file",
-      "apply_patch",
-      "delete_file",
-      "rename_file",
-      "create_dir",
-      "git_status",
-      "git_diff",
-      "open_path",
-    ];
-    const isLocal = localTools.includes(detail.toolName);
-    const resumeInput = [
-      `TOOL_RESULT ${detail.toolName}:`,
-      toolResult,
-      "",
-      isLocal
-        ? [
-            "Local desk tool finished.",
-            "Continue the coding loop: if you edited files, verify with run_terminal (typecheck/test).",
-            "If this failed, fix from the error output. State clearly what changed or what failed.",
-            "Call another tool when needed — do not claim done without verification when edits were made.",
-          ].join(" ")
-        : "The operator approved this action. Continue helping — summarize what you will do next and make concrete progress.",
-    ].join("\n");
-
-    const providerConfigured = this.gateway.listProviders().length > 0;
-    if (!providerConfigured) {
-      throw new ValidationError("No model provider is configured");
-    }
-
-    const localFloor =
-      profile.tier === "high" ? 900 : profile.tier === "medium" ? 520 : 360;
-    const deskSystemExtra = isLocal
-      ? [
-          "Local desk TOOL_RESULT received. You still have full PC tools for this folder:",
-          "list_files, search_code, read_file, apply_patch, write_file, delete_file, rename_file, create_dir,",
-          "run_terminal, git_status, git_diff, open_path, preview_html, generate_pdf, export_csv, web_search, fetch_url.",
-          "Continue the coding loop until the operator's ask is done. Verify edits with run_terminal.",
-          "For reports/pages: preview_html or generate_pdf. For tables: export_csv.",
-          "Be brief and precise — prefer exact paths and commands.",
-        ].join(" ")
-      : "You just received an approved tool result. Do not call propose_action again for the same action.";
 
     const mailConnector = await this.connectors.findPreferredMailConnector();
     const emailTools = mailConnector
@@ -997,19 +1010,19 @@ export class ConversationService {
           readMessage: async (args: Record<string, string>) => {
             const messageId = args.message_id?.trim() || args.id?.trim() || "";
             if (!messageId) return "FAILED read_email: message_id is required";
-            const detail = await this.connectors.readEmail(
+            const mail = await this.connectors.readEmail(
               mailConnector.id,
               messageId,
               args.mailbox?.trim() || "INBOX",
             );
             return JSON.stringify(
               {
-                id: detail.id,
-                subject: detail.subject,
-                from: detail.from,
-                to: detail.to,
-                date: detail.date,
-                text: detail.text?.slice(0, 12_000) ?? null,
+                id: mail.id,
+                subject: mail.subject,
+                from: mail.from,
+                to: mail.to,
+                date: mail.date,
+                text: mail.text?.slice(0, 12_000) ?? null,
               },
               null,
               2,
@@ -1076,6 +1089,110 @@ export class ConversationService {
         }
       : null;
 
+    const finnhubAccess = await this.connectors.resolveFinnhubAccess();
+    const finnhubTools = finnhubAccess
+      ? {
+          getQuote: async (args: Record<string, string>) => {
+            const symbol = args.symbol?.trim() || "";
+            if (!symbol) return "FAILED get_quote: symbol is required";
+            const quote = await this.connectors.getFinnhubQuote(symbol);
+            return JSON.stringify({ source: "Finnhub", ...quote }, null, 2);
+          },
+          getNews: async (args: Record<string, string>) => {
+            const symbol = args.symbol?.trim() || "";
+            if (!symbol) return "FAILED get_news: symbol is required";
+            const days = Math.min(30, Math.max(1, Number(args.days) || 7));
+            const items = await this.connectors.getFinnhubNews(symbol, days);
+            return JSON.stringify({ source: "Finnhub", symbol, items }, null, 2);
+          },
+        }
+      : null;
+
+    const toolResult = await executeApprovedTool(
+      detail.toolName,
+      detail.arguments,
+      {
+        email: emailTools,
+        emailAccountLabel: mailConnector?.accountLabel ?? null,
+        ssh: sshTools,
+        sshAccountLabel: sshConnector?.accountLabel ?? null,
+        finnhub: finnhubTools,
+        finnhubAccountLabel: finnhubAccess?.accountLabel ?? null,
+        traderMode: isTraderCompanion(agent),
+      },
+      options?.toolResult,
+    );
+    const profile = resolveSpendProfile(conversation.spendTier ?? "low");
+    const historyMessages = (
+      await this.loadPlainMessages(conversation.id)
+    )
+      .filter((message) => message.role === "user" || message.role === "assistant")
+      .slice(-profile.historyMessages);
+
+    const history = historyMessages.map((message) => ({
+      role: message.role as "user" | "assistant",
+      content: message.content,
+    }));
+
+    const localTools = [
+      "run_terminal",
+      "list_files",
+      "search_code",
+      "read_file",
+      "write_file",
+      "apply_patch",
+      "delete_file",
+      "rename_file",
+      "create_dir",
+      "git_status",
+      "git_diff",
+      "open_path",
+    ];
+    const isLocal = localTools.includes(detail.toolName);
+    const isEmailMutating =
+      detail.toolName === "send_email" || detail.toolName === "arrange_email";
+    const resumeInput = [
+      `TOOL_RESULT ${detail.toolName}:`,
+      toolResult,
+      "",
+      isLocal
+        ? [
+            "Local desk tool finished.",
+            "Continue the coding loop: if you edited files, verify with run_terminal (typecheck/test).",
+            "If this failed, fix from the error output. State clearly what changed or what failed.",
+            "Call another tool when needed — do not claim done without verification when edits were made.",
+          ].join(" ")
+        : isEmailMutating
+          ? [
+              "The operator approved this email action and it already ran once.",
+              "Summarize the result clearly.",
+              "Do not call send_email or arrange_email again for the same message or batch.",
+            ].join(" ")
+          : "The operator approved this action. Continue helping — summarize what you will do next and make concrete progress.",
+    ].join("\n");
+
+    const providerConfigured = this.gateway.listProviders().length > 0;
+    if (!providerConfigured) {
+      throw new ValidationError("No model provider is configured");
+    }
+
+    const localFloor =
+      profile.tier === "high" ? 900 : profile.tier === "medium" ? 520 : 360;
+    const deskSystemExtra = isLocal
+      ? [
+          "Local desk TOOL_RESULT received. You still have full PC tools for this folder:",
+          "list_files, search_code, read_file, apply_patch, write_file, delete_file, rename_file, create_dir,",
+          "run_terminal, git_status, git_diff, open_path, preview_html, generate_pdf, export_csv, web_search, scrape_page, fetch_url.",
+          "Continue the coding loop until the operator's ask is done. Verify edits with run_terminal.",
+          "Research: web_search → scrape_page. For reports/pages: preview_html or generate_pdf. For tables: export_csv.",
+          "Be brief and precise — prefer exact paths and commands.",
+        ].join(" ")
+      : isEmailMutating
+        ? "Approved email TOOL_RESULT received. Do not resend or re-arrange the same items. Confirm outcome in one short update."
+        : "You just received an approved tool result. Do not call propose_action again for the same action.";
+
+    // mailConnector / emailTools / sshTools already prepared above for executeApprovedTool.
+
     const result = await this.runtime.run(
       {
         agent,
@@ -1106,6 +1223,9 @@ export class ConversationService {
           emailAccountLabel: mailConnector?.accountLabel ?? null,
           ssh: sshTools,
           sshAccountLabel: sshConnector?.accountLabel ?? null,
+          finnhub: finnhubTools,
+          finnhubAccountLabel: finnhubAccess?.accountLabel ?? null,
+          traderMode: isTraderCompanion(agent),
         },
       },
       this.gateway,
@@ -1168,6 +1288,7 @@ export class ConversationService {
           outputTokens: result.usage.outputTokens,
           createdAt: this.clock.isoNow(),
         });
+        await this.trackFamilyUsage(result.usage.inputTokens + result.usage.outputTokens);
       }
 
       const lastUser =
@@ -1227,6 +1348,7 @@ export class ConversationService {
         outputTokens: result.usage.outputTokens,
         createdAt: this.clock.isoNow(),
       });
+      await this.trackFamilyUsage(result.usage.inputTokens + result.usage.outputTokens);
     }
 
     await this.persistence.conversations.update({

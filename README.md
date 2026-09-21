@@ -4,7 +4,11 @@ Build your AI workforce. Create specialized AI employees, connect them to your p
 
 Arrab Studio is a desktop application (Tauri 2) that talks to the Arrab API. The API owns secrets, persistence, and all communication with model providers. The desktop app never receives OpenAI, Anthropic, or database credentials.
 
-## Current phase: Phase 12 — Goals, Streaming, Tools & Team Chat
+## Security
+
+- Desktop ships with **only** the public API URL — no provider keys or connector secrets in the installer.
+- Account session tokens guard connector and GitHub APIs. See [docs/SECURITY.md](./docs/SECURITY.md).
+
 
 - **Goals** — persisted studio/agent goals (`/v1/goals`) injected into every reply until marked done
 - **Streaming** — `POST /v1/conversations/:id/messages/stream` (SSE tokens) with Chat UI progressive reveal
@@ -15,11 +19,12 @@ Still later: Stripe checkout, OAuth IdP, full autonomous shell control, cloud VM
 
 ## Current UI
 
-Floating left icon rail: Studio · Chat · Cowork · Workforce · Connector · Activity · Settings.
+Main desktop frontend: `apps/desktop` (individuals + organizations).
 
-- **Chat** — advanced agent chat with folder / GitHub repo, goals, streaming, team mode, commit/push/PR
-- **Cowork** — AI coworker on this laptop: open folder, browse/edit files, local git, terminal
-- **Settings → Account** — connect account, activate subscription, view token quota
+- **Individuals** — companions chat, board, work, me, connectors, account, settings
+- **Organizations** — studio home, chat, cowork, workforce, employee desk, activity, connectors, account, settings
+- **iOS** — native SwiftUI client in `apps/ios` (Chat, Studio, Brain, Tasks, Me + API / PC link)
+- Design preview (offline HTML): `docs/design/desktop/Arrab-Design.html`
 
 ## Requirements
 
@@ -49,14 +54,36 @@ pnpm typecheck
 pnpm lint
 pnpm test
 pnpm build
+
+# Scaffold a new feature slice (page + checklist)
+pnpm new:feature my-thing
+pnpm new:feature my-thing --audience=individual,family --api
+
+# Ship installers (Mac .app/.dmg · Windows NSIS/MSI)
+pnpm ship:mac
+pnpm ship:windows
+pnpm ship
 ```
+
+See [docs/FEATURE.md](./docs/FEATURE.md) for the agile checklist when adding features.
+See [docs/DESKTOP_RELEASE.md](./docs/DESKTOP_RELEASE.md) for packaging, signing, and CI.
 
 ## Monorepo layout
 
-- `apps/desktop` — Tauri + React studio
-- `apps/api` — Fastify Arrab API
-- `packages/shared` — domain types + HTTP contract
-- `packages/core` — errors, ports, helpers
-- `packages/ai` — AI gateway + providers
-- `packages/agents` — chat runtime
-- `packages/database` — persistence + migrations
+```text
+apps/
+  desktop/          # Tauri + React — main Studio UI (+ packaging/)
+  api/              # Fastify Arrab API
+  testingworkspace/ # Internal testing workspace
+packages/
+  shared/           # Domain types + HTTP contract
+  core/             # Errors, ports, helpers
+  ai/               # AI gateway + providers
+  agents/           # Chat runtime
+  database/         # Persistence + migrations
+brand/              # Canonical logo + symbol
+docs/               # Architecture, security, design, release
+scripts/            # Dev + ship scripts (macOS / Windows)
+tests/              # Cross-package / desktop UI tests
+release/artifacts/  # Built installers (local / CI output)
+```

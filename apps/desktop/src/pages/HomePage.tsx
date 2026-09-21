@@ -1,19 +1,20 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, ChevronDown, Plus, Sparkles } from "lucide-react";
-import type { DashboardResponse } from "@arrab/shared";
-import logoTall from "@/assets/logotall.png";
-import symbol from "@/assets/symbol.png";
+import { ArrowRight, Plus, Send } from "lucide-react";
+import type { Agent, DashboardResponse, TeamMembership } from "@arrab/shared";
+import { WorkforceList, type WorkforceListGroup } from "@/components/WorkforceList";
 import { Surface } from "@/components/StudioFrame";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError, isTransientApiError } from "@/lib/api";
+import { filterLiveWorkforceAgents } from "@/lib/agent-session-policy";
+import { notifyStudio, pushToast } from "@/lib/notify";
 import { useRole } from "@/roles/RoleProvider";
+import { useOrgSeatCapabilities } from "@/lib/org-seat";
 import { cn } from "@/lib/utils";
 
 type ComposeMode = "team" | "employee" | "project";
 
 const STUDIO_GOAL_KEY = "arrab.studioGoal";
-const GOAL_KEY_PREFIX = "arrab.chatGoal.";
 
 function readStudioGoal(): string {
   try {
@@ -30,11 +31,80 @@ function initials(name: string): string {
   return `${parts[0]![0] ?? ""}${parts[1]![0] ?? ""}`.toUpperCase();
 }
 
+function normalizeName(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function findAgentByName(agents: Agent[], rawName: string): Agent | null {
+  const needle = normalizeName(rawName);
+  if (!needle) return null;
+  const exact = agents.find((agent) => normalizeName(agent.name) === needle);
+  if (exact) return exact;
+  const starts = agents.find((agent) => normalizeName(agent.name).startsWith(needle));
+  if (starts) return starts;
+  return agents.find((agent) => normalizeName(agent.name).includes(needle)) ?? null;
+}
+
+/** Parse "assign X to Mohammed", "@sam do Y", or free text + selected assignee. */
+export function parseStudioAssign(
+  input: string,
+  agents: Agent[],
+): { title: string; agent: Agent | null; nameHint: string | null } {
+  const text = input.trim();
+  if (!text) return { title: "", agent: null, nameHint: null };
+
+  const atMatch = text.match(/^@([^\s]+)\s+(.+)$/s);
+  if (atMatch) {
+    const nameHint = atMatch[1]!.trim();
+    return {
+      title: atMatch[2]!.trim(),
+      agent: findAgentByName(agents, nameHint),
+      nameHint,
+    };
+  }
+
+  const assignToColon = text.match(/^assign\s+to\s+([^:]+):\s*(.+)$/is);
+  if (assignToColon) {
+    const nameHint = assignToColon[1]!.trim();
+    return {
+      title: assignToColon[2]!.trim(),
+      agent: findAgentByName(agents, nameHint),
+      nameHint,
+    };
+  }
+
+  const forColon = text.match(/^(?:for|to)\s+([^:]+):\s*(.+)$/is);
+  if (forColon) {
+    const nameHint = forColon[1]!.trim();
+    return {
+      title: forColon[2]!.trim(),
+      agent: findAgentByName(agents, nameHint),
+      nameHint,
+    };
+  }
+
+  const assignTo = text.match(/^(?:assign|give|send)\s+(.+?)\s+to\s+(.+)$/is);
+  if (assignTo) {
+    let title = assignTo[1]!.trim();
+    const nameHint = assignTo[2]!.trim();
+    title = title.replace(/^(?:this\s+)?(?:task|one)$/i, "Task").trim() || "Task";
+    return {
+      title,
+      agent: findAgentByName(agents, nameHint),
+      nameHint,
+    };
+  }
+
+  return { title: text, agent: null, nameHint: null };
+}
+
 export function HomePage() {
   const { t, locale } = useLanguage();
   const { href } = useRole();
+  const { canAssignWork, canHireAgents } = useOrgSeatCapabilities();
   const navigate = useNavigate();
   const [data, setData] = useState<DashboardResponse | null>(null);
+  const [memberships, setMemberships] = useState<TeamMembership[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<ComposeMode>("employee");
   const [name, setName] = useState("");
@@ -46,14 +116,24 @@ export function HomePage() {
   const [goalDraft, setGoalDraft] = useState(readStudioGoal);
   const [goalEditing, setGoalEditing] = useState(false);
   const [showMore, setShowMore] = useState(false);
+  const [assignText, setAssignText] = useState("");
+  const [assignAgentId, setAssignAgentId] = useState<string | null>(null);
+  const [assignBusy, setAssignBusy] = useState(false);
+  const [assignError, setAssignError] = useState<string | null>(null);
 
   const load = useCallback(() => {
     setError(null);
-    void arrabApi
-      .dashboard()
-      .then(setData)
+    void Promise.all([
+      arrabApi.dashboard(),
+      arrabApi.memberships().catch(() => ({ items: [] as TeamMembership[] })),
+    ])
+      .then(([dashboard, membershipList]) => {
+        setData(dashboard);
+        setMemberships(membershipList.items);
+      })
       .catch((err: unknown) => {
         setData(null);
+        setMemberships([]);
         const message = err instanceof ApiRequestError ? err.message : t("apiUnavailable");
         if (!isTransientApiError(message)) {
           setError(message);
@@ -66,6 +146,16 @@ export function HomePage() {
   }, [load]);
 
   useEffect(() => {
+    const onRoster = () => load();
+    window.addEventListener("arrab-workforce-roster", onRoster);
+    window.addEventListener("storage", onRoster);
+    return () => {
+      window.removeEventListener("arrab-workforce-roster", onRoster);
+      window.removeEventListener("storage", onRoster);
+    };
+  }, [load]);
+
+  useEffect(() => {
     if (!studioGoal.trim()) {
       localStorage.removeItem(STUDIO_GOAL_KEY);
       return;
@@ -75,12 +165,72 @@ export function HomePage() {
 
   const activeProjects = data?.projects.filter((p) => p.status === "active") ?? [];
   const employees = useMemo(
-    () => (data?.agents ?? []).filter((agent) => agent.status !== "archived").slice(0, 8),
+    () => filterLiveWorkforceAgents(data?.agents ?? []),
     [data?.agents],
   );
-  const teams = useMemo(() => (data?.teams ?? []).slice(0, 4), [data?.teams]);
+  const workforceGroups = useMemo((): WorkforceListGroup[] => {
+    const byTeam = new Map<string, Agent[]>();
+    for (const membership of memberships) {
+      const agent = employees.find((item) => item.id === membership.agentId);
+      if (!agent) continue;
+      const list = byTeam.get(membership.teamId) ?? [];
+      list.push(agent);
+      byTeam.set(membership.teamId, list);
+    }
+    const assigned = new Set(
+      memberships.map((membership) => membership.agentId).filter(Boolean),
+    );
+    const sortedTeams = [...(data?.teams ?? [])].sort((a, b) => {
+      const score = (name: string) => {
+        const lower = name.toLowerCase();
+        if (lower.includes("studio")) return 0;
+        if (lower.includes("all-hands") || lower.includes("all hands")) return 1;
+        return 2;
+      };
+      return score(a.name) - score(b.name);
+    });
+    const groups: WorkforceListGroup[] = sortedTeams.slice(0, 8).map((team) => ({
+      id: team.id,
+      name: team.name,
+      agents: (byTeam.get(team.id) ?? []).map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        role: agent.role,
+      })),
+    }));
+    const unassigned = employees.filter((agent) => !assigned.has(agent.id));
+    if (groups.length === 0 && employees.length > 0) {
+      groups.push({
+        id: "workforce",
+        name: t("workforceTitle"),
+        agents: employees.map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          role: agent.role,
+        })),
+      });
+    } else if (unassigned.length > 0) {
+      groups.push({
+        id: "unassigned",
+        name: t("mapUnassigned"),
+        agents: unassigned.map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          role: agent.role,
+        })),
+      });
+    }
+    return groups;
+  }, [data?.teams, employees, memberships, t]);
   const isAr = locale === "ar";
   const hasPeople = employees.length > 0;
+
+  const parsedAssign = useMemo(
+    () => parseStudioAssign(assignText, employees),
+    [assignText, employees],
+  );
+  const resolvedAssignee =
+    parsedAssign.agent ?? employees.find((agent) => agent.id === assignAgentId) ?? null;
 
   async function onCompose(event: FormEvent) {
     event.preventDefault();
@@ -118,6 +268,61 @@ export function HomePage() {
     }
   }
 
+  async function onAssign(event: FormEvent) {
+    event.preventDefault();
+    if (!canAssignWork) {
+      setAssignError(t("studioAssignManagersOnly"));
+      return;
+    }
+    setAssignError(null);
+    const title = parsedAssign.title.trim();
+    if (!title) {
+      setAssignError(t("studioAssignEmpty"));
+      return;
+    }
+    if (!resolvedAssignee) {
+      setAssignError(
+        parsedAssign.nameHint
+          ? t("studioAssignUnknown").replace("{name}", parsedAssign.nameHint)
+          : t("studioAssignPick"),
+      );
+      return;
+    }
+    setAssignBusy(true);
+    try {
+      const task = await arrabApi.createTask({
+        title,
+        brief: assignText.trim() || null,
+        assigneeAgentId: resolvedAssignee.id,
+        status: "assigned",
+        priority: "medium",
+      });
+      setAssignText("");
+      setAssignAgentId(null);
+      pushToast({
+        title: t("studioAssignDone"),
+        body: t("studioAssignDoneBody")
+          .replace("{task}", task.title)
+          .replace("{name}", resolvedAssignee.name),
+        tone: "success",
+        href: href("/workplace"),
+      });
+      void notifyStudio({
+        kind: "cowork",
+        title: t("studioAssignDone"),
+        body: t("studioAssignDoneBody")
+          .replace("{task}", task.title)
+          .replace("{name}", resolvedAssignee.name),
+        href: href("/workplace"),
+      });
+      load();
+    } catch (err: unknown) {
+      setAssignError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+    } finally {
+      setAssignBusy(false);
+    }
+  }
+
   function openChatWith(agentId: string) {
     sessionStorage.setItem("arrab.chatAgent", agentId);
     navigate(href("/chat"));
@@ -131,243 +336,214 @@ export function HomePage() {
   }
 
   return (
-    <Surface className="arrab-fade studio-home overflow-hidden">
-      <div className="flex h-full min-h-0 min-w-0 flex-col overflow-y-auto">
-        <section className="arrab-hero relative shrink-0 overflow-hidden">
-          <div className="arrab-grid pointer-events-none absolute inset-0 opacity-60" />
-          <img
-            src={symbol}
-            alt=""
-            className="brand-mark pointer-events-none absolute end-[-6%] top-[-12%] h-[125%] max-w-[55%] object-contain opacity-[0.1]"
-          />
+    <Surface className="cp-ui studio-org !overflow-hidden">
+      <div className="studio-org-page studio-claude flex h-full min-h-0 w-full flex-col overflow-hidden">
+        <div className="studio-claude-glow pointer-events-none absolute inset-0" aria-hidden />
 
-          <div className="relative mx-auto flex max-w-[980px] flex-col px-6 pb-12 pt-12 sm:px-8 sm:pb-14 sm:pt-14 lg:px-10">
-            <div className="arrab-rise max-w-xl">
-              <p className="mb-3 text-[10px] uppercase tracking-[0.2em] text-neutral-500">
-                {t("roleLivingOrganization")}
-              </p>
-              <img
-                src={logoTall}
-                alt={t("brand")}
-                className="brand-mark mb-7 h-10 w-auto max-w-[240px] sm:h-12 sm:max-w-[280px]"
-              />
-              <h1
-                className={cn(
-                  "font-semibold text-white",
-                  isAr
-                    ? "text-[clamp(1.9rem,4vw,2.75rem)] leading-[1.25] tracking-normal"
-                    : "text-[clamp(2.15rem,4.2vw,3.15rem)] leading-[1.08] tracking-[-0.045em]",
-                )}
+        <header className="studio-claude-head relative shrink-0 px-5 pt-7 sm:px-8 sm:pt-9">
+          <div className="mx-auto flex w-full max-w-[1080px] flex-wrap items-end justify-between gap-4">
+            <div className="min-w-0 max-w-xl">
+              <h1>{t("hq")}</h1>
+              <p className="studio-claude-lead">{t("studioOrgLead")}</p>
+              {studioGoal && !goalEditing ? (
+                <p className="studio-claude-goal">
+                  <span>{t("dashStudioGoal")}</span>
+                  {studioGoal}
+                  <button type="button" onClick={() => { setGoalDraft(studioGoal); setGoalEditing(true); }}>
+                    {t("edit")}
+                  </button>
+                </p>
+              ) : null}
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Link
+                to={hasPeople ? href("/chat") : href("/workforce")}
+                onClick={(event) => {
+                  if (!hasPeople) {
+                    event.preventDefault();
+                    if (canHireAgents) setShowMore(true);
+                  }
+                }}
+                className="studio-claude-primary"
               >
-                {t("heroTitleOrganization")}
-              </h1>
-              <p
-                className={cn(
-                  "mt-4 max-w-md text-[15px] text-neutral-400",
-                  isAr ? "leading-7" : "leading-relaxed",
-                )}
-              >
-                {t("heroBodyOrganization")}
-              </p>
-              <div className="mt-8 flex flex-wrap items-center gap-3">
-                <Link
-                  to={hasPeople ? href("/chat") : "#hire"}
-                  onClick={(event) => {
-                    if (!hasPeople) {
-                      event.preventDefault();
-                      document.getElementById("hire")?.scrollIntoView({ behavior: "smooth", block: "start" });
-                    }
+                {hasPeople ? t("homePrimaryCta") : canHireAgents ? t("homeHireFirstCta") : t("homePrimaryCta")}
+                <ArrowRight className={cn("size-3.5", isAr && "rotate-180")} strokeWidth={1.8} />
+              </Link>
+              {!studioGoal && !goalEditing ? (
+                <button
+                  type="button"
+                  className="studio-claude-quiet"
+                  onClick={() => {
+                    setGoalDraft("");
+                    setGoalEditing(true);
                   }}
-                  className="home-btn-primary inline-flex h-11 items-center gap-2 px-6 text-[14px] font-medium"
                 >
-                  {hasPeople ? t("homePrimaryCta") : t("homeHireFirstCta")}
-                  <ArrowRight className={cn("size-4 opacity-70", isAr && "rotate-180")} strokeWidth={1.8} />
-                </Link>
-                <Link
-                  to={href("/cowork")}
-                  className="home-btn-secondary inline-flex h-11 items-center px-5 text-[14px]"
-                >
-                  {t("openCowork")}
-                </Link>
-              </div>
+                  {t("setGoal")}
+                </button>
+              ) : null}
             </div>
           </div>
-        </section>
+        </header>
 
-        <div className="mx-auto w-full max-w-[980px] space-y-6 px-6 py-8 sm:px-8 sm:py-10 lg:px-10">
-          {error ? (
-            <div className="home-panel px-5 py-4">
-              <p className="text-sm text-white">{t("apiUnavailable")}</p>
-              <p className="mt-1 text-sm text-neutral-500">{error}</p>
-              <button type="button" onClick={load} className="home-btn-secondary mt-3 h-9 px-4 text-xs">
-                {t("retry")}
-              </button>
-            </div>
-          ) : null}
-
-          <section className="arrab-rise arrab-rise-delay-1 home-panel px-5 py-4 sm:px-6">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <p className="text-[13px] text-neutral-500">{t("dashStudioGoal")}</p>
-                {!goalEditing ? (
-                  <p className="mt-1 text-[15px] leading-snug text-neutral-200">
-                    {studioGoal || t("dashStudioGoalEmpty")}
-                  </p>
+        {goalEditing ? (
+          <div className="relative mx-auto w-full max-w-[1080px] shrink-0 px-5 pt-4 sm:px-8">
+            <div className="studio-claude-goal-edit">
+              <textarea
+                value={goalDraft}
+                onChange={(event) => setGoalDraft(event.target.value)}
+                rows={2}
+                placeholder={t("dashStudioGoalPlaceholder")}
+                className="studio-assign-input"
+              />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={!goalDraft.trim()}
+                  onClick={() => applyStudioGoal(goalDraft)}
+                  className="studio-claude-primary disabled:opacity-40"
+                >
+                  {t("setGoal")}
+                </button>
+                {studioGoal ? (
+                  <button type="button" onClick={() => applyStudioGoal("")} className="studio-claude-quiet">
+                    {t("markGoalDone")}
+                  </button>
                 ) : null}
-              </div>
-              {!goalEditing ? (
                 <button
                   type="button"
                   onClick={() => {
                     setGoalDraft(studioGoal);
-                    setGoalEditing(true);
+                    setGoalEditing(false);
                   }}
-                  className="home-chip shrink-0"
+                  className="studio-claude-quiet"
                 >
-                  {studioGoal ? t("editGoal") : t("setGoal")}
+                  {t("cancel")}
                 </button>
-              ) : null}
+              </div>
             </div>
-            {goalEditing ? (
-              <div className="mt-3 space-y-2">
-                <textarea
-                  value={goalDraft}
-                  onChange={(event) => setGoalDraft(event.target.value)}
-                  rows={2}
-                  placeholder={t("dashStudioGoalPlaceholder")}
-                  className="field !h-auto !rounded-2xl py-3"
-                />
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    disabled={!goalDraft.trim()}
-                    onClick={() => applyStudioGoal(goalDraft)}
-                    className="home-btn-primary h-9 px-4 text-xs disabled:opacity-40"
-                  >
-                    {t("setGoal")}
-                  </button>
-                  {studioGoal ? (
-                    <button
-                      type="button"
-                      onClick={() => applyStudioGoal("")}
-                      className="home-btn-secondary h-9 px-4 text-xs"
-                    >
-                      {t("markGoalDone")}
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setGoalDraft(studioGoal);
-                      setGoalEditing(false);
-                    }}
-                    className="home-btn-secondary h-9 px-4 text-xs"
-                  >
-                    {t("cancel")}
-                  </button>
-                </div>
-              </div>
-            ) : null}
+          </div>
+        ) : null}
+
+        {error ? (
+          <section className="relative mx-auto mt-4 w-full max-w-[1080px] shrink-0 px-5 sm:px-8">
+            <div className="studio-org-card">
+              <p className="text-sm text-[var(--cp-text)]">{t("apiUnavailable")}</p>
+              <p className="mt-1 text-sm text-[var(--cp-muted)]">{error}</p>
+              <button type="button" onClick={load} className="studio-claude-quiet mt-3">
+                {t("retry")}
+              </button>
+            </div>
           </section>
+        ) : null}
 
-          <div className="grid gap-6 lg:grid-cols-[1.05fr_0.95fr] lg:gap-7">
-            <section className="arrab-rise arrab-rise-delay-2 home-panel min-w-0 p-5 sm:p-6">
-              <div className="flex items-end justify-between gap-3">
+        <div className="relative mx-auto flex min-h-0 w-full max-w-[1080px] flex-1 flex-col gap-4 px-5 py-5 sm:px-8 sm:py-6">
+          <div className="studio-org-stage min-h-0 flex-1">
+            <WorkforceList
+              className="studio-workforce-list"
+              groups={workforceGroups}
+              onAgentClick={openChatWith}
+            />
+
+            {canAssignWork ? (
+              <section className="studio-claude-compose" aria-label={t("studioAssignTitle")}>
+                <h2>{t("studioAssignTitle")}</h2>
+                <p className="studio-org-hint">{t("studioAssignHint")}</p>
+                <form onSubmit={(event) => void onAssign(event)} className="studio-assign-form mt-4">
+                  <textarea
+                    value={assignText}
+                    onChange={(event) => setAssignText(event.target.value)}
+                    rows={4}
+                    className="studio-assign-input"
+                    placeholder={t("studioAssignPlaceholder")}
+                    disabled={!hasPeople || assignBusy}
+                  />
+
+                  {hasPeople ? (
+                    <div className="studio-assign-people" role="list">
+                      {employees.slice(0, 10).map((agent) => {
+                        const active =
+                          resolvedAssignee?.id === agent.id ||
+                          (!parsedAssign.agent && assignAgentId === agent.id);
+                        return (
+                          <button
+                            key={agent.id}
+                            type="button"
+                            role="listitem"
+                            className={cn("studio-assign-chip", active && "is-on")}
+                            onClick={() =>
+                              setAssignAgentId((current) => (current === agent.id ? null : agent.id))
+                            }
+                          >
+                            <span className="studio-assign-avatar">{initials(agent.name)}</span>
+                            {agent.name}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="studio-org-hint">{t("studioAssignNeedPeople")}</p>
+                  )}
+
+                  {resolvedAssignee ? (
+                    <p className="text-[12px] text-[var(--cp-muted)]">
+                      {t("studioAssignWillGo")
+                        .replace("{name}", resolvedAssignee.name)
+                        .replace("{task}", parsedAssign.title.trim() || "…")}
+                    </p>
+                  ) : null}
+
+                  {assignError ? <p className="text-xs text-red-300/90">{assignError}</p> : null}
+
+                  <button
+                    type="submit"
+                    disabled={assignBusy || !hasPeople || !assignText.trim()}
+                    className="studio-claude-primary self-start disabled:opacity-40"
+                  >
+                    {assignBusy ? (
+                      t("saving")
+                    ) : (
+                      <>
+                        <Send size={15} strokeWidth={1.8} />
+                        {t("studioAssignCta")}
+                      </>
+                    )}
+                  </button>
+                </form>
+              </section>
+            ) : (
+              <section className="studio-claude-compose" aria-label={t("studioAssignTitle")}>
+                <h2>{t("studioAssignTitle")}</h2>
+                <p className="studio-org-hint">{t("studioAssignManagersOnly")}</p>
+              </section>
+            )}
+          </div>
+        </div>
+
+        {showMore && canHireAgents ? (
+          <div
+            className="studio-org-sheet"
+            id="hire"
+            onClick={() => setShowMore(false)}
+            role="presentation"
+          >
+            <div
+              className="studio-org-sheet-panel"
+              onClick={(event) => event.stopPropagation()}
+              role="dialog"
+              aria-modal="true"
+              aria-label={t("homeComposeTitle")}
+            >
+              <div className="mb-4 flex items-center justify-between gap-3">
                 <div>
-                  <h2 className="text-[17px] font-medium tracking-tight text-white">
-                    {t("homeRosterTitle")}
-                  </h2>
-                  <p className="mt-1 text-[13px] text-neutral-500">{t("homeRosterHint")}</p>
+                  <h2>{t("homeComposeTitle")}</h2>
+                  <p className="studio-org-hint">{t("homeComposeBody")}</p>
                 </div>
-                <Link to={href("/workforce")} className="text-[13px] text-neutral-500 transition-colors hover:text-white">
-                  {t("homeViewAll")}
-                </Link>
+                <button type="button" onClick={() => setShowMore(false)} className="studio-claude-quiet">
+                  {t("close")}
+                </button>
               </div>
 
-              {employees.length === 0 ? (
-                <div className="mt-8 flex flex-col items-center rounded-[22px] border border-dashed border-white/10 bg-white/[0.02] px-6 py-10 text-center">
-                  <div className="flex size-12 items-center justify-center rounded-full bg-white/5">
-                    <Sparkles className="size-5 text-neutral-400" strokeWidth={1.6} />
-                  </div>
-                  <p className="mt-4 text-[15px] text-neutral-300">{t("homeRosterEmpty")}</p>
-                  <button
-                    type="button"
-                    onClick={() => document.getElementById("hire")?.scrollIntoView({ behavior: "smooth" })}
-                    className="home-btn-primary mt-5 h-10 px-5 text-sm"
-                  >
-                    {t("homeHireFirstCta")}
-                  </button>
-                </div>
-              ) : (
-                <ul className="mt-5 space-y-2.5">
-                  {employees.map((agent) => {
-                    let goal = "";
-                    try {
-                      goal = localStorage.getItem(`${GOAL_KEY_PREFIX}${agent.id}`) ?? "";
-                    } catch {
-                      goal = "";
-                    }
-                    return (
-                      <li key={agent.id}>
-                        <button
-                          type="button"
-                          onClick={() => openChatWith(agent.id)}
-                          className="home-person group flex w-full items-center gap-3.5 px-3.5 py-3 text-start transition-colors"
-                        >
-                          <span className="home-avatar flex size-11 shrink-0 items-center justify-center text-[13px] font-medium">
-                            {initials(agent.name)}
-                          </span>
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[15px] text-white">{agent.name}</span>
-                            <span className="mt-0.5 block truncate text-[12px] text-neutral-500">
-                              {agent.role}
-                              {goal ? ` · ${goal}` : ""}
-                            </span>
-                          </span>
-                          <span className="home-chip opacity-70 transition-opacity group-hover:opacity-100">
-                            {t("talk")}
-                          </span>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-
-              {teams.length > 0 ? (
-                <div className="mt-7 border-t border-white/8 pt-5">
-                  <div className="flex items-center justify-between gap-3">
-                    <h3 className="text-[14px] font-medium text-white">{t("homeTeamsTitle")}</h3>
-                    <Link to={href("/workforce")} className="text-[12px] text-neutral-500 hover:text-white">
-                      {t("open")}
-                    </Link>
-                  </div>
-                  <ul className="mt-3 space-y-2">
-                    {teams.map((team) => (
-                      <li
-                        key={team.id}
-                        className="flex items-center justify-between gap-3 rounded-2xl px-3 py-2.5 hover:bg-white/[0.03]"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate text-[14px] text-neutral-200">{team.name}</p>
-                          <p className="truncate text-[12px] text-neutral-500">
-                            {team.purpose ?? t("none")}
-                          </p>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </section>
-
-            <section id="hire" className="arrab-rise arrab-rise-delay-3 home-panel min-w-0 scroll-mt-6 p-5 sm:p-6">
-              <h2 className="text-[17px] font-medium tracking-tight text-white">
-                {t("homeComposeTitle")}
-              </h2>
-              <p className="mt-1 text-[13px] text-neutral-500">{t("homeComposeBody")}</p>
-
-              <div className="mt-5 flex gap-1 rounded-2xl bg-white/[0.04] p-1">
+              <div className="studio-org-tabs">
                 {(
                   [
                     ["employee", t("createEmployee")],
@@ -380,29 +556,36 @@ export function HomePage() {
                     type="button"
                     onClick={() => {
                       setMode(id);
-                      setShowMore(false);
+                      setShowMore(true);
                     }}
-                    className={cn(
-                      "flex-1 rounded-xl px-2 py-2 text-[12px] transition-colors sm:text-[13px]",
-                      mode === id
-                        ? "bg-white text-black shadow-none"
-                        : "text-neutral-400 hover:text-neutral-200",
-                    )}
+                    className={cn(mode === id && "is-on")}
                   >
                     {label}
                   </button>
                 ))}
               </div>
 
-              <form onSubmit={onCompose} className="mt-5 space-y-3.5">
-                <Field label={mode === "team" ? t("teamName") : mode === "employee" ? t("employeeName") : t("projectName")}>
+              <form onSubmit={(event) => void onCompose(event)} className="mt-5 space-y-3.5">
+                <Field
+                  label={
+                    mode === "team"
+                      ? t("teamName")
+                      : mode === "employee"
+                        ? t("employeeName")
+                        : t("projectName")
+                  }
+                >
                   <input
                     required
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     className="field !h-11 !rounded-2xl"
                     placeholder={
-                      mode === "team" ? t("homePlaceholderTeam") : mode === "employee" ? t("homePlaceholderEmployee") : t("homePlaceholderProject")
+                      mode === "team"
+                        ? t("homePlaceholderTeam")
+                        : mode === "employee"
+                          ? t("homePlaceholderEmployee")
+                          : t("homePlaceholderProject")
                     }
                   />
                 </Field>
@@ -427,37 +610,20 @@ export function HomePage() {
                 </Field>
 
                 {mode !== "project" ? (
-                  <div>
-                    <button
-                      type="button"
-                      onClick={() => setShowMore((v) => !v)}
-                      className="inline-flex items-center gap-1 text-[12px] text-neutral-500 hover:text-neutral-300"
+                  <Field label={t("linkedProject")}>
+                    <select
+                      value={projectId}
+                      onChange={(e) => setProjectId(e.target.value)}
+                      className="field !h-11 !rounded-2xl"
                     >
-                      <ChevronDown
-                        className={cn("size-3.5 transition-transform", showMore && "rotate-180")}
-                        strokeWidth={1.8}
-                      />
-                      {t("homeMoreOptions")}
-                    </button>
-                    {showMore ? (
-                      <div className="mt-3">
-                        <Field label={t("linkedProject")}>
-                          <select
-                            value={projectId}
-                            onChange={(e) => setProjectId(e.target.value)}
-                            className="field !h-11 !rounded-2xl"
-                          >
-                            <option value="">{t("unassigned")}</option>
-                            {activeProjects.map((project) => (
-                              <option key={project.id} value={project.id}>
-                                {project.name}
-                              </option>
-                            ))}
-                          </select>
-                        </Field>
-                      </div>
-                    ) : null}
-                  </div>
+                      <option value="">{t("unassigned")}</option>
+                      {activeProjects.map((project) => (
+                        <option key={project.id} value={project.id}>
+                          {project.name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
                 ) : null}
 
                 {formError ? <p className="text-xs text-red-300/90">{formError}</p> : null}
@@ -465,37 +631,15 @@ export function HomePage() {
                 <button
                   type="submit"
                   disabled={saving}
-                  className="home-btn-primary mt-1 inline-flex h-11 w-full items-center justify-center gap-2 text-[14px] font-medium disabled:opacity-40"
+                  className="studio-claude-primary mt-1 w-full justify-center disabled:opacity-40"
                 >
                   <Plus className="size-4" strokeWidth={1.8} />
                   {saving ? t("saving") : mode === "employee" ? t("homeHireCta") : t("create")}
                 </button>
               </form>
-            </section>
+            </div>
           </div>
-
-          {(data?.activity.length ?? 0) > 0 ? (
-            <section className="arrab-rise arrab-rise-delay-3 home-panel p-5 sm:p-6">
-              <div className="flex items-center justify-between gap-3">
-                <h2 className="text-[15px] font-medium text-white">{t("recentActivity")}</h2>
-                <Link to={href("/activity")} className="text-[12px] text-neutral-500 hover:text-white">
-                  {t("open")}
-                </Link>
-              </div>
-              <ol className="mt-4 space-y-3">
-                {data?.activity.slice(0, 3).map((entry) => (
-                  <li key={entry.id} className="flex gap-3">
-                    <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-white/35" />
-                    <div className="min-w-0">
-                      <p className="text-[14px] text-neutral-200">{entry.summary}</p>
-                      <p className="mt-0.5 text-[11px] text-neutral-600">{entry.objectType}</p>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-            </section>
-          ) : null}
-        </div>
+        ) : null}
       </div>
     </Surface>
   );
@@ -504,7 +648,7 @@ export function HomePage() {
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
     <label className="grid gap-1.5">
-      <span className="text-[12px] text-neutral-500">{label}</span>
+      <span className="text-[12px] text-[var(--cp-muted)]">{label}</span>
       {children}
     </label>
   );

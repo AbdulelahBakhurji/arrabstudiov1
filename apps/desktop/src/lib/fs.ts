@@ -117,3 +117,11 @@ export async function openPath(
   }
   return invoke("open_path", { root, relative: relative || null });
 }
+
+/** App-data desk folder for PDF/HTML/CSV when no folder is attached. */
+export async function ensureAssistantDesk(): Promise<string> {
+  if (!isTauriRuntime()) {
+    throw new Error("Desktop app required");
+  }
+  return invoke<string>("ensure_assistant_desk");
+}
