@@ -28,6 +28,7 @@ const PUBLIC_PREFIXES = [
   "/v1/billing/moyasar/callback",
   "/v1/billing/confirm",
   "/v1/releases",
+  "/v1/connectors/catalog",
   "/v1/connectors/gmail/oauth/callback",
   "/v1/connectors/outlook/oauth/callback",
   "/v1/connectors/github/oauth/callback",
@@ -43,14 +44,7 @@ const PUBLIC_PREFIXES = [
   "/v1/connectors/figma/oauth/callback",
   "/v1/connectors/whatsapp/webhook",
   "/v1/org/employees/sign-in",
-] as const;
-
-/** Sensitive surfaces that expose or mutate secrets / third-party tokens / org admin. */
-const PROTECTED_PREFIXES = [
-  "/v1/connectors",
-  "/v1/github/",
-  "/v1/org/",
-  "/v1/family",
+  "/v1/family/members/sign-in",
 ] as const;
 
 function extractAccountToken(request: FastifyRequest): string | null {
@@ -67,13 +61,6 @@ function extractAccountToken(request: FastifyRequest): string | null {
 function isPublicPath(url: string, routePrefix = ""): boolean {
   const path = stripRoutePrefix(url.split("?")[0] ?? url, routePrefix);
   return PUBLIC_PREFIXES.some((prefix) => path === prefix || path.startsWith(prefix));
-}
-
-function isProtectedPath(url: string, routePrefix = ""): boolean {
-  const path = stripRoutePrefix(url.split("?")[0] ?? url, routePrefix);
-  if (path === "/v1/connectors/catalog") return false;
-  if (path.endsWith("/oauth/callback")) return false;
-  return PROTECTED_PREFIXES.some((prefix) => path === prefix || path.startsWith(prefix));
 }
 
 function stripRoutePrefix(path: string, routePrefix: string): string {
@@ -125,6 +112,7 @@ export async function registerSecurity(
       path.startsWith("/v1/account/sign-in") ||
       path.startsWith("/v1/account/connect") ||
       path.startsWith("/v1/org/employees/sign-in") ||
+      path.startsWith("/v1/family/members/sign-in") ||
       path.includes("/oauth/start")
     ) {
       const key = `${clientKey(request)}:${path}`;
@@ -163,7 +151,11 @@ export async function registerSecurity(
       request.orgEmployee = await resolveOrgEmployee(empToken?.trim() || null);
     }
 
-    if (isProtectedPath(request.url, prefix) && !isPublicPath(request.url, prefix)) {
+    // Default-deny: once a studio account exists, every non-public /v1 route needs a session.
+    // /erp/* authenticates itself (ERP token or published-catalog read) so unknown
+    // paths still fall through to Fastify's "Route … not found".
+    const bare = stripRoutePrefix(request.url.split("?")[0] ?? request.url, prefix);
+    if (!isPublicPath(request.url, prefix) && !bare.startsWith("/erp/") && bare !== "/erp") {
       await requireStudioSession(request, accounts);
     }
   });

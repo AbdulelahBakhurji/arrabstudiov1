@@ -52,6 +52,7 @@ docs/design/desktop/preview-tools/.build
 
 # Packaged desktop installers & local release dumps
 release/artifacts/
+release/builds/
 *.dmg
 *.msi
 *.exe

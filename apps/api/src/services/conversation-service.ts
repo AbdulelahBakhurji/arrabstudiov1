@@ -1,10 +1,13 @@
 import type { AiGateway } from "@arrab/ai";
 import {
   executeApprovedTool,
+  isClientExecTool,
   type AgentRunResult,
+  type AgentSkillTools,
   type AgentRuntime,
 } from "@arrab/agents";
 import {
+  ForbiddenError,
   NotFoundError,
   SessionBudgetExceededError,
   ValidationError,
@@ -13,9 +16,12 @@ import {
   type Clock,
   type IdGenerator,
 } from "@arrab/core";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Persistence } from "@arrab/database";
 import {
   brandId,
+  guardianHardHit,
+  toolResultAttestationPayload,
   type Activity,
   type ActivityId,
   type AgentId,
@@ -29,10 +35,14 @@ import {
   type MessageId,
   type ProjectId,
   type SendMessageRequest,
+  type SkillLibraryEntry,
+  type IngestConversationMessagesRequest,
+  type IngestConversationMessagesResponse,
   type SendMessageResponse,
   type SessionUsageSnapshot,
   type TeamId,
   type UsageEvent,
+  type WorkspaceHint,
   type WorkspaceId,
 } from "@arrab/shared";
 import { decryptField, encryptField } from "../lib/field-crypto.js";
@@ -47,6 +57,134 @@ import {
   normalizeSpendTier,
   resolveSpendProfile,
 } from "./token-spend.js";
+
+/**
+ * Desktop clients also mirror skills into workspace rules so older API builds
+ * still apply them. When the dedicated `skills` field is present, drop that
+ * copy (and the synthetic "none" hint it created) to avoid double injection.
+ */
+function stripSkillsFallback(
+  hint: WorkspaceHint | null | undefined,
+  hasSkills: boolean,
+): WorkspaceHint | null {
+  if (!hint) return null;
+  if (!hasSkills || !hint.workspaceRules?.includes("<<arrab-skills>>")) return hint;
+  const rules = hint.workspaceRules
+    .replace(/\n*<<arrab-skills>>[\s\S]*?<<\/arrab-skills>>\n*/g, "\n")
+    .trim();
+  const next: WorkspaceHint = { ...hint, workspaceRules: rules || null };
+  const hasContent = Object.entries(next).some(
+    ([key, value]) =>
+      key !== "kind" && value != null && !(Array.isArray(value) && value.length === 0) && value !== "",
+  );
+  return next.kind === "none" && !hasContent ? null : next;
+}
+
+const SKILL_LIBRARY_LIMITS = {
+  skills: 40,
+  instructions: 40_000,
+  files: 40,
+  fileChars: 120_000,
+  totalChars: 700_000,
+  readChars: 40_000,
+} as const;
+
+/** Server-side use_skill / read_skill_file backed by the library the desktop sent. */
+function buildSkillTools(library: SendMessageRequest["skillLibrary"]): AgentSkillTools | null {
+  if (!Array.isArray(library) || library.length === 0) return null;
+  let total = 0;
+  const skills = library
+    .filter(
+      (entry): entry is SkillLibraryEntry =>
+        Boolean(entry) &&
+        typeof entry.slug === "string" &&
+        typeof entry.instructions === "string" &&
+        entry.instructions.trim().length > 0,
+    )
+    .slice(0, SKILL_LIBRARY_LIMITS.skills)
+    .map((entry) => {
+      const instructions = entry.instructions.slice(0, SKILL_LIBRARY_LIMITS.instructions);
+      total += instructions.length;
+      const files = (Array.isArray(entry.files) ? entry.files : [])
+        .filter((file) => file && typeof file.path === "string" && typeof file.content === "string")
+        .slice(0, SKILL_LIBRARY_LIMITS.files)
+        .flatMap((file) => {
+          const room = SKILL_LIBRARY_LIMITS.totalChars - total;
+          if (room <= 0) return [];
+          const content = file.content.slice(0, Math.min(SKILL_LIBRARY_LIMITS.fileChars, room));
+          total += content.length;
+          return [{ path: file.path.replace(/^\.?\/+/, ""), content }];
+        });
+      return {
+        slug: entry.slug.trim().toLowerCase(),
+        name: typeof entry.name === "string" && entry.name.trim() ? entry.name.trim() : entry.slug,
+        description: typeof entry.description === "string" ? entry.description.trim() : "",
+        instructions,
+        active: entry.active === true,
+        files,
+        installedPath:
+          typeof entry.installedPath === "string" && entry.installedPath.trim()
+            ? entry.installedPath.trim()
+            : null,
+      };
+    });
+  if (skills.length === 0) return null;
+
+  const find = (raw: string | undefined) => {
+    const key = (raw ?? "").trim().replace(/^\//, "").toLowerCase();
+    if (!key) return null;
+    return (
+      skills.find((skill) => skill.slug === key) ??
+      skills.find((skill) => skill.name.toLowerCase() === key) ??
+      skills.find((skill) => skill.slug.includes(key) || key.includes(skill.slug)) ??
+      null
+    );
+  };
+  const available = () => skills.map((skill) => skill.slug).join(", ");
+
+  return {
+    catalog: skills.map(({ slug, name, description, active }) => ({ slug, name, description, active })),
+    useSkill: (args) => {
+      const skill = find(args.name || args.skill || args.slug);
+      if (!skill) return `Unknown skill '${args.name ?? ""}'. Installed skills: ${available()}.`;
+      return [
+        `# Skill: ${skill.name} (${skill.slug})`,
+        skill.instructions,
+        skill.files.length
+          ? `\nFiles bundled with this skill (open with read_skill_file):\n${skill.files.map((file) => `- ${file.path}`).join("\n")}`
+          : null,
+        skill.installedPath
+          ? [
+              `\nInstalled on the operator's computer at: ${skill.installedPath}`,
+              "When run_terminal is available, run bundled scripts from there, e.g.",
+              `python3 "${skill.installedPath}/scripts/<script>.py" <args>`,
+            ].join("\n")
+          : null,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    },
+    readSkillFile: (args) => {
+      const skill = find(args.name || args.skill || args.slug);
+      if (!skill) return `Unknown skill '${args.name ?? ""}'. Installed skills: ${available()}.`;
+      const wanted = (args.path || args.file || "").trim().replace(/^\.?\/+/, "").toLowerCase();
+      if (!wanted || wanted === "skill.md") return skill.instructions.slice(0, SKILL_LIBRARY_LIMITS.readChars);
+      const file =
+        skill.files.find((item) => item.path.toLowerCase() === wanted) ??
+        skill.files.find((item) => item.path.toLowerCase().endsWith(`/${wanted}`)) ??
+        skill.files.find((item) => item.path.toLowerCase().split("/").pop() === wanted.split("/").pop());
+      if (!file) {
+        return `File '${args.path ?? ""}' is not bundled with ${skill.slug}. Files: ${
+          skill.files.map((item) => item.path).join(", ") || "(none)"
+        }.`;
+      }
+      const content = file.content.slice(0, SKILL_LIBRARY_LIMITS.readChars);
+      return content.length < file.content.length
+        ? `${content}\n\n[truncated — ${file.content.length.toLocaleString()} characters total]`
+        : content;
+    },
+  };
+}
 
 function isTraderCompanion(agent: {
   name?: string | null;
@@ -158,6 +296,10 @@ export class ConversationService {
         conversationId: parsed.conversationId,
         toolName: parsed.toolName,
         arguments: parsed.arguments ?? {},
+        resultToken:
+          typeof parsed.resultToken === "string" && parsed.resultToken.trim()
+            ? parsed.resultToken.trim()
+            : undefined,
       };
     } catch {
       return null;
@@ -168,6 +310,7 @@ export class ConversationService {
     return (await this.persistence.conversations.list()).map((conversation) => ({
       ...conversation,
       ownerEmployeeId: conversation.ownerEmployeeId ?? null,
+      familyMemberId: conversation.familyMemberId ?? null,
       visibility: conversation.visibility ?? "workspace",
       spendTier: conversation.spendTier ?? "low",
       sessionTokenBudget:
@@ -206,6 +349,7 @@ export class ConversationService {
           ? null
           : conversation.sessionTokenBudget,
       ownerEmployeeId: conversation.ownerEmployeeId ?? null,
+      familyMemberId: conversation.familyMemberId ?? null,
       visibility: conversation.visibility ?? "workspace",
     };
     return {
@@ -274,6 +418,9 @@ export class ConversationService {
         ? normalizeSessionBudget(input.spend.sessionTokenBudget)
         : normalizeSessionBudget(5_000);
 
+    const familyMemberId =
+      (await this.familyHousehold?.getActiveMemberId())?.trim() || null;
+
     const conversation: Conversation = {
       id: brandId<ConversationId>(this.ids.next("conv")),
       workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
@@ -286,6 +433,7 @@ export class ConversationService {
       spendTier,
       sessionTokenBudget,
       ownerEmployeeId: actorEmployeeId?.trim() || null,
+      familyMemberId,
       visibility: actorEmployeeId
         ? (input.visibility ?? "private")
         : (input.visibility ?? "workspace"),
@@ -304,6 +452,55 @@ export class ConversationService {
     return conversation;
   }
 
+  /** Store client-produced turns (local model / guardian) without running the LLM. */
+  async ingestMessages(
+    conversationId: string,
+    input: IngestConversationMessagesRequest,
+  ): Promise<IngestConversationMessagesResponse> {
+    const items = input.messages ?? [];
+    if (!items.length) {
+      throw new ValidationError("At least one message is required");
+    }
+    if (items.length > 40) {
+      throw new ValidationError("Too many messages to ingest at once");
+    }
+
+    const conversation = await this.persistence.conversations.getById(conversationId);
+    if (!conversation) {
+      throw new NotFoundError("Conversation", conversationId);
+    }
+
+    const saved: Message[] = [];
+    for (const item of items) {
+      const role = item.role === "assistant" ? "assistant" : "user";
+      const content = item.content?.trim() ?? "";
+      if (!content) continue;
+      if (content.length > 8000) {
+        throw new ValidationError("Message must be 8000 characters or fewer");
+      }
+      const message: Message = {
+        id: brandId<MessageId>(this.ids.next("msg")),
+        conversationId: conversation.id,
+        role,
+        content,
+        createdAt: this.clock.isoNow(),
+      };
+      await this.persistMessage(message);
+      saved.push(message);
+    }
+
+    if (!saved.length) {
+      throw new ValidationError("Message content is required");
+    }
+
+    await this.persistence.conversations.update({
+      ...conversation,
+      updatedAt: this.clock.isoNow(),
+    });
+
+    return { messages: saved };
+  }
+
   async sendMessage(
     conversationId: string,
     input: SendMessageRequest,
@@ -320,6 +517,25 @@ export class ConversationService {
     }
     if (content.length > 8000) {
       throw new ValidationError("Message must be 8000 characters or fewer");
+    }
+
+    const childSeat = (await this.familyHousehold?.isActiveChildSeat()) === true;
+    if (childSeat) {
+      const hard = guardianHardHit(content);
+      if (hard) {
+        throw new ForbiddenError(
+          `Family safety boundary: ${hard.labelEn}. Ask a parent if you need help.`,
+        );
+      }
+      // Never trust client-supplied skill bodies or goal hints for child seats.
+      input = {
+        ...input,
+        skills: [],
+        skillLibrary: null,
+        workspaceHint: input.workspaceHint
+          ? { ...input.workspaceHint, activeGoal: null }
+          : input.workspaceHint,
+      };
     }
 
     await this.accounts.assertWithinQuota();
@@ -371,6 +587,7 @@ export class ConversationService {
       throw new NotFoundError("Agent", agentId);
     }
 
+    const ephemeral = Boolean(input.ephemeral);
     const now = this.clock.isoNow();
     const userMessage: Message = {
       id: brandId<MessageId>(this.ids.next("msg")),
@@ -379,16 +596,30 @@ export class ConversationService {
       content,
       createdAt: now,
     };
-    await this.persistMessage(userMessage);
+    if (!ephemeral) {
+      await this.persistMessage(userMessage);
+    }
 
-    const history = (await this.loadPlainMessages(conversationId))
-      .filter((message) => message.id !== userMessage.id)
-      .filter((message) => message.role === "user" || message.role === "assistant")
-      .slice(-profile.historyMessages)
-      .map((message) => ({
-        role: message.role as "user" | "assistant",
-        content: message.content,
-      }));
+    const history = ephemeral
+      ? (input.priorMessages ?? [])
+          .filter(
+            (message) =>
+              (message.role === "user" || message.role === "assistant") &&
+              Boolean(message.content?.trim()),
+          )
+          .map((message) => ({
+            role: message.role as "user" | "assistant",
+            content: message.content.trim().slice(0, 8000),
+          }))
+          .slice(-profile.historyMessages)
+      : (await this.loadPlainMessages(conversationId))
+          .filter((message) => message.id !== userMessage.id)
+          .filter((message) => message.role === "user" || message.role === "assistant")
+          .slice(-profile.historyMessages)
+          .map((message) => ({
+            role: message.role as "user" | "assistant",
+            content: message.content,
+          }));
 
     const providerConfigured = this.gateway.listProviders().length > 0;
     let assistantMessage: Message | null = null;
@@ -421,7 +652,7 @@ export class ConversationService {
         }
       }
 
-      const allDocs = await this.persistence.knowledge.list();
+      const allDocs = childSeat ? [] : await this.persistence.knowledge.list();
       if (allDocs.length > 0 && profile.knowledgeDocs > 0) {
         const {
           selectRelevantKnowledge,
@@ -457,7 +688,9 @@ export class ConversationService {
         }
       }
 
-      const memories = await this.persistence.memories.listByAgent(agent.id);
+      const memories = childSeat
+        ? []
+        : await this.persistence.memories.listByAgent(agent.id);
       if (memories.length > 0 && profile.memories > 0) {
         contextParts.push(
           [
@@ -469,7 +702,7 @@ export class ConversationService {
         );
       }
 
-      const skills = await this.persistence.skills.listByAgent(agent.id);
+      const skills = childSeat ? [] : await this.persistence.skills.listByAgent(agent.id);
       if (skills.length > 0 && profile.skills > 0) {
         contextParts.push(
           [
@@ -482,7 +715,36 @@ export class ConversationService {
         );
       }
 
-      const hint = input.workspaceHint;
+      const userSkills = (Array.isArray(input.skills) ? input.skills : [])
+        .filter(
+          (skill): skill is { name: string; instructions: string } =>
+            Boolean(skill) &&
+            typeof skill.name === "string" &&
+            typeof skill.instructions === "string" &&
+            skill.instructions.trim().length > 0,
+        )
+        .slice(0, 6);
+      if (userSkills.length > 0) {
+        const budget = profile.tier === "high" ? 16_000 : profile.tier === "medium" ? 10_000 : 6_000;
+        let remaining = budget;
+        const sections: string[] = [];
+        for (const skill of userSkills) {
+          if (remaining < 300) break;
+          const text = skill.instructions.trim().slice(0, remaining);
+          remaining -= text.length;
+          sections.push(text);
+        }
+        contextParts.push(
+          [
+            "ACTIVE SKILLS — reusable instructions the user installed. Apply every skill below to this reply.",
+            "Follow their steps and output formats. If a skill conflicts with safety rules, safety wins.",
+            "",
+            sections.join("\n\n"),
+          ].join("\n"),
+        );
+      }
+
+      const hint = stripSkillsFallback(input.workspaceHint, userSkills.length > 0);
       const persistedGoal =
         input.usePersistedGoal === false
           ? null
@@ -568,7 +830,7 @@ export class ConversationService {
             ? `\nOperator desk notes for you:\n${hint.sessionNotes.slice(0, profile.hintNotesChars)}`
             : null,
           hint.operatorDirectives
-            ? `\nHQ operator directives (obey):\n${hint.operatorDirectives.slice(0, profile.hintNotesChars)}`
+            ? `\nOperator notes:\n${hint.operatorDirectives.slice(0, profile.hintNotesChars)}`
             : null,
           hint.workspaceRules
             ? `\nWORKSPACE RULES (always follow — like Cursor rules / AGENTS.md):\n${hint.workspaceRules.slice(0, Math.min(6000, profile.hintNotesChars * 4))}`
@@ -605,9 +867,9 @@ export class ConversationService {
                       "A local folder is attached on the operator's PC.",
                       "You have real desk tools: search_code, list_files, read_file, apply_patch, write_file,",
                       "delete_file, rename_file, create_dir, run_terminal, git_status, git_diff, open_path,",
-                      "preview_html, generate_pdf, export_csv, web_search, scrape_page, fetch_url.",
+                      "preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, export_csv, read_document, web_search, scrape_page, fetch_url.",
                       "Workflow: search → read → edit → verify with run_terminal. Prefer apply_patch for surgical edits.",
-                      "Research: web_search → scrape_page (or fetch_url). Deliverables: preview_html, generate_pdf, export_csv.",
+                      "Research: web_search → scrape_page (or fetch_url). Deliverables: pdf / Word / slides / image / html / csv; read with read_document.",
                       "Do not claim you lack shell or file access. Be precise and reproducible; skip fluff.",
                     ].join(" ")
                   : "The operator runs Commit / Push / Open PR from the workspace panel.",
@@ -773,10 +1035,20 @@ export class ConversationService {
         history,
         model: input.model?.trim() || this.defaultModel,
         systemExtra,
-        maxOutputTokens: codingFolder
-          ? Math.max(profile.maxOutputTokens, codingFloor)
-          : profile.maxOutputTokens,
-        temperature: codingFolder ? 0.2 : undefined,
+        maxOutputTokens:
+          typeof input.maxOutputTokens === "number" && input.maxOutputTokens > 0
+            ? Math.min(8_000, Math.round(input.maxOutputTokens))
+            : codingFolder
+              ? Math.max(profile.maxOutputTokens, codingFloor)
+              : profile.maxOutputTokens,
+        temperature:
+          typeof input.temperature === "number" &&
+          input.temperature >= 0 &&
+          input.temperature <= 2
+            ? input.temperature
+            : codingFolder
+              ? 0.2
+              : undefined,
         tools: {
           workspaceSummary,
           activeGoal: activeGoalText,
@@ -788,6 +1060,7 @@ export class ConversationService {
           finnhub: finnhubTools,
           finnhubAccountLabel: finnhubAccess?.accountLabel ?? null,
           traderMode: isTraderCompanion(agent),
+          skills: buildSkillTools(input.skillLibrary),
         },
       };
 
@@ -822,10 +1095,12 @@ export class ConversationService {
       }
 
       if (result.status === "needs_approval" && result.pendingTool) {
+        const resultToken = randomBytes(32).toString("hex");
         const toolDetail: CallToolApprovalDetail = {
           conversationId: conversation.id,
           toolName: result.pendingTool.name,
           arguments: result.pendingTool.arguments,
+          resultToken,
         };
         approval = {
           id: brandId<ApprovalId>(this.ids.next("apr")),
@@ -859,7 +1134,9 @@ export class ConversationService {
             `Proposed action awaiting your approval: ${approval.title}`,
           createdAt: this.clock.isoNow(),
         };
-        await this.persistMessage(assistantMessage);
+        if (!ephemeral) {
+          await this.persistMessage(assistantMessage);
+        }
       } else if (result.status !== "completed" || !result.output?.trim()) {
         // Prefer a soft completion over a hard failure when tools already ran
         // or the model returned an empty final string (common after web_search).
@@ -877,7 +1154,9 @@ export class ConversationService {
           content: soft,
           createdAt: this.clock.isoNow(),
         };
-        await this.persistMessage(assistantMessage);
+        if (!ephemeral) {
+          await this.persistMessage(assistantMessage);
+        }
         await this.record(
           "ran",
           "conversation",
@@ -894,7 +1173,9 @@ export class ConversationService {
           content: result.output,
           createdAt: this.clock.isoNow(),
         };
-        await this.persistMessage(assistantMessage);
+        if (!ephemeral) {
+          await this.persistMessage(assistantMessage);
+        }
         await this.record(
           "ran",
           "conversation",
@@ -944,7 +1225,7 @@ export class ConversationService {
 
   async resumeAfterToolApproval(
     approval: Approval,
-    options?: { toolResult?: string | null },
+    options?: { toolResult?: string | null; toolResultAttestation?: string | null },
   ): Promise<SendMessageResponse> {
     if (approval.kind !== "call_tool") {
       throw new ValidationError("Approval is not a tool call");
@@ -969,29 +1250,42 @@ export class ConversationService {
 
     await this.accounts.assertWithinQuota();
 
-    if (
-      [
-        "run_terminal",
-        "list_files",
-        "search_code",
-        "read_file",
-        "write_file",
-        "apply_patch",
-        "delete_file",
-        "rename_file",
-        "create_dir",
-        "git_status",
-        "git_diff",
-        "open_path",
-        "preview_html",
-        "generate_pdf",
-        "export_csv",
-      ].includes(detail.toolName) &&
-      !options?.toolResult?.trim()
-    ) {
+    const childSeat = (await this.familyHousehold?.isActiveChildSeat()) === true;
+    if (childSeat && isClientExecTool(detail.toolName)) {
+      throw new ForbiddenError("Desktop tools are not available on child seats");
+    }
+
+    const clientExec = isClientExecTool(detail.toolName);
+    if (clientExec && !options?.toolResult?.trim()) {
       throw new ValidationError(
         `${detail.toolName} requires toolResult from the desktop after local execution`,
       );
+    }
+
+    if (clientExec && options?.toolResult?.trim()) {
+      const token = detail.resultToken?.trim() ?? "";
+      const attestation = options.toolResultAttestation?.trim() ?? "";
+      if (!token || !attestation) {
+        throw new ValidationError("toolResultAttestation is required for desktop tool results");
+      }
+      const expected = createHash("sha256")
+        .update(toolResultAttestationPayload(token, options.toolResult))
+        .digest("hex");
+      const provided = Buffer.from(attestation, "utf8");
+      const want = Buffer.from(expected, "utf8");
+      if (provided.length !== want.length || !timingSafeEqual(provided, want)) {
+        throw new ForbiddenError("Invalid toolResult attestation");
+      }
+      // One-time use: clear token so the same approval cannot be replayed with a forged result.
+      const cleared: CallToolApprovalDetail = {
+        conversationId: detail.conversationId,
+        toolName: detail.toolName,
+        arguments: detail.arguments,
+      };
+      await this.persistence.approvals.update({
+        ...approval,
+        detail: JSON.stringify(cleared),
+      });
     }
 
     const mailConnector = await this.connectors.findPreferredMailConnector();
@@ -1182,9 +1476,9 @@ export class ConversationService {
       ? [
           "Local desk TOOL_RESULT received. You still have full PC tools for this folder:",
           "list_files, search_code, read_file, apply_patch, write_file, delete_file, rename_file, create_dir,",
-          "run_terminal, git_status, git_diff, open_path, preview_html, generate_pdf, export_csv, web_search, scrape_page, fetch_url.",
+          "run_terminal, git_status, git_diff, open_path, preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, export_csv, read_document, web_search, scrape_page, fetch_url.",
           "Continue the coding loop until the operator's ask is done. Verify edits with run_terminal.",
-          "Research: web_search → scrape_page. For reports/pages: preview_html or generate_pdf. For tables: export_csv.",
+          "Research: web_search → scrape_page. Deliverables: pdf / Word / slides / image / html / csv; read with read_document.",
           "Be brief and precise — prefer exact paths and commands.",
         ].join(" ")
       : isEmailMutating
@@ -1236,6 +1530,7 @@ export class ConversationService {
         conversationId: conversation.id,
         toolName: result.pendingTool.name,
         arguments: result.pendingTool.arguments,
+        resultToken: randomBytes(32).toString("hex"),
       };
       const nextApproval: Approval = {
         id: brandId<ApprovalId>(this.ids.next("apr")),

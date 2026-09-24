@@ -47,7 +47,7 @@ export interface ApiMetaResponse {
     tokensUsed: number;
     tokensRemaining: number | null;
     overLimit: boolean;
-    pauseMode: "upgrade_required" | "upgrade_or_wait" | null;
+    pauseMode: "upgrade_required" | "upgrade_or_wait" | "payment_required" | null;
   };
 }
 
@@ -157,6 +157,49 @@ export interface SendMessageRequest {
   usePersistedGoal?: boolean;
   /** Optional model override (OpenRouter/Bedrock/OpenAI/Anthropic id). */
   model?: string | null;
+  /** Companion-specific sampling. Omitted uses the runtime default. */
+  temperature?: number | null;
+  /** Companion-specific completion cap. */
+  maxOutputTokens?: number | null;
+  /**
+   * Incognito / private mode: run the model but do not store transcript rows
+   * on the account. Client supplies prior turns from the on-device vault.
+   */
+  ephemeral?: boolean;
+  /** Prior user/assistant turns when `ephemeral` is true (device-side history). */
+  priorMessages?: Array<{ role: "user" | "assistant"; content: string }>;
+  /** User skills (SKILL.md-style instruction packs) that apply to this turn only. */
+  skills?: Array<{ name: string; instructions: string }> | null;
+  /**
+   * Claude-style skill library for progressive disclosure: the model sees each
+   * skill's name + description and loads instructions/files via use_skill and
+   * read_skill_file only when relevant.
+   */
+  skillLibrary?: SkillLibraryEntry[] | null;
+}
+
+export interface SkillLibraryEntry {
+  name: string;
+  slug: string;
+  description: string;
+  instructions: string;
+  /** Already applied in the system prompt for this turn. */
+  active?: boolean;
+  files?: Array<{ path: string; content: string }>;
+  /** Absolute folder where the desktop installed this skill (scripts can run from here). */
+  installedPath?: string | null;
+}
+
+/** Persist turns that were produced client-side (local model / guardian) onto the account. */
+export interface IngestConversationMessagesRequest {
+  messages: Array<{
+    role: "user" | "assistant";
+    content: string;
+  }>;
+}
+
+export interface IngestConversationMessagesResponse {
+  messages: Message[];
 }
 
 export interface CreateGoalRequest {
@@ -278,6 +321,8 @@ export interface ConnectorPublic {
   connectedAt: string;
   lastVerifiedAt: string | null;
   error: string | null;
+  /** Family seat owner — null outside family plans. */
+  familyMemberId: string | null;
 }
 
 export interface ConnectorResource {
@@ -730,5 +775,10 @@ export interface ResolveApprovalRequest {
   status: "approved" | "rejected";
   /** Client-supplied result after local execution (required for run_terminal). */
   toolResult?: string | null;
+  /**
+   * sha256hex(`${resultToken}\\n${toolResult}`) from CallToolApprovalDetail.resultToken.
+   * Required when toolResult is provided for client-exec tools.
+   */
+  toolResultAttestation?: string | null;
 }
 

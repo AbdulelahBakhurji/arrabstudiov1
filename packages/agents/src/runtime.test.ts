@@ -329,6 +329,67 @@ describe("GatewayChatRuntime", () => {
     expect(result.output).toBe("Archived 2 messages.");
   });
 
+  it("lists skills and loads one on demand via use_skill", async () => {
+    const gateway = new RegistryAiGateway();
+    let toolNames: string[] = [];
+    let system = "";
+    let lastToolResult = "";
+    let round = 0;
+    gateway.register({
+      id: "openai",
+      kind: "openai_compatible",
+      supportsTools: true,
+      async complete(request: AiCompletionRequest): Promise<AiCompletion> {
+        toolNames = (request.tools ?? []).map((tool) => tool.name);
+        system = request.messages.find((message) => message.role === "system")?.content ?? "";
+        lastToolResult = request.messages.filter((message) => message.role === "tool").at(-1)?.content ?? "";
+        round += 1;
+        if (round === 1) {
+          return {
+            id: "cmpl_skill_1",
+            model: { providerId: "openai", model: "gpt-4o-mini" },
+            message: { role: "assistant", content: "" },
+            finishReason: "tool_calls",
+            usage: null,
+            toolCalls: [{ id: "call_skill", name: "use_skill", arguments: JSON.stringify({ name: "pdf" }) }],
+          };
+        }
+        return {
+          id: "cmpl_skill_2",
+          model: { providerId: "openai", model: "gpt-4o-mini" },
+          message: { role: "assistant", content: "Merged." },
+          finishReason: "stop",
+          usage: null,
+        };
+      },
+    });
+    const loaded: string[] = [];
+    const result = await new GatewayChatRuntime().run(
+      {
+        agent,
+        conversationId: null,
+        input: "Merge these PDFs",
+        tools: {
+          skills: {
+            catalog: [{ slug: "pdf", name: "PDF", description: "Work with PDF files" }],
+            useSkill: (args) => {
+              loaded.push(args.name ?? "");
+              return "PDF skill instructions";
+            },
+            readSkillFile: () => "",
+          },
+        },
+      },
+      gateway,
+    );
+    expect(toolNames).toEqual(expect.arrayContaining(["use_skill", "read_skill_file"]));
+    expect(system).toContain("Work with PDF files");
+    expect(loaded).toEqual(["pdf"]);
+    expect(lastToolResult).toContain("PDF skill instructions");
+    expect(result.toolsUsed).toContain("use_skill");
+    expect(result.output).toBe("Merged.");
+  });
+
   it("streams tokens live from streamComplete", async () => {
     const gateway = new RegistryAiGateway();
     gateway.register({

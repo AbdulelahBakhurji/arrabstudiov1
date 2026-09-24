@@ -1,7 +1,16 @@
 import { COMPANION_PRESETS } from "@/lib/companion-catalog";
 import type { CompanionProfile } from "@/lib/companions";
 
-export type CompanionSuggestKind = "email" | "code" | "money" | "sleep" | "general" | "custom";
+export type CompanionSuggestKind =
+  | "email"
+  | "code"
+  | "money"
+  | "sleep"
+  | "health"
+  | "relationships"
+  | "parents"
+  | "general"
+  | "custom";
 
 export type CompanionSuggestion = {
   id: string;
@@ -74,7 +83,10 @@ export function companionSuggestKind(person: CompanionProfile): CompanionSuggest
   ) {
     return "code";
   }
-  if (/money|spend|budget|مال|مصروف|فواتير/.test(text)) return "money";
+  if (/money|spend|budget|مال|مصروف|فواتير|sam|سام/.test(text)) return "money";
+  if (/health|ivy|آيفي|صحة|طبيب/.test(text)) return "health";
+  if (/relationship|maya|مايا|صديق|علاقة/.test(text)) return "relationships";
+  if (/parent|june|جون|أم|أب|والدين/.test(text)) return "parents";
   if (/sleep|نوم|سهر|راحة/.test(text)) return "sleep";
   if (person.domain === "general") return "general";
   const preset = COMPANION_PRESETS.find((item) => item.domain === person.domain);
@@ -161,6 +173,66 @@ export function companionComposerSuggestions(person: CompanionProfile): Companio
     ];
   }
 
+  if (kind === "health") {
+    return [
+      {
+        id: "baseline",
+        labelEn: "How have I been sleeping?",
+        labelAr: "كيف كان نومي؟",
+        promptEn: "Look at my recent rest against my own baseline — what changed?",
+        promptAr: "انظر لراحتي الأخيرة مقابل خطّي أنا — ماذا تغيّر؟",
+      },
+      {
+        id: "checkup",
+        labelEn: "When was my last check-up?",
+        labelAr: "متى كان آخر فحص؟",
+        promptEn: "Help me remember or plan a check-up — no diagnosis.",
+        promptAr: "ساعدني أتذكر أو أخطط لفحص — بلا تشخيص.",
+      },
+      ...shared,
+    ];
+  }
+
+  if (kind === "relationships") {
+    return [
+      {
+        id: "quiet",
+        labelEn: "Who have I gone quiet on?",
+        labelAr: "على من صمتُّ؟",
+        promptEn: "Who have I gone quiet on, and is one reach-out due?",
+        promptAr: "على من صمتُّ، وهل حان تواصل واحد؟",
+      },
+      {
+        id: "listen",
+        labelEn: "I need you to listen",
+        labelAr: "أريدك أن تسمع",
+        promptEn: "I need you to listen first — don't advise yet.",
+        promptAr: "أريدك أن تسمع أولاً — لا تنصح بعد.",
+      },
+      ...shared,
+    ];
+  }
+
+  if (kind === "parents") {
+    return [
+      {
+        id: "call",
+        labelEn: "Remind me to call",
+        labelAr: "ذكّرني أن أتصل",
+        promptEn: "Remind me to call a parent — one small step, no guilt.",
+        promptAr: "ذكّرني أن أتصل بأحد الوالدين — خطوة صغيرة بلا ذنب.",
+      },
+      {
+        id: "occasion",
+        labelEn: "Upcoming occasion",
+        labelAr: "مناسبة قادمة",
+        promptEn: "Is there a parent appointment or occasion coming up?",
+        promptAr: "هل هناك موعد أو مناسبة للوالدين قريباً؟",
+      },
+      ...shared,
+    ];
+  }
+
   if (kind === "sleep") {
     return [
       {
@@ -223,6 +295,34 @@ export function companionComposerSuggestions(person: CompanionProfile): Companio
 /** Empty-state starter cards (larger welcome buttons). */
 export function companionWelcomeSuggestions(person: CompanionProfile): CompanionSuggestion[] {
   return companionComposerSuggestions(person).slice(0, 2);
+}
+
+/** Kid Board quick-starts — talk only, no connectors or adult modes. */
+export function kidBoardSuggestions(person: CompanionProfile): CompanionSuggestion[] {
+  const focus = person.domain && person.domain !== "general" ? person.domain : person.name;
+  return [
+    {
+      id: "kid-hi",
+      labelEn: "Say hi",
+      labelAr: "قل مرحباً",
+      promptEn: `Hi ${person.name}!`,
+      promptAr: `مرحباً ${person.name}!`,
+    },
+    {
+      id: "kid-help",
+      labelEn: "I need help",
+      labelAr: "أحتاج مساعدة",
+      promptEn: `Can you help me with ${focus}?`,
+      promptAr: `تقدر تساعدني في ${focus}؟`,
+    },
+    {
+      id: "kid-feel",
+      labelEn: "How I feel",
+      labelAr: "كيف أشعر",
+      promptEn: "I want to talk about how I feel today.",
+      promptAr: "أبي أتكلم عن شعوري اليوم.",
+    },
+  ];
 }
 
 export function detectConnectFamily(text: string, person: CompanionProfile): ConnectFamily | null {

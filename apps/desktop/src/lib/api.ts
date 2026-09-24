@@ -25,6 +25,7 @@ import type {
   CreateMemoryRequest,
   DashboardResponse,
   EmailMessageDetail,
+  ErpCompanion,
   Goal,
   GithubCommitRequest,
   GithubCommitResponse,
@@ -61,6 +62,8 @@ import type {
   ArrangeEmailResponse,
   StartGmailOAuthResponse,
   SendMessageRequest,
+  IngestConversationMessagesRequest,
+  IngestConversationMessagesResponse,
   SendMessageResponse,
   Skill,
   Task,
@@ -80,6 +83,8 @@ import type {
   FamilyGuidancePublic,
   CreateFamilyMemberRequest,
   UpdateFamilyMemberRequest,
+  FamilyMemberSignInRequest,
+  FamilyMemberSignInResponse,
   SwitchFamilyProfileRequest,
   SwitchFamilyProfileResponse,
   GrantFamilyTokensRequest,
@@ -92,16 +97,20 @@ import {
   normalizeApiRoutePrefix,
   readApiBaseOverride,
   readApiRoutePrefixOverride,
+  splitApiBaseAndPrefix,
   writeApiBaseOverride,
+  writeApiRoutePrefixOverride,
 } from "./prefs";
+import { isTauriRuntime } from "./terminal";
+import { applySkillsToSendBody, ensureSkillCatalogWarm } from "./user-skills";
+import { invoke } from "@tauri-apps/api/core";
 
-const envApiBaseUrl = (import.meta.env.VITE_ARRAB_API_URL ?? "http://127.0.0.1:8787").replace(
-  /\/$/,
-  "",
+const envSplit = splitApiBaseAndPrefix(
+  import.meta.env.VITE_ARRAB_API_URL ?? "http://127.0.0.1:8787",
 );
-
+const envApiBaseUrl = envSplit.base;
 const envApiRoutePrefix = normalizeApiRoutePrefix(
-  import.meta.env.VITE_ARRAB_API_ROUTE_PREFIX ?? "",
+  import.meta.env.VITE_ARRAB_API_ROUTE_PREFIX || envSplit.prefix || "",
 );
 
 const DEAD_API_HOSTS = /185\.197\.250\.43/i;
@@ -113,7 +122,16 @@ export function getApiBaseUrl(): string {
     writeApiBaseOverride(null);
     return envApiBaseUrl;
   }
-  return override ?? envApiBaseUrl;
+  const raw = override ?? envApiBaseUrl;
+  const { base, prefix } = splitApiBaseAndPrefix(raw);
+  // Heal prefs that stored Coolify path inside the base URL field.
+  if (override && prefix && override !== base) {
+    writeApiBaseOverride(base);
+    if (readApiRoutePrefixOverride() === null) {
+      writeApiRoutePrefixOverride(prefix);
+    }
+  }
+  return base;
 }
 
 /** Optional Coolify/Traefik path prefix before `/health` and `/v1/*`. */
@@ -140,11 +158,13 @@ export function getEnvApiRoutePrefix(): string {
 
 export class ApiRequestError extends Error {
   readonly status: number;
+  readonly code: string | null;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, code: string | null = null) {
     super(message);
     this.name = "ApiRequestError";
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -207,6 +227,52 @@ function buildAuthHeaders(): Record<string, string> {
   return authHeaders;
 }
 
+function parseErrorPayload(raw: string, status: number): ApiRequestError {
+  let message = `Arrab API returned ${status}`;
+  let code: string | null = null;
+  try {
+    const payload = JSON.parse(raw) as {
+      error?: { message?: string; code?: string } | string;
+      message?: string;
+      code?: string;
+    };
+    if (typeof payload.error === "object" && payload.error) {
+      if (payload.error.message) message = payload.error.message;
+      if (payload.error.code) code = payload.error.code;
+    } else if (typeof payload.error === "string") {
+      message = payload.error;
+    } else if (payload.message) {
+      message = payload.message;
+    }
+    if (!code && typeof payload.code === "string") code = payload.code;
+  } catch {
+    // keep status message
+  }
+  if (!code && status === 402) {
+    code = /session budget/i.test(message) ? "SESSION_BUDGET_EXCEEDED" : "QUOTA_EXCEEDED";
+  }
+  return new ApiRequestError(message, status, code);
+}
+
+async function nativeRequest(
+  url: string,
+  init?: { method?: string; body?: unknown; timeoutMs?: number },
+): Promise<{ status: number; body: string }> {
+  return invoke<{ status: number; body: string }>("native_http_request", {
+    args: {
+      method: init?.method ?? "GET",
+      url,
+      timeoutMs: init?.timeoutMs ?? 25_000,
+      headers: {
+        Accept: "application/json",
+        ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...buildAuthHeaders(),
+      },
+      body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
+    },
+  });
+}
+
 async function request<T>(
   path: string,
   init?: { method?: string; body?: unknown; timeoutMs?: number; signal?: AbortSignal },
@@ -223,6 +289,19 @@ async function request<T>(
     init?.signal?.addEventListener("abort", abort, { once: true });
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);
     try {
+      // Desktop WebView is blocked by Coolify CORP:same-site — use native HTTP.
+      if (isTauriRuntime()) {
+        const native = await nativeRequest(url, {
+          method: init?.method,
+          body: init?.body,
+          timeoutMs,
+        });
+        if (native.status < 200 || native.status >= 300) {
+          throw parseErrorPayload(native.body, native.status);
+        }
+        return JSON.parse(native.body) as T;
+      }
+
       const response = await fetch(url, {
         method: init?.method ?? "GET",
         signal: controller.signal,
@@ -234,16 +313,8 @@ async function request<T>(
         body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
       });
       if (!response.ok) {
-        let message = `Arrab API returned ${response.status}`;
-        try {
-          const payload = (await response.json()) as { error?: { message?: string } };
-          if (payload.error?.message) {
-            message = payload.error.message;
-          }
-        } catch {
-          // keep status message
-        }
-        throw new ApiRequestError(message, response.status);
+        const raw = await response.text();
+        throw parseErrorPayload(raw, response.status);
       }
       return (await response.json()) as T;
     } catch (error) {
@@ -278,7 +349,22 @@ async function request<T>(
 }
 
 export const arrabApi = {
-  health: () => request<HealthResponse>("/health"),
+  health: async () => {
+    try {
+      return await request<HealthResponse>("/health");
+    } catch (err) {
+      // Coolify may expose `/v1/*` under the prefix while omitting `/health`.
+      if (err instanceof ApiRequestError && err.status === 404) {
+        await request<{ name?: string }>("/v1/meta");
+        return {
+          status: "ok" as const,
+          service: "arrab-api" as const,
+          time: new Date().toISOString(),
+        };
+      }
+      throw err;
+    }
+  },
   meta: () =>
     request<{
       name: "arrab-api";
@@ -296,7 +382,7 @@ export const arrabApi = {
         pauseMode: "upgrade_required" | "upgrade_or_wait" | null;
       };
     }>("/v1/meta"),
-  account: () => request<AccountStatusResponse>("/v1/account", { timeoutMs: 6_000 }),
+  account: () => request<AccountStatusResponse>("/v1/account", { timeoutMs: 15_000 }),
   connectAccount: (body: ConnectAccountRequest) =>
     request<ConnectAccountResponse>("/v1/account/connect", { method: "POST", body }),
   signInAccount: (body: SignInAccountRequest) =>
@@ -305,16 +391,17 @@ export const arrabApi = {
     request<AccountStatusResponse>("/v1/account/disconnect", { method: "POST" }),
   logoutAccount: () => request<AccountStatusResponse>("/v1/account/logout", { method: "POST" }),
   startWebAuth: (body: StartWebAuthRequest = {}) =>
-    request<StartWebAuthResponse>("/v1/account/auth/web/start", { method: "POST", body }),
+    request<StartWebAuthResponse>("/v1/account/auth/web/start", { method: "POST", body, timeoutMs: 20_000 }),
   pollWebAuth: (state: string, pollSecret: string) =>
     request<PollWebAuthResponse>(
       `/v1/account/auth/web/poll?state=${encodeURIComponent(state)}&pollSecret=${encodeURIComponent(pollSecret)}`,
+      { timeoutMs: 15_000 },
     ),
   activateSubscription: (body: ActivateSubscriptionRequest) =>
     request<AccountStatusResponse>("/v1/account/subscribe", { method: "POST", body }),
   updateAccountProfile: (body: UpdateAccountProfileRequest) =>
     request<AccountStatusResponse>("/v1/account", { method: "PATCH", body }),
-  verifyAccountSession: (body: VerifyAccountSessionRequest, timeoutMs = 2_500) =>
+  verifyAccountSession: (body: VerifyAccountSessionRequest, timeoutMs = 12_000) =>
     request<AccountStatusResponse>("/v1/account/session", {
       method: "POST",
       body,
@@ -363,6 +450,17 @@ export const arrabApi = {
       timeoutMs: 90_000,
       signal,
     }),
+  ingestConversationMessages: (
+    id: string,
+    body: IngestConversationMessagesRequest,
+    signal?: AbortSignal,
+  ) =>
+    request<IngestConversationMessagesResponse>(`/v1/conversations/${id}/messages/ingest`, {
+      method: "POST",
+      body,
+      timeoutMs: 30_000,
+      signal,
+    }),
   sendMessageStream: async (
     id: string,
     body: SendMessageRequest,
@@ -376,6 +474,36 @@ export const arrabApi = {
     } = {},
     signal?: AbortSignal,
   ) => {
+    await ensureSkillCatalogWarm().catch(() => []);
+    body = applySkillsToSendBody(body);
+    // WebView fetch is blocked by CORP:same-site — use non-stream native request.
+    if (isTauriRuntime()) {
+      try {
+        const result = await request<SendMessageResponse>(`/v1/conversations/${id}/messages`, {
+          method: "POST",
+          body,
+          timeoutMs: 180_000,
+          signal,
+        });
+        const text = result.assistantMessage?.content ?? "";
+        if (text) handlers.onToken?.(text);
+        if (result.approval) handlers.onApproval?.(result.approval);
+        handlers.onDone?.(result);
+        return result;
+      } catch (err: unknown) {
+        const message =
+          err instanceof ApiRequestError
+            ? err.message
+            : err instanceof Error
+              ? err.message
+              : unreachableMessage("network");
+        handlers.onError?.(message);
+        throw err instanceof ApiRequestError
+          ? err
+          : new ApiRequestError(message, 0);
+      }
+    }
+
     signal?.throwIfAborted();
     const controller = new AbortController();
     const abort = () => controller.abort(signal?.reason);
@@ -653,6 +781,11 @@ export const arrabApi = {
     request<FamilyMemberPublic>(`/v1/family/members/${id}`, { method: "PATCH", body }),
   deleteFamilyMember: (id: string) =>
     request<{ ok: true }>(`/v1/family/members/${id}`, { method: "DELETE" }),
+  familyMemberSignIn: (body: FamilyMemberSignInRequest) =>
+    request<FamilyMemberSignInResponse>("/v1/family/members/sign-in", {
+      method: "POST",
+      body,
+    }),
   switchFamilyProfile: (body: SwitchFamilyProfileRequest) =>
     request<SwitchFamilyProfileResponse>("/v1/family/switch", { method: "POST", body }),
   grantFamilyTokens: (body: GrantFamilyTokensRequest) =>
@@ -680,6 +813,8 @@ export const arrabApi = {
   unbindProjectRepo: (projectId: string) =>
     request<{ ok: true }>(`/v1/projects/${projectId}/repo`, { method: "DELETE" }),
   operator: () => request<OperatorProfile>("/v1/operator"),
+  erpCompanions: () =>
+    request<{ items: ErpCompanion[] }>("/erp/companions?limit=500"),
   companionState: () =>
     request<{ updatedAt: string | null; state: unknown | null }>("/v1/companions/state"),
   putCompanionState: (body: { updatedAt: string; state: unknown }) =>

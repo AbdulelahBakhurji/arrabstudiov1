@@ -106,6 +106,24 @@ export function subscribePrefs(listener: (prefs: StudioPrefs) => void): () => vo
   };
 }
 
+/**
+ * Split a pasted API URL into origin + optional Coolify path.
+ * Never keep `/r/...` (or any path) inside the base URL field.
+ */
+export function splitApiBaseAndPrefix(raw: string): { base: string; prefix: string } {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return { base: "", prefix: "" };
+  try {
+    const url = new URL(trimmed);
+    const path = url.pathname.replace(/\/+$/, "") || "";
+    const base = `${url.protocol}//${url.host}`;
+    if (!path || path === "/") return { base, prefix: "" };
+    return { base, prefix: path.startsWith("/") ? path : `/${path}` };
+  } catch {
+    return { base: trimmed, prefix: "" };
+  }
+}
+
 export function readApiBaseOverride(): string | null {
   try {
     const value = localStorage.getItem(API_BASE_KEY)?.trim();
@@ -119,8 +137,16 @@ export function writeApiBaseOverride(url: string | null): void {
   const trimmed = url?.trim().replace(/\/$/, "") ?? "";
   if (!trimmed) {
     localStorage.removeItem(API_BASE_KEY);
-  } else {
-    localStorage.setItem(API_BASE_KEY, trimmed);
+    return;
+  }
+  // Origin only — peel any accidental Coolify path into the prefix key.
+  const { base, prefix } = splitApiBaseAndPrefix(trimmed);
+  localStorage.setItem(API_BASE_KEY, base);
+  if (prefix) {
+    const existing = localStorage.getItem(API_ROUTE_PREFIX_KEY);
+    if (existing === null || !existing.trim()) {
+      localStorage.setItem(API_ROUTE_PREFIX_KEY, prefix);
+    }
   }
 }
 
@@ -128,6 +154,10 @@ export function writeApiBaseOverride(url: string | null): void {
 export function normalizeApiRoutePrefix(value: string | null | undefined): string {
   const trimmed = (value ?? "").trim().replace(/\/+$/, "");
   if (!trimmed) return "";
+  // If someone pasted a full URL into the prefix field, keep only the path.
+  if (/^https?:\/\//i.test(trimmed)) {
+    return splitApiBaseAndPrefix(trimmed).prefix;
+  }
   return trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
 }
 
@@ -225,4 +255,5 @@ export function clearLocalStudioData(options?: { keepAppearance?: boolean }): vo
   void import("./device-cache").then(({ clearDeviceCache }) => clearDeviceCache());
   void import("./chat-history").then(({ clearChatHistory }) => clearChatHistory());
   void import("./incognito-vault").then(({ wipeIncognitoVault }) => wipeIncognitoVault());
+  void import("./second-brain").then(({ clearAllBrainPartitions }) => clearAllBrainPartitions());
 }

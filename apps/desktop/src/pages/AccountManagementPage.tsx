@@ -7,6 +7,7 @@ import {
   CreditCard,
   Gauge,
   KeyRound,
+  LogIn,
   LogOut,
   Shield,
   UserRound,
@@ -18,7 +19,6 @@ import { PlansCatalog } from "@/components/PlansCatalog";
 import { FamilyHouseholdPanel } from "@/components/FamilyHouseholdPanel";
 import { Surface } from "@/components/StudioFrame";
 import { useLanguage } from "@/i18n/LanguageProvider";
-import { useFamilyProfile } from "@/lib/use-family-profile";
 import { arrabApi, ApiRequestError } from "@/lib/api";
 import {
   ACCOUNT_EVENT,
@@ -32,6 +32,7 @@ import { liveCompanions, useCompanionState } from "@/lib/companions";
 import { openExternalUrl } from "@/lib/desktop";
 import { pushToast } from "@/lib/notify";
 import { useOrgSeatCapabilities } from "@/lib/org-seat";
+import { clearGuestLocalMode, isGuestLocalMode, subscribeGuestMode } from "@/lib/guest-mode";
 import { audienceFromPlanId } from "@/roles/catalog";
 import { useRole } from "@/roles/RoleProvider";
 import { cn } from "@/lib/utils";
@@ -90,6 +91,8 @@ export function AccountManagementPage() {
   const { canViewOrgBilling, canViewOwnUsageOnly } = useOrgSeatCapabilities();
   const { account: signedInAccount } = useSignedInAccount();
   const accountId = signedInAccount?.id ?? null;
+  const [guestLocal, setGuestLocal] = useState(() => isGuestLocalMode());
+  useEffect(() => subscribeGuestMode(() => setGuestLocal(isGuestLocalMode())), []);
   const initialSection = ((): AccountSection => {
     const raw = searchParams.get("section");
     if (
@@ -191,14 +194,15 @@ export function AccountManagementPage() {
     });
   }, [refresh]);
 
-  const account = status?.account ?? null;
+  const isSignedIn = Boolean(signedInAccount) && !guestLocal;
+  const account = isSignedIn ? (status?.account ?? null) : null;
   const entitlements = status?.entitlements ?? null;
-  const planId = account?.planId ?? entitlements?.planId ?? null;
-  const used = entitlements?.tokensUsed ?? 0;
-  const limit = entitlements?.tokenLimit ?? null;
-  const remaining = entitlements?.tokensRemaining ?? null;
+  const planId = isSignedIn ? (account?.planId ?? entitlements?.planId ?? null) : null;
+  // Cloud quota only when signed in — local / guest shows zero cloud usage.
+  const used = isSignedIn ? (entitlements?.tokensUsed ?? 0) : 0;
+  const limit = isSignedIn ? (entitlements?.tokenLimit ?? null) : null;
   const pct = usagePercent(used, limit);
-  const overLimit = Boolean(entitlements?.overLimit);
+  const overLimit = isSignedIn ? Boolean(entitlements?.overLimit) : false;
   const profileDirty = Boolean(account && displayName.trim() && displayName.trim() !== account.displayName);
   const periodDaysLeft = entitlements ? daysUntil(entitlements.periodEnd) : null;
   const planFeatures = useMemo(() => {
@@ -213,7 +217,6 @@ export function AccountManagementPage() {
   }, [planId]);
 
   const isFamilyPlan = audienceFromPlanId(planId) === "family";
-  const { isChild: isFamilyChild } = useFamilyProfile();
 
   const nav = useMemo(() => {
     const items: { id: AccountSection; label: string; icon: typeof Gauge }[] = [
@@ -222,12 +225,12 @@ export function AccountManagementPage() {
       { id: "plan", label: t("amPlanBilling"), icon: CreditCard },
       { id: "usage", label: t("amUsage"), icon: ArrowUpRight },
     ];
-    if (isFamilyPlan && !isFamilyChild) {
+    if (isFamilyPlan) {
       items.push({ id: "family", label: t("amFamily"), icon: UsersRound });
     }
     items.push({ id: "security", label: t("amSecurity"), icon: Shield });
     return canViewOrgBilling ? items : items.filter((item) => item.id !== "plan");
-  }, [t, canViewOrgBilling, isFamilyPlan, isFamilyChild]);
+  }, [t, canViewOrgBilling, isFamilyPlan]);
 
   useEffect(() => {
     const raw = searchParams.get("section");
@@ -247,10 +250,10 @@ export function AccountManagementPage() {
     if (!canViewOrgBilling && section === "plan") {
       setSection("usage");
     }
-    if ((!isFamilyPlan || isFamilyChild) && section === "family") {
+    if (!isFamilyPlan && section === "family") {
       setSection("overview");
     }
-  }, [canViewOrgBilling, isFamilyPlan, isFamilyChild, section]);
+  }, [canViewOrgBilling, isFamilyPlan, section]);
 
   function selectSection(next: AccountSection) {
     setSection(next);
@@ -332,8 +335,9 @@ export function AccountManagementPage() {
   async function logout() {
     setBusy(true);
     try {
-      await arrabApi.logoutAccount();
+      await arrabApi.logoutAccount().catch(() => undefined);
       clearAccountSession();
+      setStatus((prev) => (prev ? { ...prev, connected: false, account: null } : null));
       pushToast({ title: t("accountLoggedOut"), tone: "info" });
     } catch (err: unknown) {
       setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
@@ -356,6 +360,10 @@ export function AccountManagementPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function goSignIn() {
+    clearGuestLocalMode();
   }
 
   if (loading && !status) {
@@ -414,11 +422,18 @@ export function AccountManagementPage() {
           <button
             type="button"
             disabled={busy}
-            onClick={() => void logout()}
+            onClick={() => {
+              if (isSignedIn) void logout();
+              else goSignIn();
+            }}
             className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-2xl border border-white/12 bg-[var(--color-surface)] px-4 text-sm font-medium text-white transition hover:bg-white/[0.04] disabled:opacity-40"
           >
-            <LogOut className="size-3.5" strokeWidth={1.8} />
-            {t("amSignOut")}
+            {isSignedIn ? (
+              <LogOut className="size-3.5" strokeWidth={1.8} />
+            ) : (
+              <LogIn className="size-3.5" strokeWidth={1.8} />
+            )}
+            {isSignedIn ? t("amSignOut") : t("signInAccount")}
           </button>
         </aside>
 
@@ -468,15 +483,27 @@ export function AccountManagementPage() {
                         {t("amManagePlan")}
                       </button>
                     ) : null}
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void logout()}
-                      className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-white/12 px-3.5 text-sm text-neutral-200 transition hover:bg-white/5 hover:text-white disabled:opacity-40"
-                    >
-                      <LogOut className="size-3.5" strokeWidth={1.8} />
-                      {t("amSignOut")}
-                    </button>
+                    {isSignedIn ? (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void logout()}
+                        className="inline-flex h-9 items-center gap-1.5 rounded-lg border border-white/12 px-3.5 text-sm text-neutral-200 transition hover:bg-white/5 hover:text-white disabled:opacity-40"
+                      >
+                        <LogOut className="size-3.5" strokeWidth={1.8} />
+                        {t("amSignOut")}
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={goSignIn}
+                        className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-white px-3.5 text-sm font-medium text-black transition hover:bg-neutral-100 disabled:opacity-40"
+                      >
+                        <LogIn className="size-3.5" strokeWidth={1.8} />
+                        {t("signInAccount")}
+                      </button>
+                    )}
                   </div>
                 </div>
               </Panel>
@@ -525,11 +552,13 @@ export function AccountManagementPage() {
                       {canViewOwnUsageOnly ? t("usageOwnTokens") : t("amUsage")}
                     </h2>
                     <p className="mt-0.5 text-xs text-neutral-500">
-                      {canViewOwnUsageOnly
-                        ? t("usageOwnTokensHint")
-                        : overLimit
-                          ? t("amOverLimit")
-                          : t("amWithinQuota")}
+                      {!isSignedIn
+                        ? t("amLocalUsageHint")
+                        : canViewOwnUsageOnly
+                          ? t("usageOwnTokensHint")
+                          : overLimit
+                            ? t("amOverLimit")
+                            : t("amWithinQuota")}
                     </p>
                   </div>
 
@@ -573,7 +602,10 @@ export function AccountManagementPage() {
                     </p>
                   </div>
 
-                  {overLimit || ((planId === "free" || planId === "family_free") && pct >= 80) ? (
+                  {overLimit ||
+                  (isSignedIn &&
+                    (planId === "free" || planId === "family_free") &&
+                    pct >= 80) ? (
                     <button
                       type="button"
                       onClick={() => selectSection("plan")}
@@ -591,22 +623,31 @@ export function AccountManagementPage() {
                 <Header title={t("amStudioSnapshot")} subtitle={t("amStudioSnapshotBody")} />
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <Metric label={t("amCompanionsCount")} value={String(companionCount)} />
-                  <Metric label={t("amConnectorsCount")} value={String(connectorCount)} />
-                  <Metric label={t("amPlanTier")} value={planUsageTier(planId)} />
+                  {isSignedIn ? (
+                    <Metric label={t("amConnectorsCount")} value={String(connectorCount)} />
+                  ) : (
+                    <Metric label={t("amConnectorsCount")} value="—" />
+                  )}
+                  <Metric
+                    label={t("amPlanTier")}
+                    value={isSignedIn ? planUsageTier(planId) : t("amLocalModels")}
+                  />
                   <Metric
                     label={t("amSession")}
-                    value={hasSession ? t("amSessionActive") : t("amSessionLocal")}
+                    value={isSignedIn ? t("amSessionActive") : t("amSessionLocal")}
                   />
                 </div>
               </Panel>
 
-              <div className="grid gap-4 lg:grid-cols-3">
-                <ActionTile
-                  icon={Cable}
-                  title={t("amOpenConnectors")}
-                  body={t("amOpenConnectorsBody")}
-                  onClick={() => navigate(href("/connectors"))}
-                />
+              <div className={cn("grid gap-4", isSignedIn ? "lg:grid-cols-3" : "lg:grid-cols-2")}>
+                {isSignedIn ? (
+                  <ActionTile
+                    icon={Cable}
+                    title={t("amOpenConnectors")}
+                    body={t("amOpenConnectorsBody")}
+                    onClick={() => navigate(href("/connectors"))}
+                  />
+                ) : null}
                 <ActionTile
                   icon={Shield}
                   title={t("amOpenSecurity")}
@@ -968,22 +1009,41 @@ export function AccountManagementPage() {
                 <p className="mt-1 text-xs text-neutral-500">{t("amDangerZoneBody")}</p>
 
                 <div className="mt-5 space-y-3">
-                  <div className="flex flex-col gap-3 rounded-xl border border-white/10 bg-black/30 p-4 sm:flex-row sm:items-center sm:justify-between">
-                    <div>
-                      <p className="text-sm text-white">{t("logOut")}</p>
-                      <p className="mt-0.5 text-xs text-neutral-500">{t("amSignOutBody")}</p>
+                  {isSignedIn ? (
+                    <div className="flex flex-col gap-3 rounded-xl border border-white/10 bg-black/30 p-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm text-white">{t("logOut")}</p>
+                        <p className="mt-0.5 text-xs text-neutral-500">{t("amSignOutBody")}</p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void logout()}
+                        className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg bg-white px-4 text-sm font-medium text-black disabled:opacity-40"
+                      >
+                        <LogOut className="size-3.5" strokeWidth={1.8} />
+                        {t("logOut")}
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => void logout()}
-                      className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg bg-white px-4 text-sm font-medium text-black disabled:opacity-40"
-                    >
-                      <LogOut className="size-3.5" strokeWidth={1.8} />
-                      {t("logOut")}
-                    </button>
-                  </div>
+                  ) : (
+                    <div className="flex flex-col gap-3 rounded-xl border border-white/10 bg-black/30 p-4 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm text-white">{t("signInAccount")}</p>
+                        <p className="mt-0.5 text-xs text-neutral-500">{t("amSignInBody")}</p>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={busy}
+                        onClick={goSignIn}
+                        className="inline-flex h-9 shrink-0 items-center justify-center gap-2 rounded-lg bg-white px-4 text-sm font-medium text-black disabled:opacity-40"
+                      >
+                        <LogIn className="size-3.5" strokeWidth={1.8} />
+                        {t("signInAccount")}
+                      </button>
+                    </div>
+                  )}
 
+                  {isSignedIn ? (
                   <div className="flex flex-col gap-3 rounded-xl border border-red-400/20 bg-red-500/[0.06] p-4 sm:flex-row sm:items-center sm:justify-between">
                     <div>
                       <p className="text-sm text-red-100">{t("amDisconnect")}</p>
@@ -998,6 +1058,7 @@ export function AccountManagementPage() {
                       {t("amDisconnect")}
                     </button>
                   </div>
+                  ) : null}
                 </div>
               </Panel>
             </div>

@@ -96,13 +96,20 @@ import {
 } from "@/lib/web-search";
 import { PersonAvatar } from "@/components/companions/CompanionUI";
 import { useSignedInAccount } from "@/lib/use-signed-in-account";
-import { resolvePreferredModel } from "@/lib/ai-prefs";
+import { resolveAiRuntime, resolvePreferredModel } from "@/lib/ai-prefs";
+import { streamOllamaChat } from "@/lib/local-models";
 
 import { AgentSteps, friendlyToolTitle, type AgentStep } from "@/components/AgentSteps";
 import { humanizeApprovalCopy } from "@/lib/approval-copy";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useStudioPrefs } from "@/hooks/useStudioPrefs";
 import { arrabApi, ApiRequestError, isTransientApiError } from "@/lib/api";
+import { buildResolveApprovalBody } from "@/lib/resolve-approval";
+import {
+  assertTokensAvailable,
+  enforceTokenGuard,
+  subscribeTokenGuard,
+} from "@/lib/token-guard";
 import {
   filterLiveWorkforceAgents,
   readAgentSessionPolicy,
@@ -533,6 +540,13 @@ export function ChatPage() {
 
   const reportError = useCallback(
     (err: unknown) => {
+      const guarded = enforceTokenGuard(err);
+      if (guarded) {
+        streamAbortRef.current?.abort();
+        setSending(false);
+        setError(guarded);
+        return;
+      }
       const message = err instanceof ApiRequestError ? err.message : t("apiUnavailable");
       if (isTransientApiError(message)) {
         return;
@@ -541,6 +555,14 @@ export function ChatPage() {
     },
     [t],
   );
+
+  useEffect(() => {
+    return subscribeTokenGuard((detail) => {
+      streamAbortRef.current?.abort();
+      setSending(false);
+      setError(detail.message);
+    });
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(
@@ -2406,6 +2428,77 @@ export function ChatPage() {
     };
 
     try {
+      const runtime = resolveAiRuntime(prefs);
+      if (runtime === "blocked") {
+        setError(t("cloudNeedsSignIn"));
+        setMessages((current) => current.filter((message) => message.id !== optimisticId));
+        setAgentSteps([]);
+        void updateAgentPresence({
+          title: t("cloudNeedsSignIn"),
+          state: "error",
+          progress: 1,
+        });
+        void hideAgentPresence(2800);
+        return;
+      }
+
+      if (runtime === "cloud") {
+        try {
+          assertTokensAvailable();
+        } catch (err: unknown) {
+          reportError(err);
+          setMessages((current) => current.filter((message) => message.id !== optimisticId));
+          setAgentSteps([]);
+          return;
+        }
+      }
+
+      if (runtime === "local") {
+        const userContent = searchQuery
+          ? `Web search request: ${searchQuery}\n\nUser message: ${content}`
+          : content;
+        const reply = await streamOllamaChat(
+          prefs.aiLocalModel.trim(),
+          [
+            {
+              role: "system",
+              content:
+                "You are Arrab Studio's local assistant on this Mac (Ollama). Be clear and helpful. Match the user's language.",
+            },
+            { role: "user", content: userContent },
+          ],
+          (text) => {
+            if (controller.signal.aborted) return;
+            streamed += text;
+            setAgentSteps((current) =>
+              current.map((step) =>
+                step.id === "thinking" && step.status === "running"
+                  ? { ...step, status: "done" as const }
+                  : step,
+              ),
+            );
+            setMessages((current) => {
+              const without = current.filter((message) => message.id !== assistantLocalId);
+              return [
+                ...without,
+                {
+                  id: assistantLocalId as Message["id"],
+                  conversationId: activeConversation.id,
+                  role: "assistant",
+                  content: streamed,
+                  createdAt: new Date().toISOString(),
+                },
+              ];
+            });
+          },
+          controller.signal,
+          prefs.aiLocalBaseUrl,
+        );
+        applyLocalAssistant(reply.trim() || webUserFallback || streamed.trim());
+        composerRef.current?.focus();
+        return;
+      }
+
       await arrabApi.sendMessageStream(
         activeConversation.id,
         {
@@ -2905,10 +2998,14 @@ export function ChatPage() {
           copy[runningIdx] = { ...copy[runningIdx]!, ...done, id: copy[runningIdx]!.id };
           return copy;
         });
-        const result = await arrabApi.resolveApproval(approval.id, {
-          status: "approved",
-          toolResult: executed.toolResult,
-        });
+        const result = await arrabApi.resolveApproval(
+          approval.id,
+          await buildResolveApprovalBody({
+            status: "approved",
+            approvalDetail: approval.detail,
+            toolResult: executed.toolResult,
+          }),
+        );
         setPendingApproval(null);
         if (result.continued?.assistantMessage) {
           setMessages((current) => [...current, result.continued!.assistantMessage!]);
@@ -3005,10 +3102,14 @@ export function ChatPage() {
       }
       const approvalId = pendingApproval.id;
       const approvalDetail = pendingApproval.detail;
-      const result = await arrabApi.resolveApproval(approvalId, {
-        status,
-        toolResult: toolResult ?? null,
-      });
+      const result = await arrabApi.resolveApproval(
+        approvalId,
+        await buildResolveApprovalBody({
+          status,
+          approvalDetail: approvalDetail,
+          toolResult: toolResult ?? null,
+        }),
+      );
       setPendingApproval(null);
       if (status === "approved" && toolName && isEmailPolicyTool(toolName)) {
         setAgentSteps((current) => {

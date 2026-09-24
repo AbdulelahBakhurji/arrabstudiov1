@@ -6,6 +6,8 @@ import { ensureNotificationPermission } from "./notify";
 export const GETTING_STARTED_KEY = "arrab.gettingStarted";
 export const GETTING_STARTED_EVENT = "arrab:getting-started";
 export const OPEN_ADD_COMPANION_KEY = "arrab.companions.openAdd";
+/** Prefill catalog “Add for” seat when opening add-companion from Board. */
+export const OPEN_ASSIGN_MEMBER_KEY = "arrab.companions.assignMemberId";
 
 export type GettingStartedStepId =
   | "notifications"

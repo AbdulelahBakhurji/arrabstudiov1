@@ -28,6 +28,7 @@ import {
   type OrgSecurityEvent,
   type FamilyMemberRecord,
   type FamilyGuidanceRecord,
+  type ErpCompanion,
 } from "@arrab/shared";
 import {
   LOCAL_ORGANIZATION_ID,
@@ -560,6 +561,8 @@ export type MemorySnapshot = {
   familyGuidance: FamilyGuidanceRecord[];
   familyExtraSeats: number;
   familyActiveMemberId: string | null;
+  familyLockedMemberId: string | null;
+  erpCompanions: ErpCompanion[];
 };
 
 export type MemoryPersistenceOptions = {
@@ -572,6 +575,7 @@ const READ_METHODS = new Set([
   "list",
   "get",
   "getById",
+  "getByExternalId",
   "listByAgent",
   "listByTeam",
   "listByConversation",
@@ -646,6 +650,8 @@ export function emptyMemorySnapshot(now = new Date().toISOString()): MemorySnaps
     familyGuidance: [],
     familyExtraSeats: 0,
     familyActiveMemberId: null,
+    familyLockedMemberId: null,
+    erpCompanions: [],
   };
 }
 
@@ -692,9 +698,25 @@ export function normalizeMemorySnapshot(
       typeof snapshot.familyExtraSeats === "number" ? snapshot.familyExtraSeats : 0;
     snapshot.familyActiveMemberId =
       typeof snapshot.familyActiveMemberId === "string" ? snapshot.familyActiveMemberId : null;
+    snapshot.familyLockedMemberId =
+      typeof snapshot.familyLockedMemberId === "string" ? snapshot.familyLockedMemberId : null;
+    snapshot.erpCompanions = Array.isArray(snapshot.erpCompanions) ? snapshot.erpCompanions : [];
     for (const member of snapshot.familyMembers) {
       member.tokenAllowance = member.tokenAllowance ?? 0;
       member.tokensUsed = member.tokensUsed ?? 0;
+    }
+    for (const connector of snapshot.connectors) {
+      connector.familyMemberId = connector.familyMemberId ?? null;
+    }
+    for (const conversation of snapshot.conversations) {
+      conversation.familyMemberId = conversation.familyMemberId ?? null;
+    }
+    // Assign legacy connectors to the owner so kid seats stay isolated in-memory too.
+    const owner = snapshot.familyMembers.find((m) => m.isOwner);
+    if (owner) {
+      for (const connector of snapshot.connectors) {
+        if (!connector.familyMemberId) connector.familyMemberId = owner.id;
+      }
     }
     return snapshot;
   }
@@ -726,6 +748,8 @@ export function normalizeMemorySnapshot(
     orgSecurityEvents: Array.isArray(raw.orgSecurityEvents) ? raw.orgSecurityEvents : [],
     familyMembers: (Array.isArray(raw.familyMembers) ? raw.familyMembers : []).map((member) => ({
       ...member,
+      email: member.email ?? null,
+      passwordHash: member.passwordHash ?? null,
       tokenAllowance: member.tokenAllowance ?? 0,
       tokensUsed: member.tokensUsed ?? 0,
     })),
@@ -733,6 +757,9 @@ export function normalizeMemorySnapshot(
     familyExtraSeats: typeof raw.familyExtraSeats === "number" ? raw.familyExtraSeats : 0,
     familyActiveMemberId:
       typeof raw.familyActiveMemberId === "string" ? raw.familyActiveMemberId : null,
+    familyLockedMemberId:
+      typeof raw.familyLockedMemberId === "string" ? raw.familyLockedMemberId : null,
+    erpCompanions: Array.isArray(raw.erpCompanions) ? raw.erpCompanions : [],
   };
 }
 
@@ -882,6 +909,49 @@ class MemoryFamilyHouseholdMetaRepository {
   async setActiveMemberId(id: string | null): Promise<void> {
     this.snapshot.familyActiveMemberId = id;
   }
+  async getLockedMemberId(): Promise<string | null> {
+    return this.snapshot.familyLockedMemberId ?? null;
+  }
+  async setLockedMemberId(id: string | null): Promise<void> {
+    this.snapshot.familyLockedMemberId = id;
+  }
+}
+
+class MemoryErpCompanionRepository {
+  constructor(private readonly snapshot: MemorySnapshot) {
+    if (!Array.isArray(this.snapshot.erpCompanions)) this.snapshot.erpCompanions = [];
+  }
+
+  async list(): Promise<ErpCompanion[]> {
+    return [...this.snapshot.erpCompanions];
+  }
+
+  async getById(id: string): Promise<ErpCompanion | null> {
+    return this.snapshot.erpCompanions.find((item) => item.id === id) ?? null;
+  }
+
+  async getByExternalId(externalId: string): Promise<ErpCompanion | null> {
+    return this.snapshot.erpCompanions.find((item) => item.externalId === externalId) ?? null;
+  }
+
+  async insert(item: ErpCompanion): Promise<ErpCompanion> {
+    this.snapshot.erpCompanions.push(item);
+    return item;
+  }
+
+  async replace(item: ErpCompanion): Promise<ErpCompanion | null> {
+    const index = this.snapshot.erpCompanions.findIndex((row) => row.id === item.id);
+    if (index < 0) return null;
+    this.snapshot.erpCompanions[index] = item;
+    return item;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    const index = this.snapshot.erpCompanions.findIndex((row) => row.id === id);
+    if (index < 0) return false;
+    this.snapshot.erpCompanions.splice(index, 1);
+    return true;
+  }
 }
 
 export function createInMemoryPersistence(
@@ -1030,7 +1100,13 @@ export function createInMemoryPersistence(
           await repo.setActiveMemberId(id);
           touch();
         },
+        getLockedMemberId: () => repo.getLockedMemberId(),
+        setLockedMemberId: async (id: string | null) => {
+          await repo.setLockedMemberId(id);
+          touch();
+        },
       };
     })(),
+    erpCompanions: wrap(new MemoryErpCompanionRepository(snapshot)),
   };
 }

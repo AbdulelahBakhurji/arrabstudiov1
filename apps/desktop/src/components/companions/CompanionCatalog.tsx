@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Check, Pencil, Plus } from "lucide-react";
+import type { ErpCompanion, FamilyMemberPublic } from "@arrab/shared";
 import { ConnectorBrandIcon } from "@/components/ConnectorBrandIcon";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { COMPANION_PRESETS, companionDisplayBlurb, type CompanionPreset } from "@/lib/companion-catalog";
@@ -7,6 +8,7 @@ import {
   connectorLabel,
   resolveConnectorProviders,
 } from "@/lib/connector-catalog";
+import { arrabApi } from "@/lib/api";
 import {
   addCompanion,
   addFact,
@@ -16,6 +18,7 @@ import {
   useCompanionState,
   type CompanionProfile,
   type CompanionSpace,
+  type CompanionTone,
   type CompanionToneName,
 } from "@/lib/companions";
 import { PhotoAvatar } from "./CompanionFace";
@@ -28,12 +31,38 @@ type CatalogView = "list" | "create" | "edit";
 type CatalogSelection =
   | { kind: "preset"; id: string }
   | { kind: "person"; id: string }
+  | { kind: "erp"; id: string }
   | null;
 
+function toneFromErp(person: ErpCompanion): CompanionTone | undefined {
+  const personality = person.personality;
+  if (!personality) return undefined;
+  return {
+    bluntness: 40,
+    humour: personality.humor ?? 30,
+    replyLength: personality.verbosity ?? 45,
+    warmth: personality.warmth ?? 55,
+    formality: personality.formality ?? 40,
+    criticism: 35,
+    pace: personality.creativity ?? 45,
+  };
+}
+
 const PRESET_HUES: Record<string, number> = {
+  health: 162,
+  relationships: 328,
   sleep: 248,
   money: 148,
+  parents: 22,
+  career: 198,
   work: 28,
+  meetings: 210,
+  colleagues: 18,
+  chronicler: 40,
+  "decision-guard": 255,
+  meaning: 48,
+  paperwork: 200,
+  "daily-decisions": 300,
   study: 208,
   training: 336,
   focus: 188,
@@ -50,20 +79,55 @@ export function CompanionCatalog({
   initialDomain = "",
   onClose,
   onCreated,
+  /** Family household: pick who this companion is for (parent or child seat). */
+  assignMembers,
+  defaultAssignMemberId,
 }: {
   space: CompanionSpace;
   signedIn: boolean;
   initialDomain?: string;
   onClose: () => void;
   onCreated: (person: CompanionProfile) => void;
+  assignMembers?: FamilyMemberPublic[];
+  defaultAssignMemberId?: string | null;
 }) {
   const { t, locale } = useLanguage();
   const ar = locale === "ar";
   const state = useCompanionState();
   useEnsureRealisticPortraits();
-  const people = liveCompanions(state, space).filter((person) => person.domain !== "general");
+  const householdAssign = Boolean(assignMembers && assignMembers.length > 0);
+  const [assignMemberId, setAssignMemberId] = useState(
+    () => defaultAssignMemberId || assignMembers?.[0]?.id || "",
+  );
+  const assignMember =
+    assignMembers?.find((m) => m.id === assignMemberId) ?? assignMembers?.[0] ?? null;
+
+  const people = liveCompanions(state, space).filter((person) => {
+    if (person.domain === "general") return false;
+    if (!householdAssign || !assignMember) return true;
+    return person.familyMemberId === assignMember.id;
+  });
   const [view, setView] = useState<CatalogView>(() => (initialDomain.trim() ? "create" : "list"));
   const [selection, setSelection] = useState<CatalogSelection>(null);
+  const [erpItems, setErpItems] = useState<ErpCompanion[]>([]);
+  useEffect(() => {
+    if (!signedIn) {
+      setErpItems([]);
+      return;
+    }
+    let cancelled = false;
+    void arrabApi
+      .erpCompanions()
+      .then((res) => {
+        if (!cancelled) {
+          setErpItems(res.items.filter((item) => item.status === "published"));
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [signedIn]);
   const [editingId, setEditingId] = useState<string | null>(null);
   const ownedDomains = useMemo(
     () => new Set(people.map((person) => person.domain.toLowerCase())),
@@ -83,7 +147,49 @@ export function CompanionCatalog({
   const editingPerson = editingId
     ? (people.find((person) => person.id === editingId) ?? null)
     : null;
-  const detailOpen = Boolean(selectedPreset || selectedPerson);
+  const selectedErp =
+    selection?.kind === "erp"
+      ? (erpItems.find((item) => item.id === selection.id) ?? null)
+      : null;
+  const detailOpen = Boolean(selectedPreset || selectedPerson || selectedErp);
+
+  function addFromErp(item: ErpCompanion) {
+    if (!signedIn) return;
+    const existing = people.find((person) => person.erpId === item.id);
+    if (existing) {
+      onCreated(existing);
+      onClose();
+      return;
+    }
+    const person = addCompanion({
+      name: item.name,
+      domain: item.slug || item.category || "custom",
+      purposeId: "custom",
+      brief: item.systemPrompt || item.description || item.tagline || null,
+      space,
+      tone: toneFromErp(item),
+      avatarPhoto: item.avatar || null,
+      familyMemberId: assignMember?.id ?? undefined,
+      erpId: item.id,
+      chatModel: item.model || null,
+      temperature: item.temperature ?? null,
+      maxTokens: item.maxTokens ?? null,
+      greeting: item.greeting || null,
+      seedTasks: false,
+    });
+    for (const note of item.knowledge ?? []) {
+      const text = [note.title, note.content].filter(Boolean).join("\n").trim();
+      if (!text) continue;
+      addFact({
+        companionId: person.id,
+        text,
+        source: "Arrab Control",
+        space,
+      });
+    }
+    onCreated(person);
+    onClose();
+  }
 
   function addFromPreset(preset: CompanionPreset) {
     if (!signedIn) return;
@@ -103,15 +209,7 @@ export function CompanionCatalog({
       toneName: preset.toneName,
       faceSeed: presetPortraitSeed(preset.id),
       hue: PRESET_HUES[preset.id],
-    });
-    addFact({
-      companionId: person.id,
-      text: ar
-        ? `أريد رفيقًا يهتم بـ ${preset.domain}، ومهمته: ${preset.briefAr}`
-        : `I want a companion for ${preset.domain}. Their purpose: ${preset.brief}`,
-      source: ar ? "من قائمة الرفاق" : "From the companion list",
-      kind: "explicit",
-      space,
+      familyMemberId: assignMember?.id ?? undefined,
     });
     onCreated(person);
     onClose();
@@ -127,6 +225,62 @@ export function CompanionCatalog({
     setView("edit");
   }
 
+  const assignPicker =
+    householdAssign && assignMembers ? (
+      <div className="cp-catalog-assign" role="group" aria-label={t("familyCatalogAssignFor")}>
+        <div className="cp-catalog-assign-copy">
+          <p className="cp-catalog-assign-kicker">{t("familyCatalogAssignFor")}</p>
+          <p className="cp-catalog-assign-lead">
+            {assignMember
+              ? t("familyCatalogAssignPicked").replace("{name}", assignMember.displayName)
+              : t("familyCatalogAssignPick")}
+          </p>
+        </div>
+        <div className="cp-face-list cp-catalog-assign-faces">
+          {assignMembers.map((member) => {
+            const pressed = assignMember?.id === member.id;
+            const age =
+              member.ageTier === "tier_6_9"
+                ? t("familyAgeShort69")
+                : member.ageTier === "tier_10_13"
+                  ? t("familyAgeShort1013")
+                  : member.ageTier === "tier_14_17"
+                    ? t("familyAgeShort1417")
+                    : null;
+            const meta =
+              member.role === "child"
+                ? age ?? t("familyRoleChild")
+                : member.isOwner
+                  ? t("familyOwner")
+                  : member.role === "partner"
+                    ? t("familyRolePartner")
+                    : t("familyRoleParent");
+            return (
+              <button
+                key={member.id}
+                type="button"
+                className="cp-face-choice"
+                aria-pressed={pressed}
+                onClick={() => {
+                  setAssignMemberId(member.id);
+                  setSelection(null);
+                }}
+              >
+                <span
+                  className={`cp-catalog-assign-disc${pressed ? " is-on" : ""}`}
+                  style={{ background: member.color }}
+                >
+                  {member.displayName.slice(0, 1).toUpperCase()}
+                </span>
+                <strong>{member.displayName}</strong>
+                <small>{meta}</small>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    ) : null;
+
   if (view === "create") {
     return (
       <div className="cp-ui cp-page cp-catalog-page cp-catalog-create-page">
@@ -140,10 +294,12 @@ export function CompanionCatalog({
           </button>
         </CompanionPageHeader>
         <div className="cp-catalog-page-body cp-catalog-create-body">
+          {assignPicker}
           {signedIn ? (
             <CompanionEditorForm
               space={space}
               initialDomain={initialDomain}
+              familyMemberId={assignMember?.id ?? null}
               onCancel={() => (initialDomain.trim() ? onClose() : setView("list"))}
               onSaved={(person) => {
                 onCreated(person);
@@ -201,7 +357,10 @@ export function CompanionCatalog({
 
   return (
     <div className="cp-ui cp-page cp-catalog-page">
-      <CompanionPageHeader title={t("compListTitle")} subtitle={t("compCatalogSubtitle")}>
+      <CompanionPageHeader
+        title={householdAssign ? t("familyCatalogTitle") : t("compListTitle")}
+        subtitle={householdAssign ? t("familyCatalogSubtitle") : t("compCatalogSubtitle")}
+      >
         <button type="button" className="cp-button" onClick={onClose}>
           {ar ? "رجوع" : "Back"}
         </button>
@@ -209,6 +368,7 @@ export function CompanionCatalog({
 
       <div className={`cp-catalog-page-body ${detailOpen ? "has-detail" : ""}`}>
         <div className="cp-catalog-main">
+          {assignPicker}
           <div className="cp-catalog-circles" role="list">
             {COMPANION_PRESETS.map((preset) => {
               const owned = ownedDomains.has(preset.domain);
@@ -241,6 +401,40 @@ export function CompanionCatalog({
                   </span>
                   <strong>{ar ? preset.nameAr : preset.name}</strong>
                   <small>{owned ? (ar ? "مضاف" : "Added") : ar ? preset.blurbAr : preset.blurb}</small>
+                </button>
+              );
+            })}
+
+            {erpItems.map((item) => {
+              const owned = people.some((person) => person.erpId === item.id);
+              const active = selection?.kind === "erp" && selection.id === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  role="listitem"
+                  className={`cp-catalog-circle ${owned ? "is-owned" : ""} ${active ? "is-active" : ""}`}
+                  aria-pressed={active}
+                  onClick={() => setSelection({ kind: "erp", id: item.id })}
+                >
+                  <span className="cp-catalog-disc">
+                    <PhotoAvatar
+                      src={
+                        item.avatar ||
+                        companionPortraitUrl({
+                          seed: 17,
+                          name: item.name,
+                          domain: item.slug || "custom",
+                          size: 256,
+                        })
+                      }
+                      name={item.name}
+                      size="lg"
+                      state={active ? "lit" : owned ? "contributing" : "quiet"}
+                    />
+                  </span>
+                  <strong>{item.name}</strong>
+                  <small>{owned ? (ar ? "مضاف" : "Added") : item.tagline || item.category || ""}</small>
                 </button>
               );
             })}
@@ -354,6 +548,53 @@ export function CompanionCatalog({
           </aside>
         ) : null}
 
+        {selectedErp ? (
+          <aside className="cp-catalog-detail" aria-live="polite">
+            <div className="cp-catalog-detail-head">
+              <span className="cp-catalog-disc cp-catalog-disc-lg">
+                <PhotoAvatar
+                  src={
+                    selectedErp.avatar ||
+                    companionPortraitUrl({
+                      seed: 17,
+                      name: selectedErp.name,
+                      domain: selectedErp.slug || "custom",
+                      size: 320,
+                    })
+                  }
+                  name={selectedErp.name}
+                  size="xl"
+                  state="lit"
+                />
+              </span>
+              <div>
+                <h2>{selectedErp.name}</h2>
+                <p className="cp-muted">{selectedErp.tagline || selectedErp.category || ""}</p>
+              </div>
+            </div>
+            <div className="cp-catalog-detail-block">
+              <h3>{t("compBrief")}</h3>
+              <p>{selectedErp.description || selectedErp.tagline || selectedErp.name}</p>
+            </div>
+            <div className="cp-actions">
+              <button
+                type="button"
+                className="cp-button cp-primary"
+                onClick={() => addFromErp(selectedErp)}
+              >
+                {people.some((person) => person.erpId === selectedErp.id)
+                  ? t("open")
+                  : ar
+                    ? "إضافة"
+                    : "Add"}
+              </button>
+              <button type="button" className="cp-button" onClick={() => setSelection(null)}>
+                {t("close")}
+              </button>
+            </div>
+          </aside>
+        ) : null}
+
         {selectedPreset ? (
           <aside className="cp-catalog-detail" aria-live="polite">
             <div className="cp-catalog-detail-head">
@@ -454,12 +695,14 @@ function CompanionEditorForm({
   space,
   initialDomain = "",
   person,
+  familyMemberId = null,
   onCancel,
   onSaved,
 }: {
   space: CompanionSpace;
   initialDomain?: string;
   person?: CompanionProfile;
+  familyMemberId?: string | null;
   onCancel: () => void;
   onSaved: (person: CompanionProfile) => void;
 }) {
@@ -556,15 +799,7 @@ function CompanionEditorForm({
           connectors,
           space,
           toneName: tone,
-        });
-        addFact({
-          companionId: created.id,
-          text: ar
-            ? `أريد رفيقًا يهتم بـ ${domain.trim()}، ومهمته: ${brief.trim()}`
-            : `I want a companion for ${domain.trim()}. Their purpose: ${brief.trim()}`,
-          source: ar ? "عند إضافة الرفيق" : "When you added this companion",
-          kind: "explicit",
-          space,
+          familyMemberId: familyMemberId ?? undefined,
         });
         onSaved(created);
       }}

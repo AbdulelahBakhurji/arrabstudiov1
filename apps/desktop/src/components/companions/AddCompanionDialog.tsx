@@ -3,7 +3,6 @@ import { Check, Plus } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import {
   addCompanion,
-  addFact,
   type CompanionProfile,
   type CompanionSpace,
   type CompanionToneName,
@@ -69,15 +68,6 @@ function AddForm({
           brief: brief.trim(),
           space,
           toneName: tone,
-        });
-        addFact({
-          companionId: person.id,
-          text: ar
-            ? `أريد رفيقًا يهتم بـ ${domain.trim()}، ومهمته: ${brief.trim()}`
-            : `I want a companion for ${domain.trim()}. Their purpose: ${brief.trim()}`,
-          source: ar ? "عند إضافة الرفيق" : "When you added this companion",
-          kind: "explicit",
-          space,
         });
         onCreated(person);
         onClose();

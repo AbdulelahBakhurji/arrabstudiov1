@@ -526,6 +526,66 @@ alter table studio_accounts
   check (plan_id in ('free', 'pro', 'family_free', 'family', 'family_plus', 'team', 'unlimited'));
 `;
 
+/** Per-seat connector isolation for Family profiles. */
+export const MIGRATION_023_CONNECTOR_FAMILY_MEMBER = `
+alter table connectors
+  add column if not exists family_member_id text references family_members(id) on delete set null;
+
+create index if not exists connectors_workspace_member_idx
+  on connectors (workspace_id, family_member_id);
+
+-- Legacy connectors belong to the household owner so kids never inherit them.
+update connectors c
+set family_member_id = (
+  select fm.id from family_members fm
+  where fm.workspace_id = c.workspace_id and fm.is_owner = true
+  limit 1
+)
+where c.family_member_id is null
+  and exists (
+    select 1 from family_members fm
+    where fm.workspace_id = c.workspace_id and fm.is_owner = true
+  );
+`;
+
+/** Seat login credentials so kids/partners can sign in with email + password. */
+export const MIGRATION_024_FAMILY_MEMBER_CREDENTIALS = `
+alter table family_members
+  add column if not exists email text;
+alter table family_members
+  add column if not exists password_hash text;
+
+create unique index if not exists family_members_workspace_email_idx
+  on family_members (workspace_id, lower(email))
+  where email is not null;
+`;
+
+/** Seat lock for member login + conversation ownership for family isolation. */
+export const MIGRATION_025_FAMILY_SEAT_ISOLATION = `
+alter table family_household
+  add column if not exists locked_member_id text references family_members(id) on delete set null;
+
+alter table conversations
+  add column if not exists family_member_id text references family_members(id) on delete set null;
+
+create index if not exists conversations_family_member_idx
+  on conversations (workspace_id, family_member_id);
+`;
+
+export const MIGRATION_026_ERP_COMPANIONS = `
+create table if not exists erp_companions (
+  id text primary key,
+  external_id text,
+  status text not null,
+  updated_at timestamptz not null,
+  document jsonb not null
+);
+
+create unique index if not exists erp_companions_external_id_uidx
+  on erp_companions (external_id)
+  where external_id is not null and external_id <> '';
+`;
+
 export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "001_core", sql: MIGRATION_001_CORE },
   { id: "002_conversations", sql: MIGRATION_002_CONVERSATIONS },
@@ -549,4 +609,8 @@ export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "020_family_household", sql: MIGRATION_020_FAMILY_HOUSEHOLD },
   { id: "021_family_member_tokens", sql: MIGRATION_021_FAMILY_MEMBER_TOKENS },
   { id: "022_family_free_plan", sql: MIGRATION_022_FAMILY_FREE_PLAN },
+  { id: "023_connector_family_member", sql: MIGRATION_023_CONNECTOR_FAMILY_MEMBER },
+  { id: "024_family_member_credentials", sql: MIGRATION_024_FAMILY_MEMBER_CREDENTIALS },
+  { id: "025_family_seat_isolation", sql: MIGRATION_025_FAMILY_SEAT_ISOLATION },
+  { id: "026_erp_companions", sql: MIGRATION_026_ERP_COMPANIONS },
 ];

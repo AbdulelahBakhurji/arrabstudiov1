@@ -120,6 +120,13 @@ export interface ApiEnv {
   finnhubApiKey: string | undefined;
   /** Shared secret for POST /v1/connectors/finnhub/webhook (X-Finnhub-Secret). */
   finnhubWebhookSecret: string | undefined;
+  /**
+   * Bearer token for Arrab Control (`/erp/companions`).
+   * Optional so existing local configs keep compiling; writes stay closed until set.
+   */
+  erpToken?: string | undefined;
+  /** Scopes on ARRAB_ERP_TOKEN. Defaults to companions:read, companions:write. */
+  erpTokenScopes?: string[];
 }
 
 const LOG_LEVELS = new Set(["fatal", "error", "warn", "info", "debug", "trace"]);
@@ -340,6 +347,10 @@ export function loadApiEnv(): ApiEnv {
       readOptionalEnv("WHATSAPP_APP_SECRET") ?? readOptionalEnv("META_APP_SECRET"),
     finnhubApiKey: readOptionalEnv("FINNHUB_API_KEY"),
     finnhubWebhookSecret: readOptionalEnv("FINNHUB_WEBHOOK_SECRET"),
+    erpToken: readOptionalEnv("ARRAB_ERP_TOKEN"),
+    erpTokenScopes: parseCsv(
+      readOptionalEnv("ARRAB_ERP_TOKEN_SCOPES", "companions:read,companions:write"),
+    ),
   };
 }
 

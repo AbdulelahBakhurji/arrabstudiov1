@@ -212,7 +212,7 @@ describe("arrab api", () => {
     expect((usage.json() as { totals: { events: number } }).totals.events).toBe(0);
 
     const meta = await app.inject({ method: "GET", url: "/v1/meta" });
-    expect((meta.json() as { version: string }).version).toBe("0.13.0");
+    expect((meta.json() as { version: string }).version).toBe("0.15.1");
 
     await app.close();
   });
@@ -355,7 +355,7 @@ describe("arrab api", () => {
       expect(reportBody.recentTaskRuns.length).toBe(1);
 
       const meta = await app.inject({ method: "GET", url: "/v1/meta" });
-      expect((meta.json() as { version: string }).version).toBe("0.13.0");
+      expect((meta.json() as { version: string }).version).toBe("0.15.1");
 
       await app.close();
     } finally {
@@ -501,7 +501,7 @@ describe("arrab api", () => {
     expect((approval.json() as { kind: string }).kind).toBe("git_push");
 
     const meta = await app.inject({ method: "GET", url: "/v1/meta" });
-    expect((meta.json() as { version: string }).version).toBe("0.13.0");
+    expect((meta.json() as { version: string }).version).toBe("0.15.1");
 
     await app.close();
   });
@@ -517,7 +517,7 @@ describe("arrab api", () => {
       entitlements: { tokenLimit: number | null; connected: boolean };
     };
     expect(beforeBody.connected).toBe(false);
-    expect(beforeBody.entitlements.tokenLimit).toBe(25_000);
+    expect(beforeBody.entitlements.tokenLimit).toBeNull();
 
     const connected = await app.inject({
       method: "POST",
@@ -552,6 +552,7 @@ describe("arrab api", () => {
     const upgraded = await app.inject({
       method: "POST",
       url: "/v1/account/subscribe",
+      headers: { authorization: `Bearer ${connectedBody.sessionToken}` },
       payload: { code: "PRO-ARRAB" },
     });
     expect(upgraded.statusCode).toBe(200);
@@ -562,12 +563,20 @@ describe("arrab api", () => {
     expect(upgradedBody.account.planId).toBe("pro");
     expect(upgradedBody.entitlements.tokenLimit).toBe(2_000_000);
 
-    const usage = await app.inject({ method: "GET", url: "/v1/usage" });
+    const usage = await app.inject({
+      method: "GET",
+      url: "/v1/usage",
+      headers: { authorization: `Bearer ${connectedBody.sessionToken}` },
+    });
     expect(
       (usage.json() as { entitlements: { planId: string } }).entitlements.planId,
     ).toBe("pro");
 
-    const meta = await app.inject({ method: "GET", url: "/v1/meta" });
+    const meta = await app.inject({
+      method: "GET",
+      url: "/v1/meta",
+      headers: { authorization: `Bearer ${connectedBody.sessionToken}` },
+    });
     expect((meta.json() as { account: { connected: boolean; planId: string } }).account.connected).toBe(
       true,
     );
@@ -589,8 +598,12 @@ describe("arrab api", () => {
       },
     });
     expect(connected.statusCode).toBe(200);
-    const account = (connected.json() as { account: { periodStart: string; periodEnd: string } })
-      .account;
+    const connectedJson = connected.json() as {
+      account: { periodStart: string; periodEnd: string };
+      sessionToken: string;
+    };
+    const account = connectedJson.account;
+    const sessionToken = connectedJson.sessionToken;
 
     const workspace = await context.persistence.getWorkspace();
     await context.persistence.usage.append({
@@ -619,7 +632,11 @@ describe("arrab api", () => {
       ).toISOString(),
     });
 
-    const usage = await app.inject({ method: "GET", url: "/v1/usage" });
+    const usage = await app.inject({
+      method: "GET",
+      url: "/v1/usage",
+      headers: { authorization: `Bearer ${sessionToken}` },
+    });
     expect(usage.statusCode).toBe(200);
     const body = usage.json() as {
       totals: { inputTokens: number; outputTokens: number; events: number };
@@ -750,10 +767,18 @@ describe("arrab api", () => {
     expect(polledBody.account.email).toBe("web@arrab.studio");
     expect(polledBody.sessionToken).toBe(completedBody.sessionToken);
 
-    const status = await app.inject({ method: "GET", url: "/v1/account" });
+    const status = await app.inject({
+      method: "GET",
+      url: "/v1/account",
+      headers: { authorization: `Bearer ${completedBody.sessionToken}` },
+    });
     expect((status.json() as { connected: boolean }).connected).toBe(true);
 
-    const logout = await app.inject({ method: "POST", url: "/v1/account/logout" });
+    const logout = await app.inject({
+      method: "POST",
+      url: "/v1/account/logout",
+      headers: { authorization: `Bearer ${completedBody.sessionToken}` },
+    });
     expect(logout.statusCode).toBe(200);
     // Logout ends the device session but keeps the account for reconnect.
     expect((logout.json() as { connected: boolean; account: unknown }).connected).toBe(true);
@@ -830,14 +855,16 @@ describe("arrab api", () => {
       true,
     );
 
-    await app.inject({
+    const connected = await app.inject({
       method: "POST",
       url: "/v1/account/connect",
       payload: { email: "bill@arrab.studio", password: "securepass" },
     });
+    const sessionToken = (connected.json() as { sessionToken: string }).sessionToken;
     const checkout = await app.inject({
       method: "POST",
       url: "/v1/billing/checkout",
+      headers: { authorization: `Bearer ${sessionToken}` },
       payload: { planId: "pro" },
     });
     expect(checkout.statusCode).toBe(503);
@@ -845,6 +872,7 @@ describe("arrab api", () => {
     const fake = await app.inject({
       method: "POST",
       url: "/v1/billing/checkout",
+      headers: { authorization: `Bearer ${sessionToken}` },
       payload: { planId: "pro" },
     });
     expect(fake.statusCode).toBe(503);
@@ -860,6 +888,82 @@ describe("arrab api", () => {
       payload: { name: "  " },
     });
     expect(response.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("lets Arrab Control manage companions and hides drafts from the app", async () => {
+    const context = await createApiContext({ ...testEnv, erpToken: "erp-test-token" });
+    const app = await buildApp(context);
+    const erp = { authorization: "Bearer erp-test-token" };
+
+    const missing = await app.inject({ method: "GET", url: "/erp/not-a-route" });
+    expect(missing.statusCode).toBe(404);
+    expect(String((missing.json() as { message?: string }).message)).toMatch(/Route .+ not found/);
+
+    const denied = await app.inject({
+      method: "POST",
+      url: "/erp/companions",
+      payload: { name: "Nope" },
+    });
+    expect(denied.statusCode).toBe(401);
+
+    const created = await app.inject({
+      method: "POST",
+      url: "/erp/companions",
+      headers: erp,
+      payload: {
+        name: "Desk",
+        externalId: "erp-desk-1",
+        status: "draft",
+        systemPrompt: "Help with the desk.",
+        temperature: 0.4,
+      },
+    });
+    expect(created.statusCode).toBe(200);
+    const draft = created.json() as { id: string; status: string; externalId: string };
+    expect(draft.status).toBe("draft");
+    expect(draft.externalId).toBe("erp-desk-1");
+
+    const published = await app.inject({
+      method: "POST",
+      url: "/erp/companions",
+      headers: erp,
+      payload: { name: "Guide", status: "published", tagline: "Ready" },
+    });
+    expect(published.statusCode).toBe(200);
+    const live = published.json() as { id: string };
+
+    const control = await app.inject({
+      method: "GET",
+      url: "/erp/companions?limit=500",
+      headers: erp,
+    });
+    expect(control.statusCode).toBe(200);
+    expect((control.json() as { items: unknown[] }).items).toHaveLength(2);
+
+    const appView = await app.inject({ method: "GET", url: "/erp/companions?limit=500" });
+    expect(appView.statusCode).toBe(200);
+    const visible = (appView.json() as { items: Array<{ name: string; status: string }> }).items;
+    expect(visible.map((item) => item.name)).toEqual(["Guide"]);
+    expect(visible.every((item) => item.status === "published")).toBe(true);
+
+    const patched = await app.inject({
+      method: "PATCH",
+      url: `/erp/companions/${draft.id}`,
+      headers: erp,
+      payload: { name: "Desk", externalId: "erp-desk-1", status: "published" },
+    });
+    expect(patched.statusCode).toBe(200);
+    expect((patched.json() as { status: string }).status).toBe("published");
+
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/erp/companions/${live.id}`,
+      headers: erp,
+    });
+    expect(removed.statusCode).toBe(200);
+    expect(removed.json()).toEqual({ ok: true });
+
     await app.close();
   });
 });

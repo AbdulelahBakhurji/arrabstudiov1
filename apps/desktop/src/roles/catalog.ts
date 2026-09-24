@@ -74,14 +74,17 @@ export const INDIVIDUAL_NAV: RoleNavItem[] = [
 ];
 
 /**
- * Family — studio, chat, cowork, connectors, activity, settings (no workforce).
+ * Family — full individual suite plus connectors.
+ * Chat stays first so kids and parents land on conversation.
  */
 export const FAMILY_NAV: RoleNavItem[] = [
   { key: "chat", path: "", icon: MessageSquare, end: true },
   { key: "studio", path: "/studio", icon: Sparkles },
-  { key: "compWork", path: "/work", icon: ListTodo },
-  { key: "connectors", path: "/connectors", icon: Cable },
   { key: "compBoard", path: "/board", icon: LayoutGrid },
+  { key: "brainNav", path: "/brain", icon: Brain },
+  { key: "compWork", path: "/work", icon: ListTodo },
+  { key: "compMe", path: "/me", icon: UserRound },
+  { key: "connectors", path: "/connectors", icon: Cable },
   { key: "settings", path: "/settings", icon: Settings2 },
 ];
 

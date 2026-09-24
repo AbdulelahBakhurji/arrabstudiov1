@@ -27,6 +27,8 @@ import {
   brainContextSnippet,
   brainLinksForNodes,
   brainNodesForScope,
+  companionsForActiveBrain,
+  ensureBrainPartition,
   getSecondBrain,
   ingestBrainMessages,
   moveBrainNode,
@@ -39,6 +41,8 @@ import {
   type BrainScope,
 } from "@/lib/second-brain";
 import { listCachedChats, loadChatHistory } from "@/lib/chat-history";
+import { FAMILY_EVENT, isFamilyChild, readActiveFamilyMemberId } from "@/lib/family-session";
+import { useFamilyProfile } from "@/lib/use-family-profile";
 import { cn } from "@/lib/utils";
 
 const KIND_FILTERS: Array<BrainNodeKind | "all"> = [
@@ -92,9 +96,27 @@ async function pullRealChats(input: {
   companions: ReturnType<typeof getCompanionState>["companions"];
 }) {
   const before = getSecondBrain().nodes.length;
+  ensureBrainPartition();
+
+  const companions = companionsForActiveBrain(input.companions);
+  const allowedIds = new Set(companions.map((c) => c.id));
+  const allowedConversations = new Set(
+    companions.map((c) => c.conversationId).filter(Boolean) as string[],
+  );
+  const seatId = readActiveFamilyMemberId();
+  const childSeat = isFamilyChild();
 
   if (input.scope === "individual") {
     syncBrainFromCompanions(getCompanionState());
+  }
+
+  // Kid with no parent-listed companions → keep partition clean (no household chat pull).
+  if (input.scope === "individual" && childSeat && companions.length === 0) {
+    const after = getSecondBrain().nodes.length;
+    if (after !== before || before === 0) {
+      relayoutBrainScope(input.scope, input.space);
+    }
+    return;
   }
 
   const cached = await listCachedChats();
@@ -111,8 +133,12 @@ async function pullRealChats(input: {
   for (const chat of cached) {
     if (chat.conversation.teamId) continue;
     seen.add(chat.conversation.id);
-    const person = input.companions.find((c) => c.conversationId === chat.conversation.id);
-    if (input.scope === "individual" && !person && !chat.conversation.agentId) continue;
+    const person = companions.find((c) => c.conversationId === chat.conversation.id);
+    if (input.scope === "individual") {
+      if (!person) continue;
+      if (!allowedIds.has(person.id)) continue;
+      if (childSeat && person.familyMemberId !== seatId) continue;
+    }
     ingestBrainMessages({
       scope: input.scope,
       space: input.scope === "solo" ? "org" : (person?.space ?? input.space),
@@ -123,11 +149,19 @@ async function pullRealChats(input: {
         (input.scope === "solo" ? "Agent" : "Companion"),
       conversationId: chat.conversation.id,
       messages: chat.messages,
+      familyMemberId: person?.familyMemberId ?? (childSeat ? seatId : null),
     });
   }
 
   for (const conversation of soloRemote) {
     if (seen.has(conversation.id)) continue;
+    if (
+      input.scope === "individual" &&
+      !allowedConversations.has(conversation.id) &&
+      !companions.some((c) => c.id === conversation.agentId)
+    ) {
+      continue;
+    }
     let messages =
       (await loadChatHistory(conversation.id))?.messages ??
       [];
@@ -140,7 +174,11 @@ async function pullRealChats(input: {
       }
     }
     if (messages.length < 2) continue;
-    const person = input.companions.find((c) => c.conversationId === conversation.id);
+    const person = companions.find(
+      (c) => c.conversationId === conversation.id || c.id === conversation.agentId,
+    );
+    if (input.scope === "individual" && !person) continue;
+    if (input.scope === "individual" && childSeat && person?.familyMemberId !== seatId) continue;
     ingestBrainMessages({
       scope: input.scope,
       space: input.scope === "solo" ? "org" : (person?.space ?? input.space),
@@ -149,6 +187,7 @@ async function pullRealChats(input: {
         person?.name ?? conversation.title ?? (input.scope === "solo" ? "Agent" : "Companion"),
       conversationId: conversation.id,
       messages,
+      familyMemberId: person?.familyMemberId ?? (childSeat ? seatId : null),
     });
   }
 
@@ -162,6 +201,7 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
   const { t, locale } = useLanguage();
   const ar = locale === "ar";
   const { href } = useRole();
+  const { active: familyActive } = useFamilyProfile();
   const companionState = useCompanionState();
   const brain = useSecondBrain();
   const [space, setSpace] = useCompanionSpace();
@@ -177,45 +217,56 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
 
   const effectiveScope: BrainScope = scope;
   const spaceKey = effectiveScope === "individual" ? space : ("org" as const);
+  const seatKey = familyActive?.id ?? "self";
 
   const refreshFromChats = useCallback(async () => {
     if (syncingRef.current) return;
     syncingRef.current = true;
     setSyncing(true);
     try {
+      ensureBrainPartition();
       await pullRealChats({
         scope: effectiveScope,
         space: spaceKey === "org" ? "org" : space,
         companions: getCompanionState().companions,
       });
       setLastSyncedAt(Date.now());
+      setSelectedId(null);
     } finally {
       syncingRef.current = false;
       setSyncing(false);
     }
-  }, [effectiveScope, space, spaceKey]);
+  }, [effectiveScope, space, spaceKey, seatKey]);
 
   useEffect(() => {
+    ensureBrainPartition();
     void refreshFromChats();
     const interval = window.setInterval(() => void refreshFromChats(), SYNC_MS);
     const onFocus = () => void refreshFromChats();
     const onVis = () => {
       if (document.visibilityState === "visible") void refreshFromChats();
     };
+    const onFamily = () => {
+      ensureBrainPartition();
+      void refreshFromChats();
+    };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
+    window.addEventListener(FAMILY_EVENT, onFamily);
     return () => {
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener(FAMILY_EVENT, onFamily);
     };
   }, [refreshFromChats]);
 
   useEffect(() => {
     if (effectiveScope === "individual") {
+      ensureBrainPartition();
       syncBrainFromCompanions(companionState);
     }
-  }, [companionState, effectiveScope]);
+  }, [companionState, effectiveScope, seatKey]);
 
   useEffect(() => {
     const id = window.setInterval(() => setTick((n) => n + 1), 40);

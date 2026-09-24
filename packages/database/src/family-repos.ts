@@ -20,4 +20,7 @@ export interface FamilyHouseholdMetaRepository {
   setExtraSeats(seats: number): Promise<number>;
   getActiveMemberId(): Promise<string | null>;
   setActiveMemberId(id: string | null): Promise<void>;
+  /** Seat locked by member email/password sign-in (cannot switch away). */
+  getLockedMemberId(): Promise<string | null>;
+  setLockedMemberId(id: string | null): Promise<void>;
 }

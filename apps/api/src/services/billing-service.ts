@@ -72,8 +72,20 @@ export class BillingService {
     }
     const account = await this.accounts.requireConnectedAccount();
     const plan = SUBSCRIPTION_PLANS[planId];
-    if (account.planId === planId) {
+    const entitlements = await this.accounts.buildEntitlements(account);
+    const renewingPastDue =
+      entitlements.pauseMode === "payment_required" && account.planId === planId;
+    if (account.planId === planId && !renewingPastDue) {
       throw new ValidationError(`You are already on ${plan.name}`);
+    }
+    // Month ended on Free / Family Free — unlock only by paying for a paid plan.
+    if (
+      entitlements.pauseMode === "payment_required" &&
+      plan.monthlyPriceHalalas <= 0
+    ) {
+      throw new ValidationError(
+        "Your free month ended. Choose a paid plan and complete payment to unlock chat.",
+      );
     }
     if (plan.monthlyPriceHalalas <= 0) {
       await this.accounts.applyPlan(planId);
@@ -92,7 +104,9 @@ export class BillingService {
     const invoice = await client.createInvoice({
       amount: plan.monthlyPriceHalalas,
       currency: plan.currency,
-      description: `Arrab Studio ${plan.name} (${plan.id})`,
+      description: renewingPastDue
+        ? `Arrab Studio ${plan.name} renewal (${plan.id})`
+        : `Arrab Studio ${plan.name} (${plan.id})`,
       callbackUrl: `${origin}/v1/billing/moyasar/callback`,
       successUrl: `${origin}/app?paid=1#plans`,
       backUrl: `${origin}/app#plans`,
@@ -100,6 +114,7 @@ export class BillingService {
         planId: plan.id,
         accountId: account.id,
         email: account.email,
+        renew: renewingPastDue ? "1" : "0",
       },
     });
     if (!invoice.url) {
@@ -137,6 +152,11 @@ export class BillingService {
           ? "Payment is still in progress"
           : `Invoice is ${invoice.status}, not paid`,
       );
+    }
+    const account = await this.accounts.requireConnectedAccount();
+    const metaAccountId = invoice.metadata?.accountId?.trim();
+    if (!metaAccountId || metaAccountId !== account.id) {
+      throw new ValidationError("Paid invoice does not belong to this workspace");
     }
     const planId = planFromInvoice(invoice);
     if (!planId) {

@@ -14,14 +14,18 @@ import {
   ensureCompanionsReady,
   ensureGeneralCompanion,
   exportEverything,
+  factsForMePage,
   getCompanionState,
   liveCompanions,
   markCompanionInstructionsSynced,
+  matchToneStyleId,
   resetCompanionTone,
   setCompanionAvatar,
   setCompanionTone,
   setFactShared,
   toggleCallOut,
+  clampTone,
+  tonePreviewSample,
   TONE_STYLE_CHIPS,
   updateCompanion,
   updateFact,
@@ -29,6 +33,7 @@ import {
   visibleFacts,
   type CompanionProfile,
   type CompanionSpace,
+  type CompanionTone,
 } from "@/lib/companions";
 import { CompanionModal, PersonAvatar } from "./CompanionUI";
 
@@ -93,14 +98,7 @@ export function MemoryDetails({
     return () => window.clearTimeout(timer);
   }, [notice]);
 
-  const facts = state.facts
-    .filter(
-      (fact) =>
-        fact.space === space &&
-        (!person || fact.companionId === person.id || fact.shared) &&
-        (!fact.derivedFrom || state.permissions[fact.derivedFrom]),
-    )
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  const facts = factsForMePage(state, space, person?.id ?? null);
 
   function sync() {
     void syncCompanionMemory()
@@ -358,6 +356,9 @@ export function ToneDetails({ person, onFold }: { person: CompanionProfile; onFo
   const { t, locale } = useLanguage();
   const ar = locale === "ar";
   const [error, setError] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [syncedAt, setSyncedAt] = useState<number | null>(null);
+  const syncTimer = useRef<number | null>(null);
   const state = useCompanionState();
   const live =
     state.companions.find((item) => item.id === person.id) ??
@@ -371,40 +372,81 @@ export function ToneDetails({ person, onFold }: { person: CompanionProfile; onFo
     return ensureGeneralCompanion(live.space);
   }
 
-  const sync = () => {
-    void syncCompanionMemory().catch(() => setError(t("apiUnavailable")));
+  const sync = (immediate = false) => {
+    const run = () => {
+      setSyncing(true);
+      void syncCompanionMemory()
+        .then(() => {
+          setSyncedAt(Date.now());
+          setError("");
+        })
+        .catch(() => setError(t("apiUnavailable")))
+        .finally(() => setSyncing(false));
+    };
+    if (syncTimer.current) {
+      window.clearTimeout(syncTimer.current);
+      syncTimer.current = null;
+    }
+    if (immediate) {
+      run();
+      return;
+    }
+    syncTimer.current = window.setTimeout(run, 420);
   };
 
-  const toneAxes = [
+  useEffect(() => {
+    return () => {
+      if (syncTimer.current) window.clearTimeout(syncTimer.current);
+    };
+  }, []);
+
+  const toneAxes: {
+    key: keyof CompanionTone;
+    label: string;
+    low: string;
+    high: string;
+  }[] = [
     {
-      key: "bluntness" as const,
+      key: "bluntness",
       label: t("compBluntness"),
       low: ar ? "لطيف" : "Gentle",
       high: ar ? "صارح" : "Blunt",
     },
     {
-      key: "humour" as const,
+      key: "humour",
       label: t("compHumour"),
       low: ar ? "جاد" : "Serious",
       high: ar ? "مرح" : "Playful",
     },
     {
-      key: "replyLength" as const,
+      key: "replyLength",
       label: t("compReplyLength"),
       low: ar ? "قصير" : "Short",
       high: ar ? "مطوّل" : "Long",
     },
     {
-      key: "warmth" as const,
+      key: "warmth",
       label: ar ? "الدفء" : "Warmth",
       low: ar ? "محايد" : "Cool",
       high: ar ? "دافئ" : "Warm",
     },
     {
-      key: "formality" as const,
+      key: "formality",
       label: ar ? "الرسمية" : "Formality",
       low: ar ? "عفوي" : "Casual",
       high: ar ? "رسمي" : "Formal",
+    },
+    {
+      key: "criticism",
+      label: ar ? "النقد" : "Criticism",
+      low: ar ? "داعم" : "Soft",
+      high: ar ? "صريح" : "Candid",
+    },
+    {
+      key: "pace",
+      label: ar ? "الإيقاع" : "Pace",
+      low: ar ? "صبور" : "Patient",
+      high: ar ? "سريع" : "Brisk",
     },
   ];
 
@@ -419,23 +461,46 @@ export function ToneDetails({ person, onFold }: { person: CompanionProfile; onFo
     relationships: ar ? "العلاقات" : "Relationships",
   };
 
-  const activeChip =
-    TONE_STYLE_CHIPS.find(
-      (chip) =>
-        chip.tone.bluntness === live.tone.bluntness &&
-        chip.tone.humour === live.tone.humour &&
-        chip.tone.replyLength === live.tone.replyLength &&
-        chip.tone.warmth === live.tone.warmth &&
-        chip.tone.formality === live.tone.formality,
-    )?.id ?? null;
+  const tone = clampTone(live.tone);
+  const activeChip = matchToneStyleId(tone);
+  const preview = tonePreviewSample(tone, ar ? "ar" : "en");
+  const activeStyle = activeChip
+    ? TONE_STYLE_CHIPS.find((chip) => chip.id === activeChip)
+    : null;
 
   return (
     <div className="cp-stack cp-tone-panel">
       <p className="cp-muted">
         {ar
-          ? "اختر أسلوبًا جاهزًا أو عدّل كل محور. يمكنك أيضًا طلب تغيير الأسلوب أثناء المحادثة."
-          : "Pick a style or fine-tune each axis. You can also ask for a different tone in conversation."}
+          ? "اختر أسلوبًا جاهزًا أو عدّل كل محور. يمكنك أيضًا طلب تغيير الأسلوب أثناء المحادثة («كن أصرح»، «اختصر»)."
+          : "Pick a style or fine-tune each axis. You can also ask in chat (“be blunter”, “keep it short”)."}
       </p>
+
+      <div className="cp-tone-active" aria-live="polite">
+        <span className="cp-tone-active-label">
+          {ar ? "الأسلوب الحالي" : "Current style"}
+        </span>
+        <strong className="cp-tone-active-value">
+          {activeStyle
+            ? ar
+              ? activeStyle.labelAr
+              : activeStyle.labelEn
+            : ar
+              ? "مخصص"
+              : "Custom"}
+        </strong>
+        <span className="cp-tone-sync">
+          {syncing
+            ? ar
+              ? "يحفظ…"
+              : "Saving…"
+            : syncedAt
+              ? ar
+                ? "محفوظ"
+                : "Saved"
+              : null}
+        </span>
+      </div>
 
       <div className="cp-tone-styles" role="group" aria-label={t("compTone")}>
         {TONE_STYLE_CHIPS.map((chip) => (
@@ -447,32 +512,52 @@ export function ToneDetails({ person, onFold }: { person: CompanionProfile; onFo
             onClick={() => {
               const ready = readyPerson();
               applyCompanionToneStyle(ready.id, chip.tone, chip.toneName);
-              sync();
+              sync(true);
             }}
           >
             <strong>{ar ? chip.labelAr : chip.labelEn}</strong>
             <span>{ar ? chip.hintAr : chip.hintEn}</span>
           </button>
         ))}
+        <div
+          className="cp-tone-style cp-tone-style-custom"
+          aria-pressed={activeChip == null}
+          data-active={activeChip == null ? "true" : "false"}
+        >
+          <strong>{ar ? "مخصص" : "Custom"}</strong>
+          <span>
+            {ar
+              ? "المنزلقات أدناه — مزيجك أنت"
+              : "Your mix from the sliders below"}
+          </span>
+        </div>
+      </div>
+
+      <div className="cp-tone-preview" aria-live="polite">
+        <span className="cp-tone-preview-label">
+          {ar ? "معاينة الرد" : "Reply preview"}
+        </span>
+        <p className="cp-tone-preview-sample">“{preview}”</p>
       </div>
 
       {toneAxes.map((axis) => (
         <label className="cp-tone-range" key={axis.key}>
           <span>
             {axis.label}
-            <output>{live.tone[axis.key]}</output>
+            <output>{tone[axis.key]}</output>
           </span>
           <input
             type="range"
             min="0"
             max="100"
-            value={live.tone[axis.key]}
+            value={tone[axis.key]}
             onChange={(event) => {
               const ready = readyPerson();
               setCompanionTone(ready.id, { [axis.key]: Number(event.target.value) });
+              sync();
             }}
-            onPointerUp={sync}
-            onBlur={sync}
+            onPointerUp={() => sync(true)}
+            onBlur={() => sync(true)}
           />
           <span className="cp-tone-ends">
             <small>{axis.low}</small>
@@ -499,13 +584,13 @@ export function ToneDetails({ person, onFold }: { person: CompanionProfile; onFo
             if (next === previous) return;
             const ready = readyPerson();
             updateCompanion(ready.id, { toneNote: next || null });
-            sync();
+            sync(true);
           }}
         />
         <span className="cp-field-hint">
           {ar
-            ? "يُضاف فوق المنزلقات — اكتب كيف تريد أن يرد."
-            : "Layered on top of the sliders — write how they should sound."}
+            ? "أعلى أولوية من المنزلقات — اكتب كيف تريد أن يرد."
+            : "Highest priority over the sliders — write how they should sound."}
         </span>
       </label>
 
@@ -521,7 +606,7 @@ export function ToneDetails({ person, onFold }: { person: CompanionProfile; onFo
               onClick={() => {
                 const ready = readyPerson();
                 toggleCallOut(ready.id, topic);
-                sync();
+                sync(true);
               }}
             >
               {callOutLabels[topic]}
@@ -537,7 +622,7 @@ export function ToneDetails({ person, onFold }: { person: CompanionProfile; onFo
           onClick={() => {
             const ready = readyPerson();
             resetCompanionTone(ready.id);
-            sync();
+            sync(true);
           }}
         >
           <RotateCcw size={14} />

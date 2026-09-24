@@ -4,6 +4,7 @@
  */
 import type { FamilyMemberPublic, FamilyHouseholdSnapshot } from "@arrab/shared";
 import { arrabApi } from "@/lib/api";
+import { readAccountSessionToken } from "@/lib/account-session";
 
 export const FAMILY_ACTIVE_KEY = "arrab.family.activeMemberId";
 export const FAMILY_EVENT = "arrab:family-profile";
@@ -35,10 +36,29 @@ export function readActiveFamilyMemberId(): string | null {
   }
 }
 
+/** Wipe household seats so a signed-out or other-account session never shows Family. */
+export function clearFamilySession(): void {
+  try {
+    localStorage.removeItem(FAMILY_ACTIVE_KEY);
+  } catch {
+    // ignore
+  }
+  setState({ snapshot: null, active: null, loading: false });
+}
+
 export function writeActiveFamilyMemberId(id: string | null): void {
+  const previous = readActiveFamilyMemberId();
   try {
     if (id) localStorage.setItem(FAMILY_ACTIVE_KEY, id);
     else localStorage.removeItem(FAMILY_ACTIVE_KEY);
+  } catch {
+    // ignore
+  }
+  if (previous === id) return;
+  try {
+    sessionStorage.removeItem("arrab.companionFocus");
+    localStorage.removeItem("arrab.chat.lastAgent");
+    localStorage.removeItem("arrab.cowork.lastAgent");
   } catch {
     // ignore
   }
@@ -82,11 +102,17 @@ export function getFamilyState(): FamilyState {
 }
 
 export async function refreshFamilyProfile(opts?: { silent?: boolean }): Promise<FamilyState> {
+  if (!readAccountSessionToken()) {
+    if (state.snapshot || state.active) clearFamilySession();
+    else setState({ snapshot: null, active: null, loading: false });
+    return state;
+  }
   if (!opts?.silent) setState({ loading: true });
   try {
     const snapshot = await arrabApi.familyHousehold();
     if (!snapshot.available) {
-      setState({ snapshot, active: null, loading: false });
+      writeActiveFamilyMemberId(null);
+      setState({ snapshot: null, active: null, loading: false });
       return state;
     }
     const savedId = readActiveFamilyMemberId();
@@ -102,7 +128,8 @@ export async function refreshFamilyProfile(opts?: { silent?: boolean }): Promise
     setState({ snapshot, active, loading: false });
     return state;
   } catch {
-    setState({ loading: false });
+    writeActiveFamilyMemberId(null);
+    setState({ snapshot: null, active: null, loading: false });
     return state;
   }
 }

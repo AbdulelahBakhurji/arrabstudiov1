@@ -9,6 +9,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::Manager;
 
+/// Menu-bar and presence windows must not reach the desk, shell, or device store.
+fn main_window_only(window: &tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() == "main" {
+        return Ok(());
+    }
+    Err("Blocked: this window cannot use files, shell, or network commands".into())
+}
+
 fn resolve_under_root(root: &str, relative: &str) -> Result<PathBuf, String> {
     let root_path = PathBuf::from(root.trim());
     if !root_path.is_dir() {
@@ -63,7 +71,8 @@ fn resolve_under_root(root: &str, relative: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-fn pick_folder() -> Result<Option<String>, String> {
+fn pick_folder(window: tauri::WebviewWindow) -> Result<Option<String>, String> {
+    main_window_only(&window)?;
     let folder = rfd::FileDialog::new()
         .set_title("Choose workspace folder")
         .pick_folder();
@@ -71,7 +80,12 @@ fn pick_folder() -> Result<Option<String>, String> {
 }
 
 #[tauri::command]
-fn list_dir(root: String, relative: Option<String>) -> Result<serde_json::Value, String> {
+fn list_dir(
+    window: tauri::WebviewWindow,
+    root: String,
+    relative: Option<String>,
+) -> Result<serde_json::Value, String> {
+    main_window_only(&window)?;
     let path = resolve_under_root(&root, relative.as_deref().unwrap_or(""))?;
     if !path.is_dir() {
         return Err("Not a directory".into());
@@ -138,7 +152,12 @@ fn list_dir(root: String, relative: Option<String>) -> Result<serde_json::Value,
 }
 
 #[tauri::command]
-fn read_text_file(root: String, relative: String) -> Result<serde_json::Value, String> {
+fn read_text_file(
+    window: tauri::WebviewWindow,
+    root: String,
+    relative: String,
+) -> Result<serde_json::Value, String> {
+    main_window_only(&window)?;
     let path = resolve_under_root(&root, &relative)?;
     if !path.is_file() {
         return Err("Not a file".into());
@@ -160,7 +179,13 @@ fn read_text_file(root: String, relative: String) -> Result<serde_json::Value, S
 }
 
 #[tauri::command]
-fn write_text_file(root: String, relative: String, content: String) -> Result<serde_json::Value, String> {
+fn write_text_file(
+    window: tauri::WebviewWindow,
+    root: String,
+    relative: String,
+    content: String,
+) -> Result<serde_json::Value, String> {
+    main_window_only(&window)?;
     if content.len() > 800_000 {
         return Err("Content is too large to save".into());
     }
@@ -181,7 +206,12 @@ fn write_text_file(root: String, relative: String, content: String) -> Result<se
 }
 
 #[tauri::command]
-fn run_local_command(command: String, cwd: Option<String>) -> Result<serde_json::Value, String> {
+fn run_local_command(
+    window: tauri::WebviewWindow,
+    command: String,
+    cwd: Option<String>,
+) -> Result<serde_json::Value, String> {
+    main_window_only(&window)?;
     let trimmed = command.trim();
     if trimmed.is_empty() {
         return Err("Command is empty".into());
@@ -239,12 +269,14 @@ fn run_local_command(command: String, cwd: Option<String>) -> Result<serde_json:
 
 #[tauri::command]
 fn search_workspace(
+    window: tauri::WebviewWindow,
     root: String,
     query: String,
     relative: Option<String>,
     glob: Option<String>,
     case_sensitive: Option<bool>,
 ) -> Result<serde_json::Value, String> {
+    main_window_only(&window)?;
     let q = query.trim();
     if q.is_empty() {
         return Err("Query is empty".into());
@@ -427,7 +459,11 @@ fn namespace_dir(app: &tauri::AppHandle, namespace: &str) -> Result<PathBuf, Str
 
 /// Default workspace for Arrab Assistant deliverables (PDF / HTML / CSV) when no folder is attached.
 #[tauri::command]
-fn ensure_assistant_desk(app: tauri::AppHandle) -> Result<String, String> {
+fn ensure_assistant_desk(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    main_window_only(&window)?;
     let root = app
         .path()
         .app_data_dir()
@@ -446,10 +482,12 @@ fn store_file(app: &tauri::AppHandle, namespace: &str, key: &str) -> Result<Path
 
 #[tauri::command]
 fn device_store_get(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     namespace: String,
     key: String,
 ) -> Result<Option<String>, String> {
+    main_window_only(&window)?;
     let path = store_file(&app, &namespace, &key)?;
     if !path.is_file() {
         return Ok(None);
@@ -459,11 +497,13 @@ fn device_store_get(
 
 #[tauri::command]
 fn device_store_set(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     namespace: String,
     key: String,
     value: String,
 ) -> Result<(), String> {
+    main_window_only(&window)?;
     if value.len() > 8_000_000 {
         return Err("Value is too large to store on this device".into());
     }
@@ -472,7 +512,13 @@ fn device_store_set(
 }
 
 #[tauri::command]
-fn device_store_remove(app: tauri::AppHandle, namespace: String, key: String) -> Result<(), String> {
+fn device_store_remove(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    namespace: String,
+    key: String,
+) -> Result<(), String> {
+    main_window_only(&window)?;
     let path = store_file(&app, &namespace, &key)?;
     if path.exists() {
         fs::remove_file(path).map_err(|err| err.to_string())?;
@@ -482,10 +528,12 @@ fn device_store_remove(app: tauri::AppHandle, namespace: String, key: String) ->
 
 #[tauri::command]
 fn device_store_keys(
+    window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     namespace: String,
     prefix: Option<String>,
 ) -> Result<Vec<String>, String> {
+    main_window_only(&window)?;
     let dir = namespace_dir(&app, &namespace)?;
     let prefix = prefix.unwrap_or_default();
     let mut keys = Vec::new();
@@ -505,7 +553,12 @@ fn device_store_keys(
 }
 
 #[tauri::command]
-fn device_store_clear(app: tauri::AppHandle, namespace: String) -> Result<(), String> {
+fn device_store_clear(
+    window: tauri::WebviewWindow,
+    app: tauri::AppHandle,
+    namespace: String,
+) -> Result<(), String> {
+    main_window_only(&window)?;
     let dir = namespace_dir(&app, &namespace)?;
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|err| err.to_string())?;
@@ -705,7 +758,20 @@ fn agent_presence_focus_studio(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 fn companion_panel_size() -> (f64, f64) {
-    (400.0, 640.0)
+    (680.0, 112.0)
+}
+
+#[tauri::command]
+fn companion_panel_fit(window: tauri::WebviewWindow, height: f64) -> Result<(), String> {
+    if window.label() != "companion-panel" {
+        return Err("Blocked".into());
+    }
+    let height = height.clamp(96.0, 460.0);
+    let _ = window.set_size(tauri::Size::Logical(tauri::LogicalSize {
+        width: 680.0,
+        height,
+    }));
+    Ok(())
 }
 
 fn place_companion_panel(window: &tauri::WebviewWindow, tray_rect: Option<&tauri::Rect>) {
@@ -772,15 +838,15 @@ fn ensure_companion_panel(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow
     .skip_taskbar(true)
     .visible(false)
     .focused(false)
-    .shadow(true)
-    .background_color(tauri::window::Color(0x17, 0x17, 0x1f, 0xff));
+    .shadow(false)
+    .transparent(true)
+    .background_color(tauri::window::Color(0, 0, 0, 0));
 
     #[cfg(target_os = "macos")]
     {
         builder = builder.accept_first_mouse(true);
     }
 
-    // Opaque panel — no glass / transparency.
     let window = builder.build().map_err(|err| err.to_string())?;
     place_companion_panel(&window, None);
     Ok(window)
@@ -905,7 +971,8 @@ fn install_tray(app: &tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn open_external_url(url: String) -> Result<(), String> {
+fn open_external_url(window: tauri::WebviewWindow, url: String) -> Result<(), String> {
+    main_window_only(&window)?;
     let trimmed = url.trim();
     if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
         return Err("Only http(s) URLs are allowed".into());
@@ -926,8 +993,103 @@ fn open_external_url(url: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeHttpRequest {
+    method: String,
+    url: String,
+    headers: Option<std::collections::HashMap<String, String>>,
+    body: Option<String>,
+    timeout_ms: Option<u64>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeHttpResponse {
+    status: u16,
+    body: String,
+}
+
+fn allow_native_http_url(url: &str) -> bool {
+    let trimmed = url.trim();
+    let Ok(parsed) = reqwest::Url::parse(trimmed) else {
+        return false;
+    };
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return false;
+    }
+    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
+    match host.as_str() {
+        "api.arrabai.com" | "auth.arrabai.com" | "testingworkspace.arrabai.com" => {
+            scheme == "https"
+        }
+        "127.0.0.1" | "localhost" => {
+            // Only known local API / Vite ports — not arbitrary loopback services.
+            matches!(parsed.port_or_known_default(), Some(8787) | Some(1420) | Some(5173) | Some(3000) | None)
+                && (scheme == "http" || scheme == "https")
+        }
+        _ => false,
+    }
+}
+
+/// Bypass WebView CORP/CORS — Coolify sets Cross-Origin-Resource-Policy: same-site
+/// which blocks tauri.localhost from reading api.arrabai.com responses.
 #[tauri::command]
-fn delete_path(root: String, relative: String) -> Result<serde_json::Value, String> {
+async fn native_http_request(
+    window: tauri::WebviewWindow,
+    args: NativeHttpRequest,
+) -> Result<NativeHttpResponse, String> {
+    main_window_only(&window)?;
+    let url = args.url.trim();
+    if !allow_native_http_url(url) {
+        return Err("URL not allowed for native HTTP".into());
+    }
+    let method = args.method.trim().to_uppercase();
+    let timeout = Duration::from_millis(args.timeout_ms.unwrap_or(30_000).clamp(1_000, 120_000));
+    let client = reqwest::Client::builder()
+        .timeout(timeout)
+        // Never follow redirects: a 3xx to a non-allowlisted host would bypass the gate.
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|err| err.to_string())?;
+
+    let mut builder = match method.as_str() {
+        "GET" => client.get(url),
+        "POST" => client.post(url),
+        "PUT" => client.put(url),
+        "PATCH" => client.patch(url),
+        "DELETE" => client.delete(url),
+        "HEAD" => client.head(url),
+        _ => return Err(format!("Unsupported method: {method}")),
+    };
+
+    if let Some(headers) = args.headers {
+        for (key, value) in headers {
+            let lower = key.to_ascii_lowercase();
+            if lower == "host" || lower == "content-length" {
+                continue;
+            }
+            builder = builder.header(key, value);
+        }
+    }
+    if let Some(body) = args.body {
+        builder = builder.body(body);
+    }
+
+    let response = builder.send().await.map_err(|err| err.to_string())?;
+    let status = response.status().as_u16();
+    let body = response.text().await.map_err(|err| err.to_string())?;
+    Ok(NativeHttpResponse { status, body })
+}
+
+#[tauri::command]
+fn delete_path(
+    window: tauri::WebviewWindow,
+    root: String,
+    relative: String,
+) -> Result<serde_json::Value, String> {
+    main_window_only(&window)?;
     let path = resolve_under_root(&root, &relative)?;
     if !path.exists() {
         return Err("Path does not exist".into());
@@ -944,7 +1106,13 @@ fn delete_path(root: String, relative: String) -> Result<serde_json::Value, Stri
 }
 
 #[tauri::command]
-fn rename_path(root: String, from: String, to: String) -> Result<serde_json::Value, String> {
+fn rename_path(
+    window: tauri::WebviewWindow,
+    root: String,
+    from: String,
+    to: String,
+) -> Result<serde_json::Value, String> {
+    main_window_only(&window)?;
     let src = resolve_under_root(&root, &from)?;
     let dest = resolve_under_root(&root, &to)?;
     if !src.exists() {
@@ -964,7 +1132,12 @@ fn rename_path(root: String, from: String, to: String) -> Result<serde_json::Val
 }
 
 #[tauri::command]
-fn create_dir(root: String, relative: String) -> Result<serde_json::Value, String> {
+fn create_dir(
+    window: tauri::WebviewWindow,
+    root: String,
+    relative: String,
+) -> Result<serde_json::Value, String> {
+    main_window_only(&window)?;
     let path = resolve_under_root(&root, &relative)?;
     fs::create_dir_all(&path).map_err(|err| err.to_string())?;
     Ok(serde_json::json!({
@@ -974,7 +1147,12 @@ fn create_dir(root: String, relative: String) -> Result<serde_json::Value, Strin
 }
 
 #[tauri::command]
-fn open_path(root: String, relative: Option<String>) -> Result<serde_json::Value, String> {
+fn open_path(
+    window: tauri::WebviewWindow,
+    root: String,
+    relative: Option<String>,
+) -> Result<serde_json::Value, String> {
+    main_window_only(&window)?;
     let path = resolve_under_root(&root, relative.as_deref().unwrap_or(""))?;
     if !path.exists() {
         return Err("Path does not exist".into());
@@ -1033,7 +1211,8 @@ fn agents_office_up() -> bool {
 }
 
 #[tauri::command]
-fn ensure_agents_office() -> Result<String, String> {
+fn ensure_agents_office(window: tauri::WebviewWindow) -> Result<String, String> {
+    main_window_only(&window)?;
     if agents_office_up() {
         return Ok(AGENTS_OFFICE_URL.to_string());
     }
@@ -1133,7 +1312,7 @@ fn ensure_phone_preview_server() -> Result<u16, String> {
     if let Some(port) = *PHONE_PREVIEW_PORT.lock().map_err(|_| "Preview lock poisoned")? {
         return Ok(port);
     }
-    let listener = TcpListener::bind("0.0.0.0:0").map_err(|err| format!("Preview bind failed: {err}"))?;
+    let listener = TcpListener::bind("127.0.0.1:0").map_err(|err| format!("Preview bind failed: {err}"))?;
     let port = listener
         .local_addr()
         .map_err(|err| format!("Preview addr failed: {err}"))?
@@ -1162,7 +1341,7 @@ fn handle_phone_preview_request(mut stream: TcpStream) -> Result<(), String> {
         });
     let body = html.as_bytes();
     let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: *\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream
@@ -1175,7 +1354,11 @@ fn handle_phone_preview_request(mut stream: TcpStream) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn start_phone_preview(html: String) -> Result<serde_json::Value, String> {
+fn start_phone_preview(
+    window: tauri::WebviewWindow,
+    html: String,
+) -> Result<serde_json::Value, String> {
+    main_window_only(&window)?;
     let trimmed = html.trim();
     if trimmed.is_empty() {
         return Err("Preview HTML is empty".into());
@@ -1331,6 +1514,7 @@ pub fn run() {
             device_store_keys,
             device_store_clear,
             open_external_url,
+            native_http_request,
             focus_main_window,
             agent_presence_show,
             agent_presence_update,
@@ -1338,6 +1522,7 @@ pub fn run() {
             agent_presence_focus_studio,
             companion_panel_toggle,
             companion_panel_hide,
+            companion_panel_fit,
             ensure_agents_office,
             agents_office_status,
             start_phone_preview

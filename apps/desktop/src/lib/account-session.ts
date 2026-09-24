@@ -23,11 +23,21 @@ export function writeAccountSession(token: string): void {
   }
   localStorage.setItem(ACCOUNT_SESSION_KEY, trimmed);
   clearPendingWebAuth();
+  // Signed-in users leave guest local-only mode.
+  void import("./guest-mode").then(({ clearGuestLocalMode }) => clearGuestLocalMode());
   window.dispatchEvent(new CustomEvent(ACCOUNT_EVENT));
 }
 
 export function clearAccountSession(): void {
   localStorage.removeItem(ACCOUNT_SESSION_KEY);
+  try {
+    localStorage.removeItem("arrab.account.status.cache");
+    localStorage.setItem("arrab.studioRole", "individual");
+  } catch {
+    // ignore
+  }
+  clearPendingWebAuth();
+  void import("./family-session").then(({ clearFamilySession }) => clearFamilySession());
   window.dispatchEvent(new CustomEvent(ACCOUNT_EVENT));
 }
 

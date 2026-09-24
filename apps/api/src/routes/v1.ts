@@ -22,6 +22,7 @@ import type {
   PersistenceMode,
   SendEmailRequest,
   SendMessageRequest,
+  IngestConversationMessagesRequest,
   SendWhatsAppRequest,
   SignInAccountRequest,
   StartWebAuthRequest,
@@ -47,12 +48,13 @@ import type {
   OrgEmployeeChangePasswordRequest,
   CreateFamilyMemberRequest,
   UpdateFamilyMemberRequest,
+  FamilyMemberSignInRequest,
   SwitchFamilyProfileRequest,
   GrantFamilyTokensRequest,
   PurchaseFamilySeatsRequest,
   CreateFamilyGuidanceRequest,
 } from "@arrab/shared";
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ConnectorService } from "../services/connector-service.js";
 import type { FamilyHouseholdService } from "../services/family-household-service.js";
 import type { ConversationService } from "../services/conversation-service.js";
@@ -159,10 +161,27 @@ export function registerV1Routes(
 
     const familyHeader = request.headers["x-arrab-family-member"];
     const familyMemberId = Array.isArray(familyHeader) ? familyHeader[0] : familyHeader;
-    if (familyMemberId?.trim()) {
+    // Only authenticated studio sessions may select a seat via header (blocks anonymous spoof).
+    if (request.account && familyMemberId?.trim()) {
       await deps.familyHousehold.setActiveMember(familyMemberId.trim());
     }
   });
+
+  const assertCap = async (
+    request: FastifyRequest,
+    capability: Parameters<OrgWorkforceService["assertCapability"]>[1],
+    detail: string,
+  ) => {
+    const openWorkspace = !(await deps.accounts.hasAccount());
+    deps.orgWorkforce.assertCapability(
+      request.orgEmployee ?? null,
+      capability,
+      detail,
+      request.account,
+      openWorkspace,
+    );
+  };
+
   app.get("/v1/meta", async () => {
     const status = await deps.accounts.status();
     return {
@@ -184,7 +203,20 @@ export function registerV1Routes(
     };
   });
 
-  app.get("/v1/dashboard", async () => deps.queries.dashboard());
+  app.get("/v1/dashboard", async () => {
+    const dash = await deps.queries.dashboard();
+    if (await deps.familyHousehold.isActiveChildSeat()) {
+      return {
+        ...dash,
+        projects: [],
+        agents: [],
+        teams: [],
+        activity: [],
+        conversations: await deps.familyHousehold.filterConversations(dash.conversations),
+      };
+    }
+    return dash;
+  });
   app.get("/v1/usage", async (request) => {
     const employee = request.orgEmployee ?? null;
     const perms = deps.orgWorkforce.permissionsFor(employee);
@@ -202,11 +234,10 @@ export function registerV1Routes(
     return deps.queries.usageSummary(deps.accounts);
   });
   app.get("/v1/reports/summary", async (request) => {
-    deps.orgWorkforce.assertCapability(
-      request.orgEmployee ?? null,
-      "canAdminister",
-      "Only admins can view organization reports",
-    );
+    if (await deps.familyHousehold.isActiveChildSeat()) {
+      throw new ForbiddenError("Reports are only available to parents");
+    }
+    await assertCap(request, "canAdminister", "Only admins can view organization reports");
     return deps.queries.reportSummary();
   });
 
@@ -231,23 +262,29 @@ export function registerV1Routes(
     }
     return status;
   });
-  app.post<{ Body: ConnectAccountRequest }>("/v1/account/connect", async (request) =>
-    deps.accounts.connect(request.body ?? { email: "", password: "" }),
-  );
-  app.post<{ Body: SignInAccountRequest }>("/v1/account/sign-in", async (request) =>
-    deps.accounts.signIn(request.body ?? { email: "", password: "" }),
-  );
+  app.post<{ Body: ConnectAccountRequest }>("/v1/account/connect", async (request) => {
+    const result = await deps.accounts.connect(request.body ?? { email: "", password: "" });
+    await deps.familyHousehold.clearSeatLock();
+    return result;
+  });
+  app.post<{ Body: SignInAccountRequest }>("/v1/account/sign-in", async (request) => {
+    const result = await deps.accounts.signIn(request.body ?? { email: "", password: "" });
+    await deps.familyHousehold.clearSeatLock();
+    return result;
+  });
   app.post<{ Body: VerifyAccountSessionRequest }>("/v1/account/session", async (request) =>
     deps.accounts.verifySession(request.body?.sessionToken ?? ""),
   );
-  app.post("/v1/account/disconnect", async () => deps.accounts.disconnect());
-  app.post("/v1/account/logout", async () => deps.accounts.logout());
+  app.post("/v1/account/disconnect", async () => {
+    await deps.familyHousehold.clearSeatLock();
+    return deps.accounts.disconnect();
+  });
+  app.post("/v1/account/logout", async () => {
+    await deps.familyHousehold.clearSeatLock();
+    return deps.accounts.logout();
+  });
   app.post<{ Body: ActivateSubscriptionRequest }>("/v1/account/subscribe", async (request) => {
-    deps.orgWorkforce.assertCapability(
-      request.orgEmployee ?? null,
-      "canAdminister",
-      "Only admins can change organization plans",
-    );
+    await assertCap(request, "canAdminister", "Only admins can change organization plans");
     return deps.accounts.activateSubscription(request.body ?? { code: "" });
   });
   app.patch<{ Body: UpdateAccountProfileRequest }>("/v1/account", async (request) =>
@@ -262,26 +299,17 @@ export function registerV1Routes(
     async (request) =>
       deps.accounts.pollWebAuth(request.query.state ?? "", request.query.pollSecret ?? ""),
   );
-  app.post<{ Body: CompleteWebAuthRequest }>("/v1/account/auth/web/complete", async (request) =>
-    deps.accounts.completeWebAuth(
+  app.post<{ Body: CompleteWebAuthRequest }>("/v1/account/auth/web/complete", async (request) => {
+    const result = await deps.accounts.completeWebAuth(
       request.body ?? { state: "", email: "", password: "" },
-    ),
-  );
-
-  app.get("/v1/billing/plans", async (request) => {
-    deps.orgWorkforce.assertCapability(
-      request.orgEmployee ?? null,
-      "canAdminister",
-      "Only admins can view organization plans",
     );
-    return deps.billing.catalog();
+    await deps.familyHousehold.clearSeatLock();
+    return result;
   });
+
+  app.get("/v1/billing/plans", async () => deps.billing.catalog());
   app.post<{ Body: BillingCheckoutRequest }>("/v1/billing/checkout", async (request) => {
-    deps.orgWorkforce.assertCapability(
-      request.orgEmployee ?? null,
-      "canAdminister",
-      "Only admins can change organization plans",
-    );
+    await assertCap(request, "canAdminister", "Only admins can change organization plans");
     return deps.billing.checkout(request.body?.planId ?? "");
   });
   app.get<{ Querystring: { id?: string; invoice?: string } }>(
@@ -335,8 +363,12 @@ export function registerV1Routes(
     const msg = document.getElementById('msg');
     const openApp = document.getElementById('openApp');
     function openStudio(sessionToken) {
-      const href = sessionToken
-        ? ('arrab://auth/complete?session=' + encodeURIComponent(sessionToken))
+      const state = (form.querySelector('input[name="state"]') || {}).value || '';
+      const params = new URLSearchParams();
+      if (sessionToken) params.set('session', sessionToken);
+      if (state) params.set('state', state);
+      const href = params.toString()
+        ? ('arrab://auth/complete?' + params.toString())
         : 'arrab://auth/complete';
       openApp.href = href;
       openApp.hidden = false;
@@ -393,6 +425,11 @@ export function registerV1Routes(
   );
 
   app.get("/v1/family", async () => deps.familyHousehold.snapshot());
+  app.post<{ Body: FamilyMemberSignInRequest }>("/v1/family/members/sign-in", async (request) =>
+    deps.familyHousehold.signInMember(
+      request.body ?? { email: "", password: "" },
+    ),
+  );
   app.post<{ Body: CreateFamilyMemberRequest }>("/v1/family/members", async (request) =>
     deps.familyHousehold.createMember(
       request.body ?? { displayName: "", role: "partner" },
@@ -506,32 +543,20 @@ export function registerV1Routes(
     ),
   }));
   app.post<{ Body: CreateTaskRequest }>("/v1/tasks", async (request) => {
-    deps.orgWorkforce.assertCapability(
-      request.orgEmployee,
-      "canAssignWork",
-      "Managers and admins can create tasks",
-    );
+    await assertCap(request, "canAssignWork", "Managers and admins can create tasks");
     deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
     return deps.commands.createTask(request.body ?? { title: "" });
   });
   app.patch<{ Params: { id: string }; Body: UpdateTaskRequest }>(
     "/v1/tasks/:id",
     async (request) => {
-      deps.orgWorkforce.assertCapability(
-        request.orgEmployee,
-        "canAssignWork",
-        "Managers and admins can update tasks",
-      );
+      await assertCap(request, "canAssignWork", "Managers and admins can update tasks");
       deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
       return deps.commands.updateTask(request.params.id, request.body ?? {});
     },
   );
   app.delete<{ Params: { id: string } }>("/v1/tasks/:id", async (request) => {
-    deps.orgWorkforce.assertCapability(
-      request.orgEmployee,
-      "canAssignWork",
-      "Managers and admins can delete tasks",
-    );
+    await assertCap(request, "canAssignWork", "Managers and admins can delete tasks");
     return deps.commands.deleteTask(request.params.id);
   });
   app.post<{ Params: { id: string }; Body: { requireApproval?: boolean } }>(
@@ -546,50 +571,92 @@ export function registerV1Routes(
     items: await deps.queries.listTaskRuns(request.params.id),
   }));
 
-  app.get("/v1/knowledge", async () => ({ items: await deps.queries.listKnowledge() }));
-  app.post<{ Body: CreateKnowledgeRequest }>("/v1/knowledge", async (request) =>
-    deps.commands.createKnowledge(request.body ?? { title: "", content: "" }),
-  );
+  app.get("/v1/knowledge", async () => {
+    if (await deps.familyHousehold.isActiveChildSeat()) return { items: [] };
+    return { items: await deps.queries.listKnowledge() };
+  });
+  app.post<{ Body: CreateKnowledgeRequest }>("/v1/knowledge", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) {
+      throw new ForbiddenError("Children cannot manage household knowledge");
+    }
+    return deps.commands.createKnowledge(request.body ?? { title: "", content: "" });
+  });
   app.patch<{ Params: { id: string }; Body: UpdateKnowledgeRequest }>(
     "/v1/knowledge/:id",
-    async (request) => deps.commands.updateKnowledge(request.params.id, request.body ?? {}),
+    async (request) => {
+      if (await deps.familyHousehold.isActiveChildSeat()) {
+        throw new ForbiddenError("Children cannot manage household knowledge");
+      }
+      return deps.commands.updateKnowledge(request.params.id, request.body ?? {});
+    },
   );
-  app.delete<{ Params: { id: string } }>("/v1/knowledge/:id", async (request) =>
-    deps.commands.deleteKnowledge(request.params.id),
-  );
+  app.delete<{ Params: { id: string } }>("/v1/knowledge/:id", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) {
+      throw new ForbiddenError("Children cannot manage household knowledge");
+    }
+    return deps.commands.deleteKnowledge(request.params.id);
+  });
 
-  app.get("/v1/memories", async () => ({ items: await deps.queries.listMemories() }));
-  app.post<{ Body: CreateMemoryRequest }>("/v1/memories", async (request) =>
-    deps.commands.createMemory(request.body ?? { content: "" }),
-  );
-  app.delete<{ Params: { id: string } }>("/v1/memories/:id", async (request) =>
-    deps.commands.deleteMemory(request.params.id),
-  );
+  app.get("/v1/memories", async () => {
+    if (await deps.familyHousehold.isActiveChildSeat()) return { items: [] };
+    return { items: await deps.queries.listMemories() };
+  });
+  app.post<{ Body: CreateMemoryRequest }>("/v1/memories", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) {
+      throw new ForbiddenError("Children cannot manage household memories");
+    }
+    return deps.commands.createMemory(request.body ?? { content: "" });
+  });
+  app.delete<{ Params: { id: string } }>("/v1/memories/:id", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) {
+      throw new ForbiddenError("Children cannot manage household memories");
+    }
+    return deps.commands.deleteMemory(request.params.id);
+  });
 
-  app.get<{ Querystring: { agentId?: string } }>("/v1/skills", async (request) => ({
-    items: await deps.queries.listSkills(request.query.agentId),
-  }));
-  app.post<{ Body: CreateSkillRequest }>("/v1/skills", async (request) =>
-    deps.commands.createSkill(
+  app.get<{ Querystring: { agentId?: string } }>("/v1/skills", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) return { items: [] };
+    return { items: await deps.queries.listSkills(request.query.agentId) };
+  });
+  app.post<{ Body: CreateSkillRequest }>("/v1/skills", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) {
+      throw new ForbiddenError("Children cannot manage household skills");
+    }
+    return deps.commands.createSkill(
       request.body ?? { agentId: "", title: "", instructions: "" },
-    ),
-  );
-  app.delete<{ Params: { id: string } }>("/v1/skills/:id", async (request) =>
-    deps.commands.deleteSkill(request.params.id),
-  );
+    );
+  });
+  app.delete<{ Params: { id: string } }>("/v1/skills/:id", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) {
+      throw new ForbiddenError("Children cannot manage household skills");
+    }
+    return deps.commands.deleteSkill(request.params.id);
+  });
 
-  app.get("/v1/approvals", async () => ({ items: await deps.queries.listApprovals() }));
-  app.get("/v1/approvals/pending", async () => ({
-    items: await deps.queries.listPendingApprovals(),
-  }));
-  app.post<{ Body: CreateApprovalRequest }>("/v1/approvals", async (request) =>
-    deps.commands.createApproval(
+  app.get("/v1/approvals", async () => {
+    if (await deps.familyHousehold.isActiveChildSeat()) return { items: [] };
+    return { items: await deps.queries.listApprovals() };
+  });
+  app.get("/v1/approvals/pending", async () => {
+    if (await deps.familyHousehold.isActiveChildSeat()) return { items: [] };
+    return {
+      items: await deps.queries.listPendingApprovals(),
+    };
+  });
+  app.post<{ Body: CreateApprovalRequest }>("/v1/approvals", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) {
+      throw new ForbiddenError("Children cannot manage approvals");
+    }
+    return deps.commands.createApproval(
       request.body ?? { kind: "activate_agent", title: "" },
-    ),
-  );
+    );
+  });
   app.post<{ Params: { id: string }; Body: ResolveApprovalRequest }>(
     "/v1/approvals/:id/resolve",
     async (request) => {
+      if (await deps.familyHousehold.isActiveChildSeat()) {
+        throw new ForbiddenError("Children cannot resolve approvals");
+      }
       const resolved = await deps.commands.resolveApproval(
         request.params.id,
         request.body ?? { status: "approved" },
@@ -615,7 +682,10 @@ export function registerV1Routes(
       ) {
         const continued = await deps.conversations.resumeAfterToolApproval(
           resolved.approval,
-          { toolResult: request.body?.toolResult },
+          {
+            toolResult: request.body?.toolResult,
+            toolResultAttestation: request.body?.toolResultAttestation,
+          },
         );
         return { ...resolved, continued };
       }
@@ -655,48 +725,28 @@ export function registerV1Routes(
     ),
   }));
   app.post<{ Body: CreateAgentRequest }>("/v1/agents", async (request) => {
-    deps.orgWorkforce.assertCapability(
-      request.orgEmployee,
-      "canHireAgents",
-      "Only admins can hire AI employees",
-    );
+    await assertCap(request, "canHireAgents", "Only admins can hire AI employees");
     deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
     return deps.commands.createAgent(request.body ?? { name: "", role: "" });
   });
   app.patch<{ Params: { id: string }; Body: UpdateAgentRequest }>(
     "/v1/agents/:id",
     async (request) => {
-      deps.orgWorkforce.assertCapability(
-        request.orgEmployee,
-        "canHireAgents",
-        "Only admins can update AI employees",
-      );
+      await assertCap(request, "canHireAgents", "Only admins can update AI employees");
       return deps.commands.updateAgent(request.params.id, request.body ?? {});
     },
   );
   app.delete<{ Params: { id: string } }>("/v1/agents/:id", async (request) => {
-    deps.orgWorkforce.assertCapability(
-      request.orgEmployee,
-      "canHireAgents",
-      "Only admins can delete AI employees",
-    );
+    await assertCap(request, "canHireAgents", "Only admins can delete AI employees");
     return deps.commands.deleteAgent(request.params.id);
   });
   // POST fallbacks — some clients/CORS policies only allow GET/HEAD/POST.
   app.post<{ Params: { id: string } }>("/v1/agents/:id/archive", async (request) => {
-    deps.orgWorkforce.assertCapability(
-      request.orgEmployee,
-      "canHireAgents",
-      "Only admins can archive AI employees",
-    );
+    await assertCap(request, "canHireAgents", "Only admins can archive AI employees");
     return deps.commands.updateAgent(request.params.id, { status: "archived" });
   });
   app.post<{ Params: { id: string } }>("/v1/agents/:id/remove", async (request) => {
-    deps.orgWorkforce.assertCapability(
-      request.orgEmployee,
-      "canHireAgents",
-      "Only admins can delete AI employees",
-    );
+    await assertCap(request, "canHireAgents", "Only admins can delete AI employees");
     return deps.commands.deleteAgent(request.params.id);
   });
   app.get<{ Params: { agentId: string } }>(
@@ -711,22 +761,14 @@ export function registerV1Routes(
 
   app.get("/v1/teams", async () => ({ items: await deps.queries.listTeams() }));
   app.post<{ Body: CreateTeamRequest }>("/v1/teams", async (request) => {
-    deps.orgWorkforce.assertCapability(
-      request.orgEmployee,
-      "canManageTeams",
-      "Only admins can create teams",
-    );
+    await assertCap(request, "canManageTeams", "Only admins can create teams");
     deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
     return deps.commands.createTeam(request.body ?? { name: "" });
   });
   app.patch<{ Params: { id: string }; Body: UpdateTeamRequest }>(
     "/v1/teams/:id",
     async (request) => {
-      deps.orgWorkforce.assertCapability(
-        request.orgEmployee,
-        "canManageTeams",
-        "Only admins can update teams",
-      );
+      await assertCap(request, "canManageTeams", "Only admins can update teams");
       return deps.commands.updateTeam(request.params.id, request.body ?? {});
     },
   );
@@ -737,32 +779,25 @@ export function registerV1Routes(
   app.post<{ Params: { id: string }; Body: AddTeamMemberRequest }>(
     "/v1/teams/:id/members",
     async (request) => {
-      deps.orgWorkforce.assertCapability(
-        request.orgEmployee,
-        "canManageTeams",
-        "Only admins can change team membership",
-      );
+      await assertCap(request, "canManageTeams", "Only admins can change team membership");
       return deps.commands.addTeamMember(request.params.id, request.body ?? { agentId: "" });
     },
   );
   app.delete<{ Params: { id: string; agentId: string } }>(
     "/v1/teams/:id/members/:agentId",
     async (request) => {
-      deps.orgWorkforce.assertCapability(
-        request.orgEmployee,
-        "canManageTeams",
-        "Only admins can change team membership",
-      );
+      await assertCap(request, "canManageTeams", "Only admins can change team membership");
       return deps.commands.removeTeamMember(request.params.id, request.params.agentId);
     },
   );
 
-  app.get("/v1/conversations", async (request) => ({
-    items: await deps.orgWorkforce.filterConversations(
+  app.get("/v1/conversations", async (request) => {
+    const items = await deps.orgWorkforce.filterConversations(
       await deps.conversations.listConversations(),
       request.orgEmployee,
-    ),
-  }));
+    );
+    return { items: await deps.familyHousehold.filterConversations(items) };
+  });
   app.post<{ Body: CreateConversationRequest }>("/v1/conversations", async (request) => {
     deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
     return deps.conversations.createConversation(
@@ -776,6 +811,7 @@ export function registerV1Routes(
       detail.conversation,
       request.orgEmployee,
     );
+    await deps.familyHousehold.assertCanOpenConversation(detail.conversation);
     return detail;
   });
   app.delete<{ Params: { id: string } }>("/v1/conversations/:id", async (request) => {
@@ -784,6 +820,7 @@ export function registerV1Routes(
       detail.conversation,
       request.orgEmployee,
     );
+    await deps.familyHousehold.assertCanOpenConversation(detail.conversation);
     deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
     return deps.conversations.deleteConversation(request.params.id);
   });
@@ -795,11 +832,31 @@ export function registerV1Routes(
         detail.conversation,
         request.orgEmployee,
       );
+      await deps.familyHousehold.assertCanOpenConversation(detail.conversation);
       deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
       const familyHeader = request.headers["x-arrab-family-member"];
       const familyMemberId = Array.isArray(familyHeader) ? familyHeader[0] : familyHeader;
       await deps.familyHousehold.assertCanChat(familyMemberId ?? null);
       return deps.conversations.sendMessage(request.params.id, request.body ?? { content: "" });
+    },
+  );
+  app.post<{ Params: { id: string }; Body: IngestConversationMessagesRequest }>(
+    "/v1/conversations/:id/messages/ingest",
+    async (request) => {
+      const detail = await deps.conversations.getConversation(request.params.id);
+      await deps.orgWorkforce.assertCanOpenConversation(
+        detail.conversation,
+        request.orgEmployee,
+      );
+      await deps.familyHousehold.assertCanOpenConversation(detail.conversation);
+      deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
+      const familyHeader = request.headers["x-arrab-family-member"];
+      const familyMemberId = Array.isArray(familyHeader) ? familyHeader[0] : familyHeader;
+      await deps.familyHousehold.assertCanChat(familyMemberId ?? null);
+      return deps.conversations.ingestMessages(
+        request.params.id,
+        request.body ?? { messages: [] },
+      );
     },
   );
   app.post<{ Params: { id: string }; Body: SendMessageRequest }>(
@@ -810,6 +867,7 @@ export function registerV1Routes(
         detail.conversation,
         request.orgEmployee,
       );
+      await deps.familyHousehold.assertCanOpenConversation(detail.conversation);
       deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
       const familyHeader = request.headers["x-arrab-family-member"];
       const familyMemberId = Array.isArray(familyHeader) ? familyHeader[0] : familyHeader;
@@ -858,21 +916,34 @@ export function registerV1Routes(
     },
   );
 
-  app.get<{ Querystring: { status?: string } }>("/v1/goals", async (request) => ({
-    items: await deps.goals.list(request.query.status),
-  }));
-  app.get<{ Params: { agentId: string } }>("/v1/agents/:agentId/goals", async (request) => ({
-    items: await deps.goals.listActiveByAgent(request.params.agentId),
-  }));
-  app.post<{ Body: CreateGoalRequest }>("/v1/goals", async (request) =>
-    deps.goals.create(request.body ?? { title: "" }),
-  );
+  app.get<{ Querystring: { status?: string } }>("/v1/goals", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) return { items: [] };
+    return { items: await deps.goals.list(request.query.status) };
+  });
+  app.get<{ Params: { agentId: string } }>("/v1/agents/:agentId/goals", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) return { items: [] };
+    return { items: await deps.goals.listActiveByAgent(request.params.agentId) };
+  });
+  app.post<{ Body: CreateGoalRequest }>("/v1/goals", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) {
+      throw new ForbiddenError("Children cannot manage household goals");
+    }
+    return deps.goals.create(request.body ?? { title: "" });
+  });
   app.patch<{ Params: { id: string }; Body: UpdateGoalRequest }>(
     "/v1/goals/:id",
-    async (request) => deps.goals.update(request.params.id, request.body ?? {}),
+    async (request) => {
+      if (await deps.familyHousehold.isActiveChildSeat()) {
+        throw new ForbiddenError("Children cannot manage household goals");
+      }
+      return deps.goals.update(request.params.id, request.body ?? {});
+    },
   );
 
-  app.get("/v1/activity", async () => ({ items: await deps.queries.listActivity() }));
+  app.get("/v1/activity", async () => {
+    if (await deps.familyHousehold.isActiveChildSeat()) return { items: [] };
+    return { items: await deps.queries.listActivity() };
+  });
 
   app.get("/v1/ai/status", async () => {
     const primary = deps.primaryProviderId ?? "bedrock";

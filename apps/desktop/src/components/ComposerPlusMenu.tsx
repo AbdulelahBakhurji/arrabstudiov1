@@ -4,20 +4,27 @@ import {
   Cable,
   Check,
   Cpu,
+  FileText,
   FolderOpen,
   Globe,
   HardDrive,
   Image,
+  LayoutTemplate,
+  Palette,
   Plus,
+  Presentation,
   Settings2,
   Sparkles,
   Upload,
+  Wand2,
   WifiOff,
+  X,
 } from "lucide-react";
 import type { AiGatewayStatusResponse } from "@arrab/shared";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useRole } from "@/roles/RoleProvider";
 import { arrabApi } from "@/lib/api";
+import { canUseCloudAi } from "@/lib/guest-mode";
 import {
   DEFAULT_OLLAMA_BASE,
   fetchOllamaStatus,
@@ -27,6 +34,16 @@ import { markGettingStartedStep } from "@/lib/getting-started";
 import { pushToast } from "@/lib/notify";
 import { readPrefs, subscribePrefs, updatePrefs, type StudioPrefs } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
+import { ACCOUNT_EVENT } from "@/lib/account-session";
+import { GUEST_EVENT } from "@/lib/guest-mode";
+import {
+  clearArmedSkills,
+  disarmSkill,
+  importSkillFiles,
+  toggleArmedSkill,
+  useArmedSkillIds,
+  useSkills,
+} from "@/lib/user-skills";
 
 export type ComposerPlusFeatures = {
   folder?: boolean;
@@ -37,6 +54,8 @@ export type ComposerPlusFeatures = {
   webSearch?: boolean;
   images?: boolean;
   files?: boolean;
+  /** PDF / Word / slides / image create prompts */
+  create?: boolean;
 };
 
 const DEFAULT_FEATURES: Required<ComposerPlusFeatures> = {
@@ -47,9 +66,51 @@ const DEFAULT_FEATURES: Required<ComposerPlusFeatures> = {
   webSearch: true,
   images: true,
   files: true,
+  create: true,
 };
 
-type PlusPanel = "main" | "local" | "cloud";
+export type ComposerCreateKind =
+  | "pdf"
+  | "docx"
+  | "presentation"
+  | "image"
+  | "search"
+  | "read";
+
+export function composerCreatePrompt(kind: ComposerCreateKind, locale: "en" | "ar" = "en"): string {
+  if (locale === "ar") {
+    switch (kind) {
+      case "pdf":
+        return "أنشئ ملف PDF احترافي عن: ";
+      case "docx":
+        return "أنشئ مستند Word عن: ";
+      case "presentation":
+        return "أنشئ عرض تقديمي عن: ";
+      case "image":
+        return "أنشئ صورة / غلاف عن: ";
+      case "search":
+        return "ابحث في الويب عن: ";
+      case "read":
+        return "اقرأ هذا المستند أو الصورة على المكتب واشرحها: ";
+    }
+  }
+  switch (kind) {
+    case "pdf":
+      return "Create a professional PDF about: ";
+    case "docx":
+      return "Create a Word document about: ";
+    case "presentation":
+      return "Create a presentation about: ";
+    case "image":
+      return "Create an image / cover about: ";
+    case "search":
+      return "Search the web for: ";
+    case "read":
+      return "Read this document or image on the desk and explain it: ";
+  }
+}
+
+type PlusPanel = "main" | "local" | "cloud" | "skills";
 
 /** Display label: "deepseek/deepseek-v4.1-flash" → "Deepseek 4.1 Flash" */
 function shortModelLabel(model: string): string {
@@ -83,6 +144,7 @@ export function ComposerPlusMenu({
   onUploadFiles,
   onConnectFolder,
   onWebSearch,
+  onCreate,
   features,
   className,
   children,
@@ -93,6 +155,7 @@ export function ComposerPlusMenu({
   onUploadFiles?: () => void;
   onConnectFolder?: () => void;
   onWebSearch?: () => void;
+  onCreate?: (kind: ComposerCreateKind) => void;
   features?: ComposerPlusFeatures;
   className?: string;
   children?: ReactNode;
@@ -107,15 +170,88 @@ export function ComposerPlusMenu({
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
   const [aiStatus, setAiStatus] = useState<AiGatewayStatusResponse | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [cloudAllowed, setCloudAllowed] = useState(() => canUseCloudAi());
+  const skills = useSkills();
+  const armedIds = useArmedSkillIds();
+  const [skillQuery, setSkillQuery] = useState("");
+  const [importingSkills, setImportingSkills] = useState(false);
+  const skillFileRef = useRef<HTMLInputElement>(null);
+  const enabledSkills = skills.filter((skill) => skill.enabled);
+  const armedSkills = enabledSkills.filter((skill) => armedIds.includes(skill.id));
+  const skillNeedle = skillQuery.trim().toLowerCase();
+  const visibleSkills = skillNeedle
+    ? enabledSkills.filter((skill) =>
+        `${skill.name} ${skill.slug} ${skill.description} ${skill.tags.join(" ")}`
+          .toLowerCase()
+          .includes(skillNeedle),
+      )
+    : enabledSkills;
 
-  // Any signed-in studio user can pick models (not admin-only).
-  const showCloudModels = opts.cloudModel;
+  const importSkillsFromPicker = async (list: FileList | null) => {
+    const files = list ? [...list] : [];
+    if (!files.length) return;
+    setImportingSkills(true);
+    try {
+      const result = await importSkillFiles(
+        files.map((file) => ({ file, path: file.webkitRelativePath || file.name })),
+      );
+      const count = result.added.length + result.updated.length;
+      if (count > 0) {
+        if (count === 1) {
+          const skill = result.added[0] ?? result.updated[0]!;
+          if (!armedIds.includes(skill.id) && skill.mode !== "always") toggleArmedSkill(skill.id);
+        }
+        pushToast({
+          title: ar
+            ? count === 1
+              ? "تم استيراد المهارة وتفعيلها"
+              : `تم استيراد ${count} مهارات`
+            : count === 1
+              ? "Skill imported and turned on"
+              : `${count} skills imported`,
+          body: [...result.added, ...result.updated]
+            .slice(0, 3)
+            .map((skill) => skill.name)
+            .join(" · "),
+          tone: "success",
+        });
+        setPanel("skills");
+      } else {
+        pushToast({
+          title: ar ? "لم يتم استيراد أي مهارة" : "No skills imported",
+          body: result.errors[0],
+          tone: "warn",
+        });
+      }
+    } finally {
+      setImportingSkills(false);
+      if (skillFileRef.current) skillFileRef.current.value = "";
+    }
+  };
+
+  // Cloud models only when signed in — guests stay on local Ollama.
+  const showCloudModels = opts.cloudModel && cloudAllowed;
 
   useEffect(() => subscribePrefs(setPrefs), []);
+  useEffect(() => {
+    const sync = () => setCloudAllowed(canUseCloudAi());
+    window.addEventListener(ACCOUNT_EVENT, sync);
+    window.addEventListener(GUEST_EVENT, sync);
+    return () => {
+      window.removeEventListener(ACCOUNT_EVENT, sync);
+      window.removeEventListener(GUEST_EVENT, sync);
+    };
+  }, []);
+
+  const requireCloudSignIn = () => {
+    pushToast({ title: t("cloudNeedsSignIn"), tone: "warn" });
+    onOpenChange(false);
+  };
 
   useEffect(() => {
     if (!open) {
       setPanel("main");
+      setSkillQuery("");
       return;
     }
     const onDoc = (event: MouseEvent) => {
@@ -176,6 +312,10 @@ export function ComposerPlusMenu({
   };
 
   const useCloud = () => {
+    if (!canUseCloudAi()) {
+      requireCloudSignIn();
+      return;
+    }
     const next = updatePrefs({ aiLocalEnabled: false });
     setPrefs(next);
     pushToast({
@@ -186,6 +326,10 @@ export function ComposerPlusMenu({
   };
 
   const selectCloudModel = (model: string) => {
+    if (!canUseCloudAi()) {
+      requireCloudSignIn();
+      return;
+    }
     const next = updatePrefs({
       aiPreferredModel: model,
       aiLocalEnabled: false,
@@ -200,6 +344,10 @@ export function ComposerPlusMenu({
   };
 
   const useAutoModel = () => {
+    if (!canUseCloudAi()) {
+      requireCloudSignIn();
+      return;
+    }
     const next = updatePrefs({
       aiPreferredModel: "",
       aiPreferredFamily: "auto",
@@ -233,7 +381,10 @@ export function ComposerPlusMenu({
         : "Auto";
 
   return (
-    <div className={cn("composer-plus", className)} ref={ref}>
+    <div
+      className={cn("composer-plus", armedSkills.length > 0 && "has-skills", className)}
+      ref={ref}
+    >
       <button
         type="button"
         className={cn("composer-plus-btn", open && "is-on")}
@@ -244,6 +395,43 @@ export function ComposerPlusMenu({
       >
         <Plus size={18} strokeWidth={2} />
       </button>
+      <input
+        ref={skillFileRef}
+        type="file"
+        hidden
+        multiple
+        accept=".md,.markdown,.txt,.json,.zip,.skill"
+        onChange={(event) => void importSkillsFromPicker(event.target.files)}
+      />
+      {armedSkills.length > 0 ? (
+        <span
+          className="composer-skill-chip"
+          title={armedSkills.map((skill) => skill.name).join(", ")}
+        >
+          <button
+            type="button"
+            className="composer-skill-chip-main"
+            onClick={() => {
+              setPanel("skills");
+              onOpenChange(true);
+            }}
+          >
+            <Wand2 size={12} strokeWidth={1.9} />
+            <span>
+              {armedSkills[0]!.name}
+              {armedSkills.length > 1 ? ` +${armedSkills.length - 1}` : ""}
+            </span>
+          </button>
+          <button
+            type="button"
+            className="composer-skill-chip-x"
+            aria-label={ar ? "إيقاف المهارات" : "Turn skills off"}
+            onClick={() => clearArmedSkills()}
+          >
+            <X size={11} strokeWidth={2.2} />
+          </button>
+        </span>
+      ) : null}
 
       {open ? (
         <div
@@ -305,10 +493,100 @@ export function ComposerPlusMenu({
                   <span>{t("chatWebSearch")}</span>
                 </button>
               ) : null}
+              <button type="button" role="menuitem" onClick={() => setPanel("skills")}>
+                <Wand2 size={15} strokeWidth={1.7} />
+                <span>{ar ? "المهارات" : "Skills"}</span>
+                <em className="composer-plus-badge">
+                  {armedSkills.length > 0
+                    ? ar
+                      ? `${armedSkills.length} مفعّلة`
+                      : `${armedSkills.length} on`
+                    : enabledSkills.length > 0
+                      ? String(enabledSkills.length)
+                      : ar
+                        ? "جديد"
+                        : "New"}
+                </em>
+              </button>
+
+              {opts.create && onCreate ? (
+                <>
+                  <div className="composer-plus-sep" />
+                  <p className="composer-plus-label">
+                    {ar ? "إنشاء وبحث" : "Create & research"}
+                  </p>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onCreate("search");
+                      onOpenChange(false);
+                    }}
+                  >
+                    <Globe size={15} strokeWidth={1.7} />
+                    <span>{ar ? "بحث ويب" : "Web search"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onCreate("pdf");
+                      onOpenChange(false);
+                    }}
+                  >
+                    <FileText size={15} strokeWidth={1.7} />
+                    <span>{ar ? "ملف PDF" : "PDF"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onCreate("docx");
+                      onOpenChange(false);
+                    }}
+                  >
+                    <FileText size={15} strokeWidth={1.7} />
+                    <span>{ar ? "مستند Word" : "Word doc"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onCreate("presentation");
+                      onOpenChange(false);
+                    }}
+                  >
+                    <Presentation size={15} strokeWidth={1.7} />
+                    <span>{ar ? "عرض تقديمي" : "Presentation"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onCreate("image");
+                      onOpenChange(false);
+                    }}
+                  >
+                    <Palette size={15} strokeWidth={1.7} />
+                    <span>{ar ? "صورة" : "Image"}</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onCreate("read");
+                      onOpenChange(false);
+                    }}
+                  >
+                    <LayoutTemplate size={15} strokeWidth={1.7} />
+                    <span>{ar ? "قراءة مستند / صورة" : "Read doc / image"}</span>
+                  </button>
+                </>
+              ) : null}
 
               <div className="composer-plus-sep" />
 
-              {opts.connectors ? (
+              {opts.connectors && cloudAllowed ? (
                 <Link
                   role="menuitem"
                   className="composer-plus-link"
@@ -355,6 +633,120 @@ export function ComposerPlusMenu({
                   {children}
                 </>
               ) : null}
+            </>
+          ) : panel === "skills" ? (
+            <>
+              <button
+                type="button"
+                className="composer-plus-back"
+                onClick={() => setPanel("main")}
+              >
+                ← {ar ? "رجوع" : "Back"}
+              </button>
+              <p className="composer-plus-label">{ar ? "المهارات" : "Skills"}</p>
+              <p className="composer-plus-hint">
+                {ar
+                  ? "فعّل مهارة لرسائلك القادمة، أو اكتب /اسم-المهارة في المحادثة."
+                  : "Turn a skill on for your next messages, or type /skill-name in chat."}
+              </p>
+              {enabledSkills.length > 5 ? (
+                <input
+                  className="composer-plus-search"
+                  value={skillQuery}
+                  onChange={(event) => setSkillQuery(event.target.value)}
+                  placeholder={ar ? "ابحث في المهارات" : "Search skills"}
+                  aria-label={ar ? "ابحث في المهارات" : "Search skills"}
+                  autoFocus
+                />
+              ) : null}
+              <div className="composer-plus-skill-list" role="group">
+                {visibleSkills.length === 0 ? (
+                  <p className="composer-plus-empty">
+                    {enabledSkills.length === 0
+                      ? ar
+                        ? "لا توجد مهارات بعد — استورد SKILL.md أو أنشئ مهارة."
+                        : "No skills yet — import a SKILL.md or create one."
+                      : ar
+                        ? "لا توجد نتائج."
+                        : "No matching skills."}
+                  </p>
+                ) : (
+                  visibleSkills.map((skill) => {
+                    const always = skill.mode === "always";
+                    const on = always || armedIds.includes(skill.id);
+                    return (
+                      <button
+                        key={skill.id}
+                        type="button"
+                        role="menuitemcheckbox"
+                        aria-checked={on}
+                        className={cn(on && "is-active")}
+                        disabled={always}
+                        title={skill.description || skill.name}
+                        onClick={() => toggleArmedSkill(skill.id)}
+                      >
+                        <Wand2 size={15} strokeWidth={1.7} />
+                        <span className="composer-plus-skill-copy">
+                          <strong>{skill.name}</strong>
+                          <small>/{skill.slug}</small>
+                        </span>
+                        {always ? (
+                          <em className="composer-plus-badge">{ar ? "دائمًا" : "Always"}</em>
+                        ) : on ? (
+                          <Check size={13} />
+                        ) : null}
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+              {armedSkills.length > 0 ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => armedSkills.forEach((skill) => disarmSkill(skill.id))}
+                >
+                  <X size={15} strokeWidth={1.7} />
+                  <span>{ar ? "إيقاف المهارات المفعّلة" : "Turn off active skills"}</span>
+                </button>
+              ) : null}
+              <div className="composer-plus-sep" />
+              <button
+                type="button"
+                role="menuitem"
+                disabled={importingSkills}
+                onClick={() => skillFileRef.current?.click()}
+              >
+                <Upload size={15} strokeWidth={1.7} />
+                <span>
+                  {importingSkills
+                    ? ar
+                      ? "جارٍ الاستيراد…"
+                      : "Importing…"
+                    : ar
+                      ? "استيراد مهارة…"
+                      : "Import skill…"}
+                  <em className="composer-plus-sub">SKILL.md · .zip · .json</em>
+                </span>
+              </button>
+              <Link
+                role="menuitem"
+                className="composer-plus-link"
+                to={href("/settings?tab=skills&new=1")}
+                onClick={() => onOpenChange(false)}
+              >
+                <Plus size={15} strokeWidth={1.7} />
+                <span>{ar ? "إنشاء مهارة" : "Create skill"}</span>
+              </Link>
+              <Link
+                role="menuitem"
+                className="composer-plus-link"
+                to={href("/settings?tab=skills")}
+                onClick={() => onOpenChange(false)}
+              >
+                <Settings2 size={15} strokeWidth={1.7} />
+                <span>{ar ? "إدارة المهارات" : "Manage skills"}</span>
+              </Link>
             </>
           ) : panel === "cloud" ? (
             <>

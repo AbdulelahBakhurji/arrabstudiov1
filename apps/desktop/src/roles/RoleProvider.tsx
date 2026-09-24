@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Outlet, useLocation } from "react-router-dom";
 import type { PlanAudience } from "@arrab/shared";
 import { ROLE_PATH } from "@/roles/catalog";
+import { readAccountSessionToken } from "@/lib/account-session";
 import {
   createContext,
   useCallback,
@@ -25,7 +26,11 @@ const RoleContext = createContext<RoleContextValue | null>(null);
 export function readStoredRole(): PlanAudience {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved === "organization" || saved === "individual" || saved === "family") {
+    if (saved === "family") {
+      // Family chrome is account-bound — never keep it after sign-out.
+      return readAccountSessionToken() ? "family" : "individual";
+    }
+    if (saved === "organization" || saved === "individual") {
       return saved;
     }
   } catch {

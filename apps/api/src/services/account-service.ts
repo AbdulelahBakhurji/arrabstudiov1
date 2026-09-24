@@ -10,7 +10,6 @@ import {
 } from "@arrab/core";
 import type { Persistence } from "@arrab/database";
 import {
-  LOCAL_UNCONNECTED_TOKEN_LIMIT,
   SUBSCRIPTION_PLANS,
   SUBSCRIPTION_REDEEM_CODES,
   brandId,
@@ -112,33 +111,34 @@ export class AccountService {
     if (now < account.periodEnd) {
       return account;
     }
-    const period = billingPeriod(new Date(now));
-    const next: StudioAccountRecord = {
+
+    // Every plan (including Free / Family Free): billing day freezes AI until payment.
+    if (account.subscriptionStatus === "past_due") {
+      return account;
+    }
+    const pastDue: StudioAccountRecord = {
       ...account,
-      periodStart: period.start,
-      periodEnd: period.end,
+      subscriptionStatus: "past_due",
       updatedAt: now,
     };
-    await this.persistence.accounts.upsert(next);
-    return next;
+    await this.persistence.accounts.upsert(pastDue);
+    return pastDue;
   }
 
   async buildEntitlements(account: StudioAccountRecord | null): Promise<AccountEntitlements> {
     if (!account) {
       const period = billingPeriod(new Date(this.clock.isoNow()));
-      const tokensUsed = await this.periodTokensUsed(period.start, period.end);
-      const tokenLimit = LOCAL_UNCONNECTED_TOKEN_LIMIT;
-      const overLimit = tokensUsed >= tokenLimit;
+      // Local / not signed in — cloud quota does not apply; local models are free on-device.
       return {
         connected: false,
         planId: null,
         planName: "Local (not connected)",
         subscriptionStatus: null,
-        tokenLimit,
-        tokensUsed,
-        tokensRemaining: Math.max(0, tokenLimit - tokensUsed),
-        overLimit,
-        pauseMode: overLimit ? "upgrade_required" : null,
+        tokenLimit: null,
+        tokensUsed: 0,
+        tokensRemaining: null,
+        overLimit: false,
+        pauseMode: null,
         periodStart: period.start,
         periodEnd: period.end,
       };
@@ -149,9 +149,29 @@ export class AccountService {
     const tokensUsed = await this.periodTokensUsed(current.periodStart, current.periodEnd);
     const tokenLimit = plan.monthlyTokenLimit;
     const overLimit = tokenLimit !== null && tokensUsed >= tokenLimit;
-    // Free / Family Free: full product features stay on. Token ceilings are soft for now
-    // (usage is still metered) — hard pause comes later when free-plan budgets are finalized.
     const freeTier = current.planId === "free" || current.planId === "family_free";
+    const paymentDue =
+      current.subscriptionStatus === "past_due" ||
+      current.subscriptionStatus === "canceled" ||
+      this.clock.isoNow() >= current.periodEnd;
+
+    if (paymentDue) {
+      return {
+        connected: true,
+        planId: current.planId,
+        planName: plan.name,
+        subscriptionStatus: current.subscriptionStatus === "canceled" ? "canceled" : "past_due",
+        tokenLimit,
+        tokensUsed,
+        tokensRemaining: tokenLimit === null ? null : Math.max(0, tokenLimit - tokensUsed),
+        overLimit: true,
+        pauseMode: "payment_required",
+        periodStart: current.periodStart,
+        periodEnd: current.periodEnd,
+      };
+    }
+
+    // Mid-period: Free / Family Free still meter usage but do not hard-pause on token ceilings.
     const pauseMode = !overLimit || freeTier
       ? null
       : tokenLimit === 0
@@ -186,6 +206,18 @@ export class AccountService {
   async assertWithinQuota(): Promise<AccountEntitlements> {
     const account = await this.persistence.accounts.get();
     const entitlements = await this.buildEntitlements(account);
+
+    if (entitlements.pauseMode === "payment_required") {
+      const due = new Date(entitlements.periodEnd).toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+      throw new QuotaExceededError(
+        `Paused — ${entitlements.planName} billing was due on ${due}. Chat and AI stay stopped until this month’s payment is completed.`,
+      );
+    }
+
     if (!entitlements.overLimit) {
       return entitlements;
     }

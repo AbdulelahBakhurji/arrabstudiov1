@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import {
   Coins,
+  KeyRound,
   MessageSquareHeart,
   Pause,
   Play,
@@ -26,14 +28,66 @@ import {
   useCompanionState,
   type CompanionProfile,
 } from "@/lib/companions";
+import { PersonAvatar } from "@/components/companions/CompanionUI";
 import {
   refreshFamilyProfile,
   writeActiveFamilyMemberId,
 } from "@/lib/family-session";
 import { ACCOUNT_EVENT } from "@/lib/account-session";
 import { cn } from "@/lib/utils";
+import { GuardianHub } from "@/components/GuardianHub";
+import { AddFamilyMemberWizard } from "@/components/family/AddFamilyMemberWizard";
+import { resolveMemberFaceUrl } from "@/lib/family-portraits";
+import { useGuardianStore } from "@/lib/guardian-store";
 
-const ROLE_OPTIONS: FamilyMemberRole[] = ["parent", "partner", "child"];
+type RoomTab = "overview" | "companions" | "guide" | "tokens" | "login" | "guardian";
+
+let faceTick = 0;
+function subscribeMemberFaces(listener: () => void): () => void {
+  const on = () => {
+    faceTick += 1;
+    listener();
+  };
+  window.addEventListener("arrab:profile-photo", on);
+  window.addEventListener("arrab:guardian-store", on);
+  window.addEventListener("storage", on);
+  return () => {
+    window.removeEventListener("arrab:profile-photo", on);
+    window.removeEventListener("arrab:guardian-store", on);
+    window.removeEventListener("storage", on);
+  };
+}
+
+function MemberFaceDisc({
+  member,
+  size = "md",
+  on,
+}: {
+  member: FamilyMemberPublic;
+  size?: "md" | "sm" | "lg";
+  on?: boolean;
+}) {
+  useGuardianStore();
+  useSyncExternalStore(subscribeMemberFaces, () => faceTick, () => 0);
+  const photoUrl = resolveMemberFaceUrl({
+    id: member.id,
+    role: member.role,
+    ageTier: member.ageTier,
+  });
+  return (
+    <span
+      className={cn(
+        "sf-face-disc",
+        size === "sm" && "is-sm",
+        size === "lg" && "is-lg",
+        on && "is-on",
+      )}
+    >
+      <img src={photoUrl} alt="" className="sf-face-photo" />
+    </span>
+  );
+}
+
 const AGE_TIERS: {
   id: FamilyAgeTier;
   labelKey: "familyAge69" | "familyAge1013" | "familyAge1417";
@@ -42,6 +96,16 @@ const AGE_TIERS: {
   { id: "tier_10_13", labelKey: "familyAge1013" },
   { id: "tier_14_17", labelKey: "familyAge1417" },
 ];
+
+type FaceMenuState = {
+  memberId: string;
+  /** Horizontal center of the name label (viewport). */
+  centerX: number;
+  /** Top of the menu — just below the name (viewport). */
+  top: number;
+  /** Face top — flip above if the menu would overflow the viewport. */
+  faceTop: number;
+};
 
 function roleLabel(
   role: FamilyMemberRole,
@@ -52,10 +116,6 @@ function roleLabel(
   return t("familyRoleChild");
 }
 
-function formatTokens(n: number): string {
-  return n.toLocaleString();
-}
-
 export function FamilyHouseholdPanel({
   className,
   variant = "full",
@@ -63,26 +123,25 @@ export function FamilyHouseholdPanel({
   className?: string;
   variant?: "full" | "compact";
 }) {
-  const { t } = useLanguage();
+  const { t, locale } = useLanguage();
+  const ar = locale === "ar";
   const companionState = useCompanionState();
   const [snapshot, setSnapshot] = useState<FamilyHouseholdSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [name, setName] = useState("");
-  const [role, setRole] = useState<FamilyMemberRole>("partner");
-  const [ageTier, setAgeTier] = useState<FamilyAgeTier>("tier_10_13");
-  const [pin, setPin] = useState("");
-  const [switchPin, setSwitchPin] = useState("");
-  const [switchTarget, setSwitchTarget] = useState<string | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [grantTarget, setGrantTarget] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [addingMember, setAddingMember] = useState(false);
+  const [roomTab, setRoomTab] = useState<RoomTab>("overview");
   const [grantAmount, setGrantAmount] = useState("50000");
-  const [guideChildId, setGuideChildId] = useState<string | null>(null);
-  const [guideCompanionId, setGuideCompanionId] = useState<string>("");
+  const [guideCompanionId, setGuideCompanionId] = useState("");
   const [guideText, setGuideText] = useState("");
   const [seatCode, setSeatCode] = useState("");
-  const [assignTarget, setAssignTarget] = useState<string | null>(null);
+  const [credEmail, setCredEmail] = useState("");
+  const [credPassword, setCredPassword] = useState("");
+  const [faceMenu, setFaceMenu] = useState<FaceMenuState | null>(null);
+  const faceMenuRef = useRef<HTMLDivElement | null>(null);
   const trialAttempted = useRef(false);
 
   const load = useCallback(() => {
@@ -93,7 +152,17 @@ export function FamilyHouseholdPanel({
         setSnapshot(next);
         setError(null);
         void refreshFamilyProfile({ silent: true }).then((state) => {
-          setActiveId(state.active?.id ?? next.activeMemberId);
+          const nextActive = state.active?.id ?? next.activeMemberId;
+          setActiveId(nextActive);
+          setSelectedId((current) => {
+            if (current && next.members.some((m) => m.id === current)) return current;
+            return (
+              next.members.find((m) => m.id === nextActive)?.id ??
+              next.members.find((m) => m.isOwner)?.id ??
+              next.members[0]?.id ??
+              null
+            );
+          });
         });
       })
       .catch((err: unknown) => {
@@ -107,7 +176,6 @@ export function FamilyHouseholdPanel({
     load();
   }, [load]);
 
-  /** Free trial of Family unlocks full household features (seats, members, guidance). */
   async function startFamilyFreeTrial() {
     setBusy(true);
     setError(null);
@@ -126,7 +194,6 @@ export function FamilyHouseholdPanel({
     }
   }
 
-  // Only auto-start when the API answered (available:false) — never on network errors.
   useEffect(() => {
     if (loading || busy || error || !snapshot || snapshot.available || trialAttempted.current) {
       return;
@@ -136,10 +203,6 @@ export function FamilyHouseholdPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot when locked household appears
   }, [loading, snapshot?.available, error]);
 
-  const children = useMemo(
-    () => snapshot?.members.filter((m) => m.role === "child") ?? [],
-    [snapshot?.members],
-  );
   const managers = useMemo(
     () => snapshot?.members.filter((m) => m.isManager) ?? [],
     [snapshot?.members],
@@ -153,13 +216,35 @@ export function FamilyHouseholdPanel({
     [managers, activeId],
   );
 
-  const childCompanions = useMemo(() => {
-    const all = liveCompanions(companionState);
-    if (!guideChildId) return all;
-    return all.filter(
-      (c) => !c.familyMemberId || c.familyMemberId === guideChildId,
+  const selected = useMemo(
+    () => snapshot?.members.find((m) => m.id === selectedId) ?? snapshot?.members[0] ?? null,
+    [snapshot?.members, selectedId],
+  );
+
+  useEffect(() => {
+    if (!selected) return;
+    if (selected.role !== "child" && (roomTab === "guide" || roomTab === "guardian")) {
+      setRoomTab("overview");
+    }
+  }, [selected, roomTab]);
+
+  useEffect(() => {
+    if (!selected) return;
+    setCredEmail(selected.email ?? "");
+    setCredPassword("");
+  }, [selected?.id]);
+
+  const selectedCompanions = useMemo(() => {
+    if (!selected) return [] as CompanionProfile[];
+    return liveCompanions(companionState).filter((c) => c.familyMemberId === selected.id);
+  }, [companionState, selected]);
+
+  const guideCompanions = useMemo(() => {
+    if (!selected) return liveCompanions(companionState);
+    return liveCompanions(companionState).filter(
+      (c) => !c.familyMemberId || c.familyMemberId === selected.id,
     );
-  }, [companionState, guideChildId]);
+  }, [companionState, selected]);
 
   const usagePct = useMemo(() => {
     const usage = snapshot?.usage;
@@ -167,20 +252,122 @@ export function FamilyHouseholdPanel({
     return Math.min(100, Math.round((usage.tokensUsed / usage.tokenLimit) * 100));
   }, [snapshot?.usage]);
 
-  async function addMember() {
-    if (!name.trim()) return;
+  const poolFreePct = useMemo(() => {
+    const usage = snapshot?.usage;
+    if (!usage || usage.tokenLimit == null || usage.tokenLimit <= 0) return null;
+    return Math.min(100, Math.round((usage.unallocatedTokens / usage.tokenLimit) * 100));
+  }, [snapshot?.usage]);
+
+  function focusMember(member: FamilyMemberPublic) {
+    setSelectedId(member.id);
+    setAddingMember(false);
+    setFaceMenu(null);
+    setCredEmail(member.email ?? "");
+    setCredPassword("");
+  }
+
+  function selectMember(member: FamilyMemberPublic) {
+    focusMember(member);
+    setRoomTab("overview");
+  }
+
+  function openRoomTab(member: FamilyMemberPublic, tab: RoomTab) {
+    focusMember(member);
+    if (tab === "guide") {
+      const options = liveCompanions(companionState).filter(
+        (c) => !c.familyMemberId || c.familyMemberId === member.id,
+      );
+      setGuideCompanionId(options[0]?.id ?? "");
+    }
+    if (tab === "tokens") setGrantAmount("50000");
+    setRoomTab(tab);
+  }
+
+  function openCredentials(member: FamilyMemberPublic) {
+    openRoomTab(member, "login");
+  }
+
+  function openGrant(member: FamilyMemberPublic) {
+    openRoomTab(member, "tokens");
+  }
+
+  function openGuide(member: FamilyMemberPublic) {
+    openRoomTab(member, "guide");
+  }
+
+  function openAssign(member: FamilyMemberPublic) {
+    openRoomTab(member, "companions");
+  }
+
+  useEffect(() => {
+    if (!faceMenu) return;
+    const onPointer = (event: MouseEvent) => {
+      if (faceMenuRef.current?.contains(event.target as Node)) return;
+      setFaceMenu(null);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setFaceMenu(null);
+    };
+    const onScroll = () => setFaceMenu(null);
+    // Defer so the opening contextmenu gesture cannot instantly dismiss.
+    const timer = window.setTimeout(() => {
+      window.addEventListener("mousedown", onPointer);
+      window.addEventListener("keydown", onKey);
+      window.addEventListener("scroll", onScroll, true);
+      window.addEventListener("resize", onScroll);
+    }, 0);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("mousedown", onPointer);
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [faceMenu]);
+
+  useLayoutEffect(() => {
+    if (!faceMenu || !faceMenuRef.current) return;
+    const el = faceMenuRef.current;
+    const menuRect = el.getBoundingClientRect();
+    const pad = 10;
+    let centerX = faceMenu.centerX;
+    let top = faceMenu.top;
+    const half = menuRect.width / 2;
+    if (centerX - half < pad) centerX = half + pad;
+    if (centerX + half > window.innerWidth - pad) {
+      centerX = window.innerWidth - pad - half;
+    }
+    if (top + menuRect.height > window.innerHeight - pad) {
+      top = Math.max(pad, faceMenu.faceTop - menuRect.height - 8);
+    }
+    el.style.left = `${Math.round(centerX)}px`;
+    el.style.top = `${Math.round(top)}px`;
+  }, [faceMenu]);
+
+  async function saveCredentials() {
+    if (!selected) return;
+    const member = selected;
+    const needsLogin = member.role === "child";
+    if (needsLogin && !credEmail.trim()) {
+      pushToast({ title: t("familyEmailRequired"), tone: "warn" });
+      return;
+    }
+    if (credPassword && credPassword.length < 8) {
+      pushToast({ title: t("familyPasswordMin"), tone: "warn" });
+      return;
+    }
+    if (needsLogin && !member.hasPassword && !credPassword) {
+      pushToast({ title: t("familyPasswordRequired"), tone: "warn" });
+      return;
+    }
     setBusy(true);
     try {
-      await arrabApi.createFamilyMember({
-        displayName: name.trim(),
-        role,
-        ageTier: role === "child" ? ageTier : null,
-        pin: pin.trim() || null,
+      await arrabApi.updateFamilyMember(member.id, {
+        email: credEmail.trim() || null,
+        ...(credPassword ? { password: credPassword } : {}),
       });
-      setName("");
-      setPin("");
-      setRole("partner");
-      pushToast({ title: t("familyMemberAdded"), tone: "success" });
+      setCredPassword("");
+      pushToast({ title: t("familyCredentialsSaved"), tone: "success" });
       load();
     } catch (err: unknown) {
       pushToast({
@@ -222,44 +409,8 @@ export function FamilyHouseholdPanel({
         setActiveId(null);
         void refreshFamilyProfile({ silent: true });
       }
+      if (selectedId === member.id) setSelectedId(null);
       pushToast({ title: t("familyMemberRemoved"), tone: "info" });
-      load();
-    } catch (err: unknown) {
-      pushToast({
-        title: err instanceof ApiRequestError ? err.message : t("apiUnavailable"),
-        tone: "warn",
-      });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function switchTo(member: FamilyMemberPublic) {
-    if (member.isPaused) {
-      pushToast({ title: t("familyProfilePaused"), tone: "warn" });
-      return;
-    }
-    if (member.hasPin && switchTarget !== member.id) {
-      setSwitchTarget(member.id);
-      setSwitchPin("");
-      return;
-    }
-    setBusy(true);
-    try {
-      const result = await arrabApi.switchFamilyProfile({
-        memberId: member.id,
-        pin: member.hasPin ? switchPin || undefined : undefined,
-      });
-      writeActiveFamilyMemberId(result.member.id);
-      setActiveId(result.member.id);
-      setSwitchTarget(null);
-      setSwitchPin("");
-      pushToast({
-        title: t("familySwitched"),
-        body: result.member.displayName,
-        tone: "success",
-      });
-      void refreshFamilyProfile({ silent: true });
       load();
     } catch (err: unknown) {
       pushToast({
@@ -278,7 +429,7 @@ export function FamilyHouseholdPanel({
     try {
       const next = await arrabApi.grantFamilyTokens({ memberId: member.id, tokens });
       setSnapshot(next);
-      setGrantTarget(null);
+      setRoomTab("overview");
       pushToast({ title: t("familyTokensGranted"), tone: "success" });
     } catch (err: unknown) {
       pushToast({
@@ -311,12 +462,12 @@ export function FamilyHouseholdPanel({
   }
 
   async function sendGuidance() {
-    if (!guideChildId || !guideCompanionId || !guideText.trim() || !activeManager) return;
+    if (!selected || !guideCompanionId || !guideText.trim() || !activeManager) return;
     setBusy(true);
     try {
       const note = await arrabApi.addFamilyGuidance({
         companionId: guideCompanionId,
-        childMemberId: guideChildId,
+        childMemberId: selected.id,
         authorMemberId: activeManager.id,
         content: guideText.trim(),
       });
@@ -326,6 +477,7 @@ export function FamilyHouseholdPanel({
         authorName: activeManager.displayName,
       });
       setGuideText("");
+      setRoomTab("overview");
       pushToast({
         title: t("familyGuidanceSaved"),
         body: note.authorName,
@@ -344,23 +496,21 @@ export function FamilyHouseholdPanel({
 
   if (loading && !snapshot) {
     return (
-      <section className={cn("rounded-2xl border border-black/10 bg-white p-5 shadow-sm", className)}>
-        <p className="text-sm text-neutral-500">{t("loading")}</p>
+      <section className={cn("cp-ui sf-shell", className)}>
+        <p className="sf-muted">{t("loading")}</p>
       </section>
     );
   }
 
   if (error && !snapshot?.available) {
     return (
-      <section className={cn("rounded-2xl border border-black/10 bg-white p-5 shadow-sm space-y-3", className)}>
-        <h3 className="text-base font-semibold tracking-tight text-neutral-900">
-          {t("familyHousehold")}
-        </h3>
-        <p className="text-sm text-neutral-600">{t("familyApiUnreachableBody")}</p>
-        <p className="text-sm text-rose-600">{error}</p>
+      <section className={cn("cp-ui sf-shell", className)}>
+        <h3 className="sf-title">{t("familyHousehold")}</h3>
+        <p className="sf-body">{t("familyApiUnreachableBody")}</p>
+        <p className="sf-error">{error}</p>
         <button
           type="button"
-          className="rounded-full border border-black/15 px-4 py-2 text-sm font-medium"
+          className="sf-btn sf-btn-ghost"
           disabled={busy}
           onClick={() => {
             trialAttempted.current = false;
@@ -375,14 +525,12 @@ export function FamilyHouseholdPanel({
 
   if (!snapshot?.available) {
     return (
-      <section className={cn("rounded-2xl border border-black/10 bg-white p-5 shadow-sm space-y-3", className)}>
-        <h3 className="text-base font-semibold tracking-tight text-neutral-900">
-          {t("familyHousehold")}
-        </h3>
-        <p className="text-sm text-neutral-600">{t("familyFreeTrialBody")}</p>
+      <section className={cn("cp-ui sf-shell", className)}>
+        <h3 className="sf-title">{t("familyHousehold")}</h3>
+        <p className="sf-body">{t("familyFreeTrialBody")}</p>
         <button
           type="button"
-          className="rounded-full bg-neutral-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+          className="sf-btn sf-btn-solid"
           disabled={busy}
           onClick={() => void startFamilyFreeTrial()}
         >
@@ -392,418 +540,574 @@ export function FamilyHouseholdPanel({
     );
   }
 
+  const memberPct = selected
+    ? Math.min(100, Math.max(0, Math.round(selected.usagePercent)))
+    : 0;
+  const seatsOpen = snapshot.seatsUsed < snapshot.seatLimit;
+
   return (
-    <section
-      className={cn(
-        "rounded-2xl border border-black/10 bg-white p-5 shadow-sm space-y-5 text-neutral-900",
-        className,
-      )}
-    >
-      <header className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
-            {t("familyManagement")}
-          </p>
-          <h3 className="text-lg font-semibold tracking-tight">
-            {snapshot.planName} · {snapshot.seatsUsed}/{snapshot.seatLimit} {t("familySeats")}
-          </h3>
-          <p className="mt-1 text-sm text-neutral-600">{t("familyHouseholdBody")}</p>
-        </div>
-        <div className="flex items-center gap-2 rounded-full bg-neutral-100 px-3 py-1.5 text-xs font-medium text-neutral-700">
-          <UsersRound className="size-3.5" strokeWidth={1.8} />
-          {snapshot.seatsUsed} / {snapshot.seatLimit}
-          {snapshot.extraSeats > 0 ? ` (+${snapshot.extraSeats})` : ""}
-        </div>
-      </header>
-
-      {snapshot.usage ? (
-        <div className="rounded-xl bg-neutral-50 p-4 space-y-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
-            <span className="font-medium">{t("familyUsageOverview")}</span>
-            <strong className="tabular-nums">
-              {formatTokens(snapshot.usage.tokensUsed)}
-              {snapshot.usage.tokenLimit != null
-                ? ` / ${formatTokens(snapshot.usage.tokenLimit)}`
-                : ""}
-            </strong>
-          </div>
-          <div className="h-2.5 overflow-hidden rounded-full bg-neutral-200">
-            <div
-              className={cn(
-                "h-full rounded-full transition-all",
-                snapshot.usage.overLimit ? "bg-rose-500" : "bg-neutral-900",
-              )}
-              style={{
-                width: `${usagePct == null ? 100 : Math.max(usagePct > 0 ? 4 : 0, usagePct)}%`,
+    <section className={cn("cp-ui sf-shell", className)}>
+      <div className="sf-face-bar">
+        <div className="sf-face-list" aria-label={t("familyManagement")}>
+          {snapshot.members.map((member) => {
+            const count = liveCompanions(companionState).filter(
+              (c) => c.familyMemberId === member.id,
+            ).length;
+            const pressed = !addingMember && selected?.id === member.id;
+            return (
+              <button
+                key={member.id}
+                type="button"
+                className="sf-face-choice"
+                aria-pressed={pressed}
+                disabled={busy}
+                onClick={() => selectMember(member)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  const button = event.currentTarget as HTMLButtonElement;
+                  const rect = button.getBoundingClientRect();
+                  setFaceMenu({
+                    memberId: member.id,
+                    centerX: rect.left + rect.width / 2,
+                    top: rect.bottom + 6,
+                    faceTop: rect.top,
+                  });
+                }}
+              >
+                <MemberFaceDisc member={member} on={pressed} />
+                <strong className="sf-face-name">{member.displayName}</strong>
+                <small>
+                  {roleLabel(member.role, t)}
+                  {count ? ` · ${count}` : ""}
+                </small>
+              </button>
+            );
+          })}
+          {seatsOpen ? (
+            <button
+              type="button"
+              className="sf-face-choice"
+              aria-pressed={addingMember}
+              disabled={busy}
+              onClick={() => {
+                setAddingMember(true);
+                setRoomTab("overview");
               }}
-            />
-          </div>
-          <div className="flex flex-wrap gap-3 text-xs text-neutral-500">
-            <span>
-              {t("familyUnallocated")}:{" "}
-              <strong className="text-neutral-800">
-                {formatTokens(snapshot.usage.unallocatedTokens)}
-              </strong>
-            </span>
-            <span>
-              {t("familyUsagePeriod")}: {new Date(snapshot.usage.periodStart).toLocaleDateString()} →{" "}
-              {new Date(snapshot.usage.periodEnd).toLocaleDateString()}
-            </span>
-          </div>
-        </div>
-      ) : null}
-
-      {error ? <p className="text-sm text-rose-600">{error}</p> : null}
-
-      <ul className="space-y-2.5">
-        {snapshot.members.map((member) => {
-          const isActive = activeId === member.id || snapshot.activeMemberId === member.id;
-          const memberCompanions = liveCompanions(companionState).filter(
-            (c) => c.familyMemberId === member.id,
-          );
-          return (
-            <li
-              key={member.id}
-              className={cn(
-                "rounded-xl border px-3 py-3 space-y-2",
-                isActive ? "border-neutral-900 bg-neutral-950 text-white" : "border-black/8 bg-white",
-                member.isPaused && !isActive && "opacity-60",
-              )}
             >
-              <div className="flex flex-wrap items-center gap-3">
-                <span
-                  className="grid size-10 place-items-center rounded-full text-white shrink-0"
-                  style={{ background: member.color }}
-                >
-                  <UserRound className="size-4" strokeWidth={1.8} />
+              <span className={cn("sf-face-add", addingMember && "is-on")}>
+                <Plus size={22} strokeWidth={1.5} />
+              </span>
+              <strong>{t("familyAddMember")}</strong>
+              <small>
+                {snapshot.seatsUsed}/{snapshot.seatLimit} {t("familySeats")}
+              </small>
+            </button>
+          ) : null}
+        </div>
+        <div className="sf-seat-pill">
+          <UsersRound className="size-3.5" strokeWidth={1.8} />
+          {snapshot.seatsUsed}/{snapshot.seatLimit}
+        </div>
+      </div>
+
+      {addingMember ? (
+        <AddFamilyMemberWizard
+          onClose={() => setAddingMember(false)}
+          onCreated={(member, _opts) => {
+            setSelectedId(member.id);
+            setCredEmail(member.email ?? "");
+            setCredPassword("");
+            setRoomTab("overview");
+            setAddingMember(false);
+            load();
+          }}
+        />
+      ) : selected ? (
+        <div className="sf-room">
+          <header className="sf-room-hero">
+            <div className="sf-room-person">
+              <MemberFaceDisc member={selected} size="lg" />
+              <div className="sf-room-person-copy">
+                <strong>
+                  {selected.displayName}
+                  {selected.isOwner ? (
+                    <span className="sf-owner-pill">{t("familyOwner")}</span>
+                  ) : null}
+                </strong>
+                <span className="sf-muted">
+                  {roleLabel(selected.role, t)}
+                  {selected.ageTier
+                    ? ` · ${t(AGE_TIERS.find((a) => a.id === selected.ageTier)?.labelKey ?? "familyAge1013")}`
+                    : ""}
+                  {selected.isPaused ? ` · ${t("familyPaused")}` : ""}
                 </span>
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">
-                    {member.displayName}
-                    {member.isOwner ? ` · ${t("familyOwner")}` : ""}
-                    {member.isManager && !member.isOwner ? ` · ${t("familyManager")}` : ""}
-                  </p>
-                  <p className={cn("text-xs", isActive ? "text-white/70" : "text-neutral-500")}>
-                    {roleLabel(member.role, t)}
-                    {member.ageTier
-                      ? ` · ${t(AGE_TIERS.find((a) => a.id === member.ageTier)?.labelKey ?? "familyAge1013")}`
-                      : ""}
-                    {member.isPaused ? ` · ${t("familyPaused")}` : ""}
-                    {memberCompanions.length
-                      ? ` · ${memberCompanions.length} ${t("familyCompanionsShort")}`
-                      : ""}
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {!isActive ? (
-                    <button
-                      type="button"
-                      className="rounded-full border border-current/20 px-2.5 py-1 text-xs"
-                      disabled={busy || member.isPaused}
-                      onClick={() => void switchTo(member)}
-                    >
-                      {t("familySwitch")}
-                    </button>
-                  ) : (
-                    <span className="rounded-full bg-white/15 px-2.5 py-1 text-xs">
-                      {t("familyActive")}
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded-full border border-current/20 px-2.5 py-1 text-xs"
-                    disabled={busy}
-                    onClick={() => {
-                      setGrantTarget(grantTarget === member.id ? null : member.id);
-                      setGrantAmount("50000");
-                    }}
-                  >
-                    <Coins className="size-3" strokeWidth={1.8} />
-                    {t("familyAssignTokens")}
-                  </button>
-                  {member.role === "child" ? (
-                    <button
-                      type="button"
-                      className="inline-flex items-center gap-1 rounded-full border border-current/20 px-2.5 py-1 text-xs"
-                      disabled={busy}
-                      onClick={() => {
-                        setGuideChildId(member.id);
-                        const comps = liveCompanions(companionState).filter(
-                          (c) => !c.familyMemberId || c.familyMemberId === member.id,
-                        );
-                        setGuideCompanionId(comps[0]?.id ?? "");
-                      }}
-                    >
-                      <MessageSquareHeart className="size-3" strokeWidth={1.8} />
-                      {t("familyGuideCompanion")}
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="rounded-full border border-current/20 px-2.5 py-1 text-xs"
-                    disabled={busy}
-                    onClick={() =>
-                      setAssignTarget(assignTarget === member.id ? null : member.id)
-                    }
-                  >
-                    {t("familyAssignCompanion")}
-                  </button>
-                  {!member.isOwner ? (
-                    <>
-                      <button
-                        type="button"
-                        className="rounded-full border border-current/20 p-1.5"
-                        disabled={busy}
-                        title={member.isPaused ? t("familyResume") : t("familyPause")}
-                        onClick={() => void togglePause(member)}
-                      >
-                        {member.isPaused ? (
-                          <Play className="size-3.5" strokeWidth={1.8} />
-                        ) : (
-                          <Pause className="size-3.5" strokeWidth={1.8} />
-                        )}
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-full border border-current/20 p-1.5"
-                        disabled={busy}
-                        title={t("familyRemove")}
-                        onClick={() => void removeMember(member)}
-                      >
-                        <Trash2 className="size-3.5" strokeWidth={1.8} />
-                      </button>
-                    </>
-                  ) : null}
-                </div>
               </div>
-
-              <div className={cn("space-y-1", isActive ? "text-white/80" : "text-neutral-600")}>
-                <div className="flex justify-between text-[11px] tabular-nums">
-                  <span>{t("familyMemberUsage")}</span>
-                  <span>
-                    {formatTokens(member.tokensUsed)} / {formatTokens(member.tokenAllowance)}
-                  </span>
-                </div>
-                <div
-                  className={cn(
-                    "h-1.5 overflow-hidden rounded-full",
-                    isActive ? "bg-white/20" : "bg-neutral-200",
-                  )}
+            </div>
+            {!selected.isOwner ? (
+              <div className="sf-room-tools">
+                <button
+                  type="button"
+                  className={cn("sf-tool", selected.isPaused && "is-warn")}
+                  disabled={busy}
+                  title={selected.isPaused ? t("familyResume") : t("familyPause")}
+                  onClick={() => void togglePause(selected)}
                 >
-                  <div
-                    className={cn(
-                      "h-full rounded-full",
-                      isActive ? "bg-white" : "bg-neutral-800",
-                    )}
-                    style={{ width: `${Math.max(member.usagePercent > 0 ? 3 : 0, member.usagePercent)}%` }}
-                  />
+                  {selected.isPaused ? (
+                    <Play className="size-3.5" strokeWidth={1.8} />
+                  ) : (
+                    <Pause className="size-3.5" strokeWidth={1.8} />
+                  )}
+                  <span>{selected.isPaused ? t("familyResume") : t("familyPause")}</span>
+                </button>
+                <button
+                  type="button"
+                  className="sf-tool is-danger"
+                  disabled={busy}
+                  title={t("familyRemove")}
+                  onClick={() => void removeMember(selected)}
+                >
+                  <Trash2 className="size-3.5" strokeWidth={1.8} />
+                </button>
+              </div>
+            ) : null}
+          </header>
+
+          <div className="sf-tabs" role="tablist" aria-label={t("familyManagement")}>
+            {(
+              [
+                { id: "overview" as const, label: t("familyTabOverview") },
+                { id: "companions" as const, label: t("familyTabCompanions") },
+                ...(selected.role === "child"
+                  ? [
+                      { id: "guide" as const, label: t("familyTabGuide") },
+                      { id: "guardian" as const, label: t("familyTabGuardian") },
+                    ]
+                  : []),
+                { id: "tokens" as const, label: t("familyTabTokens") },
+                { id: "login" as const, label: t("familyTabLogin") },
+              ] as Array<{ id: RoomTab; label: string }>
+            ).map((tab) => (
+              <button
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={roomTab === tab.id}
+                className={cn("sf-tab", roomTab === tab.id && "is-on")}
+                onClick={() => openRoomTab(selected, tab.id)}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="sf-room-body" role="tabpanel">
+            {error ? <p className="sf-error">{error}</p> : null}
+
+            {roomTab === "overview" ? (
+              <div className="sf-tab-pane">
+                <p className="sf-lead">{t("familyOverviewLead")}</p>
+                {snapshot.usage ? (
+                  <div className="sf-meter">
+                    <div className="sf-meter-labels">
+                      <span>{t("familyUsageOverview")}</span>
+                      <strong>{usagePct == null ? t("unlimitedTokens") : `${usagePct}%`}</strong>
+                    </div>
+                    <div className="sf-meter-track" aria-hidden>
+                      <div
+                        className={cn("sf-meter-fill", snapshot.usage.overLimit && "is-over")}
+                        style={{
+                          width: `${usagePct == null ? 100 : Math.max(usagePct > 0 ? 4 : 0, usagePct)}%`,
+                        }}
+                      />
+                    </div>
+                    <div className="sf-meter-foot">
+                      <span>
+                        {usagePct == null
+                          ? t("unlimitedTokens")
+                          : `${usagePct}% ${t("familyUsageUsed")}`}
+                      </span>
+                      {usagePct != null ? (
+                        <span>
+                          {Math.max(0, 100 - usagePct)}% {t("usageRemaining")}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div className="sf-meter-meta">
+                      {poolFreePct != null ? (
+                        <span>
+                          {poolFreePct}% {t("familyPoolAvailable")}
+                        </span>
+                      ) : null}
+                      <span>
+                        {t("familyUsagePeriod")}:{" "}
+                        {new Date(snapshot.usage.periodStart).toLocaleDateString()} →{" "}
+                        {new Date(snapshot.usage.periodEnd).toLocaleDateString()}
+                      </span>
+                    </div>
+                  </div>
+                ) : null}
+
+                <div className="sf-member-meter">
+                  <div className="sf-member-meter-labels">
+                    <span>{t("familyMemberUsage")}</span>
+                    <strong>{memberPct}%</strong>
+                  </div>
+                  <div className="sf-member-track" aria-hidden>
+                    <div
+                      className="sf-member-fill"
+                      style={{ width: `${Math.max(memberPct > 0 ? 3 : 0, memberPct)}%` }}
+                    />
+                  </div>
+                </div>
+
+                <div className="sf-comp-block">
+                  <div className="sf-section-head">
+                    <p className="sf-kicker">{t("familyTabCompanions")}</p>
+                    <button
+                      type="button"
+                      className="sf-link"
+                      onClick={() => openRoomTab(selected, "companions")}
+                    >
+                      {t("familyManageCompanions")}
+                    </button>
+                  </div>
+                  {selectedCompanions.length === 0 ? (
+                    <p className="sf-muted">{t("familyNoCompanionsYet")}</p>
+                  ) : (
+                    <div className="sf-comp-faces">
+                      {selectedCompanions.map((person) => (
+                        <div key={person.id} className="sf-comp-face">
+                          <PersonAvatar person={person} size="md" />
+                          <strong>{person.name}</strong>
+                          <small>{person.domain}</small>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {variant === "full" && snapshot.recentGuidance.length > 0 ? (
+                  <div className="sf-guidance">
+                    <p className="sf-kicker">{t("familyRecentGuidance")}</p>
+                    <ul>
+                      {snapshot.recentGuidance.slice(0, 5).map((g) => (
+                        <li key={g.id}>
+                          <strong>{g.authorName}</strong>
+                          <span> · </span>
+                          {g.content.slice(0, 160)}
+                          {g.content.length > 160 ? "…" : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {roomTab === "companions" ? (
+              <div className="sf-tab-pane">
+                <p className="sf-lead">{t("familyAssignCompanionBody")}</p>
+                <div className="sf-comp-faces">
+                  {liveCompanions(companionState).map((c) => {
+                    const assignedHere = c.familyMemberId === selected.id;
+                    return (
+                      <button
+                        key={c.id}
+                        type="button"
+                        className={cn("sf-comp-face is-btn", assignedHere && "is-on")}
+                        onClick={() => {
+                          updateCompanion(c.id, {
+                            familyMemberId: assignedHere ? null : selected.id,
+                          });
+                          pushToast({
+                            title: assignedHere
+                              ? t("familyCompanionUnassigned")
+                              : t("familyCompanionAssigned"),
+                            body: c.name,
+                            tone: "success",
+                          });
+                        }}
+                      >
+                        <PersonAvatar person={c} size="md" active={assignedHere} />
+                        <strong>{c.name}</strong>
+                        <small>{assignedHere ? "✓" : c.domain}</small>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
+            ) : null}
 
-              {memberCompanions.length > 0 ? (
-                <div className="flex flex-wrap gap-1.5 pt-0.5">
-                  {memberCompanions.slice(0, 4).map((c: CompanionProfile) => (
-                    <span
-                      key={c.id}
-                      className={cn(
-                        "rounded-full px-2 py-0.5 text-[11px]",
-                        isActive ? "bg-white/15" : "bg-neutral-100 text-neutral-700",
-                      )}
-                    >
-                      {c.name}
+            {roomTab === "guide" && selected.role === "child" ? (
+              <div className="sf-tab-pane sf-guide">
+                <header className="sf-guide-head">
+                  <p className="sf-guide-eyebrow">{t("familyGuideEyebrow")}</p>
+                  <h3 className="sf-guide-title">{t("familyGuideTitle")}</h3>
+                  <p className="sf-lead">{t("familyGuideBody")}</p>
+                </header>
+
+                <section className="sf-guide-pick" aria-label={t("familyGuidePickLabel")}>
+                  <div className="sf-section-head">
+                    <p className="sf-kicker">{t("familyGuidePickLabel")}</p>
+                    <span className="sf-guide-count">
+                      {guideCompanions.length} {t("familyCompanionsShort")}
                     </span>
-                  ))}
-                </div>
-              ) : null}
+                  </div>
+                  {guideCompanions.length === 0 ? (
+                    <p className="sf-muted">{t("familyGuideNoCompanions")}</p>
+                  ) : (
+                    <div className="sf-guide-faces">
+                      {guideCompanions.map((c) => {
+                        const on = guideCompanionId === c.id;
+                        return (
+                          <button
+                            key={c.id}
+                            type="button"
+                            className={cn("sf-guide-face", on && "is-on")}
+                            aria-pressed={on}
+                            onClick={() => setGuideCompanionId(c.id)}
+                          >
+                            <PersonAvatar person={c} size="md" active={on} />
+                            <span className="sf-guide-face-copy">
+                              <strong>{c.name}</strong>
+                              <small>{c.domain}</small>
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </section>
 
-              {switchTarget === member.id ? (
-                <div className="flex w-full items-center gap-2 pt-1">
-                  <input
-                    type="password"
-                    inputMode="numeric"
-                    maxLength={8}
-                    placeholder={t("familyPinPlaceholder")}
-                    value={switchPin}
-                    onChange={(e) => setSwitchPin(e.target.value.replace(/\D/g, ""))}
-                    className="min-w-0 flex-1 rounded-lg border border-black/10 bg-white px-3 py-1.5 text-sm text-neutral-900"
+                <section className="sf-guide-compose">
+                  <div className="sf-guide-compose-top">
+                    <label className="sf-kicker" htmlFor="sf-guide-note">
+                      {t("familyGuideNoteLabel")}
+                    </label>
+                    {guideCompanionId ? (
+                      <span className="sf-guide-target">
+                        {t("familyGuideFor")}{" "}
+                        <strong>
+                          {guideCompanions.find((c) => c.id === guideCompanionId)?.name ?? "—"}
+                        </strong>
+                      </span>
+                    ) : (
+                      <span className="sf-guide-target is-warn">{t("familyPickCompanion")}</span>
+                    )}
+                  </div>
+                  <textarea
+                    id="sf-guide-note"
+                    value={guideText}
+                    onChange={(e) => setGuideText(e.target.value)}
+                    rows={6}
+                    placeholder={t("familyGuidePlaceholder")}
+                    className="sf-guide-editor"
                   />
-                  <button
-                    type="button"
-                    className="rounded-lg bg-neutral-900 px-3 py-1.5 text-xs text-white"
-                    disabled={busy || switchPin.length < 4}
-                    onClick={() => void switchTo(member)}
-                  >
-                    {t("familyUnlock")}
-                  </button>
-                  <button type="button" className="text-xs opacity-70" onClick={() => setSwitchTarget(null)}>
-                    {t("cancel")}
-                  </button>
-                </div>
-              ) : null}
+                  <div className="sf-guide-foot">
+                    <p className="sf-guide-privacy">{t("familyGuidePrivacy")}</p>
+                    <button
+                      type="button"
+                      disabled={busy || !guideCompanionId || !guideText.trim() || !activeManager}
+                      onClick={() => void sendGuidance()}
+                      className="sf-btn sf-btn-solid sf-guide-save"
+                    >
+                      <MessageSquareHeart className="size-3.5" strokeWidth={1.9} />
+                      {t("familySendGuidance")}
+                    </button>
+                  </div>
+                </section>
 
-              {grantTarget === member.id ? (
-                <div className="flex w-full flex-wrap items-center gap-2 pt-1">
+                {variant === "full" ? (
+                  <section className="sf-guide-feed">
+                    <p className="sf-kicker">{t("familyRecentGuidance")}</p>
+                    {(() => {
+                      const notes = snapshot.recentGuidance
+                        .filter((g) => g.childMemberId === selected.id)
+                        .slice(0, 6);
+                      if (notes.length === 0) {
+                        return <p className="sf-muted">{t("familyGuideEmpty")}</p>;
+                      }
+                      return (
+                        <ul className="sf-guide-notes">
+                          {notes.map((g) => {
+                            const author =
+                              snapshot.members.find((m) => m.id === g.authorMemberId) ?? null;
+                            const companion =
+                              liveCompanions(companionState).find((c) => c.id === g.companionId) ??
+                              null;
+                            const authorFace = author
+                              ? resolveMemberFaceUrl({
+                                  id: author.id,
+                                  role: author.role,
+                                  ageTier: author.ageTier,
+                                })
+                              : null;
+                            return (
+                              <li key={g.id} className="sf-guide-note">
+                                <span
+                                  className="sf-face-disc is-sm"
+                                  style={authorFace ? undefined : { background: author?.color }}
+                                >
+                                  {authorFace ? (
+                                    <img src={authorFace} alt="" className="sf-face-photo" />
+                                  ) : (
+                                    (g.authorName || "?").slice(0, 1).toUpperCase()
+                                  )}
+                                </span>
+                                <div className="sf-guide-note-body">
+                                  <div className="sf-guide-note-meta">
+                                    <strong>{g.authorName}</strong>
+                                    {companion ? (
+                                      <span className="sf-guide-note-to">
+                                        → {companion.name}
+                                      </span>
+                                    ) : null}
+                                    <time dateTime={g.createdAt}>
+                                      {new Date(g.createdAt).toLocaleDateString()}
+                                    </time>
+                                  </div>
+                                  <p>{g.content}</p>
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      );
+                    })()}
+                  </section>
+                ) : null}
+              </div>
+            ) : null}
+
+            {roomTab === "guardian" && selected.role === "child" ? (
+              <div className="sf-tab-pane">
+                <GuardianHub
+                  child={selected}
+                  busy={busy}
+                  onTogglePause={(member) => void togglePause(member)}
+                />
+              </div>
+            ) : null}
+
+            {roomTab === "tokens" ? (
+              <div className="sf-tab-pane">
+                <p className="sf-lead">{t("familyTokensLead")}</p>
+                <div className="sf-member-meter">
+                  <div className="sf-member-meter-labels">
+                    <span>{t("familyMemberUsage")}</span>
+                    <strong>{memberPct}%</strong>
+                  </div>
+                  <div className="sf-member-track" aria-hidden>
+                    <div
+                      className="sf-member-fill"
+                      style={{ width: `${Math.max(memberPct > 0 ? 3 : 0, memberPct)}%` }}
+                    />
+                  </div>
+                </div>
+                <div className="sf-inline-form">
                   <input
                     inputMode="numeric"
                     value={grantAmount}
                     onChange={(e) => setGrantAmount(e.target.value.replace(/\D/g, ""))}
-                    className="w-36 rounded-lg border border-black/10 bg-white px-3 py-1.5 text-sm text-neutral-900"
+                    className="sf-input"
                     placeholder={t("familyTokenAmount")}
                   />
                   <button
                     type="button"
-                    className="rounded-lg bg-neutral-900 px-3 py-1.5 text-xs text-white"
+                    className="sf-btn sf-btn-solid"
                     disabled={busy}
-                    onClick={() => void grantTokens(member)}
+                    onClick={() => void grantTokens(selected)}
                   >
+                    <Coins className="size-3.5" strokeWidth={1.8} />
                     {t("familyGiveTokens")}
                   </button>
-                  <button type="button" className="text-xs opacity-70" onClick={() => setGrantTarget(null)}>
-                    {t("cancel")}
-                  </button>
                 </div>
-              ) : null}
+              </div>
+            ) : null}
 
-              {assignTarget === member.id ? (
-                <div className="space-y-1.5 pt-1">
-                  <p className={cn("text-[11px]", isActive ? "text-white/70" : "text-neutral-500")}>
-                    {t("familyAssignCompanionBody")}
-                  </p>
-                  <div className="flex flex-wrap gap-1.5">
-                    {liveCompanions(companionState).map((c) => {
-                      const assignedHere = c.familyMemberId === member.id;
-                      return (
-                        <button
-                          key={c.id}
-                          type="button"
-                          className={cn(
-                            "rounded-full px-2.5 py-1 text-[11px]",
-                            assignedHere
-                              ? isActive
-                                ? "bg-white text-neutral-900"
-                                : "bg-neutral-900 text-white"
-                              : isActive
-                                ? "bg-white/15"
-                                : "bg-neutral-100 text-neutral-700",
-                          )}
-                          onClick={() => {
-                            updateCompanion(c.id, {
-                              familyMemberId: assignedHere ? null : member.id,
-                            });
-                            pushToast({
-                              title: assignedHere
-                                ? t("familyCompanionUnassigned")
-                                : t("familyCompanionAssigned"),
-                              body: c.name,
-                              tone: "success",
-                            });
-                          }}
-                        >
-                          {c.name}
-                          {assignedHere ? " ✓" : ""}
-                        </button>
-                      );
-                    })}
-                  </div>
+            {roomTab === "login" ? (
+              <div className="sf-tab-pane">
+                <p className="sf-lead">{t("familyCredentialsBody")}</p>
+                <p className="sf-muted">
+                  {selected.hasPassword ? t("familyHasLogin") : t("familyNoLoginYet")}
+                </p>
+                <div className="sf-form-grid">
+                  <input
+                    type="email"
+                    autoComplete="off"
+                    value={credEmail}
+                    onChange={(e) => setCredEmail(e.target.value)}
+                    placeholder={t("familyEmailRequired")}
+                    className="sf-input"
+                  />
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={credPassword}
+                    onChange={(e) => setCredPassword(e.target.value)}
+                    placeholder={
+                      selected.hasPassword
+                        ? t("familyPasswordChangeOptional")
+                        : t("familyPasswordRequired")
+                    }
+                    className="sf-input"
+                  />
                 </div>
-              ) : null}
-            </li>
-          );
-        })}
-      </ul>
-
-      {variant === "full" && guideChildId ? (
-        <div className="space-y-3 rounded-xl border border-amber-200/80 bg-amber-50/50 p-4">
-          <div className="flex items-start justify-between gap-2">
-            <div>
-              <p className="text-sm font-semibold">{t("familyGuideTitle")}</p>
-              <p className="text-xs text-neutral-600">{t("familyGuideBody")}</p>
-            </div>
-            <button type="button" className="text-xs text-neutral-500" onClick={() => setGuideChildId(null)}>
-              {t("cancel")}
-            </button>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => void saveCredentials()}
+                  className="sf-btn sf-btn-solid"
+                >
+                  <KeyRound className="size-3.5" strokeWidth={1.9} />
+                  {t("familySaveCredentials")}
+                </button>
+              </div>
+            ) : null}
           </div>
-          <select
-            value={guideCompanionId}
-            onChange={(e) => setGuideCompanionId(e.target.value)}
-            className="w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-sm"
-          >
-            <option value="">{t("familyPickCompanion")}</option>
-            {childCompanions.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.name}
-              </option>
-            ))}
-          </select>
-          <textarea
-            value={guideText}
-            onChange={(e) => setGuideText(e.target.value)}
-            rows={4}
-            placeholder={t("familyGuidePlaceholder")}
-            className="w-full rounded-lg border border-black/10 bg-white px-3 py-2 text-sm"
-          />
-          <button
-            type="button"
-            disabled={busy || !guideCompanionId || !guideText.trim() || !activeManager}
-            onClick={() => void sendGuidance()}
-            className="inline-flex items-center gap-1.5 rounded-full bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-40"
-          >
-            <MessageSquareHeart className="size-3.5" strokeWidth={1.9} />
-            {t("familySendGuidance")}
-          </button>
         </div>
-      ) : null}
-
-      {variant === "full" && snapshot.recentGuidance.length > 0 ? (
-        <div className="space-y-2">
-          <p className="text-xs font-medium uppercase tracking-wide text-neutral-500">
-            {t("familyRecentGuidance")}
-          </p>
-          <ul className="space-y-1.5">
-            {snapshot.recentGuidance.slice(0, 5).map((g) => (
-              <li key={g.id} className="rounded-lg bg-neutral-50 px-3 py-2 text-xs text-neutral-700">
-                <strong>{g.authorName}</strong>
-                <span className="text-neutral-400"> · </span>
-                {g.content.slice(0, 160)}
-                {g.content.length > 160 ? "…" : ""}
-              </li>
-            ))}
-          </ul>
+      ) : (
+        <div className="sf-room">
+          <div className="sf-room-empty">
+            <UserRound className="size-8 opacity-40" strokeWidth={1.4} />
+            <p>{ar ? "اختر فرداً من العائلة" : "Pick a family member"}</p>
+          </div>
         </div>
-      ) : null}
+      )}
 
       {variant === "full" ? (
-        <div className="space-y-3 rounded-xl border border-dashed border-black/15 p-4">
-          <div className="flex items-center gap-2 text-sm font-medium">
+        <div className="sf-panel sf-panel-soft">
+          <div className="sf-panel-title-row">
             <ShoppingBag className="size-4" strokeWidth={1.8} />
             {t("familyBuySeats")}
           </div>
-          <p className="text-xs text-neutral-500">{t("familyBuySeatsBody")}</p>
-          <div className="flex flex-wrap gap-2">
+          <p className="sf-muted">{t("familyBuySeatsBody")}</p>
+          <div className="sf-packs">
             {snapshot.seatPacks.map((pack) => (
               <button
                 key={pack.seats}
                 type="button"
                 disabled={busy}
                 onClick={() => void buySeats(pack.seats)}
-                className="rounded-full border border-black/10 bg-neutral-50 px-3 py-1.5 text-xs font-medium hover:bg-neutral-100"
+                className="sf-chip is-pack"
               >
                 {pack.label} · {(pack.priceHalalas / 100).toFixed(0)} {t("plansSar")}
               </button>
             ))}
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="sf-inline-form">
             <input
               value={seatCode}
               onChange={(e) => setSeatCode(e.target.value.toUpperCase())}
               placeholder={t("familySeatCode")}
-              className="min-w-[10rem] flex-1 rounded-lg border border-black/10 bg-white px-3 py-2 text-sm"
+              className="sf-input"
             />
             <button
               type="button"
               disabled={busy || !seatCode.trim()}
               onClick={() => void buySeats(1)}
-              className="rounded-full bg-neutral-900 px-4 py-2 text-xs text-white disabled:opacity-40"
+              className="sf-btn sf-btn-solid"
             >
               {t("familyRedeemSeats")}
             </button>
@@ -811,63 +1115,108 @@ export function FamilyHouseholdPanel({
         </div>
       ) : null}
 
-      {snapshot.seatsUsed < snapshot.seatLimit ? (
-        <div className="space-y-3 rounded-xl border border-dashed border-black/15 p-4">
-          <p className="text-sm font-medium">{t("familyAddMember")}</p>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder={t("familyNamePlaceholder")}
-              className="rounded-lg border border-black/10 bg-white px-3 py-2 text-sm"
-            />
-            <select
-              value={role}
-              onChange={(e) => setRole(e.target.value as FamilyMemberRole)}
-              className="rounded-lg border border-black/10 bg-white px-3 py-2 text-sm"
-            >
-              {ROLE_OPTIONS.map((option) => (
-                <option key={option} value={option}>
-                  {roleLabel(option, t)}
-                </option>
-              ))}
-            </select>
-            {role === "child" ? (
-              <select
-                value={ageTier}
-                onChange={(e) => setAgeTier(e.target.value as FamilyAgeTier)}
-                className="rounded-lg border border-black/10 bg-white px-3 py-2 text-sm"
+      {!seatsOpen ? <p className="sf-muted">{t("familySeatsFull")}</p> : null}
+
+      {faceMenu
+        ? (() => {
+            const menuMember =
+              snapshot.members.find((m) => m.id === faceMenu.memberId) ?? null;
+            if (!menuMember || typeof document === "undefined") return null;
+            const items: Array<{
+              id: string;
+              label: string;
+              danger?: boolean;
+              run: () => void;
+            }> = [
+              {
+                id: "open",
+                label: t("familyCtxOpen"),
+                run: () => selectMember(menuMember),
+              },
+              {
+                id: "credentials",
+                label: t("familyManageCredentials"),
+                run: () => openCredentials(menuMember),
+              },
+              {
+                id: "assign",
+                label: t("familyAssignTokens"),
+                run: () => openGrant(menuMember),
+              },
+            ];
+            if (menuMember.role === "child") {
+              items.push({
+                id: "guide",
+                label: t("familyGuideCompanion"),
+                run: () => openGuide(menuMember),
+              });
+              items.push({
+                id: "guardian",
+                label: t("familyTabGuardian"),
+                run: () => openRoomTab(menuMember, "guardian"),
+              });
+            }
+            items.push({
+              id: "companions",
+              label: t("familyAssignCompanion"),
+              run: () => openAssign(menuMember),
+            });
+            if (!menuMember.isOwner) {
+              items.push({
+                id: "pause",
+                label: menuMember.isPaused ? t("familyResume") : t("familyPause"),
+                run: () => {
+                  setFaceMenu(null);
+                  void togglePause(menuMember);
+                },
+              });
+              items.push({
+                id: "remove",
+                label: t("familyRemove"),
+                danger: true,
+                run: () => {
+                  setFaceMenu(null);
+                  void removeMember(menuMember);
+                },
+              });
+            }
+            return createPortal(
+              <div
+                ref={faceMenuRef}
+                className="sf-face-menu"
+                style={{
+                  position: "fixed",
+                  left: faceMenu.centerX,
+                  top: faceMenu.top,
+                  transform: "translateX(-50%)",
+                  zIndex: 10000,
+                }}
+                role="menu"
+                onContextMenu={(event) => event.preventDefault()}
               >
-                {AGE_TIERS.map((tier) => (
-                  <option key={tier.id} value={tier.id}>
-                    {t(tier.labelKey)}
-                  </option>
+                <p className="sf-face-menu-head">{menuMember.displayName}</p>
+                {items.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    role="menuitem"
+                    className={cn("sf-face-menu-item", item.danger && "is-danger")}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setFaceMenu(null);
+                      item.run();
+                    }}
+                  >
+                    {item.label}
+                  </button>
                 ))}
-              </select>
-            ) : null}
-            <input
-              type="password"
-              inputMode="numeric"
-              maxLength={8}
-              value={pin}
-              onChange={(e) => setPin(e.target.value.replace(/\D/g, ""))}
-              placeholder={role === "child" ? t("familyPinRequired") : t("familyPinOptional")}
-              className="rounded-lg border border-black/10 bg-white px-3 py-2 text-sm"
-            />
-          </div>
-          <button
-            type="button"
-            disabled={busy || !name.trim() || (role === "child" && pin.length < 4)}
-            onClick={() => void addMember()}
-            className="inline-flex items-center gap-1.5 rounded-full bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-40"
-          >
-            <Plus className="size-3.5" strokeWidth={1.9} />
-            {t("familyAddMember")}
-          </button>
-        </div>
-      ) : (
-        <p className="text-sm text-neutral-500">{t("familySeatsFull")}</p>
-      )}
+              </div>,
+              document.body,
+            );
+          })()
+        : null}
     </section>
   );
 }

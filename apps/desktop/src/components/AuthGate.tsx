@@ -7,6 +7,10 @@ import {
   shouldShowFirstLaunchSetup,
   subscribeFirstLaunchSetup,
 } from "@/lib/first-launch-setup";
+import {
+  isGuestLocalMode,
+  subscribeGuestMode,
+} from "@/lib/guest-mode";
 import { consumePostAuthPlanSetup, peekPostAuthPlanSetup } from "@/lib/post-auth-setup";
 import { useSignedInAccount } from "@/lib/use-signed-in-account";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -17,16 +21,17 @@ export function AuthGate() {
   const { dir } = useLanguage();
   const { href } = useRole();
   const navigate = useNavigate();
-  const [needsStartup, setNeedsStartup] = useState(() =>
-    shouldShowFirstLaunchSetup(false),
-  );
+  const [needsStartup, setNeedsStartup] = useState(() => shouldShowFirstLaunchSetup());
+  const [guestLocal, setGuestLocal] = useState(() => isGuestLocalMode());
 
   useEffect(() => {
-    setNeedsStartup(shouldShowFirstLaunchSetup(false));
+    setNeedsStartup(shouldShowFirstLaunchSetup());
     return subscribeFirstLaunchSetup(() => {
-      setNeedsStartup(shouldShowFirstLaunchSetup(false));
+      setNeedsStartup(shouldShowFirstLaunchSetup());
     });
   }, []);
+
+  useEffect(() => subscribeGuestMode(() => setGuestLocal(isGuestLocalMode())), []);
 
   useEffect(() => {
     if (!signedIn) return;
@@ -53,10 +58,15 @@ export function AuthGate() {
     );
   }
 
-  // Instant entry: token or verified account → studio. No session-check page.
-  if (signedIn) {
+  // Signed-in → full studio. Guest local-only → studio with cloud AI locked.
+  if (signedIn || guestLocal) {
     return <Outlet />;
   }
 
-  return <SignInPage onSignedIn={refresh} />;
+  return (
+    <SignInPage
+      onSignedIn={refresh}
+      onContinueLocal={() => setGuestLocal(true)}
+    />
+  );
 }

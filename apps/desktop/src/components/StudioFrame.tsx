@@ -7,7 +7,7 @@ import { AgentPresenceHost } from "@/components/AgentPresenceHost";
 import { PresenceApprovalBridge } from "@/components/PresenceApprovalBridge";
 import { GettingStartedRailHelp } from "@/components/GettingStartedDock";
 import { QuotaPauseScreen } from "@/components/QuotaPauseScreen";
-import { FirstLaunchSetup } from "@/components/FirstLaunchSetup";
+import { TOKEN_GUARD_EVENT } from "@/lib/token-guard";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import logoTall from "@/assets/logotall.png";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -23,11 +23,12 @@ import { audienceFromPlanId, homePathForPlanId, navForRole, studioModeFromPlanId
 import { useRole } from "@/roles/RoleProvider";
 import { readPrefs } from "@/lib/prefs";
 import {
-  shouldShowFirstLaunchSetup,
-  subscribeFirstLaunchSetup,
-} from "@/lib/first-launch-setup";
+  clearGuestLocalMode,
+  isGuestLocalMode,
+  subscribeGuestMode,
+} from "@/lib/guest-mode";
 import { isTauriRuntime } from "@/lib/terminal";
-import { FamilyProfileSwitcher } from "@/components/FamilyProfileSwitcher";
+import { GuardianCoachingHost } from "@/components/GuardianCoachingHost";
 import { useFamilyProfile } from "@/lib/use-family-profile";
 import { cn } from "@/lib/utils";
 import type { AccountPublic } from "@arrab/shared";
@@ -74,38 +75,35 @@ export function StudioFrame() {
   const { t, toggleLocale, locale, dir } = useLanguage();
   const { theme, toggleTheme } = useTheme();
   const { role, href, isOrganization, isFamily, setRole } = useRole();
-  const { isChild: isFamilyChild, isPaused: familyPaused } = useFamilyProfile();
+  const { isPaused: familyPaused } = useFamilyProfile();
   const navigate = useNavigate();
   const location = useLocation();
-  const { account, status, refresh: refreshSignedIn } = useSignedInAccount();
+  const { account, status, refresh: refreshSignedIn, signedIn } = useSignedInAccount();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [accountUser, setAccountUser] = useState<AccountPublic | null>(null);
   const profilePhoto = useProfilePhoto();
   const [pendingCount, setPendingCount] = useState(0);
   const lastPendingRef = useRef<number | null>(null);
-  const [setupReady, setSetupReady] = useState(false);
-  const [needsFirstLaunch, setNeedsFirstLaunch] = useState(false);
+  const [guestLocal, setGuestLocal] = useState(() => isGuestLocalMode());
   const entitlements = status?.entitlements;
   const paused =
-    Boolean(entitlements?.overLimit) && !isQuotaEscapePath(location.pathname);
+    signedIn &&
+    Boolean(entitlements?.overLimit) &&
+    !isQuotaEscapePath(location.pathname);
 
   const modes = useMemo(
-    () => {
-      let items = navForRole(role).map((item) => ({
-        to: href(item.path || "/"),
-        key: item.key,
-        icon: item.icon,
-        end: Boolean(item.end),
-      }));
-      if (isFamily && isFamilyChild) {
-        items = items.filter((item) =>
-          ["chat", "compBoard", "compWork", "studio"].includes(item.key),
-        );
-      }
-      return items;
-    },
-    [href, role, isFamily, isFamilyChild],
+    () =>
+      navForRole(role)
+        // Connectors require a verified cloud account — not a stale device token.
+        .filter((item) => (account ? true : item.key !== "connectors"))
+        .map((item) => ({
+          to: href(item.path || "/"),
+          key: item.key,
+          icon: item.icon,
+          end: Boolean(item.end),
+        })),
+    [href, role, account],
   );
 
   const paletteItems = useMemo(
@@ -115,8 +113,12 @@ export function StudioFrame() {
 
   // Mode follows subscription / free-trial plan — locked to that audience only.
   useEffect(() => {
-    const planId = account?.planId ?? status?.entitlements?.planId ?? null;
-    if (!planId && !account) return;
+    if (!signedIn || !account) {
+      if (role === "family") setRole("individual");
+      return;
+    }
+    const planId = account.planId ?? status?.entitlements?.planId ?? null;
+    if (!planId) return;
     const expectedAudience = audienceFromPlanId(planId);
     if (expectedAudience !== role) {
       setRole(expectedAudience);
@@ -130,6 +132,7 @@ export function StudioFrame() {
       navigate(expectedHome, { replace: true });
     }
   }, [
+    signedIn,
     account,
     account?.planId,
     location.pathname,
@@ -143,6 +146,10 @@ export function StudioFrame() {
     void arrabApi
       .account()
       .then((status) => {
+        if (!account || isGuestLocalMode()) {
+          setAccountUser(null);
+          return;
+        }
         setAccountUser(status.account);
       })
       .catch(() => {
@@ -160,29 +167,15 @@ export function StudioFrame() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      let hasConnector = false;
-      try {
-        const res = await arrabApi.connectors();
-        hasConnector = (res.items ?? []).some((item) => item.status === "connected");
-      } catch {
-        hasConnector = false;
+    const onGuard = (event: Event) => {
+      const detail = (event as CustomEvent<{ kind?: string }>).detail;
+      if (detail?.kind === "quota") {
+        refreshSignedIn();
       }
-      if (cancelled) return;
-      setNeedsFirstLaunch(shouldShowFirstLaunchSetup(hasConnector));
-      setSetupReady(true);
-    })();
-    return subscribeFirstLaunchSetup(() => {
-      void arrabApi
-        .connectors()
-        .then((res) => {
-          const hasConnector = (res.items ?? []).some((item) => item.status === "connected");
-          setNeedsFirstLaunch(shouldShowFirstLaunchSetup(hasConnector));
-        })
-        .catch(() => setNeedsFirstLaunch(shouldShowFirstLaunchSetup(false)));
-    });
-  }, []);
+    };
+    window.addEventListener(TOKEN_GUARD_EVENT, onGuard);
+    return () => window.removeEventListener(TOKEN_GUARD_EVENT, onGuard);
+  }, [refreshSignedIn]);
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -231,6 +224,8 @@ export function StudioFrame() {
     }
     void setAlwaysOnTop(readPrefs().desktopAlwaysOnTop).catch(() => undefined);
   }, []);
+
+  useEffect(() => subscribeGuestMode(() => setGuestLocal(isGuestLocalMode())), []);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -315,30 +310,6 @@ export function StudioFrame() {
     );
   }, [paletteItems, query, t]);
 
-  if (!setupReady) {
-    return (
-      <div
-        dir={dir}
-        className="flex h-full w-full items-center justify-center bg-[var(--color-background)] text-foreground"
-      >
-        <div className="arrab-fade flex flex-col items-center gap-3 px-6 text-center">
-          <img src={logoTall} alt={t("brand")} className="brand-mark h-10 w-auto opacity-90" />
-          <p className="text-[11px] uppercase tracking-[0.22em] text-neutral-500">
-            {t("flsPreparing")}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  if (needsFirstLaunch) {
-    return (
-      <div className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground" dir={dir}>
-        <FirstLaunchSetup onFinished={() => setNeedsFirstLaunch(false)} />
-      </div>
-    );
-  }
-
   return (
     <div className={cn("app-shell companion-app flex h-full max-h-full min-h-0 w-full max-w-full flex-col overflow-hidden bg-background text-foreground")} dir={dir}>
       <header
@@ -353,7 +324,6 @@ export function StudioFrame() {
           className="brand-mark h-[26px] w-auto max-w-[150px] object-contain object-left"
         />
         <div className="no-drag ml-auto flex items-center gap-2">
-          {isFamily ? <FamilyProfileSwitcher /> : null}
           <Tooltip delayDuration={120}>
             <TooltipTrigger asChild>
               <button
@@ -470,8 +440,24 @@ export function StudioFrame() {
           </div>
         </nav>
 
-        <main className="h-full min-h-0 min-w-0 overflow-hidden ps-[96px] pe-3 pb-3">
-          {familyPaused ? (
+        <main className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden ps-[96px] pe-3 pb-3">
+          {guestLocal && !account ? (
+            <div className="mb-2 flex shrink-0 items-center justify-between gap-3 rounded-xl border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-50">
+              <span>{t("guestLocalBanner")}</span>
+              <button
+                type="button"
+                className="shrink-0 rounded-full bg-white px-3 py-1 text-[11px] font-semibold text-black"
+                onClick={() => {
+                  clearGuestLocalMode();
+                  navigate(href("/settings?tab=account"));
+                }}
+              >
+                {t("signInWithBrowser")}
+              </button>
+            </div>
+          ) : null}
+          <div className="min-h-0 flex-1 overflow-hidden">
+          {signedIn && isFamily && familyPaused ? (
             <div className="grid h-full place-items-center rounded-2xl border border-white/10 bg-black/40 p-8 text-center text-white">
               <div className="max-w-md space-y-2">
                 <h2 className="text-xl font-semibold">{t("familyProfilePaused")}</h2>
@@ -483,6 +469,7 @@ export function StudioFrame() {
           ) : (
             <Outlet />
           )}
+          </div>
         </main>
       </div>
 
@@ -532,6 +519,7 @@ export function StudioFrame() {
         </div>
       ) : null}
       <ToastHost />
+          {signedIn && isFamily ? <GuardianCoachingHost /> : null}
       <AppUpdateWatcher />
       <PresenceApprovalBridge />
       <AgentPresenceHost />

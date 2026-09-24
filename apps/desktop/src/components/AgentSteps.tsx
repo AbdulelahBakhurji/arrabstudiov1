@@ -1,5 +1,4 @@
-import { useState } from "react";
-import { Check, ChevronDown, ChevronRight, LoaderCircle, Wrench, X } from "lucide-react";
+import { Check, LoaderCircle, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type AgentStepStatus = "running" | "done" | "failed" | "pending";
@@ -27,58 +26,81 @@ export function friendlyToolTitle(name: string, detail?: string): string {
     rawHint && !rawHint.startsWith("{") && !rawHint.startsWith("[") && !rawHint.includes('"conversationId"')
       ? rawHint.replace(/^(?:File: |path[=:] ?|query: )/i, "").trim()
       : "";
+  const short = hint.length > 56 ? `${hint.slice(0, 56).trim()}…` : hint;
   switch (name) {
     case "read_file":
-      return hint ? `Reading ${hint}` : "Reading file";
+      return short ? `Reading ${short}` : "Reading file";
     case "list_files":
-      return hint ? `Listing ${hint}` : "Listing files";
+      return short ? `Listing ${short}` : "Listing files";
     case "search_code":
-      return hint ? `Searching ${hint}` : "Searching code";
+      return short ? `Searching ${short}` : "Searching code";
     case "run_terminal":
-      return hint ? `Running ${hint.slice(0, 64)}` : "Running command";
+      return short ? `Running ${short.slice(0, 64)}` : "Running command";
     case "write_file":
-      return hint ? `Writing ${hint}` : "Writing file";
+      return short ? `Writing ${short}` : "Writing file";
     case "apply_patch":
-      return hint ? `Editing ${hint}` : "Editing file";
+      return short ? `Editing ${short}` : "Editing file";
     case "summarize_workspace":
       return "Summarizing workspace";
     case "recall_goal":
       return "Checking goal";
     case "delete_file":
-      return hint ? `Deleting ${hint}` : "Deleting file";
+      return short ? `Deleting ${short}` : "Deleting file";
     case "rename_file":
-      return hint ? `Renaming ${hint}` : "Renaming file";
+      return short ? `Renaming ${short}` : "Renaming file";
     case "create_dir":
-      return hint ? `Creating folder ${hint}` : "Creating folder";
+      return short ? `Creating folder ${short}` : "Creating folder";
     case "git_status":
       return "Checking git status";
     case "git_diff":
-      return hint ? `Git diff ${hint}` : "Checking git diff";
+      return short ? `Reviewing git diff · ${short}` : "Checking git diff";
     case "open_path":
-      return hint ? `Opening ${hint}` : "Opening path";
+      return short ? `Opening ${short}` : "Opening path";
     case "preview_html":
-      return hint ? `HTML preview ${hint}` : "HTML preview";
+      return short ? `Previewing HTML · ${short}` : "Previewing HTML";
     case "generate_pdf":
-      return hint ? `Generating PDF ${hint}` : "Generating PDF";
+      return short ? `Generating PDF · ${short}` : "Generating PDF";
+    case "generate_docx":
+      return short ? `Creating Word doc · ${short}` : "Creating Word document";
+    case "generate_presentation":
+      return short ? `Building presentation · ${short}` : "Building presentation";
+    case "generate_image":
+      return short ? `Creating image · ${short}` : "Creating image";
+    case "read_document":
+      return short ? `Reading document · ${short}` : "Reading document";
     case "export_csv":
-      return hint ? `Exporting CSV ${hint}` : "Exporting CSV";
+      return short ? `Exporting CSV · ${short}` : "Exporting CSV";
     case "fetch_url":
-      return hint ? `Fetching ${hint}` : "Fetching URL";
+      return short ? `Fetching ${short}` : "Fetching URL";
     case "scrape_page":
-      return hint ? `Scraping ${hint}` : "Scraping page";
+      return short ? `Reading page · ${short}` : "Reading web page";
     case "web_search":
-      return hint ? `Searching web ${hint}` : "Searching the web";
+      return short ? `Searching the web for ${short}` : "Searching the web";
     case "list_email":
       return "Listing inbox";
     case "read_email":
       return "Reading email";
     case "send_email":
-      return hint ? `Send email · ${hint.slice(0, 48)}` : "Send email";
+      return short ? `Sending email · ${short.slice(0, 48)}` : "Sending email";
     case "arrange_email":
-      return hint ? `Arrange mail · ${hint.slice(0, 48)}` : "Arrange mail";
+      return short ? `Arranging mail · ${short.slice(0, 48)}` : "Arranging mail";
     default:
       return name.replace(/_/g, " ");
   }
+}
+
+/** Prefer the live step; otherwise the latest finished one. */
+function pickActiveStep(steps: AgentStep[]): AgentStep | null {
+  const visible = steps.filter(
+    (step) => !(step.title === "thinking" && step.status === "done"),
+  );
+  if (visible.length === 0) return null;
+  return (
+    visible.find((step) => step.status === "running" || step.status === "pending") ??
+    [...visible].reverse().find((step) => step.status === "failed") ??
+    visible[visible.length - 1] ??
+    null
+  );
 }
 
 export function AgentSteps({
@@ -90,54 +112,26 @@ export function AgentSteps({
   thinkingLabel: string;
   emptyHidden?: boolean;
 }) {
-  const [openId, setOpenId] = useState<string | null>(null);
-  const visible = steps.filter(
-    (step) => !(step.title === "thinking" && step.status === "done"),
-  );
-  if (visible.length === 0 && emptyHidden) return null;
+  const active = pickActiveStep(steps);
+  if (!active && emptyHidden) return null;
+  if (!active) return null;
+
+  const label = active.title === "thinking" ? thinkingLabel : active.title;
 
   return (
-    <div className="agent-steps rounded-2xl border border-white/[0.06] bg-white/[0.02] px-3 py-2.5">
-      <ul className="space-y-0.5">
-        {visible.map((step) => {
-          const expandable = Boolean(step.detail?.trim());
-          const open = openId === step.id;
-          return (
-            <li key={step.id}>
-              <button
-                type="button"
-                disabled={!expandable}
-                onClick={() => setOpenId(open ? null : step.id)}
-                className={cn(
-                  "flex w-full items-center gap-2 rounded-xl px-2 py-1.5 text-start transition-colors",
-                  expandable ? "hover:bg-white/[0.04]" : "cursor-default",
-                )}
-              >
-                <span className="flex size-5 shrink-0 items-center justify-center">
-                  {statusIcon(step.status)}
-                </span>
-                <span className="min-w-0 flex-1 truncate text-[12.5px] text-neutral-300">
-                  {step.title === "thinking" ? thinkingLabel : step.title}
-                </span>
-                {expandable ? (
-                  open ? (
-                    <ChevronDown className="size-3.5 shrink-0 text-neutral-600" strokeWidth={1.7} />
-                  ) : (
-                    <ChevronRight className="size-3.5 shrink-0 text-neutral-600" strokeWidth={1.7} />
-                  )
-                ) : (
-                  <Wrench className="size-3 shrink-0 text-neutral-700" strokeWidth={1.7} />
-                )}
-              </button>
-              {open && step.detail ? (
-                <pre className="mb-1 ms-7 max-h-36 overflow-y-auto whitespace-pre-wrap rounded-xl bg-black/35 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-neutral-500">
-                  {step.detail}
-                </pre>
-              ) : null}
-            </li>
-          );
-        })}
-      </ul>
+    <div
+      className={cn(
+        "agent-steps agent-steps-line",
+        "inline-flex max-w-full items-center gap-2 rounded-full border border-white/[0.06]",
+        "bg-white/[0.02] px-3 py-1.5",
+      )}
+      role="status"
+      aria-live="polite"
+    >
+      <span className="flex size-4 shrink-0 items-center justify-center">
+        {statusIcon(active.status)}
+      </span>
+      <span className="min-w-0 truncate text-[12.5px] text-neutral-300">{label}</span>
     </div>
   );
 }

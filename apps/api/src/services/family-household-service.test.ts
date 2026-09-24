@@ -120,12 +120,21 @@ describe("family household", () => {
         displayName: "Sam",
         role: "child",
         ageTier: "tier_10_13",
-        pin: "1234",
+        email: "sam@arrab.studio",
+        password: "kidpassword",
       },
     });
     expect(child.statusCode).toBe(200);
-    const childBody = child.json() as { id: string; hasPin: boolean; role: string };
-    expect(childBody.hasPin).toBe(true);
+    const childBody = child.json() as {
+      id: string;
+      hasPin: boolean;
+      hasPassword: boolean;
+      role: string;
+      email: string | null;
+    };
+    expect(childBody.hasPin).toBe(false);
+    expect(childBody.hasPassword).toBe(true);
+    expect(childBody.email).toBe("sam@arrab.studio");
 
     const granted = await app.inject({
       method: "POST",
@@ -170,21 +179,13 @@ describe("family household", () => {
     expect((seats.json() as { seatLimit: number; extraSeats: number }).extraSeats).toBe(2);
     expect((seats.json() as { seatLimit: number }).seatLimit).toBe(8);
 
-    const badPin = await app.inject({
+    const switched = await app.inject({
       method: "POST",
       url: "/v1/family/switch",
       headers: { authorization: `Bearer ${sessionToken}` },
-      payload: { memberId: childBody.id, pin: "9999" },
+      payload: { memberId: childBody.id },
     });
-    expect(badPin.statusCode).toBe(403);
-
-    const goodPin = await app.inject({
-      method: "POST",
-      url: "/v1/family/switch",
-      headers: { authorization: `Bearer ${sessionToken}` },
-      payload: { memberId: childBody.id, pin: "1234" },
-    });
-    expect(goodPin.statusCode).toBe(200);
+    expect(switched.statusCode).toBe(200);
 
     const paused = await app.inject({
       method: "PATCH",
@@ -242,6 +243,89 @@ describe("family household", () => {
       afterUsage.json() as { members: Array<{ id: string; tokensUsed: number }> }
     ).members.find((m) => m.id === childBody.id);
     expect(childAfter?.tokensUsed).toBeGreaterThanOrEqual(2500);
+
+    await app.close();
+  });
+
+  it("locks a child seat login so it cannot switch to another profile", async () => {
+    const context = await createApiContext(testEnv);
+    const app = await buildApp(context);
+
+    const connected = await app.inject({
+      method: "POST",
+      url: "/v1/account/connect",
+      payload: {
+        email: "parent-lock@arrab.studio",
+        password: "securepass",
+        displayName: "Parent Lock",
+      },
+    });
+    expect(connected.statusCode).toBe(200);
+    const sessionToken = (connected.json() as { sessionToken: string }).sessionToken;
+
+    await app.inject({
+      method: "POST",
+      url: "/v1/account/subscribe",
+      payload: { code: "FAMILY-FREE-ARRAB" },
+      headers: { authorization: `Bearer ${sessionToken}` },
+    });
+
+    const child = await app.inject({
+      method: "POST",
+      url: "/v1/family/members",
+      headers: { authorization: `Bearer ${sessionToken}` },
+      payload: {
+        displayName: "Locked Kid",
+        role: "child",
+        ageTier: "tier_10_13",
+        email: "locked-kid@arrab.studio",
+        password: "kidpass12",
+      },
+    });
+    expect(child.statusCode).toBe(200);
+    const childBody = child.json() as { id: string };
+
+    const household = await app.inject({
+      method: "GET",
+      url: "/v1/family",
+      headers: { authorization: `Bearer ${sessionToken}` },
+    });
+    const ownerId = (household.json() as { members: Array<{ id: string; isOwner: boolean }> })
+      .members.find((m) => m.isOwner)!.id;
+
+    const kidLogin = await app.inject({
+      method: "POST",
+      url: "/v1/family/members/sign-in",
+      payload: { email: "locked-kid@arrab.studio", password: "kidpass12" },
+    });
+    expect(kidLogin.statusCode).toBe(200);
+    const kidToken = (kidLogin.json() as { sessionToken: string }).sessionToken;
+
+    const snap = await app.inject({
+      method: "GET",
+      url: "/v1/family",
+      headers: { authorization: `Bearer ${kidToken}` },
+    });
+    expect(snap.statusCode).toBe(200);
+    expect((snap.json() as { seatLocked: boolean }).seatLocked).toBe(true);
+
+    const blockedSwitch = await app.inject({
+      method: "POST",
+      url: "/v1/family/switch",
+      headers: { authorization: `Bearer ${kidToken}` },
+      payload: { memberId: ownerId },
+    });
+    expect(blockedSwitch.statusCode).toBe(403);
+
+    const spoof = await app.inject({
+      method: "GET",
+      url: "/v1/family",
+      headers: {
+        authorization: `Bearer ${kidToken}`,
+        "x-arrab-family-member": ownerId,
+      },
+    });
+    expect((spoof.json() as { activeMemberId: string }).activeMemberId).toBe(childBody.id);
 
     await app.close();
   });

@@ -29,6 +29,8 @@ import { configureFieldCrypto } from "./lib/field-crypto.js";
 import { registerErrorHandler } from "./plugins/error-handler.js";
 import { registerSecurity } from "./plugins/security.js";
 import { registerV1Routes } from "./routes/v1.js";
+import { registerErpRoutes } from "./routes/erp.js";
+import { ErpCompanionService } from "./services/erp-companion-service.js";
 import { ConversationService } from "./services/conversation-service.js";
 import { ConnectorService } from "./services/connector-service.js";
 import { AccountService } from "./services/account-service.js";
@@ -342,6 +344,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     env.siteUrl,
   );
   const familyHousehold = new FamilyHouseholdService(persistence, accounts);
+  connectors.setFamilyHousehold(familyHousehold);
   const conversations = new ConversationService(
     persistence,
     aiGateway,
@@ -441,6 +444,13 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
   );
   registerErrorHandler(app);
 
+  // Coolify/Traefik may inject CORP:same-site which breaks Tauri (tauri.localhost).
+  // Force cross-origin so desktop/browser clients can read API responses.
+  app.addHook("onSend", async (_request, reply, payload) => {
+    reply.header("Cross-Origin-Resource-Policy", "cross-origin");
+    return payload;
+  });
+
   const routePrefix = context.env.apiRoutePrefix;
   const whatsappWebhookPaths = new Set(
     ["/v1/connectors/whatsapp/webhook"].concat(
@@ -495,6 +505,15 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
       time: new Date().toISOString(),
     }));
     registerV1Routes(instance, v1Options);
+    registerErpRoutes(instance, {
+      companions: new ErpCompanionService(context.persistence.erpCompanions),
+      accounts: context.accounts,
+      erpToken: context.env.erpToken,
+      erpTokenScopes: context.env.erpTokenScopes ?? [
+        "companions:read",
+        "companions:write",
+      ],
+    });
   };
 
   // Always mount at root. Coolify prefix is stripped in onRequest above.

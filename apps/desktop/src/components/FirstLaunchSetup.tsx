@@ -16,7 +16,6 @@ import { arrabApi } from "@/lib/api";
 import { COMPANION_PRESETS, type CompanionPreset } from "@/lib/companion-catalog";
 import {
   addCompanion,
-  addFact,
   liveCompanions,
   useCompanionState,
 } from "@/lib/companions";
@@ -432,15 +431,6 @@ export function FirstLaunchSetup({ onFinished }: { onFinished?: () => void }) {
       connectors: preset.connectors,
       space,
       toneName: preset.toneName,
-    });
-    addFact({
-      companionId: person.id,
-      text: ar
-        ? `أريد رفيقًا يهتم بـ ${preset.domain}، ومهمته: ${preset.briefAr}`
-        : `I want a companion for ${preset.domain}. Their purpose: ${preset.brief}`,
-      source: ar ? "من إعداد الإطلاق" : "From first-launch setup",
-      kind: "explicit",
-      space,
     });
     markGettingStartedStep("first_person", true);
     pushToast({

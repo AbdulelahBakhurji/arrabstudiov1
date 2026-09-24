@@ -12,9 +12,35 @@ import {
   type PresenceResolveRequest,
 } from "@/lib/agent-presence";
 import { pushToast } from "@/lib/notify";
+import { isApprovalId } from "@/lib/ask-guard";
 import { isTauriRuntime } from "@/lib/terminal";
 
 async function handleResolve(request: PresenceResolveRequest): Promise<void> {
+  if (
+    (request.status !== "approved" && request.status !== "rejected") ||
+    !isApprovalId(request.approvalId)
+  ) {
+    return;
+  }
+
+  try {
+    const pending = await arrabApi.pendingApprovals();
+    if (!pending.items.some((item) => item.id === request.approvalId)) {
+      pushToast({
+        title: "That approval is no longer waiting",
+        tone: "warn",
+      });
+      void hideAgentPresence();
+      return;
+    }
+  } catch {
+    pushToast({
+      title: "Couldn’t confirm that approval",
+      tone: "warn",
+    });
+    return;
+  }
+
   const claimed = dispatchPresenceResolve(request);
   if (claimed) {
     void hideAgentPresence();

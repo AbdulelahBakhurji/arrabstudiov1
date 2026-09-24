@@ -129,6 +129,9 @@ export {
   type SendMessageRequest,
   type SendMessageResponse,
   type SendMessageToolEvent,
+  type SkillLibraryEntry,
+  type IngestConversationMessagesRequest,
+  type IngestConversationMessagesResponse,
   type SessionSpendSettings,
   type SessionUsageSnapshot,
   type ConnectorProvider,
@@ -205,6 +208,8 @@ export type {
   FamilyMemberPublic,
   FamilyMemberRecord,
   FamilyMemberRole,
+  FamilyMemberSignInRequest,
+  FamilyMemberSignInResponse,
   FamilySeatPack,
   GrantFamilyTokensRequest,
   PurchaseFamilySeatsRequest,
@@ -212,3 +217,19 @@ export type {
   SwitchFamilyProfileResponse,
   UpdateFamilyMemberRequest,
 } from "./family.js";
+
+export {
+  GUARDIAN_HARD_PATTERNS,
+  guardianHardHit,
+  toolResultAttestationPayload,
+  type GuardianHardHit,
+} from "./guardian-hard.js";
+
+export type {
+  ErpCompanion,
+  ErpCompanionCapabilities,
+  ErpCompanionKnowledge,
+  ErpCompanionPersonality,
+  ErpCompanionSafety,
+  ErpCompanionStatus,
+} from "./erp-companion.js";

@@ -1,7 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { Approval, AiGatewayStatusResponse, WorkspaceHint } from "@arrab/shared";
 import { arrabApi, ApiRequestError } from "@/lib/api";
-import { resolveCompanionModel, hasLocalModelSelected } from "@/lib/ai-prefs";
+import { assertCloudAiAllowed, resolveCompanionModel, hasLocalModelSelected } from "@/lib/ai-prefs";
+import {
+  assertTokensAvailable,
+  enforceTokenGuard,
+  subscribeTokenGuard,
+} from "@/lib/token-guard";
 import {
   executeLocalAgentTool,
   isClientExecTool,
@@ -15,7 +20,10 @@ import { ensureAssistantDesk } from "@/lib/fs";
 import { streamOllamaChat } from "@/lib/local-models";
 import { readPrefs } from "@/lib/prefs";
 import { isTauriRuntime } from "@/lib/terminal";
+import { ensureSkillCatalogWarm } from "@/lib/user-skills";
+import { buildResolveApprovalBody } from "@/lib/resolve-approval";
 import {
+  applySpokenToneAdjustments,
   captureWork,
   companionInstructions,
   companionInstructionsNeedSync,
@@ -35,16 +43,26 @@ import {
   updateCompanion,
   visibleFacts,
   addParentGuidanceFact,
+  claimParentCoachConversation,
   type CompanionProfile,
+  type CompanionRoomProfile,
 } from "@/lib/companions";
 import { purposeRegistryById, resolvePurposeIdFromDomain } from "@/lib/purpose-registry";
 import { ingestBrainTurn } from "@/lib/second-brain";
+import {
+  applyGuardianToTurn,
+  evaluateGuardianPreflight,
+  guardianFramingForSend,
+  shouldRunGuardian,
+  type GuardianDecision,
+} from "@/lib/guardian";
 import {
   readSessionMode,
   sessionModePromptPrefix,
   stripSuggestModeMarker,
   type SessionMode,
 } from "@/lib/session-mode";
+import { friendlyToolTitle, type AgentStep } from "@/components/AgentSteps";
 
 
 export type ChatLine = {
@@ -61,8 +79,41 @@ export type CompanionSendExtras = {
   onArtifact?: (artifact: LocalToolArtifact) => void;
   /** Clear a streamed “awaiting tool” placeholder before the real reply lands. */
   onReplyReset?: () => void;
+  onAgentSteps?: (updater: (current: AgentStep[]) => AgentStep[]) => void;
 };
 const TASK_HINTS = ["remind me", "i need to", "i have to", "don't forget", "لازم", "ذكرني"];
+
+/** Short topic snippet for “Thinking about …” — Claude-style activity copy. */
+export function companionActivityTopic(text: string, locale: "en" | "ar" = "en"): string {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return locale === "ar" ? "رسالتك" : "your message";
+  const clipped = cleaned.length > 42 ? `${cleaned.slice(0, 42).trim()}…` : cleaned;
+  return clipped;
+}
+
+function markThinkingDone(steps: AgentStep[]): AgentStep[] {
+  return steps.map((step) =>
+    (step.id === "thinking" ||
+      step.id === "reading" ||
+      step.id === "considering") &&
+    step.status === "running"
+      ? { ...step, status: "done" as const }
+      : step,
+  );
+}
+
+function finishRunningSteps(steps: AgentStep[]): AgentStep[] {
+  return steps.map((step) =>
+    step.status === "running" ? { ...step, status: "done" as const } : step,
+  );
+}
+
+/** Model meta-refusal about its own instructions — not a real answer. */
+function isInstructionRefusal(text: string): boolean {
+  return /can(?:'|’)t follow requests to override or reveal (?:my |the )?safety instructions/i.test(
+    text,
+  );
+}
 
 function taskFromLine(text: string) {
   const hint = TASK_HINTS.find((phrase) => text.toLowerCase().includes(phrase));
@@ -77,15 +128,20 @@ function taskFromLine(text: string) {
 }
 
 async function ensureCompanionAgent(
-  person: CompanionProfile,
+  person: CompanionRoomProfile,
   signal: AbortSignal,
-): Promise<CompanionProfile> {
+): Promise<CompanionRoomProfile> {
   signal.throwIfAborted();
-  const key = `${person.id}:${person.space}`;
+  const parentCoach = Boolean(person.parentCoachLane);
+  const key = `${person.id}:${person.space}:${parentCoach ? "parent" : "chat"}`;
   let inFlight = ensureLocks.get(key);
   if (!inFlight) {
     inFlight = (async () => {
-      let ready = findCompanion(getCompanionState(), person.id) ?? person;
+      let ready: CompanionRoomProfile =
+        findCompanion(getCompanionState(), person.id) ?? person;
+      if (parentCoach) {
+        ready = { ...claimParentCoachConversation(ready), parentCoachLane: true };
+      }
       const facts = visibleFacts(getCompanionState(), ready);
       const uiLocale = localStorage.getItem("arrab.locale") === "ar" ? "ar" : "en";
       const instructions = companionInstructions(ready, facts, uiLocale);
@@ -118,14 +174,32 @@ async function ensureCompanionAgent(
           .then(() => markCompanionInstructionsSynced(agentId, instructions))
           .catch(() => undefined);
       }
-      if (!ready.conversationId) {
+      const laneId = parentCoach ? ready.parentConversationId : ready.conversationId;
+      if (!laneId) {
         const conversation = await arrabApi.createConversation({
           agentId: ready.agentId!,
-          title: ready.name,
+          title: parentCoach ? `${ready.name} · Parent` : ready.name,
           spend: companionSpendSettings(ready),
         });
-        updateCompanion(ready.id, { conversationId: conversation.id });
-        ready = { ...ready, conversationId: conversation.id };
+        if (parentCoach) {
+          updateCompanion(ready.id, { parentConversationId: conversation.id });
+          ready = {
+            ...ready,
+            parentConversationId: conversation.id,
+            conversationId: conversation.id,
+            parentCoachLane: true,
+          };
+        } else {
+          updateCompanion(ready.id, { conversationId: conversation.id });
+          ready = { ...ready, conversationId: conversation.id, parentCoachLane: false };
+        }
+      } else {
+        // Room always reads via conversationId; map the active lane onto it.
+        ready = {
+          ...ready,
+          conversationId: laneId,
+          parentCoachLane: parentCoach,
+        };
       }
       return ready;
     })().finally(() => {
@@ -135,6 +209,40 @@ async function ensureCompanionAgent(
   }
   // Waiters can cancel waiting; the shared ensure keeps running for the next send.
   return await raceAbort(inFlight, signal);
+}
+
+/** Ensure agent + conversation exist so chat is stored on the signed-in account. */
+export async function ensureCompanionCloudRoom(
+  person: CompanionRoomProfile,
+  signal?: AbortSignal,
+): Promise<CompanionRoomProfile> {
+  const controller = signal ? null : new AbortController();
+  return ensureCompanionAgent(person, signal ?? controller!.signal);
+}
+
+async function persistLocalTurn(
+  person: CompanionProfile,
+  userText: string,
+  assistantText: string,
+  signal: AbortSignal,
+): Promise<CompanionProfile> {
+  try {
+    const ready = await ensureCompanionAgent(person, signal);
+    if (!ready.conversationId || !assistantText.trim()) return ready;
+    await arrabApi.ingestConversationMessages(
+      ready.conversationId,
+      {
+        messages: [
+          { role: "user", content: userText },
+          { role: "assistant", content: assistantText },
+        ],
+      },
+      signal,
+    );
+    return ready;
+  } catch {
+    return person;
+  }
 }
 
 function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -155,7 +263,7 @@ function raceAbort<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-const ensureLocks = new Map<string, Promise<CompanionProfile>>();
+const ensureLocks = new Map<string, Promise<CompanionRoomProfile>>();
 
 function isAbortError(error: unknown): boolean {
   return (
@@ -203,10 +311,14 @@ async function runCompanionApproval(
       if (executed.artifact) onArtifact?.(executed.artifact);
     }
   }
-  const result = await arrabApi.resolveApproval(approval.id, {
-    status: "approved",
-    toolResult: toolResult ?? null,
-  });
+  const result = await arrabApi.resolveApproval(
+    approval.id,
+    await buildResolveApprovalBody({
+      status: "approved",
+      approvalDetail: approval.detail,
+      toolResult: toolResult ?? null,
+    }),
+  );
   const reply = result.continued?.assistantMessage?.content?.trim() ?? "";
   return { reply, nextApproval: result.continued?.approval ?? null };
 }
@@ -219,13 +331,20 @@ async function ask(
   model: string,
   extras?: CompanionSendExtras,
 ) {
+  const reportSteps = extras?.onAgentSteps;
   const prefs = readPrefs();
   if (hasLocalModelSelected(prefs)) {
-    const facts = visibleFacts(getCompanionState(), person);
-    const notes = companionTurnNotes(person, facts);
+    let ready = person;
+    try {
+      ready = await ensureCompanionAgent(person, signal);
+    } catch {
+      /* Guest / offline — still answer locally; sync when account is available. */
+    }
+    const facts = visibleFacts(getCompanionState(), ready);
+    const notes = companionTurnNotes(ready, facts);
     const uiLocale = localStorage.getItem("arrab.locale") === "ar" ? "ar" : "en";
     const system = [
-      companionInstructions(person, facts, uiLocale),
+      companionInstructions(ready, facts, uiLocale),
       notes,
       extras?.workspaceHint?.sessionNotes,
       extras?.workspaceHint?.operatorDirectives,
@@ -237,17 +356,32 @@ async function ask(
     ]
       .filter(Boolean)
       .join("\n\n");
-    return streamOllamaChat(
+    let sawToken = false;
+    const reply = await streamOllamaChat(
       prefs.aiLocalModel.trim(),
       [
         { role: "system", content: system },
         { role: "user", content },
       ],
-      onToken,
+      (token) => {
+        if (!sawToken) {
+          sawToken = true;
+          reportSteps?.((steps) => markThinkingDone(steps));
+        }
+        onToken(token);
+      },
       signal,
       prefs.aiLocalBaseUrl,
     );
+    if (reply?.trim()) {
+      void persistLocalTurn(ready, content, reply, signal);
+    }
+    reportSteps?.((steps) => finishRunningSteps(steps));
+    return reply;
   }
+
+  assertCloudAiAllowed();
+  assertTokensAvailable();
 
   let ready = await ensureCompanionAgent(person, signal);
   const facts = visibleFacts(getCompanionState(), ready);
@@ -255,11 +389,15 @@ async function ask(
   const uiLocale = localStorage.getItem("arrab.locale") === "ar" ? "ar" : "en";
   const hint = extras?.workspaceHint ?? {};
   const isAssistant = person.domain === "arrab-assistant";
-  const deskFolder = await resolveDeskFolder(hint.folderPath ?? null);
+  const deskFolder = isAssistant
+    ? await resolveDeskFolder(hint.folderPath ?? null)
+    : hint.folderPath?.trim() || null;
   const hasDesk = Boolean(deskFolder);
   const body = {
     content,
-    model,
+    model: person.chatModel?.trim() || model,
+    temperature: person.temperature ?? undefined,
+    maxOutputTokens: person.maxTokens ?? undefined,
     // Lift any leftover 5k session caps from older companion chats.
     spend: companionSpendSettings(ready),
     workspaceHint: {
@@ -278,19 +416,15 @@ async function ask(
       mentions: hint.mentions ?? null,
       operatorDirectives: [
         isAssistant
-          ? "You are Arrab Assistant — do the work with tools. Use PC files when a folder is attached (or the Arrab desk). Use every connected connector when relevant."
-          : "Obey companion purpose, notes, and tone. Prefer short replies. Stay in character.",
-        "LANGUAGE: Match the operator's latest message. English → English reply. Arabic → Arabic reply.",
+          ? "You are Arrab Assistant. Do the work with tools when a folder or connector is available."
+          : "Stay in character. Prefer a short, direct reply.",
+        "Match the language of the latest message.",
         uiLocale === "ar" ? "UI locale is Arabic." : "UI locale is English.",
-        "Always available: web_search, scrape_page, fetch_url for live research.",
-        "Deliverables always available: preview_html (in-app preview), generate_pdf (reports), export_csv.",
-        hasDesk
-          ? "Local desk tools are enabled for the attached folder / Arrab desk."
-          : "No PC folder yet — web research and PDF/HTML deliverables still work via Arrab desk when on desktop.",
+        hasDesk ? "Local desk tools are enabled for the attached folder." : null,
         hint.operatorDirectives,
       ]
         .filter(Boolean)
-        .join(" "),
+        .join("\n"),
     },
   };
 
@@ -298,20 +432,84 @@ async function ask(
     let reply = "";
     let streamError: string | null = null;
     let pendingApproval: Approval | null = null;
+    let sawToken = false;
     await arrabApi.sendMessageStream(
       conversationId,
       body,
       {
         onToken: (token) => {
           if (signal.aborted) return;
+          if (!sawToken) {
+            sawToken = true;
+            reportSteps?.((steps) => markThinkingDone(steps));
+          }
           reply += token;
           onToken(token);
+        },
+        onToolStart: (name, detail) => {
+          if (signal.aborted) return;
+          reportSteps?.((current) => [
+            ...markThinkingDone(current),
+            {
+              id: `tool-run-${name}-${crypto.randomUUID()}`,
+              title: friendlyToolTitle(name, detail),
+              detail,
+              status: "running",
+            },
+          ]);
+        },
+        onTool: (name, result) => {
+          if (signal.aborted) return;
+          const detail = result.slice(0, 2000);
+          reportSteps?.((current) => {
+            const runningIdx = [...current]
+              .map((step, index) => ({ step, index }))
+              .reverse()
+              .find(
+                ({ step }) =>
+                  step.status === "running" &&
+                  step.title === friendlyToolTitle(name, step.detail),
+              )?.index;
+            const done: AgentStep = {
+              id: `tool-${crypto.randomUUID()}`,
+              title: friendlyToolTitle(name, detail),
+              detail,
+              status: detail.toLowerCase().includes("fail") ? "failed" : "done",
+            };
+            if (runningIdx == null) {
+              return [...markThinkingDone(current), done];
+            }
+            const copy = [...current];
+            copy[runningIdx] = { ...copy[runningIdx]!, ...done, id: copy[runningIdx]!.id };
+            return copy;
+          });
         },
         onDone: (response) => {
           if (signal.aborted) return;
           if (!reply && response.assistantMessage?.content) {
             reply = response.assistantMessage.content;
             onToken(reply);
+          }
+          if (response.toolsUsed?.length) {
+            reportSteps?.((current) => {
+              const titles = new Set(current.map((step) => step.title.toLowerCase()));
+              const extrasTools = response.toolsUsed!.filter((name) => {
+                const friendly = friendlyToolTitle(name).toLowerCase();
+                return !titles.has(friendly) && !titles.has(name.replace(/_/g, " "));
+              });
+              const base = finishRunningSteps(markThinkingDone(current));
+              if (extrasTools.length === 0) return base;
+              return [
+                ...base,
+                ...extrasTools.map((name) => ({
+                  id: `tool-${crypto.randomUUID()}`,
+                  title: friendlyToolTitle(name),
+                  status: "done" as const,
+                })),
+              ];
+            });
+          } else {
+            reportSteps?.((steps) => finishRunningSteps(markThinkingDone(steps)));
           }
           if (response.approval) {
             pendingApproval = response.approval;
@@ -327,6 +525,17 @@ async function ask(
         },
         onApproval: (approval) => {
           pendingApproval = approval;
+          const toolName =
+            parseToolNameFromApproval(approval.detail, approval.title) ?? "tool";
+          reportSteps?.((current) => [
+            ...finishRunningSteps(markThinkingDone(current)),
+            {
+              id: `tool-run-${toolName}-${crypto.randomUUID()}`,
+              title: friendlyToolTitle(toolName, approval.detail ?? undefined),
+              detail: approval.detail ?? undefined,
+              status: "running",
+            },
+          ]);
           if (
             !reply.trim() ||
             /awaiting (?:desktop )?execution|awaiting (?:your )?approval/i.test(reply)
@@ -337,6 +546,11 @@ async function ask(
         },
         onError: (message) => {
           streamError = message;
+          reportSteps?.((steps) =>
+            steps.map((step) =>
+              step.status === "running" ? { ...step, status: "failed" as const } : step,
+            ),
+          );
         },
       },
       signal,
@@ -349,11 +563,49 @@ async function ask(
     while (pendingApproval && guard < 12) {
       guard += 1;
       signal.throwIfAborted();
+      const approval = pendingApproval;
+      const toolName =
+        parseToolNameFromApproval(approval.detail, approval.title) ?? "tool";
+      reportSteps?.((current) => {
+        const hasRunning = current.some(
+          (step) =>
+            step.status === "running" &&
+            step.title === friendlyToolTitle(toolName, approval.detail ?? undefined),
+        );
+        if (hasRunning) return current;
+        return [
+          ...finishRunningSteps(markThinkingDone(current)),
+          {
+            id: `tool-run-${toolName}-${crypto.randomUUID()}`,
+            title: friendlyToolTitle(toolName, approval.detail ?? undefined),
+            detail: approval.detail ?? undefined,
+            status: "running",
+          },
+        ];
+      });
       const continued = await runCompanionApproval(
-        pendingApproval,
+        approval,
         deskFolder,
         extras?.onArtifact,
       );
+      reportSteps?.((current) => {
+        const runningIdx = [...current]
+          .map((step, index) => ({ step, index }))
+          .reverse()
+          .find(
+            ({ step }) =>
+              step.status === "running" &&
+              step.title === friendlyToolTitle(toolName, approval.detail ?? undefined),
+          )?.index;
+        if (runningIdx == null) return finishRunningSteps(current);
+        const copy = [...current];
+        copy[runningIdx] = {
+          ...copy[runningIdx]!,
+          status: "done",
+          title: friendlyToolTitle(toolName, approval.detail ?? undefined),
+        };
+        return copy;
+      });
       if (continued.reply) {
         if (reply) {
           reply = `${reply}\n\n${continued.reply}`;
@@ -366,6 +618,7 @@ async function ask(
       pendingApproval = continued.nextApproval;
     }
 
+    reportSteps?.((steps) => finishRunningSteps(steps));
     return reply.trim();
   };
 
@@ -375,8 +628,16 @@ async function ask(
     signal.throwIfAborted();
     if (isAbortError(error)) throw error;
     if (isMissingConversationError(error)) {
-      updateCompanion(ready.id, { conversationId: null });
-      ready = await ensureCompanionAgent({ ...ready, conversationId: null }, signal);
+      if (ready.parentCoachLane) {
+        updateCompanion(ready.id, { parentConversationId: null });
+        ready = await ensureCompanionAgent(
+          { ...ready, conversationId: null, parentConversationId: null },
+          signal,
+        );
+      } else {
+        updateCompanion(ready.id, { conversationId: null });
+        ready = await ensureCompanionAgent({ ...ready, conversationId: null }, signal);
+      }
       return await streamOnce(ready.conversationId!);
     }
     if (isSessionBudgetError(error)) {
@@ -391,7 +652,7 @@ async function ask(
   }
 }
 
-export function useCompanionRoom(active: CompanionProfile, sessionKey?: string) {
+export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: string) {
   const { t, locale } = useLanguage();
   const [lines, setLines] = useState<ChatLine[]>([]);
   const [drafts] = useState(createCompanionDraftStore);
@@ -399,18 +660,53 @@ export function useCompanionRoom(active: CompanionProfile, sessionKey?: string) 
   const [mode, setMode] = useState<ReplyMode>("open");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
+  const [thinkingLabel, setThinkingLabel] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [failedDraft, setFailedDraft] = useState("");
   const [notice, setNotice] = useState("");
   const [providerReady, setProviderReady] = useState(true);
   const [aiStatus, setAiStatus] = useState<AiGatewayStatusResponse | null>(null);
   const [suggestedSessionMode, setSuggestedSessionMode] = useState<SessionMode | null>(null);
+  const [lastGuardianDecision, setLastGuardianDecision] = useState<GuardianDecision | null>(null);
   const requestRef = useRef<{ controller: AbortController; roomKey: string } | null>(null);
   const roomKey = sessionKey
-    ? `${companionRoomKey(active)}:${sessionKey}`
-    : companionRoomKey(active);
+    ? `${companionRoomKey(active)}:${sessionKey}:${active.parentCoachLane ? "parent" : "chat"}`
+    : `${companionRoomKey(active)}:${active.parentCoachLane ? "parent" : "chat"}`;
   const currentRoomRef = useRef(roomKey);
   currentRoomRef.current = roomKey;
+
+  useEffect(() => {
+    void ensureSkillCatalogWarm().catch(() => []);
+  }, []);
+
+  useEffect(() => {
+    return subscribeTokenGuard((detail) => {
+      const request = requestRef.current;
+      if (request) {
+        requestRef.current = null;
+        request.controller.abort();
+      }
+      setBusy(false);
+      setMode("open");
+      setAgentSteps((steps) =>
+        steps.map((step) =>
+          step.status === "running" ? { ...step, status: "failed" as const } : step,
+        ),
+      );
+      setError(detail.message);
+      setNotice(
+        detail.kind === "quota"
+          ? locale === "ar"
+            ? "انتهت حصة الرموز — توقّف العمل مؤقتاً."
+            : "Token limit finished — work stopped and paused."
+          : locale === "ar"
+            ? "انتهت ميزانية الجلسة — توقّف الرد."
+            : "Session budget finished — reply stopped.",
+      );
+    });
+  }, [locale]);
+
   const draft = drafts.read(roomKey);
   // An explicit key lets navigation hand a draft to the destination before it renders.
   function setDraft(text: string | ((current: string) => string), targetRoomKey = roomKey) {
@@ -442,9 +738,16 @@ export function useCompanionRoom(active: CompanionProfile, sessionKey?: string) 
     active.id,
     active.brief,
     active.domain,
+    active.parentCoachLane,
+    active.parentConversationId,
     active.tone.bluntness,
     active.tone.humour,
     active.tone.replyLength,
+    active.tone.warmth,
+    active.tone.formality,
+    active.tone.criticism,
+    active.tone.pace,
+    active.toneNote,
     active.callOut.join("|"),
     active.connectors.join("|"),
   ]);
@@ -486,12 +789,15 @@ export function useCompanionRoom(active: CompanionProfile, sessionKey?: string) 
     setError(null);
     setNotice("");
     setFailedDraft("");
+    setAgentSteps([]);
+    setThinkingLabel("");
     setMode("open");
     const cleanup = () => {
       cancelled = true;
       requestRef.current?.controller.abort();
       requestRef.current = null;
     };
+    setLastGuardianDecision(null);
     if (!active.conversationId) {
       setLoading(false);
       return cleanup;
@@ -540,7 +846,23 @@ export function useCompanionRoom(active: CompanionProfile, sessionKey?: string) 
     setNotice("");
     setFailedDraft("");
     setDraft("");
-    const person = active.domain === "general" ? ensureGeneralCompanion(active.space) : active;
+    const localeKey = locale === "ar" ? "ar" : "en";
+    const topic = companionActivityTopic(text, localeKey);
+    setThinkingLabel(
+      localeKey === "ar" ? `يفكر في ${topic}…` : `Thinking about ${topic}…`,
+    );
+    setAgentSteps([
+      { id: "reading", title: localeKey === "ar" ? "يقرأ رسالتك" : "Reading your message", status: "running" },
+    ]);
+    let person = active.domain === "general" ? ensureGeneralCompanion(active.space) : active;
+    if (applySpokenToneAdjustments(person.id, text)) {
+      person = findCompanion(getCompanionState(), person.id) ?? person;
+      setNotice(
+        localeKey === "ar"
+          ? "تم ضبط النبرة من رسالتك — الرد التالي يستخدم الأسلوب الجديد."
+          : "Tone updated from your message — the next reply uses the new voice.",
+      );
+    }
     setLines((current) => [
       ...current,
       { id: crypto.randomUUID(), who: "me", companionId: null, text, at: new Date().toISOString() },
@@ -549,19 +871,115 @@ export function useCompanionRoom(active: CompanionProfile, sessionKey?: string) 
     if (detectSensitive(text)) markSensitive();
     const framing =
       mode === "vent"
-        ? "[They just want to vent. Listen and reflect it back. No advice, no tasks, no fixing.]\n\n"
+        ? "They want to vent. Listen and reflect it back. No advice, no tasks, no fixing."
         : mode === "take"
-          ? "[They want your take. Be concrete and say what you would do.]\n\n"
+          ? "They want your take. Be concrete and say what you would do."
           : "";
     const sessionFraming = sessionModePromptPrefix(readSessionMode());
     const sensitive = isSensitiveNow(getCompanionState())
-      ? "[This is sensitive. No humour, no unsolicited advice, and no switching speakers.]\n\n"
+      ? "This is sensitive. No humour, no unsolicited advice, and no switching speakers."
       : "";
+    const guardianFraming = guardianFramingForSend(person, localeKey);
+    const turnNotes = [guardianFraming, sessionFraming, framing, sensitive].filter(Boolean).join("\n");
     const replyId = crypto.randomUUID();
+    const progressTimers: number[] = [];
+    progressTimers.push(
+      window.setTimeout(() => {
+        if (!isCurrent()) return;
+        setAgentSteps((current) => {
+          if (current.some((step) => step.id !== "reading" && step.status === "running")) {
+            return current;
+          }
+          if (current.some((step) => step.id === "thinking")) return current;
+          return [
+            ...current.map((step) =>
+              step.id === "reading" ? { ...step, status: "done" as const } : step,
+            ),
+            { id: "thinking", title: "thinking", status: "running" },
+          ];
+        });
+      }, 450),
+    );
+    progressTimers.push(
+      window.setTimeout(() => {
+        if (!isCurrent()) return;
+        setAgentSteps((current) => {
+          const onlyThinking =
+            current.some((step) => step.id === "thinking" && step.status === "running") &&
+            !current.some((step) => step.status === "running" && step.id !== "thinking");
+          if (!onlyThinking) return current;
+          return [
+            ...current.map((step) =>
+              step.id === "thinking" && step.status === "running"
+                ? { ...step, status: "done" as const }
+                : step,
+            ),
+            {
+              id: "considering",
+              title:
+                localeKey === "ar" ? "يراجع التفاصيل" : "Considering the details",
+              status: "running",
+            },
+          ];
+        });
+      }, 2200),
+    );
     try {
+      // Phase 3: hard safety + quiet hours cut before any LLM tokens.
+      let preflight: GuardianDecision | null = null;
+      if (shouldRunGuardian(person)) {
+        preflight = evaluateGuardianPreflight({
+          kidMessage: text,
+          companion: person,
+          locale: localeKey,
+        });
+        if (
+          preflight &&
+          preflight.verdict !== "allow" &&
+          (preflight.hard ||
+            preflight.verdict === "pause_with_care" ||
+            preflight.ruleIds.includes("downtime"))
+        ) {
+          const guarded = applyGuardianToTurn({
+            companion: person,
+            kidMessage: text,
+            companionDraft: preflight.modifiedReply || "",
+            locale: localeKey,
+            preflight,
+          });
+          const reply = guarded.reply || preflight.modifiedReply || "";
+          setLastGuardianDecision(guarded.decision);
+          if (reply) {
+            setLines((current) => [
+              ...current,
+              {
+                id: replyId,
+                who: "companion",
+                companionId: person.id,
+                text: reply,
+                at: new Date().toISOString(),
+              },
+            ]);
+            recordExchange({ companionId: person.id, line: reply, resume: text });
+            void persistLocalTurn(person, text, reply, signal);
+            ingestBrainTurn({
+              scope: "individual",
+              space: person.space,
+              companionId: person.id,
+              companionName: person.name,
+              conversationId: person.conversationId,
+              userText: text,
+              assistantText: reply,
+            });
+          }
+          setFailedDraft("");
+          return reply || null;
+        }
+      }
+
       const rawReply = await ask(
         person,
-        `${sessionFraming}${framing}${sensitive}${text}`,
+        text,
         (token) => {
           if (!isCurrent()) return;
           setLines((current) =>
@@ -582,9 +1000,20 @@ export function useCompanionRoom(active: CompanionProfile, sessionKey?: string) 
           );
         },
         signal,
-        resolveCompanionModel(aiStatus, readPrefs()),
+          resolveCompanionModel(aiStatus, readPrefs()),
         {
           ...extras,
+          workspaceHint: {
+            ...extras?.workspaceHint,
+            operatorDirectives: [turnNotes, extras?.workspaceHint?.operatorDirectives]
+              .filter(Boolean)
+              .join("\n"),
+          },
+          onAgentSteps: (updater) => {
+            if (!isCurrent()) return;
+            setAgentSteps(updater);
+            extras?.onAgentSteps?.(updater);
+          },
           onReplyReset: () => {
             if (!isCurrent()) return;
             setLines((current) =>
@@ -603,9 +1032,28 @@ export function useCompanionRoom(active: CompanionProfile, sessionKey?: string) 
               : "No reply arrived. Restore your message and try again."
             : t("compProviderMissing"),
         );
-      const { text: reply, suggested } = stripSuggestModeMarker(rawReply);
+      const cleanedReply = isInstructionRefusal(rawReply)
+        ? localeKey === "ar"
+          ? "ما وصلت إجابة مفيدة. أعد الطلب بجملة عادية وسأساعدك."
+          : "I didn't get a usable answer. Say it again in a normal sentence and I'll help."
+        : rawReply;
+      const { text: stripped, suggested } = stripSuggestModeMarker(cleanedReply);
       if (suggested && suggested !== readSessionMode()) {
         setSuggestedSessionMode(suggested);
+      }
+      let reply = stripped;
+      if (shouldRunGuardian(person)) {
+        const guarded = applyGuardianToTurn({
+          companion: person,
+          kidMessage: text,
+          companionDraft: stripped,
+          locale: localeKey,
+          preflight,
+        });
+        reply = guarded.reply;
+        setLastGuardianDecision(guarded.decision);
+      } else {
+        setLastGuardianDecision(null);
       }
       if (reply !== rawReply) {
         setLines((current) =>
@@ -696,15 +1144,31 @@ export function useCompanionRoom(active: CompanionProfile, sessionKey?: string) 
     } catch (err: unknown) {
       if (!isCurrent()) return null;
       if (isAbortError(err)) return null;
+      const guarded = enforceTokenGuard(err);
+      if (guarded) {
+        request.controller.abort();
+        setBusy(false);
+        setMode("open");
+        setError(guarded);
+        setFailedDraft(text);
+        setNotice(
+          locale === "ar"
+            ? "انتهت الرموز — توقّف العمل مؤقتاً."
+            : "Tokens finished — work stopped and paused.",
+        );
+        return null;
+      }
       setError(err instanceof Error ? err.message : t("apiUnavailable"));
       setFailedDraft(text);
       return null;
     } finally {
+      for (const timer of progressTimers) window.clearTimeout(timer);
       // A stopped/old request must not clear the busy state of a later send.
       if (isCurrent()) {
         requestRef.current = null;
         setBusy(false);
         setMode("open");
+        setAgentSteps((steps) => finishRunningSteps(steps));
       }
     }
   }
@@ -716,6 +1180,11 @@ export function useCompanionRoom(active: CompanionProfile, sessionKey?: string) 
     request.controller.abort();
     setBusy(false);
     setMode("open");
+    setAgentSteps((steps) =>
+      steps.map((step) =>
+        step.status === "running" ? { ...step, status: "failed" as const } : step,
+      ),
+    );
     setNotice(locale === "ar" ? "توقف استقبال الرد." : "Stopped receiving the reply.");
   }
   return {
@@ -726,6 +1195,8 @@ export function useCompanionRoom(active: CompanionProfile, sessionKey?: string) 
     setMode,
     busy,
     loading,
+    agentSteps,
+    thinkingLabel,
     error,
     setError,
     failedDraft,
@@ -734,6 +1205,8 @@ export function useCompanionRoom(active: CompanionProfile, sessionKey?: string) 
     providerReady,
     suggestedSessionMode,
     clearSuggestedSessionMode: () => setSuggestedSessionMode(null),
+    lastGuardianDecision,
+    clearGuardianDecision: () => setLastGuardianDecision(null),
     send,
     stop,
   };

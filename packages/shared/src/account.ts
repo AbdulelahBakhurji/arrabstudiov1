@@ -228,11 +228,12 @@ export interface AccountEntitlements {
   overLimit: boolean;
   /**
    * How the operator can continue after a pause:
-   * - upgrade_required: Free / local — must upgrade (or connect) to resume
-   * - upgrade_or_wait: Paid capped plan — upgrade now or wait until periodEnd
+   * - upgrade_required: Local unconnected — must connect/upgrade to resume
+   * - upgrade_or_wait: Paid capped plan mid-period — upgrade now or wait until periodEnd
+   * - payment_required: Any plan’s month ended — chat stays paused until payment (paid renew or upgrade from Free)
    * - null: not paused
    */
-  pauseMode: "upgrade_required" | "upgrade_or_wait" | null;
+  pauseMode: "upgrade_required" | "upgrade_or_wait" | "payment_required" | null;
   periodStart: string;
   periodEnd: string;
 }

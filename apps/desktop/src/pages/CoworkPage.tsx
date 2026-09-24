@@ -54,6 +54,7 @@ import { LAST_COWORK_AGENT_KEY } from "@/lib/prefs";
 import { notifyStudio } from "@/lib/notify";
 import { showAgentPresence, subscribePresenceResolve } from "@/lib/agent-presence";
 import { arrabApi, ApiRequestError, isTransientApiError } from "@/lib/api";
+import { buildResolveApprovalBody } from "@/lib/resolve-approval";
 import {
   filterLiveWorkforceAgents,
   readAgentSessionPolicy,
@@ -86,7 +87,8 @@ import {
   writeCompanionAccess,
   type RuntimeTarget,
 } from "@/lib/cowork-companion-access";
-import { resolvePreferredModel } from "@/lib/ai-prefs";
+import { resolveAiRuntime, resolvePreferredModel } from "@/lib/ai-prefs";
+import { streamOllamaChat } from "@/lib/local-models";
 import {
   liveCompanions,
   useCompanionState,
@@ -164,6 +166,7 @@ function portraitForAgent(
     id: `cowork-face:${agent.id}`,
     agentId: agent.id,
     conversationId: null,
+    parentConversationId: null,
     name: agent.name,
     domain: "work",
     purposeId: "work",
@@ -174,7 +177,15 @@ function portraitForAgent(
     faceSeed: seed % 4096,
     avatarPhoto: null,
     space: "work",
-    tone: { bluntness: 45, humour: 40, replyLength: 35, warmth: 55, formality: 35 },
+    tone: {
+      bluntness: 45,
+      humour: 40,
+      replyLength: 35,
+      warmth: 55,
+      formality: 35,
+      criticism: 40,
+      pace: 45,
+    },
     toneName: "measured",
     callOut: [],
     lastMemory: null,
@@ -1263,10 +1274,14 @@ export function CoworkPage({ asWorkplace = false }: { asWorkplace?: boolean } = 
           return copy;
         });
       }
-      const result = await arrabApi.resolveApproval(approval.id, {
-        status,
-        toolResult: toolResult ?? null,
-      });
+      const result = await arrabApi.resolveApproval(
+        approval.id,
+        await buildResolveApprovalBody({
+          status,
+          approvalDetail: approval.detail,
+          toolResult: toolResult ?? null,
+        }),
+      );
       setPendingApproval(null);
       const toolName = parseToolNameFromApproval(approval.detail, approval.title);
       if (status === "approved" && toolName && isEmailPolicyTool(toolName)) {
@@ -1527,6 +1542,70 @@ export function CoworkPage({ asWorkplace = false }: { asWorkplace?: boolean } = 
       setMentions([]);
       return;
     }
+
+    const runtime = resolveAiRuntime(prefs);
+    if (runtime === "blocked") {
+      setError(t("cloudNeedsSignIn"));
+      return;
+    }
+
+    if (runtime === "local") {
+      streamAbortRef.current?.abort();
+      const controller = new AbortController();
+      streamAbortRef.current = controller;
+      setSending(true);
+      setError(null);
+      setAgentSteps([{ id: "thinking", title: "thinking", status: "running" }]);
+      setPendingApproval(null);
+      setStreamDraft("");
+      if (!overrideContent) {
+        setDraft("");
+        setMentions([]);
+      }
+      try {
+        const reply = await streamOllamaChat(
+          prefs.aiLocalModel.trim(),
+          [
+            {
+              role: "system",
+              content:
+                "You are Arrab Studio's local coworker on this Mac (Ollama). Be concise. Match the user's language. You cannot edit files or run shell tools in local mode.",
+            },
+            { role: "user", content },
+          ],
+          (text) => {
+            if (controller.signal.aborted) return;
+            setStreamDraft((current) => {
+              if (!current) {
+                setAgentSteps((steps) =>
+                  steps.map((step) =>
+                    step.id === "thinking" && step.status === "running"
+                      ? { ...step, status: "done" }
+                      : step,
+                  ),
+                );
+              }
+              return current + text;
+            });
+          },
+          controller.signal,
+          prefs.aiLocalBaseUrl,
+        );
+        if (!controller.signal.aborted && reply.trim()) {
+          setStreamDraft(reply);
+          setAgentSteps([]);
+        }
+      } catch (err: unknown) {
+        if (!(err instanceof DOMException && err.name === "AbortError")) {
+          setError(err instanceof Error ? err.message : t("apiUnavailable"));
+        }
+      } finally {
+        if (streamAbortRef.current === controller) streamAbortRef.current = null;
+        setSending(false);
+      }
+      return;
+    }
+
     let activeConversation = conversation;
     if (!activeConversation) {
       activeConversation = await startSession("resume");

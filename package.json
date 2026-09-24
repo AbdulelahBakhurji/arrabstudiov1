@@ -2,7 +2,7 @@
   "name": "arrab-studio",
   "private": true,
   "type": "module",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Arrab Studio — build your AI workforce.",
   "packageManager": "pnpm@10.15.1",
   "engines": {

@@ -1,5 +1,5 @@
 import type { FamilyMemberId, WorkspaceId } from "./ids.js";
-import type { AccountEntitlements } from "./account.js";
+import type { AccountEntitlements, AccountPublic } from "./account.js";
 import type { Timestamps } from "./entities.js";
 
 export type FamilyMemberRole = "parent" | "partner" | "child";
@@ -16,6 +16,10 @@ export interface FamilyMemberRecord extends Timestamps {
   color: string;
   /** scrypt hash of 4–8 digit PIN — never returned to clients. */
   pinHash: string | null;
+  /** Login email for this seat (kids / partners). Lowercased. */
+  email: string | null;
+  /** Password hash for seat login — never returned to clients. */
+  passwordHash: string | null;
   /** Owner is the connected studio account holder (always a parent). */
   isOwner: boolean;
   /** Instant parental lock — blocks chat for this member. */
@@ -35,6 +39,9 @@ export interface FamilyMemberPublic {
   ageTier: FamilyAgeTier | null;
   color: string;
   hasPin: boolean;
+  /** Seat login email when credentials are set. */
+  email: string | null;
+  hasPassword: boolean;
   isOwner: boolean;
   isPaused: boolean;
   /** Parents and partners can manage the household. */
@@ -53,8 +60,12 @@ export interface CreateFamilyMemberRequest {
   role: FamilyMemberRole;
   ageTier?: FamilyAgeTier | null;
   color?: string;
-  /** 4–8 digit PIN for profile switching. Required for child; optional for adults. */
+  /** 4–8 digit PIN — unused for kids (email/password login). Optional legacy for adults. */
   pin?: string | null;
+  /** Seat login email. Required for children so they can sign in. */
+  email?: string | null;
+  /** Seat login password. Required for children (min 8 chars). */
+  password?: string | null;
   /** Optional starting token allowance from the household pool. */
   tokenAllowance?: number;
 }
@@ -67,7 +78,23 @@ export interface UpdateFamilyMemberRequest {
   isPaused?: boolean;
   /** Set a new PIN; empty string clears it (adults only). */
   pin?: string | null;
+  /** Update or set seat login email. */
+  email?: string | null;
+  /** Set a new seat login password (min 8 chars). */
+  password?: string | null;
   tokenAllowance?: number;
+}
+
+export interface FamilyMemberSignInRequest {
+  email: string;
+  password: string;
+}
+
+export interface FamilyMemberSignInResponse {
+  sessionToken: string;
+  member: FamilyMemberPublic;
+  account: AccountPublic;
+  entitlements: AccountEntitlements;
 }
 
 export interface SwitchFamilyProfileRequest {
@@ -139,6 +166,11 @@ export interface FamilyHouseholdSnapshot {
   members: FamilyMemberPublic[];
   /** Active profile on this device (server-tracked last switch). */
   activeMemberId: FamilyMemberId | null;
+  /**
+   * True when a seat signed in with its own email/password (typically a child).
+   * Locked sessions cannot switch to another household profile.
+   */
+  seatLocked: boolean;
   usage: {
     tokensUsed: number;
     tokenLimit: number | null;

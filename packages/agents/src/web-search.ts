@@ -1,6 +1,10 @@
 /** Lightweight web search + page scrape for agent tools (no API key required). */
 
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
+
 const UA = "ArrabStudio/0.14 (+agent web)";
+const MAX_REDIRECTS = 5;
 
 function stripTags(html: string): string {
   return html
@@ -16,6 +20,101 @@ function stripTags(html: string): string {
     .replace(/&#39;/gi, "'")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function ipv4Octets(ip: string): number[] | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  const nums = parts.map((p) => Number(p));
+  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
+  return nums;
+}
+
+/** Block loopback, link-local, private, and cloud metadata targets. */
+export function isBlockedIpAddress(ip: string): boolean {
+  const v4 = ipv4Octets(ip);
+  if (v4) {
+    const a = v4[0]!;
+    const b = v4[1]!;
+    if (a === 10) return true;
+    if (a === 127) return true;
+    if (a === 0) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+    if (a >= 224) return true; // multicast / reserved
+    return false;
+  }
+  const lower = ip.toLowerCase();
+  if (lower === "::1" || lower === "::") return true;
+  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
+  if (lower.startsWith("fe80:")) return true;
+  if (lower.startsWith("ff")) return true; // multicast
+  // IPv4-mapped IPv6
+  const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped?.[1]) return isBlockedIpAddress(mapped[1]);
+  return false;
+}
+
+async function assertSafePublicUrl(raw: string): Promise<URL> {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error("invalid URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("only http and https URLs are allowed");
+  }
+  if (parsed.username || parsed.password) {
+    throw new Error("URLs with credentials are not allowed");
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  if (
+    host === "localhost" ||
+    host.endsWith(".localhost") ||
+    host === "metadata.google.internal" ||
+    host.endsWith(".internal") ||
+    host.endsWith(".local")
+  ) {
+    throw new Error("private or metadata hosts are not allowed");
+  }
+  const addresses = isIP(host)
+    ? [host]
+    : (await lookup(host, { all: true, verbatim: true })).map((r) => r.address);
+  if (addresses.length === 0) {
+    throw new Error("host could not be resolved");
+  }
+  for (const address of addresses) {
+    if (isBlockedIpAddress(address)) {
+      throw new Error("private or metadata hosts are not allowed");
+    }
+  }
+  return parsed;
+}
+
+async function fetchPublicUrl(
+  rawUrl: string,
+  init: RequestInit,
+): Promise<Response> {
+  let current = await assertSafePublicUrl(rawUrl);
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
+    const response = await fetch(current, {
+      ...init,
+      redirect: "manual",
+    });
+    if (response.status >= 300 && response.status < 400) {
+      const location = response.headers.get("location");
+      if (!location) {
+        throw new Error("redirect missing Location");
+      }
+      current = await assertSafePublicUrl(new URL(location, current).toString());
+      continue;
+    }
+    return response;
+  }
+  throw new Error("too many redirects");
 }
 
 async function duckDuckGoInstant(query: string): Promise<string | null> {
@@ -151,20 +250,17 @@ export async function fetchUrl(rawUrl: string): Promise<string> {
   }
   let parsed: URL;
   try {
-    parsed = new URL(value);
-  } catch {
-    return "ERROR: fetch_url requires a valid http(s) URL.";
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return "ERROR: only http and https URLs are allowed.";
+    parsed = await assertSafePublicUrl(value);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `ERROR: fetch_url blocked — ${message}`;
   }
   try {
-    const response = await fetch(parsed, {
+    const response = await fetchPublicUrl(parsed.toString(), {
       headers: {
         Accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8",
         "User-Agent": UA,
       },
-      redirect: "follow",
       signal: AbortSignal.timeout(18_000),
     });
     const contentType = response.headers.get("content-type") || "";
@@ -202,26 +298,23 @@ export async function scrapePage(rawUrl: string, options: ScrapeOptions = {}): P
   if (!value) {
     return "ERROR: scrape_page requires a url.";
   }
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    return "ERROR: scrape_page requires a valid http(s) URL.";
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return "ERROR: only http and https URLs are allowed.";
-  }
-
   const maxChars = Math.min(24_000, Math.max(2_000, options.maxChars ?? 14_000));
   const includeLinks = options.links !== false;
 
+  let parsed: URL;
   try {
-    const response = await fetch(parsed, {
+    parsed = await assertSafePublicUrl(value);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    return `ERROR: scrape_page blocked — ${message}`;
+  }
+
+  try {
+    const response = await fetchPublicUrl(parsed.toString(), {
       headers: {
         Accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8",
         "User-Agent": UA,
       },
-      redirect: "follow",
       signal: AbortSignal.timeout(20_000),
     });
     const contentType = response.headers.get("content-type") || "";

@@ -99,7 +99,7 @@ export async function resumePendingWebAuth(opts?: {
   });
 }
 
-/** Apply a session token delivered via `arrab://auth/complete?session=…`. */
+/** Apply a session token delivered via `arrab://auth/complete?session=…&state=…`. */
 export function applySessionFromDeepLink(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -114,8 +114,18 @@ export function applySessionFromDeepLink(url: string): boolean {
       parsed.searchParams.get("session")?.trim() ||
       parsed.searchParams.get("token")?.trim() ||
       "";
+    const state = parsed.searchParams.get("state")?.trim() || "";
+    const pending = readPendingWebAuth();
+    // Reject unbound session plants from other local apps — require matching pending web-auth.
+    if (!pending || !state || state !== pending.state) {
+      window.dispatchEvent(
+        new CustomEvent(AUTH_DEEP_LINK_EVENT, { detail: { url, applied: false } }),
+      );
+      return false;
+    }
     if (session.length >= 20) {
       writeAccountSession(session);
+      clearPendingWebAuth();
       if (parsed.searchParams.get("setup") === "plan") {
         markPostAuthPlanSetup();
       }

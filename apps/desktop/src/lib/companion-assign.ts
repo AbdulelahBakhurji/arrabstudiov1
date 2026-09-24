@@ -14,6 +14,7 @@ import {
 } from "@/lib/companions";
 import { resolvePurposeIdFromDomain, purposeRegistryById } from "@/lib/purpose-registry";
 import { showAgentPresence, hideAgentPresence } from "@/lib/agent-presence";
+import { sanitizeCompanionAsk } from "@/lib/ask-guard";
 
 async function ensureCompanionReady(person: CompanionProfile): Promise<CompanionProfile> {
   let ready = findCompanion(getCompanionState(), person.id) ?? person;
@@ -52,8 +53,7 @@ export async function assignCompanionTask(input: {
   companionId: string;
   task: string;
 }): Promise<void> {
-  const text = input.task.trim();
-  if (!text) throw new Error("Write a task first");
+  const text = sanitizeCompanionAsk(input.task);
 
   const person = findCompanion(getCompanionState(), input.companionId);
   if (!person) throw new Error("Companion not found");
@@ -118,8 +118,7 @@ export async function assignAgentTask(input: {
   hue?: number;
   task: string;
 }): Promise<void> {
-  const text = input.task.trim();
-  if (!text) throw new Error("Write a task first");
+  const text = sanitizeCompanionAsk(input.task);
 
   void showAgentPresence({
     agentName: input.agentName,

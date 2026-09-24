@@ -18,8 +18,8 @@ import {
 import { isTauriRuntime } from "@/lib/terminal";
 
 /** Fail fast — never stall boot on a slow/dead API. */
-const AUTH_CHECK_BUDGET_MS = 2_500;
-const AUTH_REQUEST_TIMEOUT_MS = 2_000;
+const AUTH_CHECK_BUDGET_MS = 8_000;
+const AUTH_REQUEST_TIMEOUT_MS = 12_000;
 const ACCOUNT_CACHE_KEY = "arrab.account.status.cache";
 
 type AccountCache = {
@@ -226,6 +226,38 @@ function ensureBootstrapped(): void {
   });
 }
 
+/** Optimistically flip entitlements to overLimit so the pause screen appears immediately. */
+export function markAccountQuotaPaused(reason?: string): void {
+  const current = state.status;
+  if (!current?.entitlements) {
+    // Force a refresh path even without cache — StudioFrame listens after refresh.
+    void refreshAccount({ silent: true });
+    return;
+  }
+  const paymentDue = /billing was due|payment/i.test(reason ?? "");
+  const next: AccountStatusResponse = {
+    ...current,
+    entitlements: {
+      ...current.entitlements,
+      overLimit: true,
+      pauseMode: paymentDue
+        ? "payment_required"
+        : current.entitlements.pauseMode ?? "upgrade_required",
+      subscriptionStatus: paymentDue
+        ? "past_due"
+        : current.entitlements.subscriptionStatus,
+    },
+  };
+  const token = readAccountSessionToken();
+  if (token) writeCache(token, next);
+  setState({ status: next, account: next.account ?? state.account });
+}
+
+export function refreshAccountStatus(opts?: { silent?: boolean }): Promise<void> {
+  ensureBootstrapped();
+  return refreshAccount(opts);
+}
+
 export function useSignedInAccount(): {
   account: AccountPublic | null;
   status: AccountStatusResponse | null;
@@ -244,13 +276,12 @@ export function useSignedInAccount(): {
     ensureBootstrapped();
   }, []);
 
-  const token = readAccountSessionToken();
   return {
     account: snap.account,
     status: snap.status,
     loading: snap.loading,
-    // Optimistic: a device token means signed-in until verify proves otherwise.
-    signedIn: Boolean(snap.account) || Boolean(token),
+    // Require a verified account — a bare device token is not enough for gated chrome.
+    signedIn: Boolean(snap.account),
     refresh,
   };
 }

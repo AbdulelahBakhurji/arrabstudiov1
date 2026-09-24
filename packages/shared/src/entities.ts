@@ -101,6 +101,11 @@ export interface Conversation extends Timestamps {
   sessionTokenBudget: number | null;
   /** Human employee who owns this chat (null = studio operator / legacy). */
   ownerEmployeeId: string | null;
+  /**
+   * Family seat that owns this chat. Null for non-family workspaces
+   * (or legacy rows before seat isolation).
+   */
+  familyMemberId: string | null;
   /** private = owner only; department = same dept; workspace = all humans. */
   visibility: "private" | "department" | "workspace";
 }
@@ -189,6 +194,11 @@ export interface CallToolApprovalDetail {
   conversationId: string;
   toolName: string;
   arguments: Record<string, string>;
+  /**
+   * One-time secret for binding desktop toolResult (HMAC/sha256 attestation).
+   * Cleared after successful resolve.
+   */
+  resultToken?: string;
 }
 
 export interface ToolDefinition extends Timestamps {
@@ -280,6 +290,11 @@ export interface ConnectorSecretRecord {
   lastVerifiedAt: string | null;
   error: string | null;
   secret: string;
+  /**
+   * Family seat that owns this connector. Null for non-family workspaces
+   * (or legacy rows before seat isolation). Kids must never see another seat's connectors.
+   */
+  familyMemberId: string | null;
 }
 
 export interface OperatorProfile extends Timestamps {

@@ -1,4 +1,4 @@
-import { NotFoundError, ValidationError } from "@arrab/core";
+import { ForbiddenError, NotFoundError, ValidationError } from "@arrab/core";
 import type { Persistence } from "@arrab/database";
 import type {
   Approval,
@@ -31,6 +31,7 @@ import { brandId } from "@arrab/shared";
 import { createHash, randomUUID } from "node:crypto";
 import { decryptField, encryptField } from "../lib/field-crypto.js";
 import type { WorkspaceCommandService } from "./workspace-commands.js";
+import type { FamilyHouseholdService } from "./family-household-service.js";
 
 /** Prevent accidental double-sends when a stream falls back mid-turn. */
 const RECENT_EMAIL_SENDS = new Map<string, { at: number; response: SendEmailResponse }>();
@@ -158,6 +159,8 @@ type PendingOAuth = {
   state: string;
   createdAt: number;
   expiresAt: number;
+  /** Seat that started OAuth — callbacks may not carry the family header. */
+  familyMemberId: string | null;
 };
 const GITHUB_API = "https://api.github.com";
 const GITHUB_HEADERS_BASE = {
@@ -175,6 +178,7 @@ export class ConnectorService {
   private readonly pendingGenericOAuth = new Map<string, PendingOAuth & { provider: GenericOAuthProvider }>();
   /** Recent inbound WhatsApp messages keyed by phone_number_id. */
   private readonly whatsappInbound = new Map<string, WhatsAppInboundStored[]>();
+  private familyHousehold: FamilyHouseholdService | null = null;
 
   constructor(
     private readonly persistence: Persistence,
@@ -190,6 +194,69 @@ export class ConnectorService {
     private readonly genericOAuth: Partial<Record<GenericOAuthProvider, GenericOAuthConfig>> = {},
   ) {}
 
+  /** Wire after construction (FamilyHousehold is created later in app bootstrap). */
+  setFamilyHousehold(service: FamilyHouseholdService): void {
+    this.familyHousehold = service;
+  }
+
+  /** Family seat for isolation; null means workspace-wide (non-family plans). */
+  private async activeSeatId(explicit?: string | null): Promise<string | null> {
+    if (explicit !== undefined) return explicit;
+    if (!this.familyHousehold) return null;
+    if (!(await this.familyHousehold.isFamilyPlanActive())) return null;
+    return this.familyHousehold.getActiveMemberId();
+  }
+
+  /**
+   * Credentials connected under a child seat that clearly belong to the household
+   * owner (studio email / display name) are stamped on the owner instead — never
+   * on the device's kid profile by accident.
+   */
+  private async seatForNewConnector(
+    seatId: string | null,
+    accountLabel: string | null | undefined,
+  ): Promise<string | null> {
+    if (!seatId || !this.familyHousehold) return seatId;
+    const members = await this.persistence.familyMembers.list();
+    const seat = members.find((m) => m.id === seatId);
+    const owner = members.find((m) => m.isOwner);
+    if (!seat || seat.role !== "child" || !owner) return seatId;
+    const account = await this.persistence.accounts.get();
+    const label = (accountLabel || "").trim().toLowerCase();
+    if (!label) return seatId;
+    const accountEmail = account?.email?.trim().toLowerCase() || "";
+    const accountLocal = (accountEmail.split("@")[0] || "").replace(/[^a-z0-9]/g, "");
+    const accountName = (account?.displayName || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+    const compact = label.replace(/[^a-z0-9]/g, "");
+    if (accountEmail && label === accountEmail) return owner.id;
+    if (accountLocal && compact && (compact === accountLocal || compact.includes(accountLocal) || accountLocal.includes(compact))) {
+      return owner.id;
+    }
+    if (accountName && compact && (compact === accountName || compact.includes(accountName) || accountName.includes(compact))) {
+      return owner.id;
+    }
+    return seatId;
+  }
+
+  private async assertSeatCanAccess(record: ConnectorSecretRecord): Promise<void> {
+    if (!this.familyHousehold || !(await this.familyHousehold.isFamilyPlanActive())) return;
+    const seatId = await this.familyHousehold.getActiveMemberId();
+    if (!seatId) {
+      throw new ForbiddenError("Switch to a family profile before using connectors");
+    }
+    if (record.familyMemberId && record.familyMemberId !== seatId) {
+      throw new ForbiddenError("This connector belongs to another family profile");
+    }
+    if (!record.familyMemberId) {
+      // Legacy unowned row — only the owner seat may touch it until reconnected.
+      const members = await this.persistence.familyMembers.list();
+      const seat = members.find((m) => m.id === seatId);
+      if (!seat?.isOwner) {
+        throw new ForbiddenError("This connector belongs to another family profile");
+      }
+    }
+  }
+
   private openConnector(record: ConnectorSecretRecord): ConnectorSecretRecord {
     return { ...record, secret: decryptField(record.secret) };
   }
@@ -200,7 +267,10 @@ export class ConnectorService {
 
   private async loadConnector(id: string): Promise<ConnectorSecretRecord | null> {
     const record = await this.persistence.connectors.getById(id);
-    return record ? this.openConnector(record) : null;
+    if (!record) return null;
+    const opened = this.openConnector(record);
+    await this.assertSeatCanAccess(opened);
+    return opened;
   }
 
   private async saveConnector(record: ConnectorSecretRecord, mode: "create" | "update"): Promise<void> {
@@ -212,19 +282,26 @@ export class ConnectorService {
     }
   }
 
-  /** Create or replace the workspace connector for an OAuth provider (reconnect-safe). */
+  /** Create or replace the seat/workspace connector for an OAuth provider (reconnect-safe). */
   private async upsertOAuthConnector(
     record: Omit<ConnectorSecretRecord, "id"> & { id?: string },
   ): Promise<void> {
-    const existing = (await this.persistence.connectors.list()).find(
-      (item) => item.provider === record.provider,
+    const seatId = await this.seatForNewConnector(
+      record.familyMemberId ?? null,
+      record.accountLabel,
     );
+    const existing = (await this.persistence.connectors.list()).find((item) => {
+      if (item.provider !== record.provider) return false;
+      if (seatId) return item.familyMemberId === seatId;
+      return !item.familyMemberId;
+    });
     if (existing) {
       await this.saveConnector(
         {
           ...this.openConnector(existing),
           ...record,
           id: existing.id,
+          familyMemberId: seatId ?? existing.familyMemberId ?? null,
           connectedAt: existing.connectedAt || record.connectedAt,
         },
         "update",
@@ -235,6 +312,7 @@ export class ConnectorService {
       {
         ...record,
         id: record.id ?? randomUUID(),
+        familyMemberId: seatId,
       } as ConnectorSecretRecord,
       "create",
     );
@@ -242,7 +320,67 @@ export class ConnectorService {
 
   async list(): Promise<ConnectorPublic[]> {
     const items = await this.persistence.connectors.list();
-    return items.map(toPublic);
+    if (!this.familyHousehold || !(await this.familyHousehold.isFamilyPlanActive())) {
+      return items.map(toPublic);
+    }
+    const seatId = await this.familyHousehold.getActiveMemberId();
+    // No active seat → never leak workspace-wide / other-seat connectors.
+    if (!seatId) return [];
+
+    const members = await this.persistence.familyMembers.list();
+    const seat = members.find((m) => m.id === seatId);
+    const owner = members.find((m) => m.isOwner);
+    const managerIds = new Set(
+      members
+        .filter((m) => m.isOwner || m.role === "parent" || m.role === "partner")
+        .map((m) => String(m.id)),
+    );
+
+    // Heal bleed: credentials that landed on a child seat but belong to a parent
+    // (studio account identity, or same provider+account as a manager seat) move home.
+    if (owner && seat?.role === "child") {
+      const account = await this.persistence.accounts.get();
+      const accountEmail = account?.email?.trim().toLowerCase() || "";
+      const accountLocal = accountEmail.split("@")[0] || "";
+      const accountName = (account?.displayName || "").trim().toLowerCase().replace(/[^a-z0-9]/g, "");
+      const parentKeys = new Set(
+        items
+          .filter((item) => item.familyMemberId && managerIds.has(String(item.familyMemberId)))
+          .map((item) => `${item.provider}:${(item.accountLabel || "").trim().toLowerCase()}`),
+      );
+      const relatedToAccount = (label: string): boolean => {
+        if (!label) return false;
+        if (accountEmail && label === accountEmail) return true;
+        const compact = label.replace(/[^a-z0-9]/g, "");
+        if (accountLocal) {
+          const local = accountLocal.replace(/[^a-z0-9]/g, "");
+          if (local && (compact === local || compact.includes(local) || local.includes(compact))) {
+            return true;
+          }
+        }
+        if (accountName && compact && (compact === accountName || compact.includes(accountName) || accountName.includes(compact))) {
+          return true;
+        }
+        return false;
+      };
+      for (const item of items) {
+        if (item.familyMemberId !== seatId) continue;
+        const label = (item.accountLabel || "").trim().toLowerCase();
+        const key = `${item.provider}:${label}`;
+        const looksLikeParent = relatedToAccount(label) || (label.length > 0 && parentKeys.has(key));
+        if (!looksLikeParent) continue;
+        const opened = this.openConnector(item);
+        await this.saveConnector(
+          { ...opened, familyMemberId: owner.id },
+          "update",
+        );
+        item.familyMemberId = owner.id;
+      }
+    }
+
+    return items
+      .filter((item) => item.familyMemberId != null && item.familyMemberId === seatId)
+      .map(toPublic);
   }
 
   catalog(): Array<{
@@ -336,7 +474,7 @@ export class ConnectorService {
     }));
   }
 
-  startGmailOAuth(): StartGmailOAuthResponse {
+  async startGmailOAuth(): Promise<StartGmailOAuthResponse> {
     const config = this.requireGoogleConfig();
     this.prunePendingGmailOAuth();
     const state = newGmailOAuthState();
@@ -345,11 +483,12 @@ export class ConnectorService {
       state,
       createdAt: now,
       expiresAt: now + 15 * 60_000,
+      familyMemberId: await this.activeSeatId(),
     });
     return buildGmailAuthUrl(config, state);
   }
 
-  startGithubOAuth(): StartGmailOAuthResponse {
+  async startGithubOAuth(): Promise<StartGmailOAuthResponse> {
     const config = this.requireGithubOAuthConfig();
     this.prunePendingGithubOAuth();
     const state = newGithubOAuthState();
@@ -358,6 +497,7 @@ export class ConnectorService {
       state,
       createdAt: now,
       expiresAt: now + 15 * 60_000,
+      familyMemberId: await this.activeSeatId(),
     });
     return buildGithubAuthUrl(config, state);
   }
@@ -403,6 +543,7 @@ export class ConnectorService {
         lastVerifiedAt: now,
         error: null,
         secret: JSON.stringify(secret),
+        familyMemberId: pending.familyMemberId,
       };
       await this.upsertOAuthConnector(record);
       return {
@@ -453,6 +594,7 @@ export class ConnectorService {
         lastVerifiedAt: now,
         error: null,
         secret: JSON.stringify(secret),
+        familyMemberId: pending.familyMemberId,
       };
       await this.upsertOAuthConnector(record);
       return {
@@ -464,7 +606,7 @@ export class ConnectorService {
     }
   }
 
-  startOutlookOAuth(): StartGmailOAuthResponse {
+  async startOutlookOAuth(): Promise<StartGmailOAuthResponse> {
     const config = this.requireMicrosoftConfig();
     this.prunePendingOutlookOAuth();
     const state = newOutlookOAuthState();
@@ -473,6 +615,7 @@ export class ConnectorService {
       state,
       createdAt: now,
       expiresAt: now + 15 * 60_000,
+      familyMemberId: await this.activeSeatId(),
     });
     return buildOutlookAuthUrl(config, state);
   }
@@ -516,6 +659,7 @@ export class ConnectorService {
         lastVerifiedAt: now,
         error: null,
         secret: JSON.stringify(secret),
+        familyMemberId: pending.familyMemberId,
       };
       await this.upsertOAuthConnector(record);
       return {
@@ -527,7 +671,7 @@ export class ConnectorService {
     }
   }
 
-  startGenericOAuth(provider: GenericOAuthProvider): StartGmailOAuthResponse {
+  async startGenericOAuth(provider: GenericOAuthProvider): Promise<StartGmailOAuthResponse> {
     const config = this.requireGenericOAuthConfig(provider);
     this.prunePendingGenericOAuth();
     const state = newGenericOAuthState();
@@ -537,6 +681,7 @@ export class ConnectorService {
       state,
       createdAt: now,
       expiresAt: now + 15 * 60_000,
+      familyMemberId: await this.activeSeatId(),
     });
     return buildGenericAuthUrl(provider, config, state);
   }
@@ -584,6 +729,7 @@ export class ConnectorService {
         lastVerifiedAt: now,
         error: null,
         secret: JSON.stringify(secret),
+        familyMemberId: pending.familyMemberId,
       };
       await this.upsertOAuthConnector(record);
       return {
@@ -620,19 +766,29 @@ export class ConnectorService {
 
     const verified = await this.verifyProvider(provider, input);
     const now = new Date().toISOString();
+    const seatId = await this.seatForNewConnector(
+      await this.activeSeatId(),
+      input.label?.trim() || verified.login,
+    );
+    const existing = (await this.persistence.connectors.list()).find((item) => {
+      if (item.provider !== provider) return false;
+      if (seatId) return item.familyMemberId === seatId;
+      return !item.familyMemberId;
+    });
     const record: ConnectorSecretRecord = {
-      id: randomUUID(),
+      id: existing?.id ?? randomUUID(),
       workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
       provider,
       status: "connected",
       accountLabel: input.label?.trim() || verified.login,
       scopes: verified.scopes,
-      connectedAt: now,
+      connectedAt: existing?.connectedAt ?? now,
       lastVerifiedAt: now,
       error: null,
       secret: verified.secret,
+      familyMemberId: seatId,
     };
-    await this.saveConnector(record, "create");
+    await this.saveConnector(record, existing ? "update" : "create");
     return toPublic(record);
   }
 
@@ -835,22 +991,28 @@ export class ConnectorService {
   }
 
   async findPreferredSshConnector(): Promise<ConnectorPublic | null> {
-    const items = await this.persistence.connectors.list();
+    const items = await this.list();
     const match = items.find((item) => item.provider === "ssh" && item.status === "connected");
-    return match ? toPublic(match) : null;
+    return match ?? null;
   }
 
   /**
-   * Resolve Finnhub access: workspace connector first, then platform FINNHUB_API_KEY.
+   * Resolve Finnhub access: seat/workspace connector first, then platform FINNHUB_API_KEY.
    */
   async resolveFinnhubAccess(): Promise<{ apiKey: string; accountLabel: string } | null> {
+    const seatId = await this.activeSeatId();
     const items = await this.persistence.connectors.list();
-    const match = items.find((item) => item.provider === "finnhub" && item.status === "connected");
-    const workspaceKey = match?.secret?.trim();
+    const match = items.find((item) => {
+      if (item.provider !== "finnhub" || item.status !== "connected") return false;
+      if (seatId) return item.familyMemberId === seatId;
+      return true;
+    });
+    const opened = match ? this.openConnector(match) : null;
+    const workspaceKey = opened?.secret?.trim();
     if (workspaceKey) {
       return {
         apiKey: workspaceKey,
-        accountLabel: match?.accountLabel?.trim() || "Finnhub",
+        accountLabel: opened?.accountLabel?.trim() || "Finnhub",
       };
     }
     const platform = this.finnhubApiKey?.trim();
@@ -1907,6 +2069,7 @@ function toPublic(connector: ConnectorSecretRecord): ConnectorPublic {
     connectedAt: connector.connectedAt,
     lastVerifiedAt: connector.lastVerifiedAt,
     error: connector.error,
+    familyMemberId: connector.familyMemberId ?? null,
   };
 }
 

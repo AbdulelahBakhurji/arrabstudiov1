@@ -29,7 +29,8 @@ export async function hydrateDeviceCache(): Promise<void> {
         continue;
       }
       const value = await deviceStoreGet("cache", key);
-      if (value != null) {
+      // Never restore empty placeholders — they wipe real connection prefs.
+      if (value != null && value !== "") {
         nativeSetItem(key, value);
       }
     }

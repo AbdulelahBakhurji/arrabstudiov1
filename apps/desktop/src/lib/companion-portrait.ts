@@ -37,8 +37,24 @@ const PRESET_FILES: Record<string, string> = {
   brand: "brand.png",
   copywriter: "copywriter.png",
   sleep: "saudi-wellness-01.png",
+  health: "pool-03.png",
+  ivy: "pool-03.png",
   money: "saudi-business-01.png",
+  sam: "saudi-business-01.png",
+  relationships: "saudi-copy-01.png",
+  maya: "saudi-copy-01.png",
+  parents: "pool-05.png",
+  june: "pool-05.png",
+  career: "pool-02.png",
+  marcus: "pool-02.png",
+  chronicler: "pool-08.png",
   work: "saudi-shumagh-02.png",
+  meetings: "pool-04.png",
+  colleagues: "pool-06.png",
+  "decision-guard": "pool-10.png",
+  meaning: "pool-11.png",
+  paperwork: "pool-12.png",
+  "daily-decisions": "pool-07.png",
   study: "saudi-woman-01.png",
   training: "saudi-training-01.png",
   focus: "saudi-hijab-01.png",
@@ -125,10 +141,15 @@ const VISUAL_TWINS: Record<string, string[]> = {
   "saudi-copy-01.png": ["copywriter.png"],
 };
 
-const PORTRAIT_VERSION = "saudi-vector-v1";
+const PORTRAIT_VERSION = "saudi-vector-v3";
+
+/** Public URL for a portrait file under /companions/portraits. */
+export function portraitFileUrl(file: string): string {
+  return `/companions/portraits/${file}?v=${PORTRAIT_VERSION}`;
+}
 
 function portraitAssetUrl(file: string): string {
-  return `/companions/portraits/${file}?v=${PORTRAIT_VERSION}`;
+  return portraitFileUrl(file);
 }
 
 function domainKey(domain: string): string {
@@ -165,7 +186,13 @@ export function portraitLaneFor(domainOrPurpose: string): PortraitLane {
     key.includes("trader") ||
     key.includes("work") ||
     key.includes("business") ||
-    key.includes("finance")
+    key.includes("finance") ||
+    key.includes("career") ||
+    key.includes("meeting") ||
+    key.includes("colleague") ||
+    key.includes("paperwork") ||
+    key.includes("sam") ||
+    key.includes("marcus")
   ) {
     return "business";
   }
@@ -176,7 +203,9 @@ export function portraitLaneFor(domainOrPurpose: string): PortraitLane {
     key.includes("study") ||
     key.includes("health") ||
     key.includes("wellness") ||
-    key.includes("diet")
+    key.includes("diet") ||
+    key.includes("meaning") ||
+    key.includes("ivy")
   ) {
     return "wellness";
   }

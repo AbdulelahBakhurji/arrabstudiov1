@@ -115,10 +115,12 @@ export function CompanionMePage() {
                 ? "راجع مصادر البيانات وغيّر وصولها من الاتصالات."
                 : "Review data sources and manage access in Connections."}
             </p>
-            <Link className="cp-button" to={href("/connectors")}>
-              <Cable size={16} />
-              {t("connectors")}
-            </Link>
+            {account ? (
+              <Link className="cp-button" to={href("/connectors")}>
+                <Cable size={16} />
+                {t("connectors")}
+              </Link>
+            ) : null}
             <Link className="cp-button" to={href("/settings")}>
               <Settings2 size={16} />
               {t("settings")}

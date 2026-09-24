@@ -3,7 +3,8 @@ import { ArrowUp, EyeOff, Lock, Plus, Settings, Square, Trash2 } from "lucide-re
 import type { AiGatewayStatusResponse } from "@arrab/shared";
 import { ComposerPlusMenu } from "@/components/ComposerPlusMenu";
 import { arrabApi } from "@/lib/api";
-import { resolvePreferredModel } from "@/lib/ai-prefs";
+import { resolveAiRuntime, resolvePreferredModel } from "@/lib/ai-prefs";
+import { streamOllamaChat } from "@/lib/local-models";
 import { filesToDraftParts } from "@/lib/composer-attachments";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { readPrefs } from "@/lib/prefs";
@@ -13,6 +14,7 @@ import {
   forgetIncognitoApiId,
   incognitoVaultExists,
   isIncognitoUnlocked,
+  listIncognitoApiIds,
   listIncognitoSessions,
   loadIncognitoSession,
   lockIncognitoVault,
@@ -25,12 +27,18 @@ import {
   type IncognitoSession,
 } from "@/lib/incognito-vault";
 import { takeIncognitoImport } from "@/lib/incognito-import";
+import {
+  assertTokensAvailable,
+  enforceTokenGuard,
+  subscribeTokenGuard,
+} from "@/lib/token-guard";
 
 type ListedSession = Awaited<ReturnType<typeof listIncognitoSessions>>[number];
 
 /**
  * Password-gated private chat for the companions surface.
- * Ciphertext stays on-device; the model round-trip uses a disposable API conversation.
+ * Transcripts are AES-GCM encrypted on-device only.
+ * Cloud model calls use ephemeral requests — no account message rows.
  */
 export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
   const { t, locale } = useLanguage();
@@ -67,6 +75,15 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  useEffect(() => {
+    return subscribeTokenGuard(() => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      setSending(false);
+      setBusy(false);
+    });
   }, []);
 
   const refreshSessions = useCallback(async () => {
@@ -127,7 +144,7 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
 
   async function setupVault() {
     setError(null);
-    if (password.trim().length < 6) {
+    if (password.trim().length < 8) {
       setError(t("chatIncognitoTooShort"));
       return;
     }
@@ -186,6 +203,14 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
 
   function lockVault() {
     abortRef.current?.abort();
+    const leftover = [...listIncognitoApiIds()];
+    for (const id of leftover) {
+      forgetIncognitoApiId(id);
+      void arrabApi.deleteConversation(id).catch(() => undefined);
+    }
+    if (apiConversationId) {
+      void arrabApi.deleteConversation(apiConversationId).catch(() => undefined);
+    }
     lockIncognitoVault();
     setUnlocked(false);
     setManaging(false);
@@ -330,29 +355,53 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
     let soloId = agentId;
 
     try {
-      if (!activeSessionId || !conversationId) {
-        soloId = await ensureAgent();
-        const created = await arrabApi.createConversation({
-          agentId: soloId,
-          title: t("chatIncognitoBadge"),
-          spend: { tier: "low", sessionTokenBudget: null },
-        });
-        conversationId = created.id;
-        activeSessionId = newIncognitoSessionId();
+      const prefs = readPrefs();
+      const runtime = resolveAiRuntime(prefs);
+      if (runtime === "blocked") {
+        setError(t("cloudNeedsSignIn"));
+        return;
+      }
+
+      if (runtime === "cloud") {
+        try {
+          assertTokensAvailable();
+        } catch (err: unknown) {
+          const guarded = enforceTokenGuard(err);
+          setError(guarded ?? (err instanceof Error ? err.message : t("apiUnavailable")));
+          return;
+        }
+      }
+
+      if (!activeSessionId || (!conversationId && runtime === "cloud")) {
+        if (runtime === "cloud") {
+          soloId = await ensureAgent();
+          const created = await arrabApi.createConversation({
+            agentId: soloId,
+            title: t("chatIncognitoBadge"),
+            spend: { tier: "low", sessionTokenBudget: null },
+          });
+          conversationId = created.id;
+        } else {
+          conversationId = conversationId ?? `local-${crypto.randomUUID()}`;
+          soloId = soloId ?? "local-ollama";
+        }
+        activeSessionId = activeSessionId ?? newIncognitoSessionId();
         const session: IncognitoSession = {
           id: activeSessionId,
           title: text.slice(0, 48) || t("chatIncognitoBadge"),
-          agentId: soloId,
-          apiConversationId: conversationId,
+          agentId: soloId!,
+          apiConversationId: conversationId!,
           messages: [],
           updatedAt: new Date().toISOString(),
           createdAt: new Date().toISOString(),
         };
         await saveIncognitoSession(session);
-        rememberIncognitoApiId(conversationId);
+        if (runtime === "cloud" && conversationId) {
+          rememberIncognitoApiId(conversationId);
+        }
         setSessionId(activeSessionId);
-        setAgentId(soloId);
-        setApiConversationId(conversationId);
+        setAgentId(soloId!);
+        setApiConversationId(conversationId!);
         await refreshSessions();
       }
 
@@ -370,8 +419,8 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
       await saveIncognitoSession({
         id: activeSessionId,
         title: text.slice(0, 48) || existing?.title || t("chatIncognitoBadge"),
-        agentId: soloId,
-        apiConversationId: conversationId,
+        agentId: soloId!,
+        apiConversationId: conversationId!,
         messages: nextMessages,
         updatedAt: new Date().toISOString(),
         createdAt: existing?.createdAt ?? new Date().toISOString(),
@@ -382,12 +431,75 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
       abortRef.current = controller;
       let reply = "";
 
+      if (runtime === "local") {
+        reply = await streamOllamaChat(
+          prefs.aiLocalModel.trim(),
+          [
+            {
+              role: "system",
+              content:
+                "You are a private local assistant on this Mac (Ollama). Be discreet and helpful. Match the user's language. This chat stays encrypted on this device only.",
+            },
+            ...messages
+              .filter((message) => message.role === "user" || message.role === "assistant")
+              .slice(-16)
+              .map((message) => ({
+                role: message.role as "user" | "assistant",
+                content: message.content,
+              })),
+            { role: "user", content: text },
+          ],
+          (token) => {
+            if (controller.signal.aborted) return;
+            reply += token;
+            const assistant: IncognitoMessage = {
+              id: assistantId,
+              role: "assistant",
+              content: reply,
+              createdAt: new Date().toISOString(),
+            };
+            nextMessages = [
+              ...nextMessages.filter((message) => message.id !== assistantId),
+              assistant,
+            ];
+            setMessages(nextMessages);
+          },
+          controller.signal,
+          prefs.aiLocalBaseUrl,
+        );
+        if (reply) {
+          const latest = await loadIncognitoSession(activeSessionId);
+          await saveIncognitoSession({
+            id: activeSessionId,
+            title: text.slice(0, 48) || latest?.title || t("chatIncognitoBadge"),
+            agentId: soloId!,
+            apiConversationId: null,
+            messages: nextMessages,
+            updatedAt: new Date().toISOString(),
+            createdAt: latest?.createdAt ?? new Date().toISOString(),
+          });
+          setApiConversationId(null);
+          await refreshSessions();
+        }
+        return;
+      }
+
+      const priorMessages = messages
+        .filter((message) => message.role === "user" || message.role === "assistant")
+        .slice(-24)
+        .map((message) => ({
+          role: message.role as "user" | "assistant",
+          content: message.content,
+        }));
+
       await arrabApi.sendMessageStream(
         conversationId!,
         {
           content: text,
           model: resolvePreferredModel(aiStatus, readPrefs()),
           spend: { tier: "low", sessionTokenBudget: null },
+          ephemeral: true,
+          priorMessages,
         },
         {
           onToken: (token) => {
@@ -430,20 +542,33 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
 
       if (reply) {
         const latest = await loadIncognitoSession(activeSessionId);
+        // Transcript lives only in the encrypted on-device vault.
+        // Scrub the disposable API conversation so nothing remains on the account.
+        if (conversationId) {
+          forgetIncognitoApiId(conversationId);
+          try {
+            await arrabApi.deleteConversation(conversationId);
+          } catch {
+            // best-effort scrub
+          }
+        }
         await saveIncognitoSession({
           id: activeSessionId,
           title: text.slice(0, 48) || latest?.title || t("chatIncognitoBadge"),
           agentId: soloId,
-          apiConversationId: conversationId,
+          apiConversationId: null,
           messages: nextMessages,
           updatedAt: new Date().toISOString(),
           createdAt: latest?.createdAt ?? new Date().toISOString(),
         });
+        setApiConversationId(null);
         await refreshSessions();
       }
     } catch (err: unknown) {
       if (!(err instanceof DOMException && err.name === "AbortError")) {
-        setError(err instanceof Error ? err.message : t("apiUnavailable"));
+        const guarded = enforceTokenGuard(err);
+        abortRef.current?.abort();
+        setError(guarded ?? (err instanceof Error ? err.message : t("apiUnavailable")));
         setDraft(text);
       }
     } finally {
@@ -659,6 +784,7 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
                 </span>
                 <h2>{t("chatIncognitoMode")}</h2>
                 <p className="cp-muted">{t("chatIncognitoReadyHint")}</p>
+                <p className="cp-eyebrow">{t("chatIncognitoConfidential")}</p>
                 <button type="button" className="cp-button cp-incognito-cta" disabled={busy} onClick={() => void newSession()}>
                   {t("chatIncognitoNew")}
                 </button>

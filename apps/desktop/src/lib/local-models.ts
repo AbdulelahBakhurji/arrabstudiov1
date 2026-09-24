@@ -1,7 +1,9 @@
 /**
- * Curated local models (Ollama) — download in Settings, not in chat.
- * Tiers: low → high (size / quality).
+ * Curated local models (Ollama) — download in Settings, then Use to chat offline.
+ * Tags match https://ollama.com/library — pull + /api/chat verified paths.
  */
+import { applySkillsToChatMessages, ensureSkillCatalogWarm } from "./user-skills";
+
 export type LocalModelTier = "low" | "mid" | "high" | "max";
 
 export type LocalModelCatalogEntry = {
@@ -31,14 +33,14 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     tier: "low",
   },
   {
-    id: "gemma2-2b",
-    ollamaTag: "gemma2:2b",
-    name: "Gemma 2 2B",
-    nameAr: "Gemma 2 ‏٢ب",
-    blurb: "Very light everyday chat.",
-    blurbAr: "محادثة يومية خفيفة جداً.",
-    sizeLabel: "~1.6 GB",
-    params: "2B",
+    id: "qwen2.5-0.5b",
+    ollamaTag: "qwen2.5:0.5b",
+    name: "Qwen 2.5 0.5B",
+    nameAr: "Qwen 2.5 ‏٠٫٥ب",
+    blurb: "Tiny multilingual starter — downloads in seconds.",
+    blurbAr: "بداية متعددة اللغات بحجم صغير جداً.",
+    sizeLabel: "~398 MB",
+    params: "0.5B",
     tier: "low",
   },
   {
@@ -53,6 +55,28 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     tier: "low",
   },
   {
+    id: "gemma3-1b",
+    ollamaTag: "gemma3:1b",
+    name: "Gemma 3 1B",
+    nameAr: "Gemma 3 ‏١ب",
+    blurb: "Newest Google tiny model — fast on any laptop.",
+    blurbAr: "أحدث نموذج جوجل الصغير — سريع على أي لابتوب.",
+    sizeLabel: "~815 MB",
+    params: "1B",
+    tier: "low",
+  },
+  {
+    id: "gemma2-2b",
+    ollamaTag: "gemma2:2b",
+    name: "Gemma 2 2B",
+    nameAr: "Gemma 2 ‏٢ب",
+    blurb: "Very light everyday chat.",
+    blurbAr: "محادثة يومية خفيفة جداً.",
+    sizeLabel: "~1.6 GB",
+    params: "2B",
+    tier: "low",
+  },
+  {
     id: "llama3.2-1b",
     ollamaTag: "llama3.2:1b",
     name: "Llama 3.2 1B",
@@ -61,6 +85,28 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     blurbAr: "نموذج ميتا فائق الخفة.",
     sizeLabel: "~1.3 GB",
     params: "1B",
+    tier: "low",
+  },
+  {
+    id: "deepseek-r1-1.5b",
+    ollamaTag: "deepseek-r1:1.5b",
+    name: "DeepSeek R1 1.5B",
+    nameAr: "DeepSeek R1 ‏١٫٥ب",
+    blurb: "Small reasoning model — good for short problems.",
+    blurbAr: "نموذج تفكير صغير — مناسب للمسائل القصيرة.",
+    sizeLabel: "~1.1 GB",
+    params: "1.5B",
+    tier: "low",
+  },
+  {
+    id: "qwen2.5-3b",
+    ollamaTag: "qwen2.5:3b",
+    name: "Qwen 2.5 3B",
+    nameAr: "Qwen 2.5 ‏٣ب",
+    blurb: "Strong light multilingual default.",
+    blurbAr: "افتراضي خفيف وقوي متعدد اللغات.",
+    sizeLabel: "~1.9 GB",
+    params: "3B",
     tier: "low",
   },
   {
@@ -86,7 +132,64 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     params: "3.8B",
     tier: "low",
   },
+  {
+    id: "qwen2.5-coder-1.5b",
+    ollamaTag: "qwen2.5-coder:1.5b",
+    name: "Qwen 2.5 Coder 1.5B",
+    nameAr: "Qwen 2.5 Coder ‏١٫٥ب",
+    blurb: "Tiny coding helper.",
+    blurbAr: "مساعد برمجة صغير.",
+    sizeLabel: "~986 MB",
+    params: "1.5B",
+    tier: "low",
+  },
+  {
+    id: "qwen2.5-coder-3b",
+    ollamaTag: "qwen2.5-coder:3b",
+    name: "Qwen 2.5 Coder 3B",
+    nameAr: "Qwen 2.5 Coder ‏٣ب",
+    blurb: "Light code assistant.",
+    blurbAr: "مساعد برمجة خفيف.",
+    sizeLabel: "~1.9 GB",
+    params: "3B",
+    tier: "low",
+  },
+  {
+    id: "qwen3-0.6b",
+    ollamaTag: "qwen3:0.6b",
+    name: "Qwen 3 0.6B",
+    nameAr: "Qwen 3 ‏٠٫٦ب",
+    blurb: "Newest Qwen tiny — very fast replies.",
+    blurbAr: "أحدث Qwen الصغير — ردود سريعة جداً.",
+    sizeLabel: "~522 MB",
+    params: "0.6B",
+    tier: "low",
+  },
+  {
+    id: "qwen3-1.7b",
+    ollamaTag: "qwen3:1.7b",
+    name: "Qwen 3 1.7B",
+    nameAr: "Qwen 3 ‏١٫٧ب",
+    blurb: "New-generation small multilingual model.",
+    blurbAr: "نموذج متعدد اللغات من الجيل الجديد.",
+    sizeLabel: "~1.4 GB",
+    params: "1.7B",
+    tier: "low",
+  },
+
   // —— Mid ——
+  {
+    id: "gemma3-4b",
+    ollamaTag: "gemma3:4b",
+    name: "Gemma 3 4B",
+    nameAr: "Gemma 3 ‏٤ب",
+    blurb: "Balanced Google open model for daily chat.",
+    blurbAr: "نموذج جوجل المتوازن للمحادثة اليومية.",
+    sizeLabel: "~3.3 GB",
+    params: "4B",
+    tier: "mid",
+    recommended: true,
+  },
   {
     id: "mistral-7b",
     ollamaTag: "mistral:7b",
@@ -109,6 +212,17 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     params: "7B",
     tier: "mid",
     recommended: true,
+  },
+  {
+    id: "qwen2.5-coder-7b",
+    ollamaTag: "qwen2.5-coder:7b",
+    name: "Qwen 2.5 Coder 7B",
+    nameAr: "Qwen 2.5 Coder ‏٧ب",
+    blurb: "Best mid coding model.",
+    blurbAr: "أفضل نموذج برمجة متوسط.",
+    sizeLabel: "~4.7 GB",
+    params: "7B",
+    tier: "mid",
   },
   {
     id: "llama3.1-8b",
@@ -144,6 +258,39 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     tier: "mid",
   },
   {
+    id: "deepseek-r1-8b",
+    ollamaTag: "deepseek-r1:8b",
+    name: "DeepSeek R1 8B",
+    nameAr: "DeepSeek R1 ‏٨ب",
+    blurb: "Stronger reasoning on mid hardware.",
+    blurbAr: "تفكير أقوى على أجهزة متوسطة.",
+    sizeLabel: "~5.2 GB",
+    params: "8B",
+    tier: "mid",
+  },
+  {
+    id: "qwen3-4b",
+    ollamaTag: "qwen3:4b",
+    name: "Qwen 3 4B",
+    nameAr: "Qwen 3 ‏٤ب",
+    blurb: "New Qwen generation — sharp and efficient.",
+    blurbAr: "جيل Qwen الجديد — حاد وفعّال.",
+    sizeLabel: "~2.6 GB",
+    params: "4B",
+    tier: "mid",
+  },
+  {
+    id: "qwen3-8b",
+    ollamaTag: "qwen3:8b",
+    name: "Qwen 3 8B",
+    nameAr: "Qwen 3 ‏٨ب",
+    blurb: "Modern multilingual mid-tier.",
+    blurbAr: "متعدد اللغات حديث في الطبقة الوسطى.",
+    sizeLabel: "~5.2 GB",
+    params: "8B",
+    tier: "mid",
+  },
+  {
     id: "phi4",
     ollamaTag: "phi4",
     name: "Phi-4",
@@ -155,6 +302,30 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     tier: "mid",
   },
   {
+    id: "mistral-nemo",
+    ollamaTag: "mistral-nemo",
+    name: "Mistral Nemo",
+    nameAr: "Mistral Nemo",
+    blurb: "12B general model with long context.",
+    blurbAr: "نموذج عام ١٢ب مع سياق طويل.",
+    sizeLabel: "~7.1 GB",
+    params: "12B",
+    tier: "mid",
+  },
+
+  // —— High ——
+  {
+    id: "gemma3-12b",
+    ollamaTag: "gemma3:12b",
+    name: "Gemma 3 12B",
+    nameAr: "Gemma 3 ‏١٢ب",
+    blurb: "High-quality Google open model.",
+    blurbAr: "نموذج جوجل المفتوح بجودة عالية.",
+    sizeLabel: "~8.1 GB",
+    params: "12B",
+    tier: "high",
+  },
+  {
     id: "gemma2-27b",
     ollamaTag: "gemma2:27b",
     name: "Gemma 2 27B",
@@ -163,9 +334,8 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     blurbAr: "نموذج جوجل المفتوح في الطبقة العليا المتوسطة.",
     sizeLabel: "~16 GB",
     params: "27B",
-    tier: "mid",
+    tier: "high",
   },
-  // —— High ——
   {
     id: "qwen2.5-14b",
     ollamaTag: "qwen2.5:14b",
@@ -189,14 +359,47 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     tier: "high",
   },
   {
-    id: "llama3.1-70b",
-    ollamaTag: "llama3.1:70b",
-    name: "Llama 3.1 70B",
-    nameAr: "Llama 3.1 ‏٧٠ب",
-    blurb: "Near cloud quality — desktop/workstation GPU.",
-    blurbAr: "قريب من السحابة — يحتاج جهاز قوي.",
-    sizeLabel: "~40 GB",
-    params: "70B",
+    id: "qwen3-14b",
+    ollamaTag: "qwen3:14b",
+    name: "Qwen 3 14B",
+    nameAr: "Qwen 3 ‏١٤ب",
+    blurb: "New-generation high quality multilingual.",
+    blurbAr: "جودة عالية متعددة اللغات من الجيل الجديد.",
+    sizeLabel: "~9.0 GB",
+    params: "14B",
+    tier: "high",
+  },
+  {
+    id: "deepseek-r1-14b",
+    ollamaTag: "deepseek-r1:14b",
+    name: "DeepSeek R1 14B",
+    nameAr: "DeepSeek R1 ‏١٤ب",
+    blurb: "Heavy reasoning without 70B hardware.",
+    blurbAr: "تفكير ثقيل بدون جهاز ٧٠ب.",
+    sizeLabel: "~9.0 GB",
+    params: "14B",
+    tier: "high",
+  },
+  {
+    id: "deepseek-r1-32b",
+    ollamaTag: "deepseek-r1:32b",
+    name: "DeepSeek R1 32B",
+    nameAr: "DeepSeek R1 ‏٣٢ب",
+    blurb: "Serious reasoning for strong machines.",
+    blurbAr: "تفكير جاد للأجهزة القوية.",
+    sizeLabel: "~20 GB",
+    params: "32B",
+    tier: "high",
+  },
+  {
+    id: "mistral-small",
+    ollamaTag: "mistral-small",
+    name: "Mistral Small",
+    nameAr: "Mistral Small",
+    blurb: "Capable general model for stronger machines.",
+    blurbAr: "نموذج عام قوي للأجهزة الأعلى.",
+    sizeLabel: "~14 GB",
+    params: "22B",
     tier: "high",
   },
   {
@@ -221,18 +424,19 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     params: "35B",
     tier: "high",
   },
-  {
-    id: "mistral-small",
-    ollamaTag: "mistral-small",
-    name: "Mistral Small",
-    nameAr: "Mistral Small",
-    blurb: "Capable general model for stronger machines.",
-    blurbAr: "نموذج عام قوي للأجهزة الأعلى.",
-    sizeLabel: "~14 GB",
-    params: "22B",
-    tier: "high",
-  },
+
   // —— Max ——
+  {
+    id: "gemma3-27b",
+    ollamaTag: "gemma3:27b",
+    name: "Gemma 3 27B",
+    nameAr: "Gemma 3 ‏٢٧ب",
+    blurb: "Flagship Gemma 3 — workstation class.",
+    blurbAr: "أحدث Gemma 3 الرائد — فئة محطات العمل.",
+    sizeLabel: "~17 GB",
+    params: "27B",
+    tier: "max",
+  },
   {
     id: "qwen2.5-32b",
     ollamaTag: "qwen2.5:32b",
@@ -240,6 +444,17 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     nameAr: "Qwen 2.5 ‏٣٢ب",
     blurb: "Top open multilingual — high-end machines.",
     blurbAr: "من أقوى المفتوحات — لأجهزة عالية.",
+    sizeLabel: "~20 GB",
+    params: "32B",
+    tier: "max",
+  },
+  {
+    id: "qwen2.5-coder-32b",
+    ollamaTag: "qwen2.5-coder:32b",
+    name: "Qwen 2.5 Coder 32B",
+    nameAr: "Qwen 2.5 Coder ‏٣٢ب",
+    blurb: "Flagship open coding model.",
+    blurbAr: "نموذج برمجة مفتوح رائد.",
     sizeLabel: "~20 GB",
     params: "32B",
     tier: "max",
@@ -253,6 +468,17 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     blurbAr: "أكبر أوزان Qwen المفتوحة — فئة محطات العمل.",
     sizeLabel: "~47 GB",
     params: "72B",
+    tier: "max",
+  },
+  {
+    id: "llama3.1-70b",
+    ollamaTag: "llama3.1:70b",
+    name: "Llama 3.1 70B",
+    nameAr: "Llama 3.1 ‏٧٠ب",
+    blurb: "Near cloud quality — desktop/workstation GPU.",
+    blurbAr: "قريب من السحابة — يحتاج جهاز قوي.",
+    sizeLabel: "~40 GB",
+    params: "70B",
     tier: "max",
   },
   {
@@ -276,6 +502,17 @@ export const LOCAL_MODEL_CATALOG: LocalModelCatalogEntry[] = [
     blurbAr: "تفكير ثقيل — فئة محطات العمل.",
     sizeLabel: "~40 GB",
     params: "70B",
+    tier: "max",
+  },
+  {
+    id: "qwen3-32b",
+    ollamaTag: "qwen3:32b",
+    name: "Qwen 3 32B",
+    nameAr: "Qwen 3 ‏٣٢ب",
+    blurb: "New-generation flagship dense model.",
+    blurbAr: "نموذج كثيف رائد من الجيل الجديد.",
+    sizeLabel: "~20 GB",
+    params: "32B",
     tier: "max",
   },
   {
@@ -384,12 +621,14 @@ export async function pullOllamaModel(
     signal: options.signal,
   });
   if (!response.ok) {
-    throw new Error(`Download failed (${response.status})`);
+    const detail = await response.text().catch(() => "");
+    throw new Error(detail || `Download failed (${response.status})`);
   }
   if (!response.body) throw new Error("Download returned no body");
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let sawSuccess = false;
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -407,10 +646,13 @@ export async function pullOllamaModel(
           error?: string;
         };
         if (row.error) throw new Error(row.error);
+        if (row.status === "success") sawSuccess = true;
         const percent =
           row.total && row.total > 0 && typeof row.completed === "number"
             ? Math.min(100, Math.round((row.completed / row.total) * 100))
-            : null;
+            : row.status === "success"
+              ? 100
+              : null;
         options.onProgress?.({
           status: row.status || "downloading",
           completed: row.completed,
@@ -423,6 +665,15 @@ export async function pullOllamaModel(
       }
     }
   }
+  // Confirm the model is listed so Use / chat can run immediately.
+  const status = await fetchOllamaStatus(base);
+  if (!status.online) {
+    throw new Error("Ollama went offline during download");
+  }
+  if (!isCatalogModelInstalled(tag, status.models) && !sawSuccess) {
+    throw new Error(`Model “${tag}” did not finish installing`);
+  }
+  options.onProgress?.({ status: "success", percent: 100 });
 }
 
 export function modelsByTier(): Array<{
@@ -448,10 +699,11 @@ export async function streamOllamaChat(
   baseUrl = DEFAULT_OLLAMA_BASE,
 ): Promise<string> {
   const base = normalizeBase(baseUrl);
+  await ensureSkillCatalogWarm().catch(() => []);
   const response = await fetch(`${base}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, messages, stream: true }),
+    body: JSON.stringify({ model, messages: applySkillsToChatMessages(messages), stream: true }),
     signal,
   });
   if (!response.ok) {
@@ -492,4 +744,3 @@ export async function streamOllamaChat(
   }
   return reply.trim();
 }
-

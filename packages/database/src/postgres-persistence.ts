@@ -58,6 +58,7 @@ import {
   type FamilyMemberRole,
   type FamilyAgeTier,
   type FamilyGuidanceRecord,
+  type ErpCompanion,
 } from "@arrab/shared";
 import type { Pool } from "pg";
 import {
@@ -148,6 +149,7 @@ type ConversationRow = {
   spend_tier?: string | null;
   session_token_budget?: number | null;
   owner_employee_id?: string | null;
+  family_member_id?: string | null;
   visibility?: string | null;
   created_at: Date;
   updated_at: Date;
@@ -244,6 +246,7 @@ function mapConversation(row: ConversationRow): Conversation {
         ? null
         : Number(row.session_token_budget),
     ownerEmployeeId: row.owner_employee_id ?? null,
+    familyMemberId: row.family_member_id ?? null,
     visibility,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
@@ -532,8 +535,8 @@ class PostgresConversationRepository implements ConversationRepository {
     await this.pool.query(
       `insert into conversations
        (id, workspace_id, project_id, agent_id, team_id, title, spend_tier, session_token_budget,
-        owner_employee_id, visibility, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        owner_employee_id, family_member_id, visibility, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         entity.id,
         entity.workspaceId,
@@ -544,6 +547,7 @@ class PostgresConversationRepository implements ConversationRepository {
         entity.spendTier,
         entity.sessionTokenBudget,
         entity.ownerEmployeeId,
+        entity.familyMemberId,
         entity.visibility,
         entity.createdAt,
         entity.updatedAt,
@@ -557,8 +561,8 @@ class PostgresConversationRepository implements ConversationRepository {
       `update conversations
        set project_id = $1, agent_id = $2, team_id = $3, title = $4,
            spend_tier = $5, session_token_budget = $6,
-           owner_employee_id = $7, visibility = $8, updated_at = $9
-       where id = $10 and workspace_id = $11`,
+           owner_employee_id = $7, family_member_id = $8, visibility = $9, updated_at = $10
+       where id = $11 and workspace_id = $12`,
       [
         entity.projectId,
         entity.agentId,
@@ -567,6 +571,7 @@ class PostgresConversationRepository implements ConversationRepository {
         entity.spendTier,
         entity.sessionTokenBudget,
         entity.ownerEmployeeId,
+        entity.familyMemberId,
         entity.visibility,
         entity.updatedAt,
         entity.id,
@@ -682,8 +687,8 @@ class PostgresConnectorRepository implements ConnectorRepository {
   async create(record: ConnectorSecretRecord): Promise<ConnectorSecretRecord> {
     await this.pool.query(
       `insert into connectors
-       (id, workspace_id, provider, status, account_label, scopes, connected_at, last_verified_at, error, secret)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+       (id, workspace_id, provider, status, account_label, scopes, connected_at, last_verified_at, error, secret, family_member_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
       [
         record.id,
         record.workspaceId,
@@ -695,6 +700,7 @@ class PostgresConnectorRepository implements ConnectorRepository {
         record.lastVerifiedAt,
         record.error,
         record.secret,
+        record.familyMemberId,
       ],
     );
     return record;
@@ -703,8 +709,8 @@ class PostgresConnectorRepository implements ConnectorRepository {
   async update(record: ConnectorSecretRecord): Promise<ConnectorSecretRecord> {
     await this.pool.query(
       `update connectors set provider = $1, status = $2, account_label = $3, scopes = $4,
-       connected_at = $5, last_verified_at = $6, error = $7, secret = $8
-       where id = $9 and workspace_id = $10`,
+       connected_at = $5, last_verified_at = $6, error = $7, secret = $8, family_member_id = $9
+       where id = $10 and workspace_id = $11`,
       [
         record.provider,
         record.status,
@@ -714,6 +720,7 @@ class PostgresConnectorRepository implements ConnectorRepository {
         record.lastVerifiedAt,
         record.error,
         record.secret,
+        record.familyMemberId,
         record.id,
         record.workspaceId,
       ],
@@ -837,6 +844,7 @@ type ConnectorRow = {
   last_verified_at: Date | null;
   error: string | null;
   secret: string;
+  family_member_id: string | null;
 };
 
 type BindingRow = {
@@ -872,6 +880,7 @@ function mapConnector(row: ConnectorRow): ConnectorSecretRecord {
     lastVerifiedAt: row.last_verified_at ? iso(row.last_verified_at) : null,
     error: row.error,
     secret: row.secret,
+    familyMemberId: row.family_member_id ?? null,
   };
 }
 
@@ -1830,7 +1839,71 @@ export async function createPostgresPersistence(pool: Pool): Promise<Persistence
     familyMembers: new PostgresFamilyMemberRepository(pool, context.workspace.id),
     familyGuidance: new PostgresFamilyGuidanceRepository(pool, context.workspace.id),
     familyHouseholdMeta: new PostgresFamilyHouseholdMetaRepository(pool, context.workspace.id),
+    erpCompanions: new PostgresErpCompanionRepository(pool),
   };
+}
+
+class PostgresErpCompanionRepository {
+  constructor(private readonly pool: Pool) {}
+
+  async list(): Promise<ErpCompanion[]> {
+    const result = await this.pool.query<{ document: ErpCompanion }>(
+      `select document from erp_companions order by updated_at desc`,
+    );
+    return result.rows.map((row) => row.document);
+  }
+
+  async getById(id: string): Promise<ErpCompanion | null> {
+    const result = await this.pool.query<{ document: ErpCompanion }>(
+      `select document from erp_companions where id = $1`,
+      [id],
+    );
+    return result.rows[0]?.document ?? null;
+  }
+
+  async getByExternalId(externalId: string): Promise<ErpCompanion | null> {
+    const result = await this.pool.query<{ document: ErpCompanion }>(
+      `select document from erp_companions where external_id = $1`,
+      [externalId],
+    );
+    return result.rows[0]?.document ?? null;
+  }
+
+  async insert(item: ErpCompanion): Promise<ErpCompanion> {
+    await this.pool.query(
+      `insert into erp_companions (id, external_id, status, updated_at, document)
+       values ($1, $2, $3, $4, $5::jsonb)`,
+      [
+        item.id,
+        item.externalId ?? null,
+        item.status,
+        item.updatedAt,
+        JSON.stringify(item),
+      ],
+    );
+    return item;
+  }
+
+  async replace(item: ErpCompanion): Promise<ErpCompanion | null> {
+    const result = await this.pool.query(
+      `update erp_companions
+       set external_id = $2, status = $3, updated_at = $4, document = $5::jsonb
+       where id = $1`,
+      [
+        item.id,
+        item.externalId ?? null,
+        item.status,
+        item.updatedAt,
+        JSON.stringify(item),
+      ],
+    );
+    return (result.rowCount ?? 0) > 0 ? item : null;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    const result = await this.pool.query(`delete from erp_companions where id = $1`, [id]);
+    return (result.rowCount ?? 0) > 0;
+  }
 }
 
 class PostgresOrgDepartmentRepository implements OrgDepartmentRepository {
@@ -2160,8 +2233,8 @@ class PostgresFamilyMemberRepository implements FamilyMemberRepository {
   async create(entity: FamilyMemberRecord): Promise<FamilyMemberRecord> {
     await this.pool.query(
       `insert into family_members
-       (id, workspace_id, display_name, role, age_tier, color, pin_hash, is_owner, is_paused, token_allowance, tokens_used, last_active_at, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+       (id, workspace_id, display_name, role, age_tier, color, pin_hash, email, password_hash, is_owner, is_paused, token_allowance, tokens_used, last_active_at, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
       [
         entity.id,
         entity.workspaceId,
@@ -2170,6 +2243,8 @@ class PostgresFamilyMemberRepository implements FamilyMemberRepository {
         entity.ageTier,
         entity.color,
         entity.pinHash,
+        entity.email,
+        entity.passwordHash,
         entity.isOwner,
         entity.isPaused,
         entity.tokenAllowance,
@@ -2190,12 +2265,14 @@ class PostgresFamilyMemberRepository implements FamilyMemberRepository {
          age_tier = $5,
          color = $6,
          pin_hash = $7,
-         is_owner = $8,
-         is_paused = $9,
-         token_allowance = $10,
-         tokens_used = $11,
-         last_active_at = $12,
-         updated_at = $13
+         email = $8,
+         password_hash = $9,
+         is_owner = $10,
+         is_paused = $11,
+         token_allowance = $12,
+         tokens_used = $13,
+         last_active_at = $14,
+         updated_at = $15
        where id = $1 and workspace_id = $2`,
       [
         entity.id,
@@ -2205,6 +2282,8 @@ class PostgresFamilyMemberRepository implements FamilyMemberRepository {
         entity.ageTier,
         entity.color,
         entity.pinHash,
+        entity.email,
+        entity.passwordHash,
         entity.isOwner,
         entity.isPaused,
         entity.tokenAllowance,
@@ -2232,6 +2311,8 @@ function mapFamilyMember(row: {
   age_tier: FamilyAgeTier | null;
   color: string;
   pin_hash: string | null;
+  email?: string | null;
+  password_hash?: string | null;
   is_owner: boolean;
   is_paused: boolean;
   token_allowance?: number | null;
@@ -2248,6 +2329,8 @@ function mapFamilyMember(row: {
     ageTier: row.age_tier,
     color: row.color,
     pinHash: row.pin_hash,
+    email: row.email ?? null,
+    passwordHash: row.password_hash ?? null,
     isOwner: row.is_owner,
     isPaused: row.is_paused,
     tokenAllowance: row.token_allowance ?? 0,
@@ -2372,6 +2455,25 @@ class PostgresFamilyHouseholdMetaRepository implements FamilyHouseholdMetaReposi
       `insert into family_household (workspace_id, extra_seats, active_member_id, updated_at)
        values ($1, 0, $2, $3)
        on conflict (workspace_id) do update set active_member_id = $2, updated_at = $3`,
+      [this.workspaceId, id, now],
+    );
+  }
+
+  async getLockedMemberId(): Promise<string | null> {
+    const result = await this.pool.query(
+      `select locked_member_id from family_household where workspace_id = $1`,
+      [this.workspaceId],
+    );
+    const value = result.rows[0]?.locked_member_id;
+    return typeof value === "string" && value ? value : null;
+  }
+
+  async setLockedMemberId(id: string | null): Promise<void> {
+    const now = new Date().toISOString();
+    await this.pool.query(
+      `insert into family_household (workspace_id, extra_seats, active_member_id, locked_member_id, updated_at)
+       values ($1, 0, null, $2, $3)
+       on conflict (workspace_id) do update set locked_member_id = $2, updated_at = $3`,
       [this.workspaceId, id, now],
     );
   }

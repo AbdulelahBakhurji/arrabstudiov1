@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, Fragment } from "react";
 import {
   ArrowUp,
   ArrowUpRight,
@@ -6,8 +6,11 @@ import {
   ChevronDown,
   Ellipsis,
   EyeOff,
+  Maximize2,
+  Minimize2,
   Plus,
   Search,
+  Shield,
   Sparkles,
   Square,
   X,
@@ -15,7 +18,11 @@ import {
 import { Link, useNavigate } from "react-router-dom";
 import { QueuedQueryBar } from "@/components/QueuedQueryBar";
 import { ChatMarkdown } from "@/components/ChatMarkdown";
-import { ComposerPlusMenu } from "@/components/ComposerPlusMenu";
+import {
+  ComposerPlusMenu,
+  composerCreatePrompt,
+  type ComposerCreateKind,
+} from "@/components/ComposerPlusMenu";
 import {
   SessionModeApproveBar,
   SessionModeMenu,
@@ -30,6 +37,7 @@ import {
 
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useRole } from "@/roles/RoleProvider";
+import { audienceFromPlanId } from "@/roles/catalog";
 import { useFamilyProfile } from "@/lib/use-family-profile";
 import { useSignedInAccount } from "@/lib/use-signed-in-account";
 import { arrabApi, ApiRequestError } from "@/lib/api";
@@ -61,7 +69,10 @@ import {
   liveNudges,
   relativeTime,
   updateCompanion,
+  addParentGuidanceFact,
   useCompanionState,
+  claimParentCoachConversation,
+  companionRoomForSeat,
   type CompanionProfile,
 } from "@/lib/companions";
 import {
@@ -77,6 +88,9 @@ import {
   ToneDetails,
 } from "@/components/companions/CompanionDetails";
 import { CompanionCatalog } from "@/components/companions/CompanionCatalog";
+import { FamilyCompanionWizard } from "@/components/companions/FamilyCompanionWizard";
+import { AskParentCompanionSheet } from "@/components/AskParentCompanionSheet";
+import { ensureCompanionCloudRoom } from "@/components/companions/useCompanionRoom";
 import { CompanionConnectSheet } from "@/components/companions/CompanionConnectSheet";
 import {
   CompanionChatRail,
@@ -84,6 +98,7 @@ import {
 } from "@/components/companions/CompanionChatRail";
 import { IncognitoRoom } from "@/components/companions/IncognitoRoom";
 import { useCompanionRoom } from "@/components/companions/useCompanionRoom";
+import { AgentSteps } from "@/components/AgentSteps";
 import { companionRoomKey } from "@/lib/companion-drafts";
 import {
   createAssistantChatTab,
@@ -99,7 +114,7 @@ import {
   saveIncognitoSession,
   type IncognitoSession,
 } from "@/lib/incognito-vault";
-import { OPEN_ADD_COMPANION_KEY } from "@/lib/getting-started";
+import { OPEN_ADD_COMPANION_KEY, OPEN_ASSIGN_MEMBER_KEY } from "@/lib/getting-started";
 import {
   filesFromDesignerReply,
   localDesignFromPrompt,
@@ -107,16 +122,32 @@ import {
   studioKindForCompanion,
   writeStudioActive,
 } from "@/lib/studio-catalog";
-import { notifyStudio } from "@/lib/notify";
+import { notifyStudio, pushToast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import { useEnsureRealisticPortraits } from "@/lib/ensure-companion-portraits";
 export function CompanionsPage() {
   const { t, locale } = useLanguage();
   const ar = locale === "ar";
   const { href, isFamily } = useRole();
-  const { active: familyActive, isChild: isFamilyChild } = useFamilyProfile();
+  const { signedIn, account, status } = useSignedInAccount();
+  const familyPlan =
+    signedIn &&
+    audienceFromPlanId(account?.planId ?? status?.entitlements?.planId ?? null) === "family";
+  const familyLive = Boolean(isFamily && familyPlan);
+  const {
+    snapshot: familySnapshot,
+    active: familyActive,
+    isChild: isFamilyChildSeat,
+    isManager: isFamilyManagerSeat,
+    refresh: refreshFamily,
+  } = useFamilyProfile();
+  const isFamilyChild = familyLive && isFamilyChildSeat;
+  const isFamilyManager = familyLive && isFamilyManagerSeat;
+
+  useEffect(() => {
+    if (familyLive) refreshFamily();
+  }, [familyLive, refreshFamily]);
   const navigate = useNavigate();
-  const { signedIn } = useSignedInAccount();
   const state = useCompanionState();
   useEnsureRealisticPortraits();
   const [space, setSpace] = useCompanionSpace();
@@ -134,10 +165,23 @@ export function CompanionsPage() {
     }
     return false;
   });
+  const [catalogAssignMemberId] = useState<string | null>(() => {
+    try {
+      const id = sessionStorage.getItem(OPEN_ASSIGN_MEMBER_KEY);
+      if (id) {
+        sessionStorage.removeItem(OPEN_ASSIGN_MEMBER_KEY);
+        return id;
+      }
+    } catch {
+      /* ignore */
+    }
+    return null;
+  });
   const [incognitoOpen, setIncognitoOpen] = useState(false);
   const [birthDomain, setBirthDomain] = useState("");
   const [details, setDetails] = useState(false);
   const [detailTab, setDetailTab] = useState<"memory" | "tone">("memory");
+  const [roomFullscreen, setRoomFullscreen] = useState(false);
   const [connectFamily, setConnectFamily] = useState<ConnectFamily | null>(null);
   const [connectBusy, setConnectBusy] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
@@ -152,33 +196,96 @@ export function CompanionsPage() {
   const imageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const titledTabRef = useRef<string | null>(null);
-  const general = generalCompanion(state, space);
-  const people = liveCompanions(state, space)
-    .filter((person) => person.domain !== "general")
-    .filter((person) => {
-      if (!isFamily || !isFamilyChild || !familyActive) return true;
-      return !person.familyMemberId || person.familyMemberId === familyActive.id;
-    });
+  const general = generalCompanion(state, space, familyLive ? familyActive?.id : null);
+  const kidByMemberId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const member of familySnapshot?.members ?? []) {
+      if (member.role === "child") map.set(String(member.id), member.displayName);
+    }
+    return map;
+  }, [familySnapshot?.members]);
+  const householdMemberIds = useMemo(
+    () => new Set((familySnapshot?.members ?? []).map((m) => String(m.id))),
+    [familySnapshot?.members],
+  );
+  const people = useMemo(() => {
+    // Family seats: list household-stamped companions across personal/work so
+    // kids always see companions a parent added on the Board.
+    const pool =
+      familyLive && familyActive
+        ? liveCompanions(state).filter((person) => !person.archivedAt)
+        : liveCompanions(state, space);
+    return pool
+      .filter((person) => person.domain !== "general")
+      .filter((person) => {
+        if (!familyLive || !familyActive) return person.space === space;
+        if (isFamilyChild) {
+          return person.familyMemberId === familyActive.id;
+        }
+        if (isFamilyManager && familySnapshot) {
+          return Boolean(
+            person.familyMemberId && householdMemberIds.has(String(person.familyMemberId)),
+          );
+        }
+        return person.familyMemberId === familyActive.id;
+      });
+  }, [
+    state,
+    space,
+    familyLive,
+    familyActive,
+    isFamilyChild,
+    isFamilyManager,
+    familySnapshot,
+    householdMemberIds,
+  ]);
   const selected = findCompanion(state, activeId);
-  const active = selected && selected.space === space && !selected.archivedAt ? selected : general;
+  const selectedAllowed = Boolean(
+    selected &&
+      !selected.archivedAt &&
+      (selected.domain === "general" ||
+        !familyLive ||
+        people.some((person) => person.id === selected.id)) &&
+      (familyLive || selected.space === space),
+  );
+  const active = selectedAllowed && selected ? selected : general;
+  const coachingKidName =
+    familyLive && isFamilyManager && active.familyMemberId
+      ? kidByMemberId.get(String(active.familyMemberId)) ?? null
+      : null;
+  const parentCoachMode = Boolean(coachingKidName);
+  const chatTabLane = parentCoachMode ? "parent" : "chat";
+  const coachSeed = parentCoachMode
+    ? active.parentConversationId ?? active.conversationId
+    : active.conversationId;
   const defaultChatTitle = ar ? "محادثة" : "Chat";
   const [chatTabs, setChatTabs] = useState(() =>
-    readAssistantChatTabs(active.id, active.conversationId, defaultChatTitle),
+    readAssistantChatTabs(active.id, coachSeed, defaultChatTitle, chatTabLane),
   );
   const [tabsCompanionId, setTabsCompanionId] = useState(active.id);
-  if (tabsCompanionId !== active.id) {
+  const [tabsLane, setTabsLane] = useState(chatTabLane);
+  if (tabsCompanionId !== active.id || tabsLane !== chatTabLane) {
     setTabsCompanionId(active.id);
+    setTabsLane(chatTabLane);
     titledTabRef.current = null;
-    setChatTabs(readAssistantChatTabs(active.id, active.conversationId, defaultChatTitle));
+    setChatTabs(
+      readAssistantChatTabs(active.id, coachSeed, defaultChatTitle, chatTabLane),
+    );
   }
   const activeTab =
     chatTabs.tabs.find((tab) => tab.id === chatTabs.activeId) ?? chatTabs.tabs[0]!;
   const roomCompanion = useMemo(
-    () => ({ ...active, conversationId: activeTab.conversationId }),
-    [active, activeTab.conversationId],
+    () =>
+      companionRoomForSeat(active, {
+        parentCoach: parentCoachMode,
+        tabConversationId: activeTab.conversationId,
+        claimSharedForChild: isFamilyChild,
+      }),
+    [active, parentCoachMode, activeTab.conversationId, isFamilyChild],
   );
   const room = useCompanionRoom(roomCompanion, activeTab.id);
-  const { lines, draft, setDraft, mode, setMode, busy, loading } = room;
+  const { lines, draft, setDraft, mode, setMode, busy, loading, agentSteps, thinkingLabel } =
+    room;
   const studioKind = studioKindForCompanion(active, state);
   const nameOf = (person: CompanionProfile) =>
     person.domain === "general" ? t("compGeneral") : person.name;
@@ -188,9 +295,9 @@ export function CompanionsPage() {
   const composerSuggestions = companionComposerSuggestions(active);
   const welcomeSuggestions = companionWelcomeSuggestions(active);
   const facePeople =
-    active.domain !== "general" && !people.slice(0, 4).some((person) => person.id === active.id)
-      ? [...people.slice(0, 3), active]
-      : people.slice(0, 4);
+    active.domain !== "general" && !people.slice(0, 8).some((person) => person.id === active.id)
+      ? [...people.slice(0, 7), active]
+      : people.slice(0, 8);
   const matchingPeople = [general, ...people].filter((person) =>
     `${nameOf(person)} ${person.domain}`.toLowerCase().includes(search.toLowerCase()),
   );
@@ -212,6 +319,16 @@ export function CompanionsPage() {
     sessionStorage.removeItem(COMPANION_DRAFT_KEY);
     // Consume the board handoff only on entry.
   }, []);
+
+  useEffect(() => {
+    if (!roomFullscreen) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setRoomFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [roomFullscreen]);
+
   const followReplyRef = useRef(true);
   useEffect(() => {
     if (followReplyRef.current) {
@@ -227,17 +344,40 @@ export function CompanionsPage() {
   }, [draft]);
 
   useEffect(() => {
-    writeAssistantChatTabs(active.id, chatTabs);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatTabs]);
+    if (!isFamilyChild || !active.parentConversationId) return;
+    const parentId = active.parentConversationId;
+    setChatTabs((current) => {
+      let changed = false;
+      const tabs = current.tabs.map((tab) => {
+        if (tab.conversationId !== parentId) return tab;
+        changed = true;
+        return { ...tab, conversationId: null };
+      });
+      return changed ? { ...current, tabs } : current;
+    });
+  }, [isFamilyChild, active.id, active.parentConversationId]);
 
   useEffect(() => {
-    updateCompanion(active.id, { conversationId: activeTab.conversationId });
+    writeAssistantChatTabs(active.id, chatTabs, chatTabLane);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab.id]);
+  }, [chatTabs, chatTabLane]);
 
   useEffect(() => {
-    const conversationId = active.conversationId;
+    if (parentCoachMode) {
+      updateCompanion(active.id, { parentConversationId: activeTab.conversationId });
+    } else {
+      const parentId = active.parentConversationId;
+      // Never write the parent coach thread back onto the child’s conversation pointer.
+      if (parentId && activeTab.conversationId === parentId) return;
+      updateCompanion(active.id, { conversationId: activeTab.conversationId });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab.id, parentCoachMode]);
+
+  useEffect(() => {
+    const conversationId = parentCoachMode
+      ? active.parentConversationId
+      : active.conversationId;
     if (!conversationId) return;
     setChatTabs((current) => {
       const tab = current.tabs.find((item) => item.id === current.activeId);
@@ -249,7 +389,7 @@ export function CompanionsPage() {
         ),
       };
     });
-  }, [active.conversationId]);
+  }, [active.conversationId, active.parentConversationId, parentCoachMode]);
 
   useEffect(() => {
     const firstMine = lines.find((line) => line.who === "me");
@@ -277,6 +417,9 @@ export function CompanionsPage() {
     if (busy) return;
     followReplyRef.current = true;
     closeIncognito();
+    if (person.space && person.space !== space) {
+      setSpace(person.space);
+    }
     setActiveId(person.domain === "general" ? null : person.id);
     setAllOpen(false);
     setSearch("");
@@ -522,9 +665,43 @@ export function CompanionsPage() {
     const prompt = text;
     const kind = studioKind;
     const companionId = active.id;
-    const response = room.send(overrideText ? text : undefined);
+    const coachKid = coachingKidName;
+    const coachAuthor = familyActive?.displayName ?? "Parent";
+    const coachMemberId = active.familyMemberId;
+    const response = room.send(overrideText ? text : undefined, {
+      workspaceHint: coachKid
+        ? {
+            operatorDirectives: [
+              `PARENT COACHING SESSION: The speaker is a parent, not the child.`,
+              `Child's name: ${coachKid}.`,
+              `Listen, ask clarifying questions, and remember guidance about how ${coachKid} feels, what helps, and what to avoid.`,
+              `When ${coachKid} chats later, apply this coaching gently — never quote parent notes verbatim to the child.`,
+              `Speak as ${active.name}, the companion helping the parent support ${coachKid}.`,
+            ].join(" "),
+            sessionNotes: `Parent coaching about ${coachKid}. Capture feelings, habits, and what the companion should do.`,
+          }
+        : undefined,
+    });
     composerRef.current?.focus({ preventScroll: true });
     const reply = await response;
+    if (coachKid && coachMemberId && familyActive?.id) {
+      addParentGuidanceFact({
+        companionId,
+        text: prompt,
+        authorName: coachAuthor,
+      });
+      void arrabApi
+        .addFamilyGuidance({
+          companionId,
+          childMemberId: coachMemberId,
+          authorMemberId: familyActive.id,
+          content: prompt,
+        })
+        .then(() => {
+          pushToast({ title: t("familyChatCoachSaved"), tone: "success" });
+        })
+        .catch(() => undefined);
+    }
     if (kind && reply) {
       handoffToStudio(kind, companionId, reply, prompt);
       return;
@@ -650,18 +827,50 @@ export function CompanionsPage() {
   return (
     <>
       {adding ? (
-        <CompanionCatalog
-          space={space}
-          signedIn={signedIn}
-          initialDomain={birthDomain}
-          onClose={() => {
-            setAdding(false);
-            setBirthDomain("");
-          }}
-          onCreated={choose}
-        />
+        isFamilyChild && familyActive ? (
+          <AskParentCompanionSheet
+            childMemberId={familyActive.id}
+            childName={familyActive.displayName}
+            space={space}
+            onClose={() => {
+              setAdding(false);
+              setBirthDomain("");
+            }}
+          />
+        ) : familyLive && isFamilyManager && (familySnapshot?.members?.length ?? 0) > 0 ? (
+          <FamilyCompanionWizard
+            space={space}
+            members={familySnapshot!.members}
+            defaultMemberId={
+              catalogAssignMemberId ??
+              familySnapshot?.members.find((m) => m.role === "child")?.id ??
+              familyActive?.id ??
+              null
+            }
+            onClose={() => {
+              setAdding(false);
+              setBirthDomain("");
+            }}
+            onCreated={(person) => {
+              void ensureCompanionCloudRoom(person).catch(() => undefined);
+              choose(person);
+            }}
+          />
+        ) : (
+          <CompanionCatalog
+            space={space}
+            signedIn={signedIn}
+            initialDomain={birthDomain}
+            onClose={() => {
+              setAdding(false);
+              setBirthDomain("");
+            }}
+            onCreated={choose}
+          />
+        )
       ) : (
-    <div className="cp-ui cp-chat">
+    <div className={cn("cp-ui cp-chat", roomFullscreen && "chat-org-fullscreen cp-chat-fullscreen")}>
+      {!roomFullscreen ? (
       <header className="cp-chat-heading">
         <div>
           <p className="cp-eyebrow">ARRAB / COMPANIONS</p>
@@ -680,6 +889,20 @@ export function CompanionsPage() {
           }}
         />
       </header>
+      ) : (
+        <div className="cp-chat-fs-exit">
+          <p className="cp-chat-fs-title">{nameOf(active)}</p>
+          <button
+            type="button"
+            className="cp-button"
+            onClick={() => setRoomFullscreen(false)}
+          >
+            <Minimize2 size={15} strokeWidth={1.7} />
+            {t("chatExitFullscreen")}
+          </button>
+        </div>
+      )}
+      {!roomFullscreen ? (
       <div className="cp-face-bar">
         <div className="cp-face-list" aria-label={t("companions")}>
           {[general, ...facePeople].map((person) => (
@@ -692,14 +915,6 @@ export function CompanionsPage() {
             >
               <PersonAvatar person={person} active={!incognitoOpen && active.id === person.id} size="lg" />
               <strong>{nameOf(person)}</strong>
-              <small>
-                {person.lastMemory ||
-                  (person.domain === "general"
-                    ? ar
-                      ? "مساحة لكل شيء"
-                      : "A little of everything"
-                    : person.domain)}
-              </small>
             </button>
           ))}
           {space === "personal" ? (
@@ -723,6 +938,7 @@ export function CompanionsPage() {
               </small>
             </button>
           ) : null}
+          {!isFamilyChild ? (
           <button
             className="cp-face-choice"
             disabled={busy || !signedIn}
@@ -736,15 +952,40 @@ export function CompanionsPage() {
             <span className="cp-add-face">
               <Plus size={21} strokeWidth={1.5} />
             </span>
-            <strong>{t("compAdd")}</strong>
-            <small>{ar ? "رفيق جديد" : "A new companion"}</small>
+            <strong>{familyLive && isFamilyManager ? t("familyCatalogAdd") : t("compAdd")}</strong>
+            <small>
+              {familyLive && isFamilyManager
+                ? t("familyCatalogAddHint")
+                : ar
+                  ? "رفيق جديد"
+                  : "A new companion"}
+            </small>
           </button>
+          ) : (
+          <button
+            className="cp-face-choice"
+            disabled={busy || !signedIn}
+            onClick={() => {
+              closeIncognito();
+              setBirthDomain("");
+              setAdding(true);
+            }}
+            aria-label={t("guardianAskTitle")}
+          >
+            <span className="cp-add-face">
+              <Plus size={21} strokeWidth={1.5} />
+            </span>
+            <strong>{t("guardianAskShort")}</strong>
+            <small>{t("guardianAskFaceHint")}</small>
+          </button>
+          )}
         </div>
         <button className="cp-button cp-all" disabled={busy} onClick={() => setAllOpen(true)}>
           <Ellipsis size={19} />
           {ar ? "كل الرفاق" : "All companions"}
         </button>
       </div>
+      ) : null}
       {incognitoOpen && space === "personal" ? (
         <IncognitoRoom onExit={closeIncognito} />
       ) : (
@@ -758,11 +999,13 @@ export function CompanionsPage() {
                 ? ar
                   ? "وكيل استوديو — بعد الانتهاء نفتح صفحته"
                   : "Studio agent — opens their page when done"
-                : active.domain === "general"
-                  ? ar
-                    ? "ابدأ من حيث أنت"
-                    : "Start wherever you are"
-                  : active.domain}
+                : parentCoachMode
+                  ? `${t("familyChatCoachEyebrow")} · ${coachingKidName}`
+                  : active.domain === "general"
+                    ? ar
+                      ? "ابدأ من حيث أنت"
+                      : "Start wherever you are"
+                    : active.domain}
             </span>
           </div>
           <div className="cp-room-actions">
@@ -788,6 +1031,19 @@ export function CompanionsPage() {
               {ar ? "الذاكرة والأسلوب" : "Memory & tone"}
               <ArrowUpRight size={15} />
             </button>
+            <button
+              type="button"
+              className="cp-button"
+              onClick={() => setRoomFullscreen((open) => !open)}
+              aria-label={roomFullscreen ? t("chatExitFullscreen") : t("chatEnterFullscreen")}
+              title={roomFullscreen ? t("chatExitFullscreen") : t("chatEnterFullscreen")}
+            >
+              {roomFullscreen ? (
+                <Minimize2 size={15} strokeWidth={1.7} />
+              ) : (
+                <Maximize2 size={15} strokeWidth={1.7} />
+              )}
+            </button>
           </div>
         </header>
         {studioKind && !busy ? (
@@ -796,15 +1052,6 @@ export function CompanionsPage() {
               ? "اطلب منه العمل — عند انتهاء الرد ننقلك تلقائياً إلى صفحته في الاستوديو."
               : "Tell them what to build — when they finish, we’ll take you to their Studio page."}
           </p>
-        ) : null}
-        {active.resume && !loading ? (
-          <details className="cp-recall">
-            <summary>
-              {t("compResume")}
-              <span>{relativeTime(active.lastAt, locale)}</span>
-            </summary>
-            <p>{active.resume}</p>
-          </details>
         ) : null}
         <div className="cp-room-body">
           <CompanionChatRail
@@ -838,27 +1085,62 @@ export function CompanionsPage() {
               <span className="cp-welcome-icon">
                 <Sparkles size={30} strokeWidth={1.25} />
               </span>
-              <p className="cp-eyebrow">{ar ? "مساحتك، على راحتك" : "YOUR SPACE. YOUR PACE."}</p>
-              <h2>
-                {active.domain === "general"
-                  ? ar
-                    ? "وش في بالك اليوم؟"
-                    : "What's on your mind?"
+              <p className="cp-eyebrow">
+                {parentCoachMode
+                  ? t("familyChatCoachEyebrow").toUpperCase()
                   : ar
-                    ? `أنا ${active.name}، أسمعك.`
-                    : `I'm ${active.name}. I'm listening.`}
+                    ? "مساحتك، على راحتك"
+                    : "YOUR SPACE. YOUR PACE."}
+              </p>
+              <h2>
+                {parentCoachMode
+                  ? t("familyChatCoachPrompt")
+                  : active.domain === "general"
+                    ? ar
+                      ? "وش في بالك اليوم؟"
+                      : "What's on your mind?"
+                    : ar
+                      ? `أنا ${active.name}، أسمعك.`
+                      : `I'm ${active.name}. I'm listening.`}
               </h2>
               <p className="cp-muted">
-                {ar
-                  ? "ابدأ بفكرة، سؤال، أو حتى يوم طويل."
-                  : "A thought, a question, or just a long day."}
+                {parentCoachMode
+                  ? t("familyChatCoachBody")
+                  : ar
+                    ? "ابدأ بفكرة، سؤال، أو حتى يوم طويل."
+                    : "A thought, a question, or just a long day."}
               </p>
               <div className="cp-starters">
-                {welcomeSuggestions.map((suggestion) => (
+                {(parentCoachMode
+                  ? [
+                      {
+                        id: "coach-feel",
+                        labelEn: `${coachingKidName} felt anxious today`,
+                        labelAr: `${coachingKidName} كان قلقاً اليوم`,
+                        draftEn: `${coachingKidName} felt anxious today. Help gently — never shame them.`,
+                        draftAr: `${coachingKidName} كان قلقاً اليوم. ساعده بلطف — دون توبيخ.`,
+                      },
+                      {
+                        id: "coach-focus",
+                        labelEn: `Help ${coachingKidName} focus`,
+                        labelAr: `ساعد ${coachingKidName} على التركيز`,
+                        draftEn: `Help ${coachingKidName} focus on homework with short steps and calm encouragement.`,
+                        draftAr: `ساعد ${coachingKidName} على التركيز في الواجبات بخطوات قصيرة وتشجيع هادئ.`,
+                      },
+                    ]
+                  : welcomeSuggestions
+                ).map((suggestion) => (
                   <button
                     key={suggestion.id}
                     type="button"
-                    onClick={() => applySuggestion(suggestion)}
+                    onClick={() => {
+                      if ("draftEn" in suggestion) {
+                        setDraft(ar ? suggestion.draftAr : suggestion.draftEn);
+                        composerRef.current?.focus({ preventScroll: true });
+                        return;
+                      }
+                      applySuggestion(suggestion);
+                    }}
                   >
                     {ar ? suggestion.labelAr : suggestion.labelEn}
                     <ArrowUpRight size={15} />
@@ -867,11 +1149,27 @@ export function CompanionsPage() {
               </div>
             </div>
           ) : null}
-          {lines.map((line) => {
+          {lines.map((line, index) => {
             const speaker = findCompanion(state, line.companionId) ?? active;
+            const isLastCompanion =
+              line.who === "companion" &&
+              index === lines.length - 1 &&
+              agentSteps.length > 0;
             return (
+              <Fragment key={line.id}>
+                {isLastCompanion ? (
+                  <div
+                    className={cn("cp-agent-activity", busy && "is-streaming")}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    <AgentSteps
+                      steps={agentSteps}
+                      thinkingLabel={thinkingLabel || `${t("thinking")}…`}
+                    />
+                  </div>
+                ) : null}
               <article
-                key={line.id}
                 className={`cp-message ${line.who === "me" ? "cp-message-me" : ""}`}
               >
                 {line.who === "companion" ? <PersonAvatar person={speaker} size="sm" /> : null}
@@ -930,16 +1228,24 @@ export function CompanionsPage() {
                   ) : null}
                 </div>
               </article>
+              </Fragment>
             );
           })}
-          {busy && !(lines.at(-1)?.who === "companion" && lines.at(-1)?.text.trim()) ? (
-            <p className="cp-typing" role="status">
-              <PersonAvatar person={active} size="sm" state="speaking" />
-              <span />
-              <span />
-              <span />
-              {ar ? `${nameOf(active)} يردّ…` : `${nameOf(active)} is replying…`}
-            </p>
+          {(busy || agentSteps.length > 0) && lines.at(-1)?.who !== "companion" ? (
+            <div className="cp-agent-activity" role="status" aria-live="polite">
+              <div className="cp-agent-activity-head">
+                <PersonAvatar person={active} size="sm" state="speaking" />
+                <span className="cp-agent-activity-name">{nameOf(active)}</span>
+              </div>
+              <AgentSteps
+                steps={
+                  agentSteps.length > 0
+                    ? agentSteps
+                    : [{ id: "thinking", title: "thinking", status: "running" }]
+                }
+                thinkingLabel={thinkingLabel || `${t("thinking")}…`}
+              />
+            </div>
           ) : null}
           </div>
           <div className="cp-composer-area">
@@ -1005,6 +1311,57 @@ export function CompanionsPage() {
             <div className="cp-inline-notice" role="status">
               <Check size={14} />
               {room.notice}
+            </div>
+          ) : null}
+          {room.lastGuardianDecision &&
+          room.lastGuardianDecision.verdict !== "allow" &&
+          !(
+            isFamilyChild &&
+            (room.lastGuardianDecision.verdict === "model_boundary" ||
+              room.lastGuardianDecision.verdict === "coach_parent")
+          ) ? (
+            <div
+              className={cn(
+                "gh-boundary-chip",
+                room.lastGuardianDecision.verdict === "pause_with_care" && "is-pause",
+                room.lastGuardianDecision.verdict === "coach_parent" && "is-coach",
+                room.lastGuardianDecision.verdict === "scaffold" && "is-scaffold",
+              )}
+              role="status"
+            >
+              <Shield size={14} strokeWidth={1.8} className="shrink-0" />
+              <p className="gh-boundary-chip-line">
+                <strong>
+                  {room.lastGuardianDecision.verdict === "pause_with_care"
+                    ? t("guardianChipPause")
+                    : room.lastGuardianDecision.verdict === "model_boundary"
+                      ? t("guardianChipBoundary")
+                      : room.lastGuardianDecision.verdict === "scaffold"
+                        ? t("guardianChipScaffold")
+                        : t("guardianChipCoach")}
+                </strong>
+                <span className="gh-boundary-chip-sep" aria-hidden>
+                  ·
+                </span>
+                <span className="gh-boundary-chip-reason">
+                  {(() => {
+                    const raw = ar
+                      ? room.lastGuardianDecision.reasonAr
+                      : room.lastGuardianDecision.reason;
+                    return raw
+                      .replace(/^Named family rule openly:\s*/i, "")
+                      .replace(/^سمّيت قاعدة العائلة بوضوح:\s*/i, "")
+                      .trim();
+                  })()}
+                </span>
+              </p>
+              <button
+                type="button"
+                className="cp-text-button shrink-0"
+                onClick={() => room.clearGuardianDecision()}
+              >
+                {t("compDismiss")}
+              </button>
             </div>
           ) : null}
           {room.error ? (
@@ -1102,7 +1459,19 @@ export function CompanionsPage() {
                     : `/web ${current.trim()}`.trim() + " ",
                 )
               }
-              features={{ folder: false }}
+              onCreate={(kind: ComposerCreateKind) => {
+                const prompt = composerCreatePrompt(kind, ar ? "ar" : "en");
+                setDraft((current) => {
+                  const trimmed = current.trim();
+                  if (!trimmed) return prompt;
+                  if (trimmed.endsWith(prompt.trim()) || trimmed.includes(prompt.trim())) {
+                    return trimmed;
+                  }
+                  return `${prompt}${trimmed}`;
+                });
+                requestAnimationFrame(() => composerRef.current?.focus());
+              }}
+              features={{ folder: false, create: true }}
             />
             <SessionModeMenu disabled={busy || loading} />
             <input
@@ -1124,6 +1493,7 @@ export function CompanionsPage() {
             <input
               ref={fileInputRef}
               type="file"
+              accept=".pdf,.doc,.docx,.ppt,.pptx,.txt,.md,.csv,.json,.html,.svg,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/*,image/*"
               multiple
               hidden
               onChange={(event) => {
@@ -1163,9 +1533,13 @@ export function CompanionsPage() {
                   ? ar
                     ? "اكتب رسالتك التالية…"
                     : "Write your next message…"
-                  : ar
-                    ? "اكتب اللي في بالك…"
-                    : "Say what's on your mind…"
+                  : parentCoachMode
+                    ? ar
+                      ? `أخبر ${active.name} عن ${coachingKidName}…`
+                      : `Tell ${active.name} about ${coachingKidName}…`
+                    : ar
+                      ? "اكتب اللي في بالك…"
+                      : "Say what's on your mind…"
               }
             />
             {busy && !draft.trim() ? (
@@ -1269,7 +1643,11 @@ export function CompanionsPage() {
           disabled={!signedIn}
         >
           <Plus size={15} />
-          {t("compAddCompanion")}
+          {isFamilyChild
+            ? t("guardianAskTitle")
+            : familyLive && isFamilyManager
+              ? t("familyCatalogTitle")
+              : t("compAddCompanion")}
         </button>
       </CompanionModal>
       <CompanionModal open={details} onClose={() => setDetails(false)} title={nameOf(active)} wide>

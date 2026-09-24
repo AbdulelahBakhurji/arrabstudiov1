@@ -39,6 +39,13 @@ export interface AgentFinnhubTools {
   getNews: (args: Record<string, string>) => Promise<string>;
 }
 
+export interface AgentSkillTools {
+  /** Name + description of every skill the model may load (Claude-style catalog). */
+  catalog: Array<{ slug: string; name: string; description: string; active?: boolean }>;
+  useSkill: (args: Record<string, string>) => string;
+  readSkillFile: (args: Record<string, string>) => string;
+}
+
 export interface AgentToolContext {
   workspaceSummary?: string | null;
   activeGoal?: string | null;
@@ -54,6 +61,8 @@ export interface AgentToolContext {
   finnhubAccountLabel?: string | null;
   /** When true, add Trader market-tool + no-financial-advice system hints. */
   traderMode?: boolean;
+  /** When present, use_skill / read_skill_file are offered and run server-side. */
+  skills?: AgentSkillTools | null;
 }
 
 export interface AgentPendingTool {
@@ -371,6 +380,100 @@ const NATIVE_TOOLS: AiToolDefinition[] = [
     },
   },
   {
+    name: "generate_docx",
+    description:
+      "Create a Microsoft Word (.docx) document in the open folder from title + body text. Prefer for letters, briefs, homework write-ups, and editable reports.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Relative .docx path (default: arrab-document.docx)",
+        },
+        title: {
+          type: "string",
+          description: "Document title (heading)",
+        },
+        content: {
+          type: "string",
+          description: "Body text. Use blank lines between paragraphs.",
+        },
+      },
+      required: ["content"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "generate_presentation",
+    description:
+      "Create a slide deck (HTML presentation) in the open folder and open it. Separate slides with a line containing only --- . First line of each slide is the title.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Relative .html path (default: arrab-presentation.html)",
+        },
+        title: {
+          type: "string",
+          description: "Deck title shown in the browser tab",
+        },
+        content: {
+          type: "string",
+          description: "Slides text. Use --- between slides. First line = slide title.",
+        },
+      },
+      required: ["content"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "generate_image",
+    description:
+      "Create a professional image card (SVG) in the open folder from a prompt/title/content. Use for covers, posters, social cards, study visuals.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Relative .svg path (default: arrab-image.svg)",
+        },
+        prompt: {
+          type: "string",
+          description: "What the image should convey",
+        },
+        title: {
+          type: "string",
+          description: "Large headline on the image",
+        },
+        content: {
+          type: "string",
+          description: "Optional supporting lines",
+        },
+        width: { type: "string", description: "Optional width in px" },
+        height: { type: "string", description: "Optional height in px" },
+      },
+      required: ["prompt"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "read_document",
+    description:
+      "Read/extract text from a document in the open folder: PDF, Word (.docx), text/markdown/csv, or inspect an image. Prefer this over guessing file contents.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Relative path to the document or image",
+        },
+      },
+      required: ["path"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "web_search",
     description:
       "Search the live web for up-to-date facts, docs, errors, or news (Grok-style realtime lookup). Use when the answer may have changed or is outside the repo.",
@@ -609,12 +712,60 @@ const FINNHUB_NATIVE_TOOLS: AiToolDefinition[] = [
 
 const FINNHUB_TOOL_NAMES = new Set(FINNHUB_NATIVE_TOOLS.map((tool) => tool.name));
 
+const SKILL_NATIVE_TOOLS: AiToolDefinition[] = [
+  {
+    name: "use_skill",
+    description:
+      "Load an installed skill's full instructions (SKILL.md) and its file list. Call this before answering whenever the request matches a skill's description, then follow the instructions exactly.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Skill name from the skills list (e.g. pdf)" },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "read_skill_file",
+    description:
+      "Read a file bundled with a skill (reference docs, templates, or scripts) — e.g. reference.md or scripts/fill_form.py.",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Skill name" },
+        path: { type: "string", description: "File path inside the skill folder" },
+      },
+      required: ["name", "path"],
+      additionalProperties: false,
+    },
+  },
+];
+
+const SKILL_TOOL_NAMES = new Set(SKILL_NATIVE_TOOLS.map((tool) => tool.name));
+
+function skillCatalogHint(skills: AgentSkillTools): string | null {
+  const entries = skills.catalog.slice(0, 40);
+  if (entries.length === 0) return null;
+  return [
+    "Skills (Claude-compatible): the operator installed the skills below.",
+    "When a request matches a skill's description, call use_skill with its name BEFORE answering, then follow the returned instructions and output format exactly.",
+    "Open files a skill mentions (reference docs, templates, scripts) with read_skill_file. Skills marked [loaded] are already in your instructions — do not reload them.",
+    "If a skill needs to run a bundled script and run_terminal is available, run it from the installed path the skill reports; otherwise explain the steps or do the work directly.",
+    ...entries.map(
+      (entry) =>
+        `- ${entry.slug}${entry.active ? " [loaded]" : ""}: ${entry.description.replace(/\s+/g, " ").slice(0, 300) || entry.name}`,
+    ),
+    'Text protocol: CALL_TOOL use_skill {"name":"pdf"} · CALL_TOOL read_skill_file {"name":"pdf","path":"reference.md"}',
+  ].join("\n");
+}
+
 /** Plain chat — keep this short so OpenRouter first-token latency stays low. */
 const CHAT_HINT = [
   "Answer clearly and helpfully. Prefer short, direct replies unless standing instructions ask for more depth or a different tone.",
   "Language: match the operator's latest message — English in → English out; Arabic in → Arabic out.",
   "Live web is available via web_search, scrape_page, and fetch_url when facts may be outside your knowledge or need a current check.",
-  "PDF/HTML deliverables (generate_pdf, preview_html, export_csv) are available even without a project folder.",
+  "Deliverables (generate_pdf, generate_docx, generate_presentation, generate_image, preview_html, export_csv, read_document) are available even without a project folder.",
   "Do not invent tool results or claim access to local files, shell, email, or SSH unless those tools are offered in this turn.",
 ].join("\n");
 
@@ -623,9 +774,13 @@ const TOOL_HINT_WEB = [
   "Use web_search for current facts, docs, errors, news, and research.",
   "Use scrape_page for structured page content (title, headings, links, body).",
   "Use fetch_url for raw/JSON/plain bodies when scrape is unnecessary.",
-  "Deliverables always available: preview_html, generate_pdf, export_csv.",
+  "Deliverables always available: preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, export_csv, read_document.",
   'Example: CALL_TOOL web_search {"query":"..."} then CALL_TOOL scrape_page {"url":"https://..."}',
   'Example: CALL_TOOL generate_pdf {"path":"report.pdf","title":"Report","content":"<h1>Hello</h1>"}',
+  'Example: CALL_TOOL generate_docx {"path":"brief.docx","title":"Brief","content":"Paragraph one.\\n\\nParagraph two."}',
+  'Example: CALL_TOOL generate_presentation {"title":"Plan","content":"Goals\\nShip v1\\n---\\nNext\\nHire designer"}',
+  'Example: CALL_TOOL generate_image {"prompt":"Calm study cover","title":"Focus"}',
+  'Example: CALL_TOOL read_document {"path":"notes.docx"}',
 ].join("\n");
 
 const TOOL_HINT = [
@@ -650,20 +805,24 @@ const TOOL_HINT = [
   'CALL_TOOL fetch_url {"url":"https://example.com/api.json"}',
   'CALL_TOOL preview_html {"path":"preview.html","content":"<!doctype html><html>..."}',
   'CALL_TOOL generate_pdf {"path":"report.pdf","title":"Report","content":"<h1>Hello</h1>"}',
+  'CALL_TOOL generate_docx {"path":"brief.docx","title":"Brief","content":"Hello"}',
+  'CALL_TOOL generate_presentation {"title":"Plan","content":"One\\n---\\nTwo"}',
+  'CALL_TOOL generate_image {"prompt":"Calm cover","title":"Focus"}',
+  'CALL_TOOL read_document {"path":"notes.pdf"}',
   'CALL_TOOL export_csv {"path":"data.csv","content":"name,value\\na,1"}',
   'CALL_TOOL propose_action {"title":"...","detail":"..."}',
-  "Coding workflow: search_code → read_file → edit → verify with run_terminal. Deliverables: preview_html, generate_pdf, export_csv. Be precise; do not invent file contents.",
+  "Coding workflow: search_code → read_file → edit → verify with run_terminal. Deliverables: pdf/docx/presentation/image/html/csv + read_document. Be precise; do not invent file contents.",
   "Do not invent tool output — wait for TOOL_RESULT.",
 ].join("\n");
 
 const TOOL_HINT_NATIVE = [
-  "You may call tools for workspace facts, codebase search, files, patches, local shell, live web, HTML preview, PDF, and CSV export.",
+  "You may call tools for workspace facts, codebase search, files, patches, local shell, live web, HTML preview, PDF, Word, presentations, images, CSV, and document reading.",
   "Coding workflow (mandatory when a folder is attached):",
   "1) Ground yourself with search_code / list_files / read_file (and attached open file / git / terminal / @mentions / rules).",
   "2) Make concrete edits with apply_patch (preferred) or write_file.",
   "3) Verify with run_terminal (typecheck, lint, or tests). Fix from real output. Do not claim done until verified or blocked.",
   "4) Use web_search + scrape_page (or fetch_url) for docs, errors, or facts outside the repo.",
-  "5) For operator deliverables use preview_html (live preview), generate_pdf (reports/proposals), export_csv (tables).",
+  "5) Deliverables: preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, export_csv; read with read_document.",
   "Be precise and reproducible — prefer exact paths, commands, and outcomes over personality.",
   "Never claim you lack shell/file access when a local folder is open.",
   "State clearly what you fetched, changed, or what failed.",
@@ -717,6 +876,10 @@ const CLIENT_EXEC_TOOLS = new Set([
   "preview_html",
   "generate_pdf",
   "export_csv",
+  "generate_docx",
+  "generate_presentation",
+  "generate_image",
+  "read_document",
 ]);
 
 const MAX_TOOL_ROUNDS = 12;
@@ -748,6 +911,10 @@ function runSafeTool(
     case "preview_html":
     case "generate_pdf":
     case "export_csv":
+    case "generate_docx":
+    case "generate_presentation":
+    case "generate_image":
+    case "read_document":
       return (
         args._clientResult?.trim() ||
         "This tool runs on the desktop client after approval/auto-exec. No result was provided."
@@ -758,7 +925,7 @@ function runSafeTool(
       return `Operator approved: ${title}${detail ? `\n${detail}` : ""}`;
     }
     default:
-      return `Unknown tool '${name}'. Available: summarize_workspace, recall_goal, list_team, list_files, search_code, read_file, write_file, apply_patch, delete_file, rename_file, create_dir, git_status, git_diff, open_path, preview_html, generate_pdf, export_csv, run_terminal, web_search, scrape_page, fetch_url, propose_action.`;
+      return `Unknown tool '${name}'. Available: summarize_workspace, recall_goal, list_team, list_files, search_code, read_file, write_file, apply_patch, delete_file, rename_file, create_dir, git_status, git_diff, open_path, preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, read_document, export_csv, run_terminal, web_search, scrape_page, fetch_url, propose_action.`;
   }
 }
 
@@ -805,6 +972,15 @@ async function runTool(
       return `FAILED ${name}: ${error instanceof Error ? error.message : String(error)}`;
     }
   }
+  if (SKILL_TOOL_NAMES.has(name)) {
+    const skills = tools?.skills;
+    if (!skills) return "No skills are installed for this conversation.";
+    try {
+      return name === "use_skill" ? skills.useSkill(args) : skills.readSkillFile(args);
+    } catch (error: unknown) {
+      return `FAILED ${name}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+  }
   if (FINNHUB_TOOL_NAMES.has(name)) {
     const finnhub = tools?.finnhub;
     if (!finnhub) {
@@ -824,7 +1000,8 @@ function requiresApproval(name: string): boolean {
   return (
     name === "propose_action" ||
     CLIENT_EXEC_TOOLS.has(name) ||
-    EMAIL_APPROVAL_TOOLS.has(name)
+    EMAIL_APPROVAL_TOOLS.has(name) ||
+    SSH_TOOL_NAMES.has(name)
   );
 }
 
@@ -982,6 +1159,7 @@ export class GatewayChatRuntime implements AgentRuntime {
       ? `Market data: ${request.tools?.finnhubAccountLabel?.trim() || "Finnhub"}.\n${TOOL_HINT_FINNHUB}`
       : null;
     const traderLine = request.tools?.traderMode ? TOOL_HINT_TRADER : null;
+    const skillsLine = request.tools?.skills ? skillCatalogHint(request.tools.skills) : null;
     const deskHint = options.hasDesk
       ? options.useNativeDeskTools
         ? TOOL_HINT_NATIVE
@@ -997,7 +1175,7 @@ export class GatewayChatRuntime implements AgentRuntime {
         ? `Standing instructions from your operator (follow carefully when anyone writes to you):\n${request.agent.instructions}`
         : null,
       options.hasDesk
-        ? "Work like a precise engineering teammate: obey standing instructions, use tools for real context, verify with commands, and never claim system access you do not have."
+        ? "Work like a precise engineering teammate: follow standing instructions, use tools for real context, verify with commands, and never claim system access you do not have."
         : CHAT_HINT,
       deskHint,
       webHint,
@@ -1005,6 +1183,7 @@ export class GatewayChatRuntime implements AgentRuntime {
       sshLine,
       finnhubLine,
       traderLine,
+      skillsLine,
     ]
       .filter(Boolean)
       .join("\n\n");
@@ -1031,8 +1210,17 @@ export class GatewayChatRuntime implements AgentRuntime {
     const hasEmail = Boolean(request.tools?.email);
     const hasSsh = Boolean(request.tools?.ssh);
     const hasFinnhub = Boolean(request.tools?.finnhub);
+    const hasSkills = Boolean(request.tools?.skills?.catalog.length);
     const webToolNames = new Set(["web_search", "fetch_url", "scrape_page"]);
-    const deliverableToolNames = new Set(["preview_html", "generate_pdf", "export_csv"]);
+    const deliverableToolNames = new Set([
+      "preview_html",
+      "generate_pdf",
+      "export_csv",
+      "generate_docx",
+      "generate_presentation",
+      "generate_image",
+      "read_document",
+    ]);
     const webTools = NATIVE_TOOLS.filter((tool) => webToolNames.has(tool.name));
     const deliverableTools = NATIVE_TOOLS.filter((tool) => deliverableToolNames.has(tool.name));
     const deskTools = NATIVE_TOOLS.filter(
@@ -1046,6 +1234,7 @@ export class GatewayChatRuntime implements AgentRuntime {
       ...(hasEmail ? EMAIL_NATIVE_TOOLS : []),
       ...(hasSsh ? SSH_NATIVE_TOOLS : []),
       ...(hasFinnhub ? FINNHUB_NATIVE_TOOLS : []),
+      ...(hasSkills ? SKILL_NATIVE_TOOLS : []),
     ];
     // Web tools alone are enough to enable native tooling on plain chat.
     const useNativeTools = provider.supportsTools === true && activeTools.length > 0;
@@ -1367,6 +1556,86 @@ export class GatewayChatRuntime implements AgentRuntime {
           pendingArgs.content = content;
           pendingArgs.title = `CSV: ${pendingArgs.path}`;
           pendingArgs.detail = pendingArgs.path;
+        } else if (pendingName === "generate_docx") {
+          const content = pendingArgs.content || pendingArgs.body || "";
+          if (!content.trim()) {
+            const missing = "FAILED generate_docx: requires content.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.path = (pendingArgs.path || "").trim() || "arrab-document.docx";
+          pendingArgs.content = content;
+          pendingArgs.title = `Word: ${pendingArgs.path}`;
+          pendingArgs.detail = pendingArgs.path;
+        } else if (pendingName === "generate_presentation") {
+          const content = pendingArgs.content || pendingArgs.slides || "";
+          if (!content.trim()) {
+            const missing = "FAILED generate_presentation: requires content.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.path = (pendingArgs.path || "").trim() || "arrab-presentation.html";
+          pendingArgs.content = content;
+          pendingArgs.title = `Presentation: ${pendingArgs.path}`;
+          pendingArgs.detail = pendingArgs.path;
+        } else if (pendingName === "generate_image") {
+          const prompt =
+            pendingArgs.prompt || pendingArgs.content || pendingArgs.title || "";
+          if (!prompt.trim()) {
+            const missing = "FAILED generate_image: requires prompt.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.prompt = prompt;
+          pendingArgs.path = (pendingArgs.path || "").trim() || "arrab-image.svg";
+          pendingArgs.title = `Image: ${pendingArgs.path}`;
+          pendingArgs.detail = prompt.slice(0, 200);
+        } else if (pendingName === "read_document") {
+          const path = (pendingArgs.path || pendingArgs.relative || "").trim();
+          if (!path) {
+            const missing = "FAILED read_document: requires path.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.path = path;
+          pendingArgs.title = `Document: ${path}`;
+          pendingArgs.detail = path;
         } else if (pendingName === "send_email") {
           const to = pendingArgs.to?.trim() || "";
           const subject = pendingArgs.subject?.trim() || "";
@@ -1565,10 +1834,15 @@ export async function executeApprovedTool(
   clientResult?: string | null,
 ): Promise<string> {
   if (CLIENT_EXEC_TOOLS.has(name)) {
-    return (
-      clientResult?.trim() ||
-      "This tool runs on the desktop client after approval/auto-exec. No result was provided."
-    );
+    const result = clientResult?.trim() || "";
+    if (!result) {
+      return "This tool runs on the desktop client after approval/auto-exec. No result was provided.";
+    }
+    // Bound client results: reject oversized or obviously forged control payloads.
+    if (result.length > 200_000) {
+      return "FAILED: client tool result exceeded size limit.";
+    }
+    return result;
   }
   if (
     EMAIL_TOOL_NAMES.has(name) ||

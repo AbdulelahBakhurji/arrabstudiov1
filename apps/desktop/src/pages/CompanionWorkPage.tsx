@@ -1,5 +1,15 @@
-import { useEffect, useRef, useState } from "react";
-import { Archive, ArrowUpRight, Check, Clock, Lightbulb, Plus, RotateCcw } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Archive,
+  ArrowUpRight,
+  Check,
+  Clock,
+  Lightbulb,
+  ListTodo,
+  Plus,
+  RotateCcw,
+  Sparkles,
+} from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useRole } from "@/roles/RoleProvider";
@@ -11,6 +21,7 @@ import {
   COMPANION_FOCUS_KEY,
   findCompanion,
   formatSlot,
+  liveCompanions,
   needsTaskOrThought,
   postponeWork,
   relativeTime,
@@ -28,11 +39,22 @@ import {
   SpaceSwitch,
   useCompanionSpace,
 } from "@/components/companions/CompanionUI";
+import { useFamilyProfile } from "@/lib/use-family-profile";
+import { useSignedInAccount } from "@/lib/use-signed-in-account";
+import { audienceFromPlanId } from "@/roles/catalog";
+import { cn } from "@/lib/utils";
 
 export function CompanionWorkPage() {
   const { t, locale } = useLanguage();
   const ar = locale === "ar";
-  const { href } = useRole();
+  const { href, isFamily } = useRole();
+  const { signedIn, account, status } = useSignedInAccount();
+  const familyPlan =
+    signedIn &&
+    audienceFromPlanId(account?.planId ?? status?.entitlements?.planId ?? null) === "family";
+  const familyLive = Boolean(isFamily && familyPlan);
+  const { active: familyActive, isChild: isFamilyChildSeat } = useFamilyProfile();
+  const isFamilyChild = familyLive && isFamilyChildSeat;
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const threadsView = params.get("view") === "threads";
@@ -53,9 +75,27 @@ export function CompanionWorkPage() {
   const keepCaptureFocus = useRef(false);
   const selectedId = target?.item.id;
   const selectedState = target?.kind === "work" ? target.item.state : null;
+
+  const kidCompanionIds = useMemo(() => {
+    if (!familyLive || !isFamilyChild || !familyActive) return null;
+    return new Set(
+      liveCompanions(state)
+        .filter((c) => c.familyMemberId === familyActive.id)
+        .map((c) => c.id),
+    );
+  }, [familyLive, isFamilyChild, familyActive, state]);
+
+  function forKid(items: WorkItem[]) {
+    if (!kidCompanionIds) return items;
+    return items.filter(
+      (item) => !item.companionId || kidCompanionIds.has(item.companionId),
+    );
+  }
+
   useEffect(() => {
     if (space !== savedSpace) setSpace(space);
-  }, [space, savedSpace]);
+  }, [space, savedSpace, setSpace]);
+
   useEffect(() => {
     const preserveFocus = keepCaptureFocus.current;
     keepCaptureFocus.current = false;
@@ -70,12 +110,25 @@ export function CompanionWorkPage() {
       block: "center",
     });
   }, [selectedId, selectedState, archived, space, threadsView]);
-  const accepted = acceptedWork(state, space);
-  const suggested = suggestedWork(state, space);
-  const done = state.work.filter((item) => item.space === space && item.state === "done");
-  const threads = state.threads.filter(
-    (thread) => thread.space === space && thread.archived === archived,
+
+  const accepted = forKid(acceptedWork(state, space));
+  const suggested = forKid(suggestedWork(state, space));
+  const done = forKid(
+    state.work.filter((item) => item.space === space && item.state === "done"),
   );
+  const threads = state.threads.filter(
+    (thread) =>
+      thread.space === space &&
+      thread.archived === archived &&
+      (!kidCompanionIds || !thread.companionId || kidCompanionIds.has(thread.companionId)),
+  );
+
+  const totalOpen = accepted.length + suggested.length;
+  const progress =
+    totalOpen + done.length === 0
+      ? 0
+      : Math.round((done.length / (totalOpen + done.length)) * 100);
+
   function saveDraft(asIdea: boolean) {
     const input = {
       text: draft.trim(),
@@ -85,7 +138,6 @@ export function CompanionWorkPage() {
     };
     const item = asIdea ? captureWork(input) : addWorkTask(input);
     if (!item) return;
-    // Keep typing convenient when adding several tasks in a row.
     keepCaptureFocus.current = item.id !== selectedId || item.state !== selectedState;
     setDrafts((current) => ({ ...current, [space]: "" }));
     setFeedback(
@@ -101,22 +153,26 @@ export function CompanionWorkPage() {
             ? "هذه الفكرة محفوظة سابقًا."
             : "This idea was already saved.",
     );
-    // Reveal the saved item immediately, including an existing matching item.
     setParams({ space, item: item.id });
     captureInput.current?.focus();
   }
+
   function workRow(item: WorkItem, suggestion: boolean) {
     const person = findCompanion(state, item.companionId);
     return (
       <li
-        className={`cp-work-item ${selectedId === item.id ? "cp-item-highlight" : ""}`}
+        className={cn(
+          "cw-item",
+          suggestion && "is-suggest",
+          selectedId === item.id && "is-on",
+        )}
         key={item.id}
         tabIndex={selectedId === item.id ? -1 : undefined}
         ref={(node) => {
           if (selectedId === item.id) selectedRef.current = node;
         }}
       >
-        <div className="cp-work-line">
+        <div className="cw-item-line">
           {!suggestion ? (
             <button
               className="cp-task-check"
@@ -125,10 +181,14 @@ export function CompanionWorkPage() {
             >
               <Check size={13} />
             </button>
-          ) : null}
+          ) : (
+            <span className="cw-suggest-mark" aria-hidden>
+              <Sparkles size={13} strokeWidth={1.8} />
+            </span>
+          )}
           <p>{item.text}</p>
         </div>
-        <div className="cp-meta">
+        <div className="cw-item-meta">
           {person ? <PersonAvatar person={person} size="sm" /> : null}
           <span>{item.capturedFrom}</span>
           {item.suggestedTime ? (
@@ -141,7 +201,7 @@ export function CompanionWorkPage() {
           ) : null}
         </div>
         {needsTaskOrThought(item) ? <p className="cp-notice">{t("compTaskOrThought")}</p> : null}
-        <div className="cp-actions">
+        <div className="cw-item-actions">
           {suggestion ? (
             <>
               <button
@@ -174,14 +234,17 @@ export function CompanionWorkPage() {
       </li>
     );
   }
+
   return (
-    <div className="cp-ui cp-page">
+    <div className={cn("cp-ui cp-page cw-page", isFamilyChild && "is-kid")}>
       <CompanionPageHeader
         title={t("compWork")}
         subtitle={
-          ar
-            ? "التزاماتك، والأفكار التي تنتظر قرارك."
-            : "Your commitments, and the ideas waiting for a decision."
+          isFamilyChild
+            ? t("compWorkKidBody")
+            : ar
+              ? "التزاماتك، والأفكار التي تنتظر قرارك."
+              : "Your commitments, and the ideas waiting for a decision."
         }
       >
         <SpaceSwitch
@@ -193,7 +256,41 @@ export function CompanionWorkPage() {
           }}
         />
       </CompanionPageHeader>
-      <div className="cp-section-tabs">
+
+      <div className="cw-overview" aria-label={t("compWork")}>
+        <div className="cw-stat">
+          <ListTodo className="size-3.5" strokeWidth={1.8} />
+          <div>
+            <strong>{accepted.length}</strong>
+            <span>{t("compWorkReady")}</span>
+          </div>
+        </div>
+        <div className="cw-stat">
+          <Sparkles className="size-3.5" strokeWidth={1.8} />
+          <div>
+            <strong>{suggested.length}</strong>
+            <span>{t("compWorkInbox")}</span>
+          </div>
+        </div>
+        <div className="cw-stat">
+          <Check className="size-3.5" strokeWidth={1.8} />
+          <div>
+            <strong>{done.length}</strong>
+            <span>{t("compDone")}</span>
+          </div>
+        </div>
+        <div className="cw-progress">
+          <div className="cw-progress-labels">
+            <span>{t("compWorkProgress")}</span>
+            <strong>{progress}%</strong>
+          </div>
+          <div className="cw-progress-track" aria-hidden>
+            <div className="cw-progress-fill" style={{ width: `${progress}%` }} />
+          </div>
+        </div>
+      </div>
+
+      <div className="cp-section-tabs cw-tabs">
         <button aria-pressed={!threadsView} onClick={() => setParams({ space })}>
           {ar ? "المهام" : "Tasks"}
         </button>
@@ -201,6 +298,7 @@ export function CompanionWorkPage() {
           {t("compThreads")}
         </button>
       </div>
+
       {params.has("item") && !target ? (
         <p className="cp-target-notice" role="status">
           {ar
@@ -208,6 +306,7 @@ export function CompanionWorkPage() {
             : "This item is no longer available. Your other tasks are below."}
         </p>
       ) : null}
+
       {threadsView ? (
         <>
           <div className="cp-section-heading">
@@ -231,10 +330,13 @@ export function CompanionWorkPage() {
                 : "Ongoing topics from your chats appear here, with a summary and what's still open."}
             </CompanionEmpty>
           ) : (
-            <div className="cp-thread-grid">
+            <div className="cp-thread-grid cw-thread-grid">
               {threads.map((thread) => (
                 <article
-                  className={`cp-card cp-thread ${selectedId === thread.id ? "cp-item-highlight" : ""}`}
+                  className={cn(
+                    "cp-card cp-thread cw-thread",
+                    selectedId === thread.id && "cp-item-highlight",
+                  )}
                   key={thread.id}
                   tabIndex={selectedId === thread.id ? -1 : undefined}
                   ref={(node) => {
@@ -285,35 +387,45 @@ export function CompanionWorkPage() {
       ) : (
         <>
           <form
-            className="cp-capture-form"
+            className="cw-capture"
             onSubmit={(event) => {
               event.preventDefault();
               saveDraft(false);
             }}
           >
-            <Plus size={18} />
-            <input
-              ref={captureInput}
-              value={draft}
-              onChange={(event) =>
-                setDrafts((current) => ({ ...current, [space]: event.target.value }))
-              }
-              aria-label={ar ? "اكتب مهمة أو فكرة" : "Write a task or idea"}
-              placeholder={ar ? "ما الذي تريد إنجازه؟" : "What would you like to get done?"}
-            />
-            <button type="submit" className="cp-button cp-primary" disabled={!draft.trim()}>
-              <Plus size={15} />
-              {ar ? "إضافة مهمة" : "Add task"}
-            </button>
-            <button
-              type="button"
-              className="cp-button cp-capture-secondary"
-              disabled={!draft.trim()}
-              onClick={() => saveDraft(true)}
-            >
-              <Lightbulb size={15} />
-              {ar ? "حفظ فكرة" : "Save idea"}
-            </button>
+            <div className="cw-capture-field">
+              <Plus size={18} strokeWidth={1.8} />
+              <input
+                ref={captureInput}
+                value={draft}
+                onChange={(event) =>
+                  setDrafts((current) => ({ ...current, [space]: event.target.value }))
+                }
+                aria-label={ar ? "اكتب مهمة أو فكرة" : "Write a task or idea"}
+                placeholder={
+                  isFamilyChild
+                    ? t("compWorkKidPh")
+                    : ar
+                      ? "ما الذي تريد إنجازه؟"
+                      : "What would you like to get done?"
+                }
+              />
+            </div>
+            <div className="cw-capture-actions">
+              <button type="submit" className="cp-button cp-primary" disabled={!draft.trim()}>
+                <Plus size={15} />
+                {ar ? "إضافة مهمة" : "Add task"}
+              </button>
+              <button
+                type="button"
+                className="cp-button cp-capture-secondary"
+                disabled={!draft.trim()}
+                onClick={() => saveDraft(true)}
+              >
+                <Lightbulb size={15} />
+                {ar ? "حفظ فكرة" : "Save idea"}
+              </button>
+            </div>
           </form>
           <p className="cp-capture-feedback" role="status" aria-live="polite">
             {feedback}
@@ -337,21 +449,22 @@ export function CompanionWorkPage() {
               </button>
             </div>
           ) : null}
-          <div className="cp-work-grid">
-            <section>
-              <div className="cp-section-heading">
-                <h2>
-                  {ar ? "مهامك" : "Your tasks"}
-                  <span>{accepted.length}</span>
-                </h2>
-                <small>{ar ? "جاهزة للإنجاز" : "Ready to do"}</small>
-              </div>
+
+          <div className="cw-board">
+            <section className="cw-col">
+              <header className="cw-col-head">
+                <div>
+                  <h2>
+                    {ar ? "مهامك" : "Your tasks"}
+                    <span>{accepted.length}</span>
+                  </h2>
+                  <small>{ar ? "جاهزة للإنجاز" : "Ready to do"}</small>
+                </div>
+              </header>
               {accepted.length ? (
-                <ul className="cp-card cp-work-list">
-                  {accepted.map((item) => workRow(item, false))}
-                </ul>
+                <ul className="cw-list">{accepted.map((item) => workRow(item, false))}</ul>
               ) : (
-                <div className="cp-card">
+                <div className="cw-empty">
                   <CompanionEmpty title={ar ? "مساحة ليوم أخف" : "Room for a lighter day"}>
                     {ar
                       ? "أضف مهمة من الأعلى، أو اقبل أحد المقترحات."
@@ -360,7 +473,7 @@ export function CompanionWorkPage() {
                 </div>
               )}
               {done.length ? (
-                <details className="cp-completed">
+                <details className="cp-completed cw-done">
                   <summary>
                     {t("compDone")} · {done.length}
                   </summary>
@@ -388,24 +501,27 @@ export function CompanionWorkPage() {
                 </details>
               ) : null}
             </section>
-            <section>
-              <div className="cp-section-heading">
-                <h2>
-                  {t("compWorkSuggested")}
-                  <span>{suggested.length}</span>
-                </h2>
-              </div>
-              <p className="cp-muted cp-section-intro">
-                {ar
-                  ? "اقتراحات فقط. لن تصبح التزامًا حتى توافق عليها."
-                  : "Just suggestions. Nothing becomes a commitment until you say so."}
-              </p>
+
+            <section className="cw-col">
+              <header className="cw-col-head">
+                <div>
+                  <h2>
+                    {t("compWorkSuggested")}
+                    <span>{suggested.length}</span>
+                  </h2>
+                  <small>
+                    {ar
+                      ? "اقتراحات فقط — لن تصبح التزامًا حتى توافق."
+                      : "Suggestions only — nothing sticks until you say so."}
+                  </small>
+                </div>
+              </header>
               {suggested.length ? (
-                <ul className="cp-card cp-work-list cp-suggestions">
+                <ul className="cw-list is-suggest">
                   {suggested.map((item) => workRow(item, true))}
                 </ul>
               ) : (
-                <div className="cp-quiet-box">{t("compWorkEmpty")}</div>
+                <div className="cw-quiet">{t("compWorkEmpty")}</div>
               )}
             </section>
           </div>

@@ -117,19 +117,19 @@ export function detectSuggestedMode(text: string, current: SessionMode): Session
 
 export function sessionModePromptPrefix(mode: SessionMode): string {
   const base =
-    "If a different mode would serve the user better (agent|plan|debug|multitask|ask), end your reply with exactly one line: [[suggest_mode:MODE]] and nothing after it.\n\n";
+    "If a different mode would serve the user better (agent|plan|debug|multitask|ask), end your reply with exactly one line: [[suggest_mode:MODE]] and nothing after it.";
   switch (mode) {
     case "plan":
-      return `[Session mode: Plan. Do not jump into implementation. Clarify goals, constraints, and a short ordered plan. Ask before acting.]\n${base}`;
+      return `Session mode: Plan. Clarify goals, constraints, and a short ordered plan before acting.\n${base}`;
     case "debug":
-      return `[Session mode: Debug. Reproduce the failure, isolate the cause, propose a minimal fix. Prefer evidence over guesses.]\n${base}`;
+      return `Session mode: Debug. Reproduce the failure, isolate the cause, and propose a minimal fix from evidence.\n${base}`;
     case "multitask":
-      return `[Session mode: Multitask. Track parallel threads clearly. Number items, keep each thread short, and say what you will do next on each.]\n${base}`;
+      return `Session mode: Multitask. Number parallel threads and say the next step on each.\n${base}`;
     case "ask":
-      return `[Session mode: Ask. Answer clearly. Do not edit files, run tools, or take actions unless the user explicitly asks.]\n${base}`;
+      return `Session mode: Ask. Answer clearly. Do not edit files or run tools unless the user asks.\n${base}`;
     case "agent":
     default:
-      return `[Session mode: Agent. Take useful action. Prefer doing the work over only describing it.]\n${base}`;
+      return `Session mode: Agent. Do the useful work instead of only describing it.\n${base}`;
   }
 }
 

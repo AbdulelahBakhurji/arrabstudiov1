@@ -24,6 +24,13 @@ describe("purpose registry (Master Blueprint)", () => {
     expect(resolvePurposeIdFromDomain("arrab-assistant")).toBe("arrab-assistant");
     expect(resolvePurposeIdFromDomain("phone-design-foo")).toBe("phone-design");
     expect(resolvePurposeIdFromDomain("mystery-agent")).toBe("custom");
+    expect(resolvePurposeIdFromDomain("health")).toBe("health");
+    expect(resolvePurposeIdFromDomain("ivy")).toBe("health");
+    expect(resolvePurposeIdFromDomain("relationships")).toBe("relationships");
+    expect(resolvePurposeIdFromDomain("parents")).toBe("parents");
+    expect(resolvePurposeIdFromDomain("career")).toBe("career");
+    expect(resolvePurposeIdFromDomain("meetings")).toBe("meetings");
+    expect(resolvePurposeIdFromDomain("decision-guard")).toBe("decision-guard");
   });
 
   it("binds every chat preset to a registry purpose", () => {

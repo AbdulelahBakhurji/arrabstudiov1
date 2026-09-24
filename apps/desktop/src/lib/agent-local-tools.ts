@@ -13,6 +13,12 @@ import {
   writeTextFile,
 } from "./fs";
 import { isTauriRuntime, runLocalCommand } from "./terminal";
+import {
+  buildDocxBytes,
+  buildImageSvg,
+  buildPresentationHtml,
+  uint8ToBase64,
+} from "./deliverable-files";
 
 export const CLIENT_EXEC_TOOLS = new Set([
   "run_terminal",
@@ -30,6 +36,10 @@ export const CLIENT_EXEC_TOOLS = new Set([
   "preview_html",
   "generate_pdf",
   "export_csv",
+  "generate_docx",
+  "generate_presentation",
+  "generate_image",
+  "read_document",
 ]);
 
 /** Read-only / low-risk tools — auto-run without an approval card. */
@@ -43,6 +53,10 @@ export const AUTO_CLIENT_TOOLS = new Set([
   "preview_html",
   "generate_pdf",
   "export_csv",
+  "generate_docx",
+  "generate_presentation",
+  "generate_image",
+  "read_document",
 ]);
 
 /** Mutating tools — respect Ask / Allow everything policy. */
@@ -77,7 +91,7 @@ export function isEmailPolicyTool(name: string): boolean {
 export type LocalToolArgs = Record<string, string>;
 
 export type LocalToolArtifact = {
-  kind: "html" | "pdf" | "csv";
+  kind: "html" | "pdf" | "csv" | "docx" | "presentation" | "image";
   folderPath: string;
   relativePath: string;
   /** Absolute path when known (for OS open / convertFileSrc). */
@@ -109,6 +123,30 @@ const MAX_CHECKPOINTS = 40;
 
 function normalizeRel(path: string): string {
   return path.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^\/+/, "").trim();
+}
+
+async function writeBinaryRelative(
+  folderPath: string,
+  relative: string,
+  bytes: Uint8Array,
+): Promise<void> {
+  const b64 = uint8ToBase64(bytes);
+  const script = [
+    "import base64, pathlib, sys",
+    `path = pathlib.Path(${JSON.stringify(relative)})`,
+    "path.parent.mkdir(parents=True, exist_ok=True)",
+    `path.write_bytes(base64.b64decode(${JSON.stringify(b64)}))`,
+    "print(path.resolve())",
+  ].join("\n");
+  const written = await runLocalCommand(
+    `python3 - <<'PY'\n${script}\nPY`,
+    folderPath,
+  );
+  if (written.code !== 0) {
+    throw new Error(
+      written.stderr.trim() || written.stdout.trim() || "Failed to write binary file",
+    );
+  }
 }
 
 function readCheckpoints(): EditCheckpoint[] {
@@ -506,6 +544,180 @@ export async function executeLocalAgentTool(
         const toolResult = `WROTE CSV ${path} (${content.length} chars) and opened it`;
         return { ok: true, summary: toolResult, toolResult };
       }
+      case "generate_docx": {
+        const content = args.content ?? args.body ?? "";
+        if (!content.trim()) {
+          const msg = "ERROR: generate_docx requires content.";
+          return { ok: false, summary: msg, toolResult: msg };
+        }
+        let path = normalizeRel(args.path || "arrab-document.docx");
+        if (!path.toLowerCase().endsWith(".docx")) path = `${path}.docx`;
+        const title = (args.title || "Arrab document").trim();
+        const bytes = buildDocxBytes({ title, content });
+        await writeBinaryRelative(folderPath, path, bytes);
+        await openPath(folderPath, path);
+        const toolResult = `GENERATED Word document ${path} (${bytes.length} bytes)`;
+        return {
+          ok: true,
+          summary: toolResult,
+          toolResult,
+          artifact: {
+            kind: "docx",
+            folderPath,
+            relativePath: path,
+            absolutePath: `${folderPath.replace(/\/$/, "")}/${path}`,
+            title,
+          },
+        };
+      }
+      case "generate_presentation": {
+        const content = args.content ?? args.slides ?? "";
+        if (!content.trim()) {
+          const msg =
+            "ERROR: generate_presentation requires content (slides separated by --- or blank lines).";
+          return { ok: false, summary: msg, toolResult: msg };
+        }
+        let path = normalizeRel(args.path || "arrab-presentation.html");
+        if (!/\.(html?|htm)$/i.test(path)) path = `${path}.html`;
+        const title = (args.title || "Presentation").trim();
+        const html = buildPresentationHtml({ title, content });
+        await writeTextFile(folderPath, path, html);
+        await openPath(folderPath, path);
+        const toolResult = `GENERATED presentation ${path} — open in browser; use ← → to change slides`;
+        return {
+          ok: true,
+          summary: toolResult,
+          toolResult,
+          artifact: {
+            kind: "presentation",
+            folderPath,
+            relativePath: path,
+            absolutePath: `${folderPath.replace(/\/$/, "")}/${path}`,
+            previewHtml: html,
+            title,
+          },
+        };
+      }
+      case "generate_image": {
+        const prompt = (args.prompt || args.content || args.title || "").trim();
+        if (!prompt) {
+          const msg = "ERROR: generate_image requires prompt or content.";
+          return { ok: false, summary: msg, toolResult: msg };
+        }
+        let path = normalizeRel(args.path || "arrab-image.svg");
+        if (!/\.(svg|png)$/i.test(path)) path = `${path}.svg`;
+        // Local professional SVG card — works offline without an image API.
+        const svg = buildImageSvg({
+          title: args.title || prompt.split("\n")[0],
+          content: args.content || prompt,
+          prompt,
+          width: Number(args.width) || undefined,
+          height: Number(args.height) || undefined,
+        });
+        if (path.toLowerCase().endsWith(".png")) {
+          path = path.replace(/\.png$/i, ".svg");
+        }
+        await writeTextFile(folderPath, path, svg);
+        await openPath(folderPath, path);
+        const toolResult = `GENERATED image ${path} (SVG). Prompt: ${prompt.slice(0, 160)}`;
+        return {
+          ok: true,
+          summary: toolResult,
+          toolResult,
+          artifact: {
+            kind: "image",
+            folderPath,
+            relativePath: path,
+            absolutePath: `${folderPath.replace(/\/$/, "")}/${path}`,
+            previewHtml: `<!doctype html><html><body style="margin:0;background:#0b0d10;display:grid;place-items:center;min-height:100vh">${svg}</body></html>`,
+            title: args.title || prompt.slice(0, 60),
+          },
+        };
+      }
+      case "read_document": {
+        const path = normalizeRel(args.path || args.relative || "");
+        if (!path) {
+          const msg = "ERROR: read_document requires path.";
+          return { ok: false, summary: msg, toolResult: msg };
+        }
+        const lower = path.toLowerCase();
+        if (/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(lower)) {
+          const info = await runLocalCommand(
+            [
+              "set -e",
+              `FILE=${JSON.stringify(path)}`,
+              'if command -v sips >/dev/null 2>&1; then sips -g pixelWidth -g pixelHeight -g format "$FILE" 2>/dev/null || true; fi',
+              'ls -la "$FILE"',
+              'file "$FILE" 2>/dev/null || true',
+              'if [[ "$FILE" == *.svg || "$FILE" == *.SVG ]]; then head -c 4000 "$FILE"; fi',
+            ].join("\n"),
+            folderPath,
+          );
+          const toolResult = [
+            `IMAGE ${path}`,
+            info.stdout.trim() || info.stderr.trim() || "(no metadata)",
+            "Describe what you see from filename/context; ask the operator to attach the image in chat for a closer look if needed.",
+          ].join("\n");
+          return { ok: true, summary: `Inspected image ${path}`, toolResult };
+        }
+        if (/\.(docx)$/i.test(lower)) {
+          const extracted = await runLocalCommand(
+            [
+              "python3 - <<'PY'",
+              "import zipfile, re, sys",
+              `path = ${JSON.stringify(path)}`,
+              "try:",
+              "  with zipfile.ZipFile(path) as z:",
+              "    xml = z.read('word/document.xml').decode('utf-8', errors='ignore')",
+              "  text = re.sub(r'</w:p>', '\\n', xml)",
+              "  text = re.sub(r'<[^>]+>', '', text)",
+              "  text = re.sub(r'\\n{3,}', '\\n\\n', text).strip()",
+              "  print(text[:24000] if text else '(empty document)')",
+              "except Exception as err:",
+              "  print(f'ERROR: {err}')",
+              "  sys.exit(1)",
+              "PY",
+            ].join("\n"),
+            folderPath,
+          );
+          if (extracted.code !== 0) {
+            const msg = extracted.stderr.trim() || extracted.stdout.trim() || "Failed to read docx";
+            return { ok: false, summary: msg, toolResult: `ERROR: ${msg}` };
+          }
+          const toolResult = [`DOCUMENT ${path}`, "-----", extracted.stdout.trim()].join("\n");
+          return { ok: true, summary: `Read document ${path}`, toolResult };
+        }
+        if (/\.(pdf)$/i.test(lower)) {
+          const extracted = await runLocalCommand(
+            [
+              "set +e",
+              `FILE=${JSON.stringify(path)}`,
+              'if command -v pdftotext >/dev/null 2>&1; then pdftotext -layout "$FILE" - | head -c 24000; exit $?; fi',
+              'python3 - <<\'PY\'',
+              "from pathlib import Path",
+              `data = Path(${JSON.stringify(path)}).read_bytes()`,
+              "text = ''.join(chr(b) if 32 <= b < 127 or b in (9,10,13) else ' ' for b in data)",
+              "parts = [p for p in text.split() if len(p) > 2]",
+              "print(' '.join(parts[:3500])[:24000] or '(no extractable text — install pdftotext for better results)')",
+              "PY",
+            ].join("\n"),
+            folderPath,
+          );
+          const body = extracted.stdout.trim() || extracted.stderr.trim() || "(empty)";
+          const toolResult = [`PDF ${path}`, "-----", body].join("\n");
+          return { ok: extracted.code === 0, summary: `Read PDF ${path}`, toolResult };
+        }
+        // Text-like fallback
+        const file = await readTextFile(folderPath, path);
+        const truncated =
+          file.content.length > 40_000
+            ? `${file.content.slice(0, 40_000)}\n\n…(truncated)`
+            : file.content;
+        const toolResult = [`DOCUMENT ${path} (${file.size} bytes)`, "-----", truncated].join(
+          "\n",
+        );
+        return { ok: true, summary: `Read ${path}`, toolResult };
+      }
       default: {
         const msg = `ERROR: Unknown local tool '${toolName}'.`;
         return { ok: false, summary: msg, toolResult: msg };
@@ -543,6 +755,10 @@ export function parseToolNameFromApproval(detail: string | null, title: string):
   if (title.startsWith("HTML preview:")) return "preview_html";
   if (title.startsWith("PDF:")) return "generate_pdf";
   if (title.startsWith("CSV:")) return "export_csv";
+  if (title.startsWith("Word:") || title.startsWith("DOCX:")) return "generate_docx";
+  if (title.startsWith("Presentation:")) return "generate_presentation";
+  if (title.startsWith("Image:")) return "generate_image";
+  if (title.startsWith("Document:")) return "read_document";
   return null;
 }
 

@@ -1,4 +1,4 @@
-import { hasSpecialistCompanion, dismissGettingStarted, markGettingStartedStep } from "./getting-started";
+import { dismissGettingStarted, markGettingStartedStep } from "./getting-started";
 
 export const FIRST_LAUNCH_KEY = "arrab.firstLaunchSetup";
 export const FIRST_LAUNCH_EVENT = "arrab:first-launch-setup";
@@ -74,20 +74,9 @@ export function completeFirstLaunchSetup(): void {
   dismissGettingStarted();
 }
 
-/** Existing users who already have a companion skip the wizard once. */
-export function shouldShowFirstLaunchSetup(hasConnectedConnector: boolean): boolean {
-  const state = readFirstLaunchSetup();
-  if (state.completed) return false;
-
-  const hasCompanion = hasSpecialistCompanion();
-  if (hasCompanion && (hasConnectedConnector || state.connectorDone)) {
-    completeFirstLaunchSetup();
-    return false;
-  }
-  if (hasCompanion && !state.companionDone) {
-    updateFirstLaunchSetup({ companionDone: true });
-  }
-  return true;
+/** First open always runs the wizard until the user finishes it, then sign-in. */
+export function shouldShowFirstLaunchSetup(): boolean {
+  return !readFirstLaunchSetup().completed;
 }
 
 export function resetFirstLaunchSetup(): void {

@@ -1,6 +1,6 @@
 [package]
 name = "arrab-studio"
-version = "0.12.0"
+version = "0.12.1"
 description = "Arrab Studio"
 authors = ["Arrab"]
 edition = "2021"
@@ -25,6 +25,7 @@ tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rfd = "0.15"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }

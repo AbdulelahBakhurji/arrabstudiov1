@@ -1,5 +1,16 @@
 import type { AiGatewayStatusResponse } from "@arrab/shared";
+import { canUseCloudAi } from "@/lib/guest-mode";
 import { readPrefs, type StudioPrefs } from "@/lib/prefs";
+
+export { canUseCloudAi } from "@/lib/guest-mode";
+
+/** Throw when cloud Arrab AI is requested without a signed-in session. */
+export function assertCloudAiAllowed(): void {
+  if (canUseCloudAi()) return;
+  throw new Error(
+    "Sign in to use cloud AI. Without an account you can only run local models.",
+  );
+}
 
 const CHATGPT_FALLBACK = "openai/gpt-4o-mini";
 const CLAUDE_FALLBACK = "anthropic/claude-3.5-haiku";
@@ -85,6 +96,18 @@ export function resolveCompanionModel(
 /** True when a local Ollama model was downloaded and selected in Settings. */
 export function hasLocalModelSelected(prefs: StudioPrefs = readPrefs()): boolean {
   return Boolean(prefs.aiLocalEnabled && prefs.aiLocalModel.trim());
+}
+
+/**
+ * Local wins when selected. Cloud needs a signed-in session.
+ * Unsigned + no local model → blocked (prompt sign-in or pick Ollama).
+ */
+export function resolveAiRuntime(
+  prefs: StudioPrefs = readPrefs(),
+): "local" | "cloud" | "blocked" {
+  if (hasLocalModelSelected(prefs)) return "local";
+  if (canUseCloudAi()) return "cloud";
+  return "blocked";
 }
 
 export function providerConnected(

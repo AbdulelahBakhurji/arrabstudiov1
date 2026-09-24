@@ -86,8 +86,30 @@ export async function attachFilesToDraft(
         skippedNames.push(file.name);
       }
     } else if (file.type.startsWith("image/")) {
+      try {
+        if (file.size <= 400_000) {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ""));
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(file);
+          });
+          parts.push(
+            `[Attached image: ${file.name} (${file.type}, ${Math.round(file.size / 1024)}KB)]\n${dataUrl}`,
+          );
+        } else {
+          parts.push(
+            `[Attached image: ${file.name} (${file.type}, ${Math.round(file.size / 1024)}KB). Too large to inline — describe from filename/context or ask me to save it to the desk and use read_document.]`,
+          );
+        }
+        attachedNames.push(file.name);
+      } catch {
+        parts.push(`[Attached image: ${file.name} — could not read]`);
+        skippedNames.push(file.name);
+      }
+    } else if (/\.(pdf|docx?|pptx?)$/i.test(file.name)) {
       parts.push(
-        `[Attached image: ${file.name} (${file.type}, ${Math.round(file.size / 1024)}KB). Image is on this device — use the filename and context.]`,
+        `[Attached document: ${file.name} (${file.type || "binary"}, ${Math.round(file.size / 1024)}KB). Ask me to save it on the Arrab desk and call read_document, or summarize from the filename if that is enough.]`,
       );
       attachedNames.push(file.name);
     } else {

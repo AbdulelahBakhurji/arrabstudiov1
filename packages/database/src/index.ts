@@ -11,6 +11,7 @@ export type {
   MessageRepository,
   OperatorRepository,
   CompanionStateRepository,
+  ErpCompanionRepository,
   AccountRepository,
   Persistence,
   ProjectRepoBindingRepository,

@@ -5,12 +5,19 @@ import { useLanguage } from "@/i18n/LanguageProvider";
 import { useTheme } from "@/theme/ThemeProvider";
 import { arrabApi, ApiRequestError } from "@/lib/api";
 import { readPendingWebAuth } from "@/lib/account-session";
+import { enableGuestLocalMode } from "@/lib/guest-mode";
 import { cancelAllWebAuthPolls, pollWebAuthUntilDone, resumePendingWebAuth } from "@/lib/web-auth";
 import { openExternalUrl } from "@/lib/desktop";
 import { pushToast } from "@/lib/notify";
 import { ToastHost } from "@/components/ToastHost";
 
-export function SignInPage({ onSignedIn }: { onSignedIn: () => void }) {
+export function SignInPage({
+  onSignedIn,
+  onContinueLocal,
+}: {
+  onSignedIn: () => void;
+  onContinueLocal?: () => void;
+}) {
   const { t, toggleLocale, dir } = useLanguage();
   const { theme, toggleTheme } = useTheme();
   const [busy, setBusy] = useState(false);
@@ -63,7 +70,11 @@ export function SignInPage({ onSignedIn }: { onSignedIn: () => void }) {
       if (!started.state?.trim() || !pollSecret) {
         throw new ApiRequestError(t("webAuthMissingCredentials"), 400);
       }
-      await openExternalUrl(started.authorizationUrl);
+      const authUrl = started.authorizationUrl?.trim();
+      if (!authUrl) {
+        throw new ApiRequestError("Sign-in URL missing from Arrab API", 500);
+      }
+      await openExternalUrl(authUrl);
       setWebWaiting(true);
       pushToast({ title: t("webAuthOpened"), body: t("webAuthOpenedBody"), tone: "info" });
 
@@ -98,7 +109,13 @@ export function SignInPage({ onSignedIn }: { onSignedIn: () => void }) {
         setError(result.message);
       }
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      const message =
+        err instanceof ApiRequestError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : t("apiUnavailable");
+      setError(message);
       setWebWaiting(false);
     } finally {
       setBusy(false);
@@ -195,6 +212,26 @@ export function SignInPage({ onSignedIn }: { onSignedIn: () => void }) {
             ) : null}
 
             {error ? <p className="text-sm text-red-300">{error}</p> : null}
+
+            <button
+              type="button"
+              disabled={busy || webWaiting}
+              onClick={() => {
+                enableGuestLocalMode();
+                pushToast({
+                  title: t("continueLocalOnly"),
+                  body: t("continueLocalOnlyBody"),
+                  tone: "info",
+                });
+                onContinueLocal?.();
+              }}
+              className="inline-flex h-11 w-full items-center justify-center rounded-full border border-white/15 bg-transparent text-sm font-medium text-neutral-200 transition hover:bg-white/5 disabled:opacity-50"
+            >
+              {t("continueLocalOnly")}
+            </button>
+            <p className="text-center text-[11px] leading-relaxed text-neutral-500">
+              {t("continueLocalOnlyBody")}
+            </p>
           </div>
         </div>
       </div>

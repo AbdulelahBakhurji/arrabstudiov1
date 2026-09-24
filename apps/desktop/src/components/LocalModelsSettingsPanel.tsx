@@ -3,15 +3,15 @@ import {
   Check,
   Download,
   HardDrive,
-  LoaderCircle,
-  RefreshCw,
   Search,
+  Sparkles,
   X,
 } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { markGettingStartedStep } from "@/lib/getting-started";
 import {
   DEFAULT_OLLAMA_BASE,
+  LOCAL_MODEL_CATALOG,
   LOCAL_TIER_ORDER,
   fetchOllamaStatus,
   isCatalogModelInstalled,
@@ -34,23 +34,31 @@ export function LocalModelsSettingsPanel() {
   const [prefs, setPrefs] = useState(() => readPrefs());
   const [status, setStatus] = useState<OllamaStatus | null>(null);
   const [busyTag, setBusyTag] = useState<string | null>(null);
-  const [progress, setProgress] = useState<Record<string, { percent: number | null; status: string }>>(
-    {},
-  );
-  const [scanning, setScanning] = useState(false);
+  const [progress, setProgress] = useState<
+    Record<string, { percent: number | null; status: string }>
+  >({});
   const [query, setQuery] = useState("");
   const [tierFilter, setTierFilter] = useState<TierFilter>("all");
   const abortRef = useRef<AbortController | null>(null);
+  const refreshingRef = useRef(false);
 
   const refresh = useCallback(async () => {
-    setScanning(true);
-    const next = await fetchOllamaStatus(prefs.aiLocalBaseUrl || DEFAULT_OLLAMA_BASE);
-    setStatus(next);
-    setScanning(false);
-  }, [prefs.aiLocalBaseUrl]);
+    if (refreshingRef.current) return;
+    refreshingRef.current = true;
+    try {
+      const next = await fetchOllamaStatus(DEFAULT_OLLAMA_BASE);
+      setStatus(next);
+    } finally {
+      refreshingRef.current = false;
+    }
+  }, []);
 
   useEffect(() => {
     void refresh();
+    const timer = window.setInterval(() => {
+      void refresh();
+    }, 12_000);
+    return () => window.clearInterval(timer);
   }, [refresh]);
 
   useEffect(() => {
@@ -71,12 +79,13 @@ export function LocalModelsSettingsPanel() {
     const next = updatePrefs({
       aiLocalEnabled: true,
       aiLocalModel: entry.ollamaTag,
+      aiLocalBaseUrl: DEFAULT_OLLAMA_BASE,
     });
     setPrefs(next);
     markGettingStartedStep("local_model", true);
     pushToast({
       title: ar ? "تم اختيار النموذج المحلي" : "Local model selected",
-      body: entry.ollamaTag,
+      body: ar ? entry.nameAr : entry.name,
       tone: "success",
     });
   }
@@ -114,7 +123,7 @@ export function LocalModelsSettingsPanel() {
     }));
     try {
       await pullOllamaModel(entry.ollamaTag, {
-        baseUrl: prefs.aiLocalBaseUrl,
+        baseUrl: DEFAULT_OLLAMA_BASE,
         signal: controller.signal,
         onProgress: (row) => {
           setProgress((current) => ({
@@ -124,16 +133,26 @@ export function LocalModelsSettingsPanel() {
         },
       });
       await refresh();
+      // Activate immediately so chat can run this model without an extra click.
+      const next = updatePrefs({
+        aiLocalEnabled: true,
+        aiLocalModel: entry.ollamaTag,
+        aiLocalBaseUrl: DEFAULT_OLLAMA_BASE,
+      });
+      setPrefs(next);
+      markGettingStartedStep("local_model", true);
       pushToast({
-        title: ar ? "اكتمل التحميل" : "Download complete",
-        body: entry.ollamaTag,
+        title: ar ? "جاهز للتشغيل" : "Ready to run",
+        body: ar
+          ? `${entry.nameAr} محمّل ونشط — افتح الدردشة.`
+          : `${entry.name} downloaded and active — open chat.`,
         tone: "success",
       });
     } catch (error: unknown) {
       if (controller.signal.aborted) {
         pushToast({
           title: ar ? "تم إلغاء التحميل" : "Download cancelled",
-          body: entry.ollamaTag,
+          body: ar ? entry.nameAr : entry.name,
           tone: "info",
         });
       } else {
@@ -157,12 +176,17 @@ export function LocalModelsSettingsPanel() {
 
   const groups = modelsByTier();
   const selected = prefs.aiLocalEnabled ? prefs.aiLocalModel.trim() : "";
+  const selectedEntry = useMemo(
+    () => LOCAL_MODEL_CATALOG.find((entry) => entry.ollamaTag === selected) ?? null,
+    [selected],
+  );
+
   const installedCount = useMemo(() => {
     const installed = status?.models ?? [];
-    return groups
-      .flatMap((group) => group.items)
-      .filter((entry) => isCatalogModelInstalled(entry.ollamaTag, installed)).length;
-  }, [groups, status?.models]);
+    return LOCAL_MODEL_CATALOG.filter((entry) =>
+      isCatalogModelInstalled(entry.ollamaTag, installed),
+    ).length;
+  }, [status?.models]);
 
   const filteredGroups = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -172,7 +196,8 @@ export function LocalModelsSettingsPanel() {
         ...group,
         items: group.items.filter((entry) => {
           if (!q) return true;
-          const hay = `${entry.name} ${entry.nameAr} ${entry.ollamaTag} ${entry.blurb} ${entry.blurbAr}`.toLowerCase();
+          const hay =
+            `${entry.name} ${entry.nameAr} ${entry.ollamaTag} ${entry.blurb} ${entry.blurbAr}`.toLowerCase();
           return hay.includes(q);
         }),
       }))
@@ -199,92 +224,81 @@ export function LocalModelsSettingsPanel() {
     <section className="settings-rise sg lm">
       <header className="sg-head">
         <div>
+          <p className="sg-eyebrow">ARRAB / LOCAL</p>
           <h2>{t("settingsLocalModels")}</h2>
           <p>{t("settingsLocalModelsBody")}</p>
         </div>
       </header>
 
-      <article className="sg-panel">
+      <article className="lm-hero">
+        <div className="lm-hero-glow" aria-hidden />
         <div className="lm-runtime">
           <div className="lm-runtime-copy">
             <p className="sg-kicker">{t("localModelsRuntime")}</p>
-            <div className="lm-status-row">
-              <span
-                className={cn("lm-dot", status?.online ? "is-on" : "is-off")}
-                aria-hidden
-              />
-              <strong>
-                {status?.online
-                  ? t("localModelsOnline").replace("{version}", status.version || "Ollama")
-                  : t("localModelsOffline")}
-              </strong>
-            </div>
+            <h3>
+              {status?.online
+                ? ar
+                  ? "جاهز على هذا الجهاز"
+                  : "Ready on this device"
+                : ar
+                  ? "يحتاج تشغيل Ollama"
+                  : "Needs Ollama running"}
+            </h3>
             <p className="sg-body">
               {status?.online
                 ? t("localModelsInstalledCount").replace("{count}", String(installedCount))
                 : t("localModelsOfflineHint")}
             </p>
+            {status?.online && status.version ? (
+              <p className="lm-runtime-version">
+                {t("localModelsOnline").replace("{version}", status.version)}
+              </p>
+            ) : null}
           </div>
-          <div className="sg-actions">
-            <button
-              type="button"
-              onClick={() => void openExternalUrl("https://ollama.com/download")}
-              className="sg-ghost"
-            >
-              {t("localModelsInstallOllama")}
-            </button>
-            <button
-              type="button"
-              disabled={scanning}
-              onClick={() => void refresh()}
-              className="sg-cta"
-            >
-              {scanning ? (
-                <LoaderCircle className="size-3.5 animate-spin" />
-              ) : (
-                <RefreshCw className="size-3.5" />
-              )}
-              {t("refresh")}
-            </button>
-          </div>
+          {!status?.online ? (
+            <div className="sg-actions">
+              <button
+                type="button"
+                onClick={() => void openExternalUrl("https://ollama.com/download")}
+                className="sg-cta"
+              >
+                {t("localModelsInstallOllama")}
+              </button>
+            </div>
+          ) : null}
         </div>
 
-        <label className="lm-url">
-          <span className="sg-kicker">{t("localModelsBaseUrl")}</span>
-          <input
-            value={prefs.aiLocalBaseUrl}
-            onChange={(event) => {
-              const next = updatePrefs({
-                aiLocalBaseUrl: event.target.value.trim() || DEFAULT_OLLAMA_BASE,
-              });
-              setPrefs(next);
-            }}
-            onBlur={() => void refresh()}
-            className="field font-mono text-xs"
-            placeholder={DEFAULT_OLLAMA_BASE}
-            spellCheck={false}
-            autoComplete="off"
-          />
-          <span className="sg-body">{t("localModelsBaseUrlHint")}</span>
-        </label>
+        {selectedEntry ? (
+          <div className="lm-active">
+            <div className="lm-active-copy">
+              <span className="lm-active-icon" aria-hidden>
+                <Sparkles className="size-4" strokeWidth={1.8} />
+              </span>
+              <div>
+                <p className="sg-kicker">{t("localModelsSelected")}</p>
+                <strong>{ar ? selectedEntry.nameAr : selectedEntry.name}</strong>
+                <span className="lm-active-meta">
+                  {selectedEntry.params} · {selectedEntry.sizeLabel}
+                </span>
+              </div>
+            </div>
+            <button type="button" className="sg-ghost" onClick={clearSelection}>
+              {t("localModelsClear")}
+            </button>
+          </div>
+        ) : (
+          <div className="lm-active is-empty">
+            <HardDrive className="size-4 shrink-0 opacity-50" strokeWidth={1.8} />
+            <p className="sg-body">
+              {ar
+                ? "حمّل نموذجاً ثم اضغط استخدام لجعله النموذج المحلي النشط."
+                : "Download a model, then press Use to make it your active local model."}
+            </p>
+          </div>
+        )}
       </article>
 
-      {selected ? (
-        <article className="lm-active">
-          <div className="lm-active-copy">
-            <HardDrive className="size-4 shrink-0" strokeWidth={1.8} />
-            <div>
-              <p className="sg-kicker">{t("localModelsSelected")}</p>
-              <code>{selected}</code>
-            </div>
-          </div>
-          <button type="button" className="sg-ghost" onClick={clearSelection}>
-            {t("localModelsClear")}
-          </button>
-        </article>
-      ) : null}
-
-      <article className="sg-panel">
+      <article className="lm-catalog">
         <div className="lm-toolbar">
           <label className="lm-search">
             <Search className="size-3.5 shrink-0 opacity-60" strokeWidth={1.8} />
@@ -305,11 +319,13 @@ export function LocalModelsSettingsPanel() {
               </button>
             ) : null}
           </label>
-          <div className="lm-tiers">
+          <div className="lm-tiers" role="tablist" aria-label={t("settingsLocalModels")}>
             {tierFilters.map((item) => (
               <button
                 key={item.id}
                 type="button"
+                role="tab"
+                aria-selected={tierFilter === item.id}
                 className={cn("lm-tier", tierFilter === item.id && "is-on")}
                 onClick={() => setTierFilter(item.id)}
               >
@@ -320,7 +336,7 @@ export function LocalModelsSettingsPanel() {
         </div>
 
         {filteredGroups.length === 0 ? (
-          <p className="sg-body">{t("localModelsEmpty")}</p>
+          <p className="sg-body lm-empty">{t("localModelsEmpty")}</p>
         ) : (
           <div className="lm-groups">
             {filteredGroups.map((group) => (
@@ -343,6 +359,7 @@ export function LocalModelsSettingsPanel() {
                           "lm-card",
                           isSelected && "is-selected",
                           downloading && "is-busy",
+                          installed && "is-ready",
                         )}
                       >
                         <div className="lm-card-main">
@@ -360,7 +377,6 @@ export function LocalModelsSettingsPanel() {
                           </div>
                           <p className="sg-body">{ar ? entry.blurbAr : entry.blurb}</p>
                           <div className="lm-meta">
-                            <span>{entry.ollamaTag}</span>
                             <span>{entry.params}</span>
                             <span>{entry.sizeLabel}</span>
                           </div>

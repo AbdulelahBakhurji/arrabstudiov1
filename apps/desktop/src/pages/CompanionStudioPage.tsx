@@ -46,6 +46,7 @@ import {
   type StudioCatalogEntry,
 } from "@/lib/companions";
 import { useSignedInAccount } from "@/lib/use-signed-in-account";
+import { useFamilyProfile } from "@/lib/use-family-profile";
 import {
   blankStudioEntry,
   buildFileTree,
@@ -1728,6 +1729,7 @@ export function CompanionStudioPage({
   const isStudiosEmbed = variant === "studios";
   const isOrgWorkplace = !isStudiosEmbed && role === "organization";
   const { signedIn, account } = useSignedInAccount();
+  const { active: familyActive, isChild: isFamilyChild } = useFamilyProfile();
   const state = useCompanionState();
   const catalog = resolveStudioCatalog(state);
   /** Studios tab always opens on the roster; individual Studio may resume last companion. */
@@ -1750,7 +1752,13 @@ export function CompanionStudioPage({
   const activeKind = activeId ? studioKindById(activeId, state) : null;
 
   const ensureCompanion = (kind: StudioCatalogEntry): CompanionProfile => {
-    const existing = liveCompanions(state).find((person) => person.domain === kind.domain);
+    const seatId = familyActive?.id ?? null;
+    const existing = liveCompanions(state).find((person) => {
+      if (person.domain !== kind.domain) return false;
+      if (!seatId) return true;
+      if (isFamilyChild) return person.familyMemberId === seatId;
+      return !person.familyMemberId || person.familyMemberId === seatId;
+    });
     const lockedPhoto =
       kind.avatarPhoto?.trim() ||
       (kind.domain === "arrab-assistant" || kind.workspace === "arrab-assistant"
@@ -1794,6 +1802,7 @@ export function CompanionStudioPage({
       brief: ar ? kind.briefAr : kind.brief,
       toneName: kind.toneName,
       space: "work",
+      familyMemberId: seatId,
       connectors:
         kind.workspace === "arrab-assistant" ? [...ARRAB_ASSISTANT_CONNECTORS] : undefined,
     });
@@ -1838,7 +1847,13 @@ export function CompanionStudioPage({
       ? sessionCompanion
       : null) ??
     (activeKind
-      ? liveCompanions(state).find((person) => person.domain === activeKind.domain) ?? null
+      ? liveCompanions(state).find((person) => {
+          if (person.domain !== activeKind.domain) return false;
+          const seatId = familyActive?.id ?? null;
+          if (!seatId) return true;
+          if (isFamilyChild) return person.familyMemberId === seatId;
+          return !person.familyMemberId || person.familyMemberId === seatId;
+        }) ?? null
       : null);
 
   useEffect(() => {
@@ -1953,11 +1968,9 @@ export function CompanionStudioPage({
             <Plus size={14} />
             {t("studioAddCompanion")}
           </button>
-        ) : signedIn ? (
-          <p className="st-admin-hint">{t("studioAdminHint")}</p>
-        ) : (
+        ) : !signedIn ? (
           <p className="st-admin-hint">{t("studioSignInToAdd")}</p>
-        )}
+        ) : null}
       </header>
 
       <section className="st-roster">

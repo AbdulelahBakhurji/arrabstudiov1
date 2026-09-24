@@ -1,9 +1,10 @@
 /**
  * Menu-bar companion panel — photos, progress, readable approvals.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
+import { ArrowUp, ChevronDown, Sparkles } from "lucide-react";
 import { arrabApi } from "@/lib/api";
 import type { Activity, Agent, Approval, TaskRun } from "@arrab/shared";
 import { PhotoAvatar } from "@/components/companions/CompanionFace";
@@ -19,7 +20,7 @@ import {
   type CompanionProfile,
 } from "@/lib/companions";
 import { companionPortraitUrl } from "@/lib/companion-portrait";
-import { humanizeApprovalCopy, presenceDisplayCopy } from "@/lib/approval-copy";
+import { humanizeApprovalCopy } from "@/lib/approval-copy";
 import { purposeRegistryById } from "@/lib/purpose-registry";
 import { readStoredRole } from "@/roles/RoleProvider";
 
@@ -234,6 +235,7 @@ export function CompanionPanelApp() {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<LiveRow | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [taskDraft, setTaskDraft] = useState("");
   const [assignBusy, setAssignBusy] = useState(false);
   const [assignNote, setAssignNote] = useState<string | null>(null);
@@ -314,23 +316,17 @@ export function CompanionPanelApp() {
     };
   }, [refresh]);
 
-  const waitingLabel = useMemo(() => {
-    if (approvals.length > 0) return `${approvals.length} waiting`;
-    const live = liveRows.filter((r) => r.state === "working" || r.state === "needs_you").length;
-    if (live > 0) return `${live} live`;
-    return "All clear";
-  }, [approvals.length, liveRows]);
+  useEffect(() => {
+    if (!selected && liveRows[0]) setSelected(liveRows[0]);
+  }, [liveRows, selected]);
 
-  const presenceCopy = useMemo(
-    () =>
-      presenceDisplayCopy({
-        title: presence?.title,
-        body: presence?.body,
-        state: presence?.state,
-      }),
-    [presence?.title, presence?.body, presence?.state],
-  );
-  const presencePreview = presence?.preview?.trim() || presenceCopy.preview || "";
+  useEffect(() => {
+    const pickerH = pickerOpen ? Math.min(Math.max(liveRows.length, 1), 6) * 56 + 12 : 0;
+    const approvalH = approvals.length > 0 ? 72 : 0;
+    const noteH = assignNote || error ? 28 : 0;
+    const height = 96 + pickerH + approvalH + noteH;
+    void invoke("companion_panel_fit", { height }).catch(() => undefined);
+  }, [pickerOpen, approvals.length, assignNote, error, liveRows.length]);
 
   async function resolve(approval: Approval, status: "approved" | "rejected") {
     setBusyId(approval.id);
@@ -373,246 +369,145 @@ export function CompanionPanelApp() {
     }
   }
 
+  const firstApproval = approvals[0] ?? null;
+  const approvalCopy = firstApproval
+    ? humanizeApprovalCopy({ title: firstApproval.title, detail: firstApproval.detail })
+    : null;
+
   return (
-    <div className="cp-root">
-      <div className="cp-shell">
-        <header className="cp-header" data-tauri-drag-region>
-          <div className="cp-brand">
-            <div className="cp-title">{orgMode ? "Agents" : "Companions"}</div>
-            <div className="cp-sub">{waitingLabel}</div>
-          </div>
-          <button
-            type="button"
-            className="cp-icon-btn"
-            aria-label="Close"
-            onClick={() => void invoke("companion_panel_hide").catch(() => undefined)}
-          >
-            ✕
-          </button>
-        </header>
-
-        {presence ? (
-          <div className={`cp-presence state-${presence.state}`}>
+    <div className="ask-root">
+      <form
+        className="ask-bar"
+        data-tauri-drag-region
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submitTask();
+        }}
+      >
+        <button
+          type="button"
+          className="ask-mark"
+          aria-label={pickerOpen ? "Hide companions" : "Choose companion"}
+          onClick={() => setPickerOpen((open) => !open)}
+        >
+          {selected ? (
             <PhotoAvatar
-              src={
-                presence.agentPhoto ||
-                companionPortraitUrl({
-                  seed: presence.faceSeed ?? 42,
-                  name: presence.agentName,
-                  size: 96,
-                })
-              }
-              name={presence.agentName}
+              src={portraitFor(selected)}
+              name={selected.name}
               size="sm"
-              state={presence.state === "needs_you" ? "speaking" : "contributing"}
-              fallbackHue={presence.hue ?? 210}
-              fallbackSeed={presence.faceSeed ?? 42}
+              state={faceStateFor(selected.state)}
+              fallbackHue={selected.hue}
+              fallbackSeed={selected.faceSeed}
             />
-            <span className="cp-presence-copy">
-              <strong>{presence.agentName}</strong>
-              <span className="cp-presence-title">{presenceCopy.title}</span>
-              {presenceCopy.body ? (
-                <span className="cp-presence-body">{presenceCopy.body}</span>
-              ) : null}
-            </span>
-            {typeof presence.progress === "number" ? (
-              <div className="cp-presence-bar" aria-hidden>
-                <span style={{ width: `${Math.round(clamp01(presence.progress) * 100)}%` }} />
-              </div>
-            ) : null}
-            {presencePreview ? <pre className="cp-presence-preview">{presencePreview}</pre> : null}
-            <div className="cp-item-actions cp-presence-actions">
-              {presence.approvalId ? (
-                <>
-                  <button
-                    type="button"
-                    className="cp-btn is-decline"
-                    onClick={() => {
-                      void emit(PRESENCE_RESOLVE_EVENT, {
-                        approvalId: presence.approvalId!,
-                        status: "rejected",
-                      } satisfies PresenceResolveRequest);
-                      setPresence(null);
-                    }}
-                  >
-                    Decline
-                  </button>
-                  <button
-                    type="button"
-                    className="cp-btn is-approve"
-                    onClick={() => {
-                      void emit(PRESENCE_RESOLVE_EVENT, {
-                        approvalId: presence.approvalId!,
-                        status: "approved",
-                      } satisfies PresenceResolveRequest);
-                      setPresence(null);
-                    }}
-                  >
-                    Approve
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  className="cp-btn is-decline"
-                  style={{ gridColumn: "1 / -1" }}
-                  onClick={() => void invoke("agent_presence_hide").catch(() => undefined)}
-                >
-                  Dismiss
-                </button>
-              )}
-            </div>
-          </div>
-        ) : null}
-
-        <section className="cp-section">
-          <div className="cp-section-label">{orgMode ? "Live" : "People"}</div>
-          {liveRows.length === 0 ? (
-            <div className="cp-empty is-soft">
-              {ready ? (orgMode ? "No agents yet" : "No companions yet") : "Loading…"}
-            </div>
           ) : (
-            <ul className="cp-list">
-              {liveRows.map((row) => (
-                <li key={row.id}>
-                  <button
-                    type="button"
-                    className={`cp-live state-${row.state}${selected?.id === row.id ? " is-selected" : ""}`}
-                    onClick={() => {
-                      setSelected(row);
-                      setAssignNote(null);
-                    }}
-                  >
-                    <div className="cp-live-top">
-                      <span className="cp-live-avatar-wrap">
-                        <PhotoAvatar
-                          src={portraitFor(row)}
-                          name={row.name}
-                          size="sm"
-                          state={faceStateFor(row.state)}
-                          fallbackHue={row.hue}
-                          fallbackSeed={row.faceSeed}
-                        />
-                      </span>
-                      <div className="cp-live-copy">
-                        <div className="cp-item-title">{row.name}</div>
-                        <div className="cp-item-status">{row.status}</div>
-                        {row.activity ? (
-                          <div className="cp-item-activity">{row.activity}</div>
-                        ) : null}
-                      </div>
-                      <span className="cp-live-pct">
-                        {Math.round(row.progress * 100)}%
-                      </span>
-                    </div>
-                    <div className="cp-live-track" style={{ ["--cp-hue" as string]: row.hue }}>
-                      <span style={{ width: `${Math.round(row.progress * 100)}%` }} />
-                    </div>
-                    {row.lastAt && row.state === "idle" ? (
-                      <div className="cp-live-meta">{formatRelative(row.lastAt)}</div>
-                    ) : null}
-                  </button>
-                </li>
-              ))}
-            </ul>
+            <Sparkles size={18} strokeWidth={1.8} />
           )}
-        </section>
+        </button>
+        <input
+          className="ask-input"
+          value={taskDraft}
+          disabled={assignBusy || !selected}
+          placeholder={
+            selected
+              ? `Ask ${selected.name}`
+              : ready
+                ? "What can I help you with today?"
+                : "Loading companions…"
+          }
+          onChange={(event) => setTaskDraft(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              setPickerOpen(false);
+              void invoke("companion_panel_hide").catch(() => undefined);
+            }
+          }}
+        />
+        <button
+          type="button"
+          className="ask-who"
+          onClick={() => setPickerOpen((open) => !open)}
+        >
+          <span>{selected?.name ?? (orgMode ? "Agent" : "Companion")}</span>
+          <ChevronDown size={14} strokeWidth={2} />
+        </button>
+        <button
+          type="submit"
+          className="ask-send"
+          aria-label="Send"
+          disabled={assignBusy || !selected || !taskDraft.trim()}
+        >
+          <ArrowUp size={16} strokeWidth={2.4} />
+        </button>
+      </form>
 
-        {selected ? (
-          <section className="cp-assign">
-            <div className="cp-section-label">Task for {selected.name}</div>
-            <textarea
-              className="cp-assign-input"
-              rows={2}
-              value={taskDraft}
-              placeholder="What should they do?"
-              disabled={assignBusy}
-              onChange={(event) => setTaskDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void submitTask();
-                }
-              }}
-            />
-            <div className="cp-assign-row">
+      {pickerOpen ? (
+        <div className="ask-picker" role="listbox" aria-label={orgMode ? "Agents" : "Companions"}>
+          {liveRows.length === 0 ? (
+            <div className="ask-empty">{ready ? "No one here yet" : "Loading…"}</div>
+          ) : (
+            liveRows.map((row) => (
               <button
+                key={row.id}
                 type="button"
-                className="cp-btn is-decline"
+                role="option"
+                aria-selected={selected?.id === row.id}
+                className={`ask-person${selected?.id === row.id ? " is-on" : ""}`}
                 onClick={() => {
-                  setSelected(null);
-                  setTaskDraft("");
+                  setSelected(row);
+                  setPickerOpen(false);
                   setAssignNote(null);
                 }}
               >
-                Cancel
+                <PhotoAvatar
+                  src={portraitFor(row)}
+                  name={row.name}
+                  size="sm"
+                  state={faceStateFor(row.state)}
+                  fallbackHue={row.hue}
+                  fallbackSeed={row.faceSeed}
+                />
+                <span className="ask-person-copy">
+                  <strong>{row.name}</strong>
+                  <small>{row.status}{row.lastAt ? ` · ${formatRelative(row.lastAt)}` : ""}</small>
+                </span>
               </button>
-              <button
-                type="button"
-                className="cp-btn is-approve"
-                disabled={assignBusy || !taskDraft.trim()}
-                onClick={() => void submitTask()}
-              >
-                {assignBusy ? "Sending…" : "Assign"}
-              </button>
-            </div>
-            {assignNote ? <div className="cp-assign-note">{assignNote}</div> : null}
-          </section>
-        ) : null}
-
-        <section className="cp-section cp-section-approvals">
-          <div className="cp-section-label">Approvals</div>
-          {!ready && approvals.length === 0 ? (
-            <div className="cp-empty is-soft">Loading…</div>
-          ) : error ? (
-            <div className="cp-empty is-error">{error}</div>
-          ) : approvals.length === 0 ? (
-            <div className="cp-empty is-soft">No pending approvals</div>
-          ) : (
-            <ul className="cp-list">
-              {approvals.map((approval) => {
-                const copy = humanizeApprovalCopy({
-                  title: approval.title,
-                  detail: approval.detail,
-                });
-                return (
-                  <li key={approval.id} className="cp-item cp-item-approval">
-                    <div className="cp-item-top">
-                      <div className="cp-item-title">{copy.title}</div>
-                      <div className="cp-item-time">{formatWhen(approval.createdAt)}</div>
-                    </div>
-                    {copy.body ? <div className="cp-item-body">{copy.body}</div> : null}
-                    {copy.preview ? <pre className="cp-approval-preview">{copy.preview}</pre> : null}
-                    <div className="cp-item-actions">
-                      <button
-                        type="button"
-                        className="cp-btn is-decline"
-                        disabled={busyId === approval.id}
-                        onClick={() => void resolve(approval, "rejected")}
-                      >
-                        Decline
-                      </button>
-                      <button
-                        type="button"
-                        className="cp-btn is-approve"
-                        disabled={busyId === approval.id}
-                        onClick={() => void resolve(approval, "approved")}
-                      >
-                        Approve
-                      </button>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
+            ))
           )}
-        </section>
-      </div>
+        </div>
+      ) : null}
+
+      {presence && presence.state === "needs_you" && !firstApproval ? (
+        <p className="ask-note">{presence.agentName} is waiting on you</p>
+      ) : null}
+      {assignNote ? <p className="ask-note">{assignNote}</p> : null}
+      {error ? <p className="ask-note is-error">{error}</p> : null}
+
+      {firstApproval && approvalCopy ? (
+        <div className="ask-permit">
+          <div className="ask-permit-copy">
+            <strong>{approvalCopy.title}</strong>
+            <span>
+              {approvals.length > 1 ? `${approvals.length} need a decision` : "Needs your approval"}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="ask-permit-btn"
+            disabled={busyId === firstApproval.id}
+            onClick={() => void resolve(firstApproval, "rejected")}
+          >
+            Decline
+          </button>
+          <button
+            type="button"
+            className="ask-permit-btn is-go"
+            disabled={busyId === firstApproval.id}
+            onClick={() => void resolve(firstApproval, "approved")}
+          >
+            Approve
+          </button>
+        </div>
+      ) : null}
     </div>
   );
-}
-
-function clamp01(value: number | null | undefined): number {
-  if (typeof value !== "number" || Number.isNaN(value)) return 0;
-  return Math.max(0, Math.min(1, value));
 }

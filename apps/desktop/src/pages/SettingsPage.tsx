@@ -1,22 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import {
-  Bell,
   CircleUserRound,
   Copy,
-  Cable,
   ExternalLink,
-  HardDrive,
-  Keyboard,
   LogOut,
-  Monitor,
   Moon,
-  Shield,
-  Sparkles,
+  Search,
   Sun,
-  Workflow,
+  X,
 } from "lucide-react";
-import logoTall from "@/assets/logotall.png";
+import appSymbol from "@/assets/symbol.png";
+import "@/styles/settings.css";
 import { Surface } from "@/components/StudioFrame";
 import { FamilyHouseholdPanel } from "@/components/FamilyHouseholdPanel";
 import { useFamilyProfile } from "@/lib/use-family-profile";
@@ -24,14 +19,16 @@ import pkg from "../../package.json";
 import { useRole } from "@/roles/RoleProvider";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useTheme } from "@/theme/ThemeProvider";
-import { arrabApi, ApiRequestError, getApiBaseUrl, getApiRoutePrefix, getEnvApiBaseUrl, getEnvApiRoutePrefix } from "@/lib/api";
+import { arrabApi, ApiRequestError } from "@/lib/api";
 import {
   clearAccountSession,
   initialsFromName,
   ACCOUNT_EVENT,
+  readAccountSessionToken,
   subscribeAccountSession,
 } from "@/lib/account-session";
 import { useSignedInAccount } from "@/lib/use-signed-in-account";
+import { isGuestLocalMode, subscribeGuestMode } from "@/lib/guest-mode";
 import { openExternalUrl, openPlansPage, setAlwaysOnTop } from "@/lib/desktop";
 import { pollWebAuthUntilDone, cancelAllWebAuthPolls } from "@/lib/web-auth";
 import {
@@ -44,8 +41,6 @@ import {
   clearCrashLog,
   clearLocalStudioData,
   defaultPrefs,
-  readApiBaseOverride,
-  readApiRoutePrefixOverride,
   readCrashLog,
   readPrefs,
   recordCrash,
@@ -58,9 +53,11 @@ import { pickFolder, isTauriRuntime } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import type { AccountStatusResponse, AiGatewayStatusResponse } from "@arrab/shared";
 import { LocalModelsSettingsPanel } from "@/components/LocalModelsSettingsPanel";
+import { SkillsSettingsPanel } from "@/components/SkillsSettingsPanel";
 import { AppUpdatesPanel } from "@/components/AppUpdatesPanel";
 import {
   isSettingsTabId,
+  SETTINGS_GROUPS,
   settingsTabsFor,
   type SettingsTabId,
 } from "@/features/settings-tabs";
@@ -70,7 +67,7 @@ type SettingsTab = SettingsTabId;
 const FOLDER_KEY = "arrab.cowork.folder";
 
 function readSettingsTab(value: string | null): SettingsTab {
-  return isSettingsTabId(value) ? value : "usage";
+  return isSettingsTabId(value) ? value : "general";
 }
 
 export function SettingsPage() {
@@ -78,8 +75,13 @@ export function SettingsPage() {
   const { theme, setTheme } = useTheme();
   const { role: studioRole, href } = useRole();
   const { isChild: isFamilyChild } = useFamilyProfile();
-  const { account: signedInAccount } = useSignedInAccount();
+  const { account: signedInAccount, status: signedInStatus } = useSignedInAccount();
   const accountId = signedInAccount?.id ?? null;
+  const [guestLocal, setGuestLocal] = useState(() => isGuestLocalMode());
+  useEffect(() => subscribeGuestMode(() => setGuestLocal(isGuestLocalMode())), []);
+  /** Cloud session only — guest / local-only must not see account-bound settings. */
+  const isSignedIn =
+    Boolean(signedInAccount) && signedInStatus?.connected !== false && !guestLocal;
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTab] = useState<SettingsTab>(() => readSettingsTab(searchParams.get("tab")));
 
@@ -102,7 +104,6 @@ export function SettingsPage() {
   const [entitlements, setEntitlements] = useState<AccountStatusResponse["entitlements"] | null>(null);
   const [accountStatus, setAccountStatus] = useState<AccountStatusResponse | null>(null);
   const [accountName, setAccountName] = useState("");
-  const [subscribeCode, setSubscribeCode] = useState("");
   const [accountBusy, setAccountBusy] = useState(false);
   const [accountError, setAccountError] = useState<string | null>(null);
   const [webAuthWaiting, setWebAuthWaiting] = useState(false);
@@ -120,10 +121,6 @@ export function SettingsPage() {
   } | null>(null);
   const [connectionMsg, setConnectionMsg] = useState<string | null>(null);
   const [connectionChecking, setConnectionChecking] = useState(false);
-  const [apiBaseDraft, setApiBaseDraft] = useState(() => readApiBaseOverride() ?? getApiBaseUrl());
-  const [apiPrefixDraft, setApiPrefixDraft] = useState(
-    () => readApiRoutePrefixOverride() ?? getApiRoutePrefix(),
-  );
   const [coworkFolder, setCoworkFolder] = useState<string | null>(() => {
     try {
       return localStorage.getItem(FOLDER_KEY);
@@ -176,6 +173,20 @@ export function SettingsPage() {
     void arrabApi
       .account()
       .then((status) => {
+        // Workspace may still store a profile after logout — only show it with a live session.
+        const sessionOk =
+          Boolean(readAccountSessionToken()) && !isGuestLocalMode() && Boolean(signedInAccount);
+        if (!sessionOk) {
+          setAccountStatus({
+            ...status,
+            connected: false,
+            account: null,
+          });
+          setEntitlements(status.entitlements);
+          setAccountName("");
+          setAccountError(null);
+          return;
+        }
         setAccountStatus(status);
         setEntitlements(status.entitlements);
         if (status.account) {
@@ -186,7 +197,7 @@ export function SettingsPage() {
       .catch((err: unknown) => {
         setAccountError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
       });
-  }, [t]);
+  }, [t, signedInAccount]);
 
   const loadOperator = useCallback(() => {
     void arrabApi
@@ -203,8 +214,9 @@ export function SettingsPage() {
   }, [t]);
 
   useEffect(() => {
+    if (!isSignedIn) return;
     loadOperator();
-  }, [loadOperator]);
+  }, [isSignedIn, loadOperator]);
 
   // Drop previous account's token cards immediately when the signed-in user changes.
   useEffect(() => {
@@ -213,6 +225,14 @@ export function SettingsPage() {
     loadUsage();
     loadAccount();
   }, [accountId, loadUsage, loadAccount]);
+
+  // Guest / signed-out — wipe any leftover workspace profile from the Account panel.
+  useEffect(() => {
+    if (isSignedIn) return;
+    setAccountStatus((prev) => (prev ? { ...prev, connected: false, account: null } : null));
+    setAccountName("");
+    loadAccount();
+  }, [isSignedIn, loadAccount]);
 
   useEffect(() => {
     return subscribeAccountSession(() => {
@@ -268,17 +288,29 @@ export function SettingsPage() {
   const tabs = useMemo(
     () =>
       settingsTabsFor({
-        audience: studioRole,
+        // Signed-out: never surface family/org-only settings from a stale role.
+        audience: isSignedIn ? studioRole : "individual",
         isFamilyChild,
         theme,
-      }).map((tab) => [tab.id, t(tab.labelKey), tab.icon] as const),
-    [t, theme, studioRole, isFamilyChild],
+        signedIn: isSignedIn,
+      }).map((tab) => [tab.id, t(tab.labelKey), tab.icon, tab.group] as const),
+    [t, theme, studioRole, isFamilyChild, isSignedIn],
   );
+  const [navQuery, setNavQuery] = useState("");
+  const navGroups = useMemo(() => {
+    const q = navQuery.trim().toLowerCase();
+    return SETTINGS_GROUPS.map((group) => ({
+      ...group,
+      items: tabs.filter(
+        ([, label, , groupId]) => groupId === group.id && (!q || label.toLowerCase().includes(q)),
+      ),
+    })).filter((group) => group.items.length > 0);
+  }, [tabs, navQuery]);
 
   useEffect(() => {
     if (studioRole !== "individual") return;
     if (tab === "cowork" || tab === "family") {
-      setTab("usage");
+      setTab("general");
       setSearchParams({}, { replace: true });
     }
   }, [studioRole, tab, setSearchParams]);
@@ -286,10 +318,31 @@ export function SettingsPage() {
   useEffect(() => {
     if (studioRole !== "organization") return;
     if (tab === "family") {
-      setTab("usage");
+      setTab("general");
       setSearchParams({}, { replace: true });
     }
   }, [studioRole, tab, setSearchParams]);
+
+  useEffect(() => {
+    // Signed-out (or non-family) — never keep the Family settings panel open.
+    if (tab === "family" && (!isSignedIn || studioRole !== "family")) {
+      setTab("general");
+      setSearchParams({}, { replace: true });
+    }
+    if (!isSignedIn && (tab === "cowork" || tab === "family")) {
+      setTab("general");
+      setSearchParams({}, { replace: true });
+    }
+  }, [isSignedIn, studioRole, tab, setSearchParams]);
+
+  useEffect(() => {
+    if (!isFamilyChild) return;
+    const allowed = new Set(tabs.map(([id]) => id));
+    if (!allowed.has(tab)) {
+      setTab("general");
+      setSearchParams({ tab: "general" }, { replace: true });
+    }
+  }, [isFamilyChild, tab, tabs, setSearchParams]);
 
   useEffect(() => {
     if (searchParams.get("tab") === "plans") {
@@ -299,34 +352,39 @@ export function SettingsPage() {
   }, [searchParams, setSearchParams]);
 
   const agentPercent = useMemo(() => {
+    if (!isSignedIn) return null;
     if (!entitlements || entitlements.tokenLimit === null || entitlements.tokenLimit <= 0) {
       return null;
     }
     return Math.min(100, Math.round((entitlements.tokensUsed / entitlements.tokenLimit) * 100));
-  }, [entitlements]);
-  const planLabel = entitlements?.planName ?? t("accountNotConnected");
-  const tokensUsedValue =
-    entitlements?.tokensUsed ?? tokenUsage.inputTokens + tokenUsage.outputTokens;
+  }, [entitlements, isSignedIn]);
+  const planLabel = isSignedIn
+    ? (entitlements?.planName ?? t("accountNotConnected"))
+    : t("accountNotConnected");
+  const tokensUsedValue = isSignedIn
+    ? (entitlements?.tokensUsed ?? tokenUsage.inputTokens + tokenUsage.outputTokens)
+    : 0;
+  const cloudOverLimit = Boolean(isSignedIn && entitlements?.overLimit);
   const periodLabel = useMemo(() => {
-    if (!entitlements?.periodEnd) return null;
+    if (!isSignedIn || !entitlements?.periodEnd) return null;
     const localeTag = locale === "ar" ? "ar-SA" : "en-US";
     return new Date(entitlements.periodEnd).toLocaleDateString(localeTag, {
       month: "short",
       day: "numeric",
       year: "numeric",
     });
-  }, [entitlements?.periodEnd, locale]);
+  }, [entitlements?.periodEnd, locale, isSignedIn]);
   const billingRangeLabel = useMemo(() => {
-    if (!entitlements?.periodStart || !entitlements?.periodEnd) return null;
+    if (!isSignedIn || !entitlements?.periodStart || !entitlements?.periodEnd) return null;
     const localeTag = locale === "ar" ? "ar-SA" : "en-US";
     const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
     return `${new Date(entitlements.periodStart).toLocaleDateString(localeTag, opts)} → ${new Date(entitlements.periodEnd).toLocaleDateString(localeTag, opts)}`;
-  }, [entitlements?.periodStart, entitlements?.periodEnd, locale]);
+  }, [entitlements?.periodStart, entitlements?.periodEnd, locale, isSignedIn]);
   const daysLeftInPeriod = useMemo(() => {
-    if (!entitlements?.periodEnd) return null;
+    if (!isSignedIn || !entitlements?.periodEnd) return null;
     const ms = new Date(entitlements.periodEnd).getTime() - Date.now();
     return Math.max(0, Math.ceil(ms / 86_400_000));
-  }, [entitlements?.periodEnd]);
+  }, [entitlements?.periodEnd, isSignedIn]);
   const memberSinceLabel = useMemo(() => {
     const connectedAt = accountStatus?.account?.connectedAt;
     if (!connectedAt) return null;
@@ -378,7 +436,6 @@ export function SettingsPage() {
       const updated = await arrabApi.updateOperator({
         displayName: displayName.trim() || "Studio operator",
         title: role.trim() || null,
-        ...(role.trim() && !seats.includes(role.trim()) ? { addSeat: role.trim() } : {}),
       });
       setDisplayName(updated.displayName);
       setRole(updated.title ?? "");
@@ -478,10 +535,14 @@ export function SettingsPage() {
     setAccountError(null);
     cancelWebAuth();
     try {
-      const status = await arrabApi.logoutAccount();
+      await arrabApi.logoutAccount().catch(() => undefined);
       clearAccountSession();
-      setAccountStatus(status);
-      setEntitlements(status.entitlements);
+      // Logout keeps the workspace profile on the API — never show it without a session.
+      setAccountStatus((prev) =>
+        prev ? { ...prev, connected: false, account: null } : null,
+      );
+      setEntitlements(null);
+      setAccountName("");
       setTokenUsage({ inputTokens: 0, outputTokens: 0, events: 0 });
       pushToast({ title: t("accountLoggedOut"), tone: "info" });
       loadUsage();
@@ -495,34 +556,7 @@ export function SettingsPage() {
 
   function selectTab(next: SettingsTab) {
     setTab(next);
-    if (next === "usage") {
-      setSearchParams({}, { replace: true });
-      return;
-    }
     setSearchParams({ tab: next }, { replace: true });
-  }
-
-  async function activateSubscription() {
-    setAccountBusy(true);
-    setAccountError(null);
-    try {
-      const status = await arrabApi.activateSubscription({ code: subscribeCode });
-      setAccountStatus(status);
-      setEntitlements(status.entitlements);
-      setSubscribeCode("");
-      window.dispatchEvent(new CustomEvent(ACCOUNT_EVENT));
-      pushToast({
-        title: t("subscriptionActivated"),
-        body: status.account?.planName,
-        tone: "success",
-      });
-      loadUsage();
-    } catch (err: unknown) {
-      const message = err instanceof ApiRequestError ? err.message : t("apiUnavailable");
-      setAccountError(message);
-    } finally {
-      setAccountBusy(false);
-    }
   }
 
   async function saveAccountProfile() {
@@ -552,7 +586,8 @@ export function SettingsPage() {
         arrabApi.meta(),
         arrabApi.aiStatus().catch(() => null),
       ]);
-      await arrabApi.health();
+      // Prefixed Coolify hosts may 404 on /health — meta is enough to prove reachability.
+      await arrabApi.health().catch(() => null);
       setOnline(true);
       if (ai) {
         setAiReady(ai.configured);
@@ -575,24 +610,6 @@ export function SettingsPage() {
     } finally {
       setConnectionChecking(false);
     }
-  }
-
-  function applyConnectionUrl() {
-    const base = apiBaseDraft.trim().replace(/\/$/, "");
-    if (!base) {
-      setConnectionMsg(t("apiUnavailable"));
-      return;
-    }
-    writeApiBaseOverride(base);
-    writeApiRoutePrefixOverride(apiPrefixDraft);
-    setApiBaseDraft(getApiBaseUrl());
-    setApiPrefixDraft(getApiRoutePrefix());
-    setConnectionMsg(t("connectionApplied"));
-    pushToast({
-      title: t("connectionApplied"),
-      body: `${getApiBaseUrl()}${getApiRoutePrefix()}`,
-      tone: "success",
-    });
   }
 
   async function chooseDefaultFolder() {
@@ -649,64 +666,87 @@ export function SettingsPage() {
     writeApiBaseOverride(null);
     writeApiRoutePrefixOverride(null);
     setPrefs(defaultPrefs());
-    setApiBaseDraft(getEnvApiBaseUrl());
-    setApiPrefixDraft(getEnvApiRoutePrefix());
     setCoworkFolder(null);
     setCrashLog([]);
     pushToast({ title: t("clearLocalDone"), tone: "success" });
   }
 
   return (
-    <Surface
-      className={cn(
-        "settings-shell",
-        studioRole === "individual" && "settings-shell-individual",
-      )}
-    >
-      <div className="settings-atmosphere pointer-events-none absolute inset-0" />
-      <div className="relative mx-auto flex max-w-[1180px] flex-col gap-6 px-6 py-8 lg:flex-row lg:px-10">
-        <aside className="w-full shrink-0 lg:w-[220px]">
-          <p className="px-1 text-[11px] font-medium uppercase tracking-[0.14em] text-neutral-500">
-            {t("settings")}
-          </p>
-          <h1 className="mt-1 px-1 text-[22px] font-semibold tracking-[-0.03em] text-white">
-            {t("settingsTitle")}
-          </h1>
-          <p className="mt-1.5 px-1 text-[13px] leading-snug text-neutral-500">{t("settingsBody")}</p>
-          <nav
-            className={cn(
-              "mt-5 space-y-0.5 pe-1",
-              studioRole === "individual"
-                ? "settings-nav-clean"
-                : "max-h-[70vh] overflow-auto",
-            )}
-          >
-            {tabs.map(([id, label, Icon]) => (
+    <Surface className="settings-shell st">
+      <div className="st-layout">
+        <aside className="st-rail">
+          <div className="st-rail-head">
+            <h1>{t("settingsTitle")}</h1>
+            <p>{t("settingsBody")}</p>
+          </div>
+          <label className="st-search">
+            <Search className="size-[15px] shrink-0" strokeWidth={1.8} aria-hidden />
+            <input
+              value={navQuery}
+              onChange={(event) => setNavQuery(event.target.value)}
+              placeholder={t("settingsSearch")}
+              aria-label={t("settingsSearch")}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && navGroups[0]?.items[0]) {
+                  selectTab(navGroups[0].items[0][0]);
+                }
+                if (event.key === "Escape") setNavQuery("");
+              }}
+            />
+            {navQuery ? (
               <button
-                key={id}
                 type="button"
-                onClick={() => selectTab(id)}
-                className={cn(
-                  "flex w-full items-center gap-2.5 rounded-[10px] px-2.5 py-2 text-start text-[13px] transition-colors",
-                  tab === id
-                    ? "bg-white/[0.12] font-medium text-white"
-                    : "text-neutral-400 hover:bg-white/[0.05] hover:text-white",
-                )}
+                className="st-search-clear"
+                onClick={() => setNavQuery("")}
+                aria-label={t("settingsSearch")}
               >
-                <Icon className="size-[15px] opacity-80" strokeWidth={1.8} />
-                {label}
+                <X className="size-3.5" strokeWidth={2} />
               </button>
+            ) : null}
+          </label>
+          <nav className="st-nav" aria-label={t("settingsTitle")}>
+            {navGroups.map((group) => (
+              <div key={group.id} className="st-nav-group">
+                <p className="st-nav-label">{t(group.labelKey)}</p>
+                {group.items.map(([id, label, Icon]) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => selectTab(id)}
+                    aria-current={tab === id ? "page" : undefined}
+                    className={cn("st-nav-item", tab === id && "is-active")}
+                  >
+                    <Icon className="size-[16px] shrink-0" strokeWidth={1.8} />
+                    <span>{label}</span>
+                  </button>
+                ))}
+              </div>
             ))}
+            {navGroups.length === 0 ? <p className="st-nav-empty">{t("settingsNoMatch")}</p> : null}
           </nav>
         </aside>
 
-        <div className="min-w-0 flex-1 space-y-5">
+        <div key={tab} className="st-content">
           {tab === "usage" ? (
-            <section className="settings-rise su">
-              <header className="su-head">
-                <h2>{t("settingsUsage")}</h2>
-              </header>
+            <section className="settings-rise st-page">
+              <PageHead title={t("settingsUsage")} body={t("settingsUsageBody")} />
 
+              {!isSignedIn ? (
+                <SettingsCard>
+                  <SettingRow title={t("amLocalModels")} description={t("amLocalUsageHint")}>
+                    <span className="st-badge">0 {t("usageTokensUsed").toLowerCase()}</span>
+                  </SettingRow>
+                  <SettingRow title={t("accountNotConnected")} description={t("webAuthHint")}>
+                    <button
+                      type="button"
+                      className="st-btn is-primary"
+                      onClick={() => selectTab("account")}
+                    >
+                      {t("signInWithBrowser")}
+                    </button>
+                  </SettingRow>
+                </SettingsCard>
+              ) : (
               <article className="su-hero">
                 <div className="su-hero-top">
                   <div className="su-hero-copy">
@@ -721,7 +761,7 @@ export function SettingsPage() {
                           {t("usageResets")} {periodLabel}
                         </span>
                       ) : null}
-                      {entitlements?.overLimit ? (
+                      {cloudOverLimit ? (
                         <span className="su-chip is-warn">{t("quotaExceededHint")}</span>
                       ) : null}
                     </div>
@@ -751,7 +791,7 @@ export function SettingsPage() {
                     <div
                       className={cn(
                         "su-meter-fill",
-                        entitlements?.overLimit && "is-over",
+                        cloudOverLimit && "is-over",
                         agentPercent === null && "is-unlimited",
                       )}
                       style={{
@@ -776,22 +816,20 @@ export function SettingsPage() {
                   </div>
                 </div>
               </article>
+              )}
 
-              {studioRole === "family" ? (
-                <div className="pt-2">
-                  <p className="mb-3 text-sm text-neutral-500">{t("familyUsageHint")}</p>
+              {isSignedIn && studioRole === "family" ? (
+                <div className="grid gap-3">
+                  <p className="st-note">{t("familyUsageHint")}</p>
                   <FamilyHouseholdPanel variant="compact" />
                 </div>
               ) : null}
             </section>
           ) : null}
 
-          {tab === "family" && studioRole === "family" ? (
-            <section className="settings-rise su">
-              <header className="su-head">
-                <h2>{t("settingsFamily")}</h2>
-                <p className="text-sm text-neutral-500">{t("settingsFamilyBody")}</p>
-              </header>
+          {tab === "family" && isSignedIn && studioRole === "family" ? (
+            <section className="settings-rise st-page">
+              <PageHead title={t("settingsFamily")} body={t("settingsFamilyBody")} />
               <FamilyHouseholdPanel variant="full" />
             </section>
           ) : null}
@@ -803,7 +841,7 @@ export function SettingsPage() {
                   <h2>{t("settingsAccount")}</h2>
                   <p>{t("accountBody")}</p>
                 </div>
-                {accountStatus?.connected && accountStatus.account ? (
+                {isSignedIn ? (
                   <div className="flex flex-wrap items-center gap-2">
                     {webAuthWaiting ? (
                       <button type="button" className="sa-ghost" onClick={cancelWebAuth}>
@@ -823,7 +861,7 @@ export function SettingsPage() {
                 ) : null}
               </header>
 
-              {accountStatus?.connected && accountStatus.account ? (
+              {isSignedIn && accountStatus?.account ? (
                 <>
                   <article className="sa-hero">
                     <div className="sa-hero-top">
@@ -864,23 +902,6 @@ export function SettingsPage() {
                       <div className="sa-hero-actions">
                         <button
                           type="button"
-                          className="sa-cta"
-                          disabled={accountBusy || webAuthWaiting}
-                          onClick={() => void startBrowserSignIn()}
-                        >
-                          <ExternalLink className="size-3.5" strokeWidth={1.8} />
-                          {webAuthWaiting ? t("webAuthWaiting") : t("reconnectWithBrowser")}
-                        </button>
-                        <button
-                          type="button"
-                          className="sa-ghost"
-                          onClick={() => void openPlansPage()}
-                        >
-                          {t("managePlansOnWebsite")}
-                          <ExternalLink className="size-3.5" strokeWidth={1.9} />
-                        </button>
-                        <button
-                          type="button"
                           className="sa-ghost"
                           onClick={() => selectTab("usage")}
                         >
@@ -905,7 +926,7 @@ export function SettingsPage() {
                           <div
                             className={cn(
                               "sa-meter-fill",
-                              entitlements.overLimit && "is-over",
+                              cloudOverLimit && "is-over",
                               agentPercent === null && "is-unlimited",
                             )}
                             style={{
@@ -924,7 +945,7 @@ export function SettingsPage() {
                           </span>
                           {billingRangeLabel ? <span>{billingRangeLabel}</span> : null}
                         </div>
-                        {entitlements.overLimit ? (
+                        {cloudOverLimit ? (
                           <p className="sa-warn">{t("quotaExceededHint")}</p>
                         ) : null}
                       </div>
@@ -956,62 +977,27 @@ export function SettingsPage() {
                     </div>
                   </div>
 
-                  <div className="sa-grid">
-                    <article className="sa-panel">
-                      <p className="sa-kicker">{t("userAccountSettings")}</p>
-                      <p className="sa-panel-body">{t("userAccountSettingsBody")}</p>
-                      <Field label={t("profileName")}>
-                        <input
-                          value={accountName}
-                          onChange={(event) => setAccountName(event.target.value)}
-                          className="field"
-                          autoComplete="name"
-                        />
-                      </Field>
-                      <p className="sa-email-static">{accountStatus.account.email}</p>
-                      <button
-                        type="button"
-                        disabled={accountBusy || !profileDirty}
-                        onClick={() => void saveAccountProfile()}
-                        className="sa-cta is-block"
-                      >
-                        {t("saveProfile")}
-                      </button>
-                    </article>
-
-                    <article className="sa-panel">
-                      <p className="sa-kicker">{t("activateSubscription")}</p>
-                      <p className="sa-panel-body">{t("subscriptionCodesHint")}</p>
-                      <Field label={t("applySubscription")}>
-                        <input
-                          value={subscribeCode}
-                          onChange={(event) => setSubscribeCode(event.target.value.toUpperCase())}
-                          placeholder="PRO-ARRAB"
-                          className="field font-mono text-xs"
-                          autoComplete="off"
-                          spellCheck={false}
-                        />
-                      </Field>
-                      <div className="sa-panel-actions">
-                        <button
-                          type="button"
-                          disabled={accountBusy || !subscribeCode.trim()}
-                          onClick={() => void activateSubscription()}
-                          className="sa-cta is-block"
-                        >
-                          {t("applySubscription")}
-                        </button>
-                        <button
-                          type="button"
-                          className="sa-ghost is-block"
-                          onClick={() => void openPlansPage()}
-                        >
-                          {t("managePlansOnWebsite")}
-                          <ExternalLink className="size-3.5" strokeWidth={1.9} />
-                        </button>
-                      </div>
-                    </article>
-                  </div>
+                  <article className="sa-panel">
+                    <p className="sa-kicker">{t("userAccountSettings")}</p>
+                    <p className="sa-panel-body">{t("userAccountSettingsBody")}</p>
+                    <Field label={t("profileName")}>
+                      <input
+                        value={accountName}
+                        onChange={(event) => setAccountName(event.target.value)}
+                        className="field"
+                        autoComplete="name"
+                      />
+                    </Field>
+                    <p className="sa-email-static">{accountStatus.account.email}</p>
+                    <button
+                      type="button"
+                      disabled={accountBusy || !profileDirty}
+                      onClick={() => void saveAccountProfile()}
+                      className="sa-cta is-block"
+                    >
+                      {t("saveProfile")}
+                    </button>
+                  </article>
                 </>
               ) : (
                 <article className="sa-hero sa-signed-out">
@@ -1038,16 +1024,7 @@ export function SettingsPage() {
                       <button type="button" className="sa-ghost" onClick={cancelWebAuth}>
                         {t("cancelWebAuth")}
                       </button>
-                    ) : (
-                      <button
-                        type="button"
-                        className="sa-ghost"
-                        onClick={() => void openPlansPage()}
-                      >
-                        {t("managePlansOnWebsite")}
-                        <ExternalLink className="size-3.5" strokeWidth={1.9} />
-                      </button>
-                    )}
+                    ) : null}
                   </div>
                   {webAuthWaiting ? (
                     <p className="sa-panel-body">{t("webAuthWaitingBody")}</p>
@@ -1083,729 +1060,478 @@ export function SettingsPage() {
           ) : null}
 
           {tab === "general" ? (
-            <section className="settings-rise sg">
-              <header className="sg-head">
-                <div>
-                  <h2>{t("settingsGeneral")}</h2>
-                  <p>{t("generalBody")}</p>
-                </div>
-              </header>
+            <section className="settings-rise st-page">
+              <PageHead
+                title={t("settingsGeneral")}
+                body={t("generalBody")}
+                aside={<StatusPill online={online} label={online ? t("healthOnline") : t("healthOffline")} />}
+              />
 
-              <article className="sg-hero">
-                <div className="sg-hero-top">
-                  <div className="sg-identity">
-                    <div className="sg-avatar" aria-hidden>
+              {isSignedIn ? (
+                <article className="st-card st-profile">
+                  <div className="st-profile-top">
+                    <div className="st-avatar" aria-hidden>
                       {initialsFromName(displayName, accountStatus?.account?.email ?? "")}
                     </div>
-                    <div className="sg-identity-copy">
+                    <div className="st-profile-copy">
+                      <p className="st-eyebrow">{t("generalStudioProfile")}</p>
                       <h3>{displayName || t("generalStudioProfile")}</h3>
-                      <p>
-                        {role?.trim()
-                          ? role
-                          : accountStatus?.account?.email ?? t("generalStudioProfile")}
-                      </p>
+                      <p>{accountStatus?.account?.email ?? t("profileSaveHint")}</p>
                     </div>
                   </div>
-                  <div className="sg-hero-actions">
-                    <button
-                      type="button"
-                      disabled={profileBusy}
-                      onClick={() => void saveProfile()}
-                      className="sg-cta"
-                    >
-                      {savedFlash ? t("prefsSaved") : t("saveProfile")}
-                    </button>
-                    <button type="button" onClick={loadOperator} className="sg-ghost">
-                      {t("reloadProfile")}
-                    </button>
-                  </div>
-                </div>
-                <div className="sg-fields">
-                  <Field label={t("profileName")}>
-                    <input
-                      value={displayName}
-                      onChange={(event) => setDisplayName(event.target.value)}
-                      className="field"
-                      autoComplete="name"
-                    />
-                  </Field>
-                  <Field label={t("profileRole")}>
-                    <input
-                      value={role}
-                      onChange={(event) => setRole(event.target.value)}
-                      className="field"
-                      list="arrab-seats"
-                    />
-                    <datalist id="arrab-seats">
-                      {seats.map((seat) => (
-                        <option key={seat} value={seat} />
-                      ))}
-                    </datalist>
-                  </Field>
-                </div>
-                <p className="sg-body">{t("profileApiHint")}</p>
-                {profileError ? <p className="sg-error">{profileError}</p> : null}
-              </article>
-
-              <div className="sg-grid">
-                <article className="sg-panel">
-                  <div className="sg-panel-head">
-                    <Moon className="size-4" strokeWidth={1.8} />
-                    <p className="sg-kicker">{t("settingsAppearance")}</p>
-                  </div>
-                  <p className="sg-body">{t("generalAppearanceBody")}</p>
-                  <div className="sg-choices">
-                    <Choice
-                      active={theme === "dark"}
-                      onClick={() => setTheme("dark")}
-                      icon={<Moon className="size-4" />}
-                      label={t("themeDark")}
-                    />
-                    <Choice
-                      active={theme === "light"}
-                      onClick={() => setTheme("light")}
-                      icon={<Sun className="size-4" />}
-                      label={t("themeLight")}
-                    />
-                  </div>
-                  <div className="sg-choices">
-                    <Choice active={locale === "en"} onClick={() => setLocale("en")} label="English" />
-                    <Choice active={locale === "ar"} onClick={() => setLocale("ar")} label="العربية" />
-                  </div>
-                </article>
-
-                <article className="sg-panel">
-                  <div className="sg-panel-head">
-                    <Workflow className="size-4" strokeWidth={1.8} />
-                    <p className="sg-kicker">{t("generalBehavior")}</p>
-                  </div>
-                  <div className="sg-toggles">
-                    <Toggle
-                      label={t("coworkEnterSend")}
-                      checked={prefs.coworkEnterSend}
-                      onChange={(value) => updatePref("coworkEnterSend", value)}
-                    />
-                    <Toggle
-                      label={t("coworkAutoResume")}
-                      checked={prefs.coworkAutoResume}
-                      onChange={(value) => updatePref("coworkAutoResume", value)}
-                    />
-                    <Toggle
-                      label={t("coworkTerminalDock")}
-                      checked={prefs.coworkTerminalDock}
-                      onChange={(value) => updatePref("coworkTerminalDock", value)}
-                    />
-                    <Toggle
-                      label={t("desktopAlwaysOnTop")}
-                      checked={prefs.desktopAlwaysOnTop}
-                      onChange={(value) => updatePref("desktopAlwaysOnTop", value)}
-                    />
-                  </div>
-                </article>
-              </div>
-
-              <article className="sg-panel">
-                <div className="sg-panel-head">
-                  <HardDrive className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("defaultCoworkFolder")}</p>
-                </div>
-                <p className="sg-path">{coworkFolder ?? t("noDefaultFolder")}</p>
-                <div className="sg-actions">
-                  <button
-                    type="button"
-                    onClick={() => void chooseDefaultFolder()}
-                    className="sg-cta"
-                  >
-                    {t("chooseFolder")}
-                  </button>
-                  <button type="button" onClick={clearDefaultFolder} className="sg-ghost">
-                    {t("clearFolder")}
-                  </button>
-                </div>
-              </article>
-
-              <div className="sg-grid">
-                <article className="sg-panel">
-                  <div className="sg-panel-head">
-                    <Cable className="size-4" strokeWidth={1.8} />
-                    <p className="sg-kicker">{t("generalEnvironment")}</p>
-                  </div>
-                  <div className="sg-facts">
-                    <div className="sg-fact">
-                      <span>{t("workspaceId")}</span>
+                  <div className="st-profile-form">
+                    <Field label={t("profileName")}>
+                      <input
+                        value={displayName}
+                        onChange={(event) => setDisplayName(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" && displayName.trim()) void saveProfile();
+                        }}
+                        className="st-input"
+                        autoComplete="name"
+                      />
+                    </Field>
+                    <div className="st-actions">
+                      <button type="button" onClick={loadOperator} className="st-btn">
+                        {t("reloadProfile")}
+                      </button>
                       <button
                         type="button"
-                        className="sg-mono"
-                        disabled={!meta?.workspaceId}
-                        onClick={() => {
-                          if (!meta?.workspaceId) return;
-                          void navigator.clipboard.writeText(meta.workspaceId).then(
-                            () => pushToast({ title: t("generalCopied"), tone: "success" }),
-                            () => pushToast({ title: t("apiUnavailable"), tone: "warn" }),
-                          );
-                        }}
+                        disabled={profileBusy || !displayName.trim()}
+                        onClick={() => void saveProfile()}
+                        className="st-btn is-primary"
                       >
-                        <span>{meta?.workspaceId ? shortId(meta.workspaceId) : "—"}</span>
-                        <Copy className="size-3.5 shrink-0" strokeWidth={1.8} />
+                        {savedFlash ? t("prefsSaved") : t("saveProfile")}
                       </button>
                     </div>
-                    <div className="sg-fact">
-                      <span>{t("apiVersion")}</span>
-                      <strong className="tabular-nums">{meta?.version ?? "—"}</strong>
+                  </div>
+                  <p className="st-note">{t("profileSaveHint")}</p>
+                  {profileError ? <p className="st-error">{profileError}</p> : null}
+                </article>
+              ) : (
+                <article className="st-card st-profile is-guest">
+                  <div className="st-profile-top">
+                    <div className="st-avatar is-empty" aria-hidden>
+                      <CircleUserRound className="size-6" strokeWidth={1.5} />
                     </div>
-                    <div className="sg-fact">
-                      <span>{t("persistence")}</span>
-                      <strong>
-                        {meta
-                          ? meta.persistence === "file"
-                            ? t("persistenceFile")
-                            : meta.persistence === "postgres"
-                              ? t("persistencePostgres")
-                              : t("persistenceMemory")
-                          : "—"}
-                      </strong>
+                    <div className="st-profile-copy">
+                      <p className="st-eyebrow">{t("accountNotConnected")}</p>
+                      <h3>{t("generalGuestTitle")}</h3>
+                      <p>{t("generalGuestBody")}</p>
                     </div>
+                    <button
+                      type="button"
+                      className="st-btn is-primary st-profile-cta"
+                      onClick={() => selectTab("account")}
+                    >
+                      {t("signInWithBrowser")}
+                    </button>
                   </div>
                 </article>
+              )}
 
-                <article className="sg-panel">
-                  <div className="sg-panel-head">
-                    <Shield className="size-4" strokeWidth={1.8} />
-                    <p className="sg-kicker">{t("settingsPrivacy")}</p>
-                  </div>
-                  <div className="sg-toggles">
-                    <Toggle
-                      label={t("privacyLocalNotes")}
-                      checked={prefs.privacyLocalNotes}
-                      onChange={(value) => updatePref("privacyLocalNotes", value)}
-                    />
-                    <Toggle
-                      label={t("privacyCrash")}
-                      checked={prefs.privacyCrash}
-                      onChange={(value) => updatePref("privacyCrash", value)}
-                    />
-                    <Toggle
-                      label={t("privacyAnalytics")}
-                      checked={prefs.privacyAnalytics}
-                      onChange={(value) => updatePref("privacyAnalytics", value)}
-                    />
-                  </div>
-                </article>
-              </div>
+              <SettingsCard title={t("settingsAppearance")}>
+                <SettingRow title={t("settingsTheme")} description={t("settingsThemeBody")}>
+                  <Segmented
+                    label={t("settingsTheme")}
+                    value={theme}
+                    onChange={setTheme}
+                    options={[
+                      { value: "dark", label: t("themeDark"), icon: <Moon className="size-3.5" /> },
+                      { value: "light", label: t("themeLight"), icon: <Sun className="size-3.5" /> },
+                    ]}
+                  />
+                </SettingRow>
+                <SettingRow title={t("settingsLanguage")} description={t("settingsLanguageBody")}>
+                  <Segmented
+                    label={t("settingsLanguage")}
+                    value={locale}
+                    onChange={setLocale}
+                    options={[
+                      { value: "en", label: "English" },
+                      { value: "ar", label: "العربية" },
+                    ]}
+                  />
+                </SettingRow>
+              </SettingsCard>
 
-              <article className="sg-panel">
-                <div className="sg-panel-head">
-                  <Sparkles className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("generalQuickLinks")}</p>
-                </div>
-                <div className="sg-links">
-                  <button type="button" className="sg-ghost" onClick={() => selectTab("account")}>
-                    {t("settingsAccount")}
-                  </button>
-                  <button type="button" className="sg-ghost" onClick={() => selectTab("usage")}>
-                    {t("settingsUsage")}
-                  </button>
-                  <button type="button" className="sg-ghost" onClick={() => selectTab("models")}>
-                    {t("settingsLocalModels")}
-                  </button>
-                  <button
-                    type="button"
-                    className="sg-ghost"
-                    onClick={() => void openPlansPage()}
-                  >
-                    {t("managePlansOnWebsite")}
-                    <ExternalLink className="size-3.5" strokeWidth={1.9} />
-                  </button>
-                </div>
-              </article>
-
-              <article className="sg-panel is-danger">
-                <div className="sg-panel-head">
-                  <Shield className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("generalDangerZone")}</p>
-                </div>
-                <p className="sg-body">{t("generalDefaultsBody")}</p>
-                <div className="sg-actions">
-                  <button type="button" onClick={resetPrefs} className="sg-ghost">
-                    {t("resetPrefs")}
-                  </button>
-                  <button type="button" onClick={wipeLocalData} className="sg-ghost is-danger">
-                    {t("clearLocalData")}
-                  </button>
-                </div>
-              </article>
+              <SettingsCard title={t("generalBehavior")} description={t("generalBehaviorBody")}>
+                <Toggle
+                  label={t("coworkEnterSend")}
+                  description={t("coworkEnterSendBody")}
+                  checked={prefs.coworkEnterSend}
+                  onChange={(value) => updatePref("coworkEnterSend", value)}
+                />
+                <Toggle
+                  label={t("coworkAutoResume")}
+                  description={t("coworkAutoResumeBody")}
+                  checked={prefs.coworkAutoResume}
+                  onChange={(value) => updatePref("coworkAutoResume", value)}
+                />
+                <Toggle
+                  label={t("coworkTerminalDock")}
+                  description={t("coworkTerminalDockBody")}
+                  checked={prefs.coworkTerminalDock}
+                  onChange={(value) => updatePref("coworkTerminalDock", value)}
+                />
+              </SettingsCard>
             </section>
           ) : null}
 
           {tab === "appearance" ? (
-            <section className="settings-rise sg">
-              <header className="sg-head">
-                <div>
-                  <h2>{t("settingsAppearance")}</h2>
-                  <p>{t("generalAppearanceBody")}</p>
-                </div>
-              </header>
+            <section className="settings-rise st-page">
+              <PageHead title={t("settingsAppearance")} body={t("generalAppearanceBody")} />
 
-              <article className="sg-panel">
-                <div className="sg-panel-head">
-                  {theme === "dark" ? (
-                    <Moon className="size-4" strokeWidth={1.8} />
-                  ) : (
-                    <Sun className="size-4" strokeWidth={1.8} />
-                  )}
-                  <p className="sg-kicker">{t("settingsTheme")}</p>
+              <SettingsCard title={t("settingsTheme")} description={t("settingsThemeBody")}>
+                <div className="st-theme-tiles" role="radiogroup" aria-label={t("settingsTheme")}>
+                  {(["dark", "light"] as const).map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      role="radio"
+                      aria-checked={theme === value}
+                      onClick={() => setTheme(value)}
+                      className={cn("st-theme-tile", theme === value && "is-active")}
+                    >
+                      <span className={cn("st-theme-preview", `is-${value}`)} aria-hidden>
+                        <span className="st-tp-rail" />
+                        <span className="st-tp-body">
+                          <span className="st-tp-line is-wide" />
+                          <span className="st-tp-line" />
+                          <span className="st-tp-bubble" />
+                        </span>
+                      </span>
+                      <span className="st-theme-label">
+                        {value === "dark" ? <Moon className="size-3.5" /> : <Sun className="size-3.5" />}
+                        {value === "dark" ? t("themeDark") : t("themeLight")}
+                      </span>
+                    </button>
+                  ))}
                 </div>
-                <div className="sg-choices">
-                  <Choice
-                    active={theme === "dark"}
-                    onClick={() => setTheme("dark")}
-                    icon={<Moon className="size-4" />}
-                    label={t("themeDark")}
-                  />
-                  <Choice
-                    active={theme === "light"}
-                    onClick={() => setTheme("light")}
-                    icon={<Sun className="size-4" />}
-                    label={t("themeLight")}
-                  />
-                </div>
-              </article>
+              </SettingsCard>
 
-              <article className="sg-panel">
-                <div className="sg-panel-head">
-                  <CircleUserRound className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("settingsLanguage")}</p>
-                </div>
-                <div className="sg-choices">
-                  <Choice active={locale === "en"} onClick={() => setLocale("en")} label="English" />
-                  <Choice active={locale === "ar"} onClick={() => setLocale("ar")} label="العربية" />
-                </div>
-              </article>
+              <SettingsCard>
+                <SettingRow title={t("settingsLanguage")} description={t("settingsLanguageBody")}>
+                  <Segmented
+                    label={t("settingsLanguage")}
+                    value={locale}
+                    onChange={setLocale}
+                    options={[
+                      { value: "en", label: "English" },
+                      { value: "ar", label: "العربية" },
+                    ]}
+                  />
+                </SettingRow>
+              </SettingsCard>
             </section>
           ) : null}
 
           {tab === "models" ? <LocalModelsSettingsPanel /> : null}
 
+          {tab === "skills" ? <SkillsSettingsPanel /> : null}
+
           {tab === "notifications" ? (
-            <section className="settings-rise sg">
-              <header className="sg-head">
-                <div>
-                  <h2>{t("settingsNotifications")}</h2>
-                  <p>{t("notificationsBody")}</p>
-                </div>
-              </header>
+            <section className="settings-rise st-page">
+              <PageHead title={t("settingsNotifications")} body={t("notificationsBody")} />
 
-              <article className="sg-panel">
-                <div className="sg-panel-head">
-                  <Bell className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("settingsNotifications")}</p>
-                </div>
-                <div className="sg-toggles">
-                  <Toggle
-                    label={t("notifyApprovals")}
-                    checked={prefs.notifyApprovals}
-                    onChange={(value) => updatePref("notifyApprovals", value)}
-                  />
-                  <Toggle
-                    label={t("notifyTeamLaunch")}
-                    checked={prefs.notifyTeamLaunch}
-                    onChange={(value) => updatePref("notifyTeamLaunch", value)}
-                  />
-                  <Toggle
-                    label={t("notifyConnector")}
-                    checked={prefs.notifyConnector}
-                    onChange={(value) => updatePref("notifyConnector", value)}
-                  />
-                  <Toggle
-                    label={t("notifyCowork")}
-                    checked={prefs.notifyCowork}
-                    onChange={(value) => updatePref("notifyCowork", value)}
-                  />
-                  <Toggle
-                    label={t("notifyAgentPresence")}
-                    checked={prefs.notifyAgentPresence}
-                    onChange={(value) => updatePref("notifyAgentPresence", value)}
-                  />
-                  <Toggle
-                    label={t("notifyAppUpdates")}
-                    checked={prefs.notifyAppUpdates}
-                    onChange={(value) => updatePref("notifyAppUpdates", value)}
-                  />
-                  <Toggle
-                    label={t("autoCheckUpdates")}
-                    checked={prefs.autoCheckUpdates}
-                    onChange={(value) => updatePref("autoCheckUpdates", value)}
-                  />
-                </div>
-                <p className="sg-body mt-3">{t("notifyAgentPresenceBody")}</p>
-                <p className="sg-body mt-2">{t("notifyAppUpdatesBody")}</p>
-              </article>
+              <SettingsCard title={t("settingsAlerts")}>
+                <Toggle
+                  label={t("notifyApprovals")}
+                  description={t("notifyApprovalsBody")}
+                  checked={prefs.notifyApprovals}
+                  onChange={(value) => updatePref("notifyApprovals", value)}
+                />
+                <Toggle
+                  label={t("notifyTeamLaunch")}
+                  description={t("notifyTeamLaunchBody")}
+                  checked={prefs.notifyTeamLaunch}
+                  onChange={(value) => updatePref("notifyTeamLaunch", value)}
+                />
+                <Toggle
+                  label={t("notifyConnector")}
+                  description={t("notifyConnectorBody")}
+                  checked={prefs.notifyConnector}
+                  onChange={(value) => updatePref("notifyConnector", value)}
+                />
+                <Toggle
+                  label={t("notifyCowork")}
+                  description={t("notifyCoworkBody")}
+                  checked={prefs.notifyCowork}
+                  onChange={(value) => updatePref("notifyCowork", value)}
+                />
+              </SettingsCard>
 
-              <article className="sg-panel">
-                <div className="sg-panel-head">
-                  <Monitor className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("osNotifyStatus")}</p>
-                </div>
-                <div className="sg-facts">
-                  <div className="sg-fact">
-                    <span>{t("osNotifyStatus")}</span>
-                    <strong className="tabular-nums">{notifyPermission}</strong>
+              <SettingsCard title={t("settingsSystem")}>
+                <Toggle
+                  label={t("notifyAgentPresence")}
+                  description={t("notifyAgentPresenceBody")}
+                  checked={prefs.notifyAgentPresence}
+                  onChange={(value) => updatePref("notifyAgentPresence", value)}
+                />
+                <Toggle
+                  label={t("notifyAppUpdates")}
+                  description={t("notifyAppUpdatesBody")}
+                  checked={prefs.notifyAppUpdates}
+                  onChange={(value) => updatePref("notifyAppUpdates", value)}
+                />
+                <Toggle
+                  label={t("autoCheckUpdates")}
+                  description={t("autoCheckUpdatesBody")}
+                  checked={prefs.autoCheckUpdates}
+                  onChange={(value) => updatePref("autoCheckUpdates", value)}
+                />
+                <SettingRow title={t("osNotifyStatus")} description={t("osNotifyBody")}>
+                  <div className="st-actions">
+                    {notifyPermission === "granted" ? (
+                      <span className="st-badge is-ok">{t("osNotifyGranted")}</span>
+                    ) : notifyPermission === "denied" ? (
+                      <span className="st-badge is-warn">{t("osNotifyDenied")}</span>
+                    ) : notifyPermission === "unsupported" ? (
+                      <span className="st-badge">{t("osNotifyUnsupported")}</span>
+                    ) : (
+                      <button type="button" onClick={() => void requestOsNotify()} className="st-btn">
+                        {t("enableOsNotify")}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void sendTestNotify()}
+                      className="st-btn is-primary"
+                    >
+                      {savedFlash ? t("prefsSaved") : t("testNotify")}
+                    </button>
                   </div>
-                </div>
-                <div className="sg-actions">
-                  <button type="button" onClick={() => void requestOsNotify()} className="sg-ghost">
-                    {t("enableOsNotify")}
-                  </button>
-                  <button type="button" onClick={() => void sendTestNotify()} className="sg-cta">
-                    {savedFlash ? t("prefsSaved") : t("testNotify")}
-                  </button>
-                </div>
-              </article>
+                </SettingRow>
+              </SettingsCard>
             </section>
           ) : null}
 
           {tab === "privacy" ? (
-            <section className="settings-rise sg">
-              <header className="sg-head">
-                <div>
-                  <h2>{t("settingsPrivacy")}</h2>
-                  <p>{t("generalDefaultsBody")}</p>
-                </div>
-              </header>
+            <section className="settings-rise st-page">
+              <PageHead title={t("settingsPrivacy")} body={t("generalDefaultsBody")} />
 
-              <article className="sg-panel">
-                <div className="sg-panel-head">
-                  <Shield className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("settingsPrivacy")}</p>
-                </div>
-                <div className="sg-toggles">
-                  <Toggle
-                    label={t("privacyLocalNotes")}
-                    checked={prefs.privacyLocalNotes}
-                    onChange={(value) => updatePref("privacyLocalNotes", value)}
-                  />
-                  <Toggle
-                    label={t("privacyAnalytics")}
-                    checked={prefs.privacyAnalytics}
-                    onChange={(value) => updatePref("privacyAnalytics", value)}
-                  />
-                  <Toggle
-                    label={t("privacyCrash")}
-                    checked={prefs.privacyCrash}
-                    onChange={(value) => updatePref("privacyCrash", value)}
-                  />
-                </div>
-              </article>
+              <SettingsCard>
+                <Toggle
+                  label={t("privacyLocalNotes")}
+                  description={t("privacyLocalNotesBody")}
+                  checked={prefs.privacyLocalNotes}
+                  onChange={(value) => updatePref("privacyLocalNotes", value)}
+                />
+                <Toggle
+                  label={t("privacyAnalytics")}
+                  description={t("privacyAnalyticsBody")}
+                  checked={prefs.privacyAnalytics}
+                  onChange={(value) => updatePref("privacyAnalytics", value)}
+                />
+                <Toggle
+                  label={t("privacyCrash")}
+                  description={t("privacyCrashBody")}
+                  checked={prefs.privacyCrash}
+                  onChange={(value) => updatePref("privacyCrash", value)}
+                />
+              </SettingsCard>
 
-              <article className="sg-panel">
-                <div className="sg-panel-head">
-                  <HardDrive className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("crashLog")}</p>
-                </div>
-                {crashLog.length === 0 ? (
-                  <p className="sg-body">{t("crashLogEmpty")}</p>
-                ) : (
-                  <div className="sg-crash-list">
-                    {crashLog.slice(0, 5).map((entry) => (
-                      <div key={`${entry.at}-${entry.message}`} className="sg-crash">
-                        <p>{entry.message}</p>
-                        <span>
-                          {entry.source ?? "app"} · {new Date(entry.at).toLocaleString()}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className="sg-actions">
+              <SettingsCard
+                title={t("crashLog")}
+                action={
                   <button
                     type="button"
+                    disabled={crashLog.length === 0}
                     onClick={() => {
                       clearCrashLog();
                       setCrashLog([]);
                     }}
-                    className="sg-ghost"
+                    className="st-btn is-sm"
                   >
                     {t("clearCrashLog")}
                   </button>
-                </div>
-              </article>
+                }
+              >
+                {crashLog.length === 0 ? (
+                  <p className="st-empty">{t("crashLogEmpty")}</p>
+                ) : (
+                  crashLog.slice(0, 5).map((entry) => (
+                    <div key={`${entry.at}-${entry.message}`} className="st-log">
+                      <p>{entry.message}</p>
+                      <span>
+                        {entry.source ?? "app"} · {new Date(entry.at).toLocaleString()}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </SettingsCard>
             </section>
           ) : null}
 
           {tab === "cowork" ? (
-            <section className="settings-rise sg">
-              <header className="sg-head">
-                <div>
-                  <h2>{t("settingsCowork")}</h2>
-                  <p>{t("coworkPrefsBody")}</p>
-                </div>
-              </header>
+            <section className="settings-rise st-page">
+              <PageHead title={t("settingsCowork")} body={t("coworkPrefsBody")} />
 
-              <article className="sg-panel">
-                <div className="sg-panel-head">
-                  <Workflow className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("settingsCowork")}</p>
-                </div>
-                <div className="sg-toggles">
-                  <Toggle
-                    label={t("coworkAutoResume")}
-                    checked={prefs.coworkAutoResume}
-                    onChange={(value) => updatePref("coworkAutoResume", value)}
-                  />
-                  <Toggle
-                    label={t("coworkEnterSend")}
-                    checked={prefs.coworkEnterSend}
-                    onChange={(value) => updatePref("coworkEnterSend", value)}
-                  />
-                  <Toggle
-                    label={t("coworkTerminalDock")}
-                    checked={prefs.coworkTerminalDock}
-                    onChange={(value) => updatePref("coworkTerminalDock", value)}
-                  />
-                </div>
-              </article>
+              <SettingsCard>
+                <Toggle
+                  label={t("coworkAutoResume")}
+                  description={t("coworkAutoResumeBody")}
+                  checked={prefs.coworkAutoResume}
+                  onChange={(value) => updatePref("coworkAutoResume", value)}
+                />
+                <Toggle
+                  label={t("coworkEnterSend")}
+                  description={t("coworkEnterSendBody")}
+                  checked={prefs.coworkEnterSend}
+                  onChange={(value) => updatePref("coworkEnterSend", value)}
+                />
+                <Toggle
+                  label={t("coworkTerminalDock")}
+                  description={t("coworkTerminalDockBody")}
+                  checked={prefs.coworkTerminalDock}
+                  onChange={(value) => updatePref("coworkTerminalDock", value)}
+                />
+              </SettingsCard>
+              <p className="st-note">{t("prefsApplyLive")}</p>
             </section>
           ) : null}
 
           {tab === "desktop" ? (
-            <section className="settings-rise sg">
-              <header className="sg-head">
-                <div>
-                  <h2>{t("settingsDesktop")}</h2>
-                  <p>{t("desktopBody")}</p>
-                </div>
-              </header>
+            <section className="settings-rise st-page">
+              <PageHead title={t("settingsDesktop")} body={t("desktopBody")} />
 
-              <article className="sg-panel">
-                <div className="sg-panel-head">
-                  <Monitor className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("settingsDesktop")}</p>
-                </div>
-                <div className="sg-toggles">
-                  <Toggle
-                    label={t("desktopAlwaysOnTop")}
-                    checked={prefs.desktopAlwaysOnTop}
-                    onChange={(value) => updatePref("desktopAlwaysOnTop", value)}
-                  />
-                </div>
-                {!isTauriRuntime() ? (
-                  <p className="sg-body">{t("desktopAppRequired")}</p>
-                ) : null}
-              </article>
+              <SettingsCard title={t("settingsWindow")}>
+                <Toggle
+                  label={t("desktopAlwaysOnTop")}
+                  description={
+                    isTauriRuntime() ? t("desktopAlwaysOnTopBody") : t("desktopAppRequired")
+                  }
+                  checked={prefs.desktopAlwaysOnTop}
+                  disabled={!isTauriRuntime()}
+                  onChange={(value) => updatePref("desktopAlwaysOnTop", value)}
+                />
+              </SettingsCard>
 
-              <article className="sg-panel">
-                <div className="sg-panel-head">
-                  <HardDrive className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("defaultCoworkFolder")}</p>
-                </div>
-                <p className="sg-path">{coworkFolder ?? t("noDefaultFolder")}</p>
-                <div className="sg-actions">
-                  <button
-                    type="button"
-                    onClick={() => void chooseDefaultFolder()}
-                    className="sg-cta"
-                  >
-                    {t("chooseFolder")}
-                  </button>
-                  <button type="button" onClick={clearDefaultFolder} className="sg-ghost">
-                    {t("clearFolder")}
-                  </button>
-                </div>
-              </article>
+              <SettingsCard title={t("settingsStorage")}>
+                <SettingRow
+                  title={t("defaultCoworkFolder")}
+                  description={
+                    coworkFolder ? (
+                      <span className="st-path">{coworkFolder}</span>
+                    ) : (
+                      t("defaultCoworkFolderBody")
+                    )
+                  }
+                >
+                  <div className="st-actions">
+                    {coworkFolder ? (
+                      <button type="button" onClick={clearDefaultFolder} className="st-btn">
+                        {t("clearFolder")}
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      onClick={() => void chooseDefaultFolder()}
+                      className="st-btn is-primary"
+                    >
+                      {t("chooseFolder")}
+                    </button>
+                  </div>
+                </SettingRow>
+              </SettingsCard>
 
-              <article className="sg-panel is-danger">
-                <div className="sg-panel-head">
-                  <Shield className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("localData")}</p>
-                </div>
-                <p className="sg-body">{t("localDataBody")}</p>
-                <div className="sg-actions">
-                  <button type="button" onClick={resetPrefs} className="sg-ghost">
+              <SettingsCard title={t("generalDangerZone")} tone="danger">
+                <SettingRow title={t("resetPrefs")} description={t("resetPrefsBody")}>
+                  <button type="button" onClick={resetPrefs} className="st-btn">
                     {t("resetPrefs")}
                   </button>
-                  <button type="button" onClick={wipeLocalData} className="sg-ghost is-danger">
+                </SettingRow>
+                <SettingRow title={t("clearLocalData")} description={t("localDataBody")}>
+                  <button type="button" onClick={wipeLocalData} className="st-btn is-danger">
                     {t("clearLocalData")}
                   </button>
-                </div>
-              </article>
+                </SettingRow>
+              </SettingsCard>
             </section>
           ) : null}
 
           {tab === "shortcuts" ? (
-            <section className="settings-rise sg">
-              <header className="sg-head">
-                <div>
-                  <h2>{t("settingsShortcuts")}</h2>
-                  <p>{t("shortcutsBody")}</p>
-                </div>
-              </header>
+            <section className="settings-rise st-page">
+              <PageHead title={t("settingsShortcuts")} body={t("shortcutsBody")} />
 
-              <article className="sg-panel">
-                <div className="sg-panel-head">
-                  <Keyboard className="size-4" strokeWidth={1.8} />
-                  <p className="sg-kicker">{t("settingsShortcuts")}</p>
-                </div>
-                <div className="sg-shortcuts">
-                  {(
-                    [
-                      ["shortcutPalette", "⌘/Ctrl + K"],
-                      ["shortcutSettings", "⌘/Ctrl + ,"],
-                      ["shortcutTheme", "⌘/Ctrl + Shift + T"],
-                      ["shortcutLocale", "⌘/Ctrl + Shift + L"],
-                      ["shortcutCowork", "⌘/Ctrl + 3"],
-                      ["shortcutChat", "⌘/Ctrl + 2"],
-                      ["shortcutWorkforce", "⌘/Ctrl + 4"],
-                    ] as const
-                  ).map(([key, combo]) => (
-                    <div key={key} className="sg-shortcut">
-                      <span>{t(key)}</span>
-                      <kbd>{combo}</kbd>
-                    </div>
-                  ))}
-                </div>
-              </article>
-            </section>
-          ) : null}
-
-          {tab === "connection" ? (
-            <section className="settings-panel space-y-4">
-              <header className="sg-head">
-                <p className="sg-kicker">{t("amApiEndpoint")}</p>
-                <h2>{t("amApiEndpoint")}</h2>
-                <p className="sg-body">{t("connectionBody")}</p>
-              </header>
-              <article className="sg-hero">
-                <p className="sg-body">{t("connectionManagedBody")}</p>
-                <div className="sg-fields">
-                  <Field label={t("apiBaseUrlLabel")}>
-                    <input
-                      value={apiBaseDraft}
-                      onChange={(event) => setApiBaseDraft(event.target.value)}
-                      className="field"
-                      placeholder="https://api.arrabai.com"
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                  </Field>
-                  <Field label={t("apiRoutePrefixLabel")}>
-                    <input
-                      value={apiPrefixDraft}
-                      onChange={(event) => setApiPrefixDraft(event.target.value)}
-                      className="field"
-                      placeholder="/r/nmpi6uidtpkh1bdf"
-                      autoComplete="off"
-                      spellCheck={false}
-                    />
-                  </Field>
-                </div>
-                <p className="sg-body">{t("apiRoutePrefixHint")}</p>
-                <div className="sg-facts">
-                  <div className="sg-fact">
-                    <span>{t("studioHealth")}</span>
-                    <strong>{online ? t("healthOnline") : t("healthOffline")}</strong>
-                  </div>
-                  <div className="sg-fact">
-                    <span>{t("apiVersion")}</span>
-                    <strong className="tabular-nums">{meta?.version ?? "—"}</strong>
-                  </div>
-                  <div className="sg-fact">
-                    <span>{t("apiBaseUrlLabel")}</span>
-                    <strong className="sg-mono">{getApiBaseUrl()}</strong>
-                  </div>
-                  <div className="sg-fact">
-                    <span>{t("apiRoutePrefixLabel")}</span>
-                    <strong className="sg-mono">{getApiRoutePrefix() || "—"}</strong>
-                  </div>
-                </div>
-                <div className="sg-actions">
-                  <button type="button" onClick={applyConnectionUrl} className="sg-cta">
-                    {t("applyUrl")}
-                  </button>
-                  <button
-                    type="button"
-                    disabled={connectionChecking}
-                    onClick={() => void testConnection()}
-                    className="sg-ghost"
-                  >
-                    {connectionChecking ? t("checkingConnection") : t("checkConnection")}
-                  </button>
-                </div>
-                {connectionMsg ? <p className="sg-body">{connectionMsg}</p> : null}
-              </article>
+              <SettingsCard>
+                {(
+                  [
+                    ["shortcutPalette", [MOD_KEY, "K"]],
+                    ["shortcutSettings", [MOD_KEY, ","]],
+                    ["shortcutChat", [MOD_KEY, "2"]],
+                    ["shortcutCowork", [MOD_KEY, "3"]],
+                    ["shortcutWorkforce", [MOD_KEY, "4"]],
+                    ["shortcutTheme", [MOD_KEY, "⇧", "T"]],
+                    ["shortcutLocale", [MOD_KEY, "⇧", "L"]],
+                  ] as const
+                )
+                  .filter(([key]) => key !== "shortcutWorkforce" || studioRole === "organization")
+                  .map(([key, combo]) => (
+                  <SettingRow key={key} title={t(key)}>
+                    <span className="st-keys">
+                      {combo.map((part) => (
+                        <kbd key={part}>{part}</kbd>
+                      ))}
+                    </span>
+                  </SettingRow>
+                ))}
+              </SettingsCard>
             </section>
           ) : null}
 
           {tab === "about" ? (
-            <section className="settings-rise sg">
-              <AppUpdatesPanel />
-              <article className="sg-about">
-                <div className="sg-about-top">
-                  <div className="sg-identity">
-                    <img src={logoTall} alt="" className="sg-about-logo" />
-                    <div className="sg-identity-copy">
-                      <p className="sg-kicker">{t("settingsAbout")}</p>
-                      <h3>{t("aboutVersion")}</h3>
-                      <p>
-                        {studioRole === "individual"
-                          ? t("aboutTaglineIndividual")
-                          : t("aboutTaglineOrganization")}
-                      </p>
-                    </div>
-                  </div>
-                  <span className="sg-version">v{pkg.version}</span>
+            <section className="settings-rise st-page">
+              <article className="st-card st-about">
+                <img src={appSymbol} alt="" className="st-about-logo" />
+                <div className="st-about-copy">
+                  <h2>{t("aboutVersion")}</h2>
+                  <p>
+                    {studioRole === "individual"
+                      ? t("aboutTaglineIndividual")
+                      : t("aboutTaglineOrganization")}
+                  </p>
                 </div>
-                <p className="sg-body">
-                  {studioRole === "individual" ? t("aboutLead") : t("aboutLeadOrg")}
-                </p>
-                <div className="sg-facts">
-                  <div className="sg-fact">
-                    <span>{t("studioHealth")}</span>
-                    <strong>{online ? t("healthOnline") : t("healthOffline")}</strong>
+                <span className="st-badge">v{pkg.version}</span>
+              </article>
+
+              <SettingsCard>
+                <SettingRow
+                  title={t("studioHealth")}
+                  description={connectionMsg ?? (meta?.version ? `${t("serviceVersion")} ${meta.version}` : undefined)}
+                >
+                  <div className="st-actions">
+                    <StatusPill
+                      online={online}
+                      label={online ? t("healthOnline") : t("healthOffline")}
+                    />
+                    <button
+                      type="button"
+                      disabled={connectionChecking}
+                      onClick={() => void testConnection()}
+                      className="st-btn"
+                    >
+                      {connectionChecking ? t("checkingConnection") : t("checkConnection")}
+                    </button>
                   </div>
-                  <div className="sg-fact">
-                    <span>{t("apiVersion")}</span>
-                    <strong className="tabular-nums">{meta?.version ?? "—"}</strong>
-                  </div>
-                  <div className="sg-fact">
-                    <span>{t("persistence")}</span>
-                    <strong>
-                      {meta
-                        ? meta.persistence === "file"
-                          ? t("persistenceFile")
-                          : meta.persistence === "postgres"
-                            ? t("persistencePostgres")
-                            : t("persistenceMemory")
-                        : "—"}
-                    </strong>
-                  </div>
-                  <div className="sg-fact">
-                    <span>{t("workspaceId")}</span>
-                    <strong className="tabular-nums">
-                      {meta?.workspaceId ? shortId(meta.workspaceId) : "—"}
-                    </strong>
-                  </div>
-                </div>
-                <div className="sg-actions">
+                </SettingRow>
+                <SettingRow title={t("managePlansOnWebsite")}>
                   <button
                     type="button"
-                    disabled={connectionChecking}
-                    onClick={() => void testConnection()}
-                    className="sg-cta"
-                  >
-                    {connectionChecking ? t("checkingConnection") : t("checkConnection")}
-                  </button>
-                  <button
-                    type="button"
-                    className="sg-ghost"
+                    className="st-btn"
                     onClick={() => void openPlansPage()}
+                    aria-label={t("managePlansOnWebsite")}
                   >
-                    {t("managePlansOnWebsite")}
                     <ExternalLink className="size-3.5" strokeWidth={1.9} />
                   </button>
-                </div>
-                {connectionMsg ? <p className="sg-body">{connectionMsg}</p> : null}
-                <p className="sg-body">{t("aboutSecure")}</p>
-              </article>
+                </SettingRow>
+              </SettingsCard>
+
+              <AppUpdatesPanel />
+
+              <p className="st-note">
+                {studioRole === "individual" ? t("aboutLead") : t("aboutLeadOrg")} {t("aboutSecure")}
+              </p>
             </section>
           ) : null}
         </div>
@@ -1814,43 +1540,117 @@ export function SettingsPage() {
   );
 }
 
-function shortId(value: string) {
-  if (value.length <= 12) return value;
-  return `${value.slice(0, 6)}…${value.slice(-4)}`;
+const MOD_KEY =
+  typeof navigator !== "undefined" && /mac/i.test(navigator.platform || navigator.userAgent)
+    ? "⌘"
+    : "Ctrl";
+
+function PageHead({ title, body, aside }: { title: string; body?: string; aside?: ReactNode }) {
+  return (
+    <header className="st-head">
+      <div>
+        <h2>{title}</h2>
+        {body ? <p>{body}</p> : null}
+      </div>
+      {aside ? <div className="st-head-aside">{aside}</div> : null}
+    </header>
+  );
+}
+
+function StatusPill({ online, label }: { online: boolean | null; label: string }) {
+  return (
+    <span className={cn("st-status", online ? "is-on" : online === false && "is-off")} aria-live="polite">
+      <span className="st-status-dot" aria-hidden />
+      {label}
+    </span>
+  );
+}
+
+function SettingsCard({
+  title,
+  description,
+  action,
+  tone,
+  children,
+}: {
+  title?: string;
+  description?: string;
+  action?: ReactNode;
+  tone?: "danger";
+  children: ReactNode;
+}) {
+  return (
+    <article className={cn("st-card", tone === "danger" && "is-danger")}>
+      {title ? (
+        <header className="st-card-head">
+          <div>
+            <h3>{title}</h3>
+            {description ? <p>{description}</p> : null}
+          </div>
+          {action}
+        </header>
+      ) : null}
+      <div className="st-rows">{children}</div>
+    </article>
+  );
+}
+
+function SettingRow({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description?: ReactNode;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="st-row">
+      <div className="st-row-copy">
+        <span className="st-row-title">{title}</span>
+        {description ? <span className="st-row-desc">{description}</span> : null}
+      </div>
+      {children ? <div className="st-row-control">{children}</div> : null}
+    </div>
+  );
+}
+
+function Segmented<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: T;
+  onChange: (value: T) => void;
+  options: Array<{ value: T; label: string; icon?: ReactNode }>;
+}) {
+  return (
+    <div className="st-segmented" role="radiogroup" aria-label={label}>
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          role="radio"
+          aria-checked={value === option.value}
+          onClick={() => onChange(option.value)}
+          className={cn(value === option.value && "is-active")}
+        >
+          {option.icon}
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
 }
 
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <label className="grid gap-1.5">
-      <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">{label}</span>
+    <label className="st-field">
+      <span>{label}</span>
       {children}
     </label>
-  );
-}
-
-function Choice({
-  active,
-  onClick,
-  label,
-  icon,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-  icon?: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "inline-flex items-center gap-2 rounded-full border px-3 py-2 text-sm",
-        active ? "border-white bg-white text-black" : "border-white/15 text-neutral-400 hover:text-white",
-      )}
-    >
-      {icon}
-      {label}
-    </button>
   );
 }
 
@@ -1876,29 +1676,14 @@ function Toggle({
       onClick={() => {
         if (!disabled) onChange(!checked);
       }}
-      className={cn(
-        "flex w-full items-start justify-between gap-4 px-4 py-3.5 text-start",
-        disabled && "cursor-not-allowed opacity-70",
-      )}
+      className="st-row st-row-toggle"
     >
-      <div className="min-w-0 flex-1">
-        <span className="block text-[15px] font-medium text-white">{label}</span>
-        {description ? (
-          <span className="mt-0.5 block text-[13px] leading-snug text-neutral-500">{description}</span>
-        ) : null}
-      </div>
-      <span
-        className={cn(
-          "relative mt-0.5 h-[26px] w-[44px] shrink-0 rounded-full transition-colors",
-          checked ? "bg-[var(--color-success)]" : "bg-white/15",
-        )}
-      >
-        <span
-          className={cn(
-            "absolute top-[2px] size-[22px] rounded-full bg-white shadow-sm transition-all",
-            checked ? "start-[20px]" : "start-[2px]",
-          )}
-        />
+      <span className="st-row-copy">
+        <span className="st-row-title">{label}</span>
+        {description ? <span className="st-row-desc">{description}</span> : null}
+      </span>
+      <span className={cn("st-switch", checked && "is-on")} aria-hidden>
+        <span className="st-switch-knob" />
       </span>
     </button>
   );

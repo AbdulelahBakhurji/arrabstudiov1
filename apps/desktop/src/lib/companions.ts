@@ -12,6 +12,7 @@
  */
 import { useSyncExternalStore } from "react";
 import { arrabApi } from "@/lib/api";
+import { ACCOUNT_EVENT, readAccountSessionToken } from "./account-session";
 import { looksEncryptedLocal, openLocalJson, sealLocalJson } from "./local-secure";
 import {
   playbookText,
@@ -26,6 +27,7 @@ import {
   presetPortraitFile,
   resolveCompanionPortraitSrc,
 } from "./companion-portrait";
+import { scrubConversationFromChatTabs } from "./assistant-chat-tabs";
 
 export type CompanionSpace = "personal" | "work";
 export type CompanionToneName = "direct" | "measured";
@@ -43,13 +45,24 @@ export interface CompanionTone {
   warmth: number;
   /** 0 = casual, 100 = formal. */
   formality: number;
+  /** 0 = soft feedback, 100 = candid criticism. */
+  criticism: number;
+  /** 0 = patient, 100 = brisk. */
+  pace: number;
 }
+
+export type CompanionStyleId = "direct" | "measured" | "coach" | "friend" | "pro" | "quiet";
 
 export interface CompanionProfile {
   id: string;
   /** Backing Arrab agent — created lazily on the first real message. */
   agentId: string | null;
   conversationId: string | null;
+  /**
+   * Parent-only coaching thread for a kid’s companion.
+   * Never shown when a child profile is active — kids only see `conversationId`.
+   */
+  parentConversationId: string | null;
   name: string;
   /** What they watch: general, sleep, money, work, study… */
   domain: string;
@@ -81,6 +94,12 @@ export interface CompanionProfile {
   familyMemberId: string | null;
   createdAt: string;
   archivedAt: string | null;
+  /** Arrab Control catalog id, when this companion was hired from ERP. */
+  erpId?: string | null;
+  chatModel?: string | null;
+  temperature?: number | null;
+  maxTokens?: number | null;
+  greeting?: string | null;
 }
 
 export interface CompanionFact {
@@ -250,9 +269,57 @@ export interface BoardCard {
   threadId: string | null;
 }
 
-const STORAGE_KEY = "arrab.companions.v2";
-const SYNCED_AT_KEY = "arrab.companions.syncedAt";
+const STORE_PREFIX = "arrab.companions.v2";
+/** Pre-partition vault — never shown to guests; adopted once into a signed-in account. */
+const LEGACY_STORAGE_KEY = "arrab.companions.v2";
+const SYNCED_AT_PREFIX = "arrab.companions.syncedAt";
+const LEGACY_SYNCED_AT_KEY = "arrab.companions.syncedAt";
 const CHANGE_EVENT = "arrab:companions";
+
+function hashPartition(raw: string): string {
+  let h = 0;
+  for (let i = 0; i < raw.length; i++) h = (h * 31 + raw.charCodeAt(i)) | 0;
+  return `${Math.abs(h).toString(36)}${raw.length.toString(36)}`.slice(0, 16);
+}
+
+/** One vault per signed-in account. Guests get an empty local vault. */
+function accountPartition(): string {
+  const token = readAccountSessionToken();
+  if (!token) return "guest";
+  return hashPartition(`acct::${token}`);
+}
+
+function storageKey(): string {
+  return `${STORE_PREFIX}.${accountPartition()}`;
+}
+
+function syncedAtKey(): string {
+  return `${SYNCED_AT_PREFIX}.${accountPartition()}`;
+}
+
+/**
+ * Move the old shared vault into this account once.
+ * Guests never inherit it — that was the cross-account leak.
+ */
+function adoptLegacyVaultIfNeeded(partition: string): void {
+  if (partition === "guest") return;
+  try {
+    if (localStorage.getItem(`${STORE_PREFIX}.${partition}`)) return;
+    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!legacy) return;
+    localStorage.setItem(`${STORE_PREFIX}.${partition}`, legacy);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+    const legacySync = localStorage.getItem(LEGACY_SYNCED_AT_KEY);
+    if (legacySync && !localStorage.getItem(`${SYNCED_AT_PREFIX}.${partition}`)) {
+      localStorage.setItem(`${SYNCED_AT_PREFIX}.${partition}`, legacySync);
+      localStorage.removeItem(LEGACY_SYNCED_AT_KEY);
+    }
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+let activePartition: string | null = null;
 
 /** The board hands the room a companion and an unsent line. */
 export const COMPANION_FOCUS_KEY = "arrab.companionFocus";
@@ -276,15 +343,33 @@ const DEFAULT_TONE: CompanionTone = {
   replyLength: 35,
   warmth: 55,
   formality: 35,
+  criticism: 40,
+  pace: 45,
 };
 
 export const TONE_PRESETS: Record<CompanionToneName, CompanionTone> = {
-  direct: { bluntness: 78, humour: 30, replyLength: 20, warmth: 40, formality: 45 },
-  measured: { bluntness: 32, humour: 45, replyLength: 55, warmth: 60, formality: 40 },
+  direct: {
+    bluntness: 78,
+    humour: 30,
+    replyLength: 20,
+    warmth: 40,
+    formality: 45,
+    criticism: 70,
+    pace: 72,
+  },
+  measured: {
+    bluntness: 32,
+    humour: 45,
+    replyLength: 55,
+    warmth: 60,
+    formality: 40,
+    criticism: 35,
+    pace: 40,
+  },
 };
 
 export const TONE_STYLE_CHIPS: {
-  id: string;
+  id: CompanionStyleId;
   toneName: CompanionToneName;
   tone: CompanionTone;
   labelEn: string;
@@ -313,7 +398,15 @@ export const TONE_STYLE_CHIPS: {
   {
     id: "coach",
     toneName: "direct",
-    tone: { bluntness: 72, humour: 28, replyLength: 48, warmth: 62, formality: 40 },
+    tone: {
+      bluntness: 72,
+      humour: 28,
+      replyLength: 48,
+      warmth: 62,
+      formality: 40,
+      criticism: 68,
+      pace: 65,
+    },
     labelEn: "Coach",
     labelAr: "مدرب",
     hintEn: "Pushes you, keeps advice practical",
@@ -322,7 +415,15 @@ export const TONE_STYLE_CHIPS: {
   {
     id: "friend",
     toneName: "measured",
-    tone: { bluntness: 38, humour: 72, replyLength: 50, warmth: 82, formality: 18 },
+    tone: {
+      bluntness: 38,
+      humour: 72,
+      replyLength: 50,
+      warmth: 82,
+      formality: 18,
+      criticism: 30,
+      pace: 48,
+    },
     labelEn: "Friend",
     labelAr: "صديق",
     hintEn: "Warm, light, easy to talk to",
@@ -331,7 +432,15 @@ export const TONE_STYLE_CHIPS: {
   {
     id: "pro",
     toneName: "direct",
-    tone: { bluntness: 58, humour: 12, replyLength: 62, warmth: 35, formality: 78 },
+    tone: {
+      bluntness: 58,
+      humour: 12,
+      replyLength: 62,
+      warmth: 35,
+      formality: 78,
+      criticism: 55,
+      pace: 58,
+    },
     labelEn: "Professional",
     labelAr: "مهني",
     hintEn: "Crisp, formal, work-ready",
@@ -340,13 +449,172 @@ export const TONE_STYLE_CHIPS: {
   {
     id: "quiet",
     toneName: "measured",
-    tone: { bluntness: 22, humour: 12, replyLength: 18, warmth: 48, formality: 30 },
+    tone: {
+      bluntness: 22,
+      humour: 12,
+      replyLength: 18,
+      warmth: 48,
+      formality: 30,
+      criticism: 22,
+      pace: 28,
+    },
     labelEn: "Quiet",
     labelAr: "هادئ",
     hintEn: "Few words, soft edge",
     hintAr: "كلمات قليلة وحدود ناعمة",
   },
 ];
+
+export function clampTone(tone: Partial<CompanionTone> | null | undefined): CompanionTone {
+  const pick = (key: keyof CompanionTone, fallback: number) => {
+    const raw = Number(tone?.[key] ?? fallback);
+    if (!Number.isFinite(raw)) return fallback;
+    return Math.max(0, Math.min(100, Math.round(raw)));
+  };
+  return {
+    bluntness: pick("bluntness", DEFAULT_TONE.bluntness),
+    humour: pick("humour", DEFAULT_TONE.humour),
+    replyLength: pick("replyLength", DEFAULT_TONE.replyLength),
+    warmth: pick("warmth", DEFAULT_TONE.warmth),
+    formality: pick("formality", DEFAULT_TONE.formality),
+    criticism: pick("criticism", DEFAULT_TONE.criticism),
+    pace: pick("pace", DEFAULT_TONE.pace),
+  };
+}
+
+export function matchToneStyleId(tone: CompanionTone): CompanionStyleId | null {
+  const normalized = clampTone(tone);
+  return (
+    TONE_STYLE_CHIPS.find(
+      (chip) =>
+        chip.tone.bluntness === normalized.bluntness &&
+        chip.tone.humour === normalized.humour &&
+        chip.tone.replyLength === normalized.replyLength &&
+        chip.tone.warmth === normalized.warmth &&
+        chip.tone.formality === normalized.formality &&
+        chip.tone.criticism === normalized.criticism &&
+        chip.tone.pace === normalized.pace,
+    )?.id ?? null
+  );
+}
+
+function axisBand(value: number): "low" | "mid" | "high" {
+  if (value > 66) return "high";
+  if (value > 33) return "mid";
+  return "low";
+}
+
+/** Standing voice rules injected into agent instructions and every turn. */
+export function formatToneDirective(person: CompanionProfile, locale: "en" | "ar" = "en"): string {
+  const tone = clampTone(person.tone);
+  const style = matchToneStyleId(tone);
+  const styleLabel =
+    style != null
+      ? (locale === "ar"
+          ? TONE_STYLE_CHIPS.find((chip) => chip.id === style)?.labelAr
+          : TONE_STYLE_CHIPS.find((chip) => chip.id === style)?.labelEn) ?? style
+      : locale === "ar"
+        ? "مخصص"
+        : "Custom";
+
+  const blunt =
+    axisBand(tone.bluntness) === "high"
+      ? "Be direct. Lead with the point. Skip soft padding and hedging."
+      : axisBand(tone.bluntness) === "mid"
+        ? "Be honest and clear, without harshness."
+        : "Be careful and kind. Ask before judging. Soften hard truths.";
+  const humour =
+    axisBand(tone.humour) === "high"
+      ? "Light humour is welcome when the moment is safe. Irony about the situation, never the person."
+      : axisBand(tone.humour) === "mid"
+        ? "Occasional dry humour only if the user jokes first."
+        : "Stay serious. No jokes unless the user clearly invites it.";
+  const length =
+    axisBand(tone.replyLength) === "high"
+      ? "Give full answers when useful. Structure with short paragraphs or bullets."
+      : axisBand(tone.replyLength) === "mid"
+        ? "Default to 2–4 short sentences. Expand only when asked or the task needs it."
+        : "Keep replies to 1–2 short lines unless they ask for more.";
+  const warmth =
+    axisBand(tone.warmth) === "high"
+      ? "Warm and encouraging. Acknowledge effort before critique."
+      : axisBand(tone.warmth) === "mid"
+        ? "Steady, respectful warmth — neither cold nor gushing."
+        : "Reserved. Keep emotional distance. No empty praise.";
+  const formality =
+    axisBand(tone.formality) === "high"
+      ? "Professional register. Complete sentences. No slang."
+      : axisBand(tone.formality) === "mid"
+        ? "Natural spoken register — clear and human."
+        : "Casual, like a close friend. Plain words are fine.";
+  const criticism =
+    axisBand(tone.criticism) === "high"
+      ? "When something is off, say it candidly once. Criticise the pattern, not the person."
+      : axisBand(tone.criticism) === "mid"
+        ? "Offer honest feedback gently. Prefer one concrete observation over a lecture."
+        : "Prefer support over critique. Soften disagreement; ask a question instead of a verdict.";
+  const pace =
+    axisBand(tone.pace) === "high"
+      ? "Brisk. Prefer the next action now. Cut throat-clearing."
+      : axisBand(tone.pace) === "mid"
+        ? "Balanced pace — decide when to push and when to wait."
+        : "Patient. Leave room to think. Do not rush them into a decision.";
+
+  const callOut = person.callOut.length
+    ? `Call out these topics when relevant: ${person.callOut.join(", ")}. Always show a visible reason.`
+    : "Do not moralise or nudge unprompted.";
+  const note = person.toneNote?.trim()
+    ? `Operator style notes (highest priority): ${person.toneNote.trim().slice(0, 500)}`
+    : null;
+
+  return [
+    `VOICE STYLE: ${styleLabel}. Obey this voice on every reply unless the operator asks otherwise.`,
+    blunt,
+    humour,
+    length,
+    warmth,
+    formality,
+    criticism,
+    pace,
+    callOut,
+    "Hard stops for humour: health scares, large money decisions, family conflict, grief, or sensitive mode.",
+    "If the operator asks to change tone in chat (e.g. \"be blunter\", \"go easier\"), follow them immediately.",
+    note,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Short sample line for the Tone panel preview. */
+export function tonePreviewSample(tone: CompanionTone, locale: "en" | "ar" = "en"): string {
+  const t = clampTone(tone);
+  if (locale === "ar") {
+    if (axisBand(t.replyLength) === "low") {
+      return axisBand(t.bluntness) === "high"
+        ? "ابدأ بالمهمة الأصعب. عشر دقائق تكفي للانطلاق."
+        : "خذ نفساً. ما أصغر خطوة تناسبك الآن؟";
+    }
+    if (axisBand(t.humour) === "high" && axisBand(t.warmth) === "high") {
+      return "الأسبوع كان ثقيلاً، صح؟ خلّنا نختار خطوة واحدة واضحة ونكمّل منها.";
+    }
+    if (axisBand(t.formality) === "high") {
+      return "أقترح ترتيب الأولويات كالتالي: أنجز العنصر الحرج أولاً، ثم راجع الباقي.";
+    }
+    return "واضح أن الضغط مرتفع. نحدد هدفاً واحداً لليوم ونؤجّل الباقي بهدوء.";
+  }
+  if (axisBand(t.replyLength) === "low") {
+    return axisBand(t.bluntness) === "high"
+      ? "Start with the hardest task. Ten minutes is enough to begin."
+      : "Breathe. What's the smallest step that fits right now?";
+  }
+  if (axisBand(t.humour) === "high" && axisBand(t.warmth) === "high") {
+    return "Rough week, huh? Let's pick one clear move and ride that instead of juggling five.";
+  }
+  if (axisBand(t.formality) === "high") {
+    return "I recommend this order: finish the critical item first, then review the remainder.";
+  }
+  return "Pressure is high. Let's lock one goal for today and park the rest calmly.";
+}
 
 export const CALL_OUT_TOPICS = [
   "spending",
@@ -361,9 +629,15 @@ export const CALL_OUT_TOPICS = [
 
 /** Topics we listen for. Three mentions of one of these offers a companion. */
 const TOPIC_RULES: { domain: string; words: string[] }[] = [
+  { domain: "health", words: ["health", "checkup", "symptom", "doctor", "صحة", "طبيب", "فحص"] },
+  { domain: "relationships", words: ["friend", "partner", "relationship", "lonely", "صديق", "علاقة", "وحدة"] },
+  { domain: "parents", words: ["mom", "dad", "mother", "father", "والدي", "والدتي", "أمي", "أبي"] },
+  { domain: "career", words: ["career", "promotion", "burnout", "resign", "مسار", "ترقية", "احتراق"] },
   { domain: "sleep", words: ["sleep", "tired", "insomnia", "awake", "نوم", "تعبان"] },
   { domain: "money", words: ["spend", "budget", "salary", "invoice", "money", "مصروف", "راتب"] },
-  { domain: "work", words: ["deadline", "meeting", "client", "ship", "launch", "اجتماع", "عميل"] },
+  { domain: "work", words: ["deadline", "client", "ship", "launch", "عميل", "إطلاق"] },
+  { domain: "meetings", words: ["meeting", "standup", "agenda", "اجتماع", "أجندة"] },
+  { domain: "paperwork", words: ["passport", "visa", "licence", "license", "renew", "جواز", "إقامة", "رخصة"] },
   { domain: "study", words: ["exam", "study", "course", "thesis", "اختبار", "دراسة"] },
   { domain: "training", words: ["gym", "run", "training", "workout", "تمرين", "جري"] },
 ];
@@ -416,14 +690,43 @@ let localReadyPromise: Promise<void> | null = null;
 let pushTimer: ReturnType<typeof setTimeout> | null = null;
 let pushInFlight = false;
 let suppressCloudPush = false;
+let purposeMigrateDone = false;
 /** Mutations queued while the encrypted on-device vault is still opening. */
 let pendingMutations: Array<(draft: CompanionState) => CompanionState | void> = [];
 /** Stable empty snapshot while encrypted vault decrypts (useSyncExternalStore-safe). */
 let pendingVaultSnapshot: CompanionState | null = null;
 
+function remountPartition(): void {
+  const next = accountPartition();
+  if (activePartition === next && cache) return;
+  activePartition = next;
+  cache = null;
+  localReady = false;
+  localReadyPromise = null;
+  purposeMigrateDone = false;
+  pendingMutations = [];
+  pendingVaultSnapshot = null;
+  if (next !== "guest") adoptLegacyVaultIfNeeded(next);
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener(ACCOUNT_EVENT, () => {
+    activePartition = null;
+    cache = null;
+    localReady = false;
+    localReadyPromise = null;
+    purposeMigrateDone = false;
+    pendingMutations = [];
+    pendingVaultSnapshot = null;
+    void ensureCompanionsReady().then(() => {
+      window.dispatchEvent(new Event(CHANGE_EVENT));
+    });
+  });
+}
+
 function readSyncedAt(): string | null {
   try {
-    return localStorage.getItem(SYNCED_AT_KEY);
+    return localStorage.getItem(syncedAtKey());
   } catch {
     return null;
   }
@@ -431,7 +734,7 @@ function readSyncedAt(): string | null {
 
 function writeSyncedAt(value: string): void {
   try {
-    localStorage.setItem(SYNCED_AT_KEY, value);
+    localStorage.setItem(syncedAtKey(), value);
   } catch {
     // ignore quota
   }
@@ -440,15 +743,16 @@ function writeSyncedAt(value: string): void {
 async function writeLocalState(state: CompanionState): Promise<void> {
   try {
     const sealed = await sealLocalJson(state);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(sealed));
+    localStorage.setItem(storageKey(), JSON.stringify(sealed));
   } catch {
     // over quota / unavailable — keep the in-memory copy
   }
 }
 
 async function readLocalState(): Promise<CompanionState | null> {
+  remountPartition();
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey());
     if (!raw) return null;
     const parsed = JSON.parse(raw) as unknown;
     if (looksEncryptedLocal(parsed)) {
@@ -462,6 +766,7 @@ async function readLocalState(): Promise<CompanionState | null> {
 
 /** Decrypt on-device companion vault before UI/cloud sync reads it. */
 export async function ensureCompanionsReady(): Promise<CompanionState> {
+  remountPartition();
   if (localReady && cache) {
     migratePurposeTasksOnce(cache);
     return cache;
@@ -491,8 +796,6 @@ export async function ensureCompanionsReady(): Promise<CompanionState> {
   migratePurposeTasksOnce(state);
   return cache ?? emptyState();
 }
-
-let purposeMigrateDone = false;
 
 /** Idempotent: ensure every live companion has purpose-seeded tasks. */
 function migratePurposeTasksOnce(state: CompanionState): void {
@@ -527,13 +830,16 @@ function normalizeState(raw: unknown): CompanionState {
         typeof (person as CompanionProfile).familyMemberId === "string"
           ? (person as CompanionProfile).familyMemberId
           : null,
-      tone: {
-        bluntness: Number(person.tone?.bluntness ?? DEFAULT_TONE.bluntness),
-        humour: Number(person.tone?.humour ?? DEFAULT_TONE.humour),
-        replyLength: Number(person.tone?.replyLength ?? DEFAULT_TONE.replyLength),
-        warmth: Number(person.tone?.warmth ?? DEFAULT_TONE.warmth),
-        formality: Number(person.tone?.formality ?? DEFAULT_TONE.formality),
-      },
+      parentConversationId:
+        typeof (person as CompanionProfile).parentConversationId === "string"
+          ? (person as CompanionProfile).parentConversationId
+          : null,
+      tone: clampTone(person.tone),
+      erpId: typeof person.erpId === "string" ? person.erpId : null,
+      chatModel: typeof person.chatModel === "string" ? person.chatModel : null,
+      temperature: typeof person.temperature === "number" ? person.temperature : null,
+      maxTokens: typeof person.maxTokens === "number" ? person.maxTokens : null,
+      greeting: typeof person.greeting === "string" ? person.greeting : null,
     };
   });
   next.facts = (Array.isArray(next.facts) ? next.facts : [])
@@ -618,9 +924,10 @@ function normalizeState(raw: unknown): CompanionState {
 }
 
 function hydrate(): CompanionState {
+  remountPartition();
   if (cache) return cache;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey());
     if (!raw) {
       cache = emptyState();
       localReady = true;
@@ -667,6 +974,7 @@ function scheduleCloudPush(): void {
 
 async function pushCompanionsToCloud(): Promise<void> {
   if (pushInFlight || suppressCloudPush) return;
+  if (!readAccountSessionToken()) return;
   pushInFlight = true;
   try {
     await ensureCompanionsReady();
@@ -686,6 +994,12 @@ async function pushCompanionsToCloud(): Promise<void> {
  * Remote wins only when clearly newer; never wipe local memories on first sync.
  */
 export async function syncCompanionsFromCloud(): Promise<void> {
+  if (!readAccountSessionToken()) {
+    remountPartition();
+    await ensureCompanionsReady();
+    window.dispatchEvent(new Event(CHANGE_EVENT));
+    return;
+  }
   try {
     await ensureCompanionsReady();
     const doc = await arrabApi.companionState();
@@ -768,17 +1082,30 @@ function update(mutate: (draft: CompanionState) => CompanionState | void): Compa
 function subscribe(listener: () => void): () => void {
   /** Another studio window wrote to disk — drop our copy and read it again. */
   const onStorage = (event: StorageEvent) => {
-    if (event.key && event.key !== STORAGE_KEY) return;
+    if (event.key && !event.key.startsWith(STORE_PREFIX)) return;
     cache = null;
     localReady = false;
     localReadyPromise = null;
+    activePartition = null;
+    void ensureCompanionsReady().then(() => listener());
+  };
+  const onAccount = () => {
+    activePartition = null;
+    cache = null;
+    localReady = false;
+    localReadyPromise = null;
+    purposeMigrateDone = false;
+    pendingMutations = [];
+    pendingVaultSnapshot = null;
     void ensureCompanionsReady().then(() => listener());
   };
   window.addEventListener(CHANGE_EVENT, listener);
   window.addEventListener("storage", onStorage);
+  window.addEventListener(ACCOUNT_EVENT, onAccount);
   return () => {
     window.removeEventListener(CHANGE_EVENT, listener);
     window.removeEventListener("storage", onStorage);
+    window.removeEventListener(ACCOUNT_EVENT, onAccount);
   };
 }
 
@@ -797,47 +1124,111 @@ export function liveCompanions(state: CompanionState, space?: CompanionSpace): C
     .filter((person) => (space ? person.space === space : true));
 }
 
+/**
+ * Companions visible to the active family seat.
+ * Children only see their own; managers see household-stamped companions;
+ * unowned legacy companions stay on manager seats only.
+ */
+export function companionsForActiveSeat(
+  state: CompanionState,
+  opts: {
+    space?: CompanionSpace;
+    activeMemberId?: string | null;
+    isChild?: boolean;
+    isManager?: boolean;
+    householdMemberIds?: Set<string>;
+  },
+): CompanionProfile[] {
+  const pool = opts.space ? liveCompanions(state, opts.space) : liveCompanions(state);
+  const seatId = opts.activeMemberId ?? null;
+  if (!seatId) return pool;
+  return pool.filter((person) => {
+    if (person.domain === "general") {
+      return !person.familyMemberId || person.familyMemberId === seatId;
+    }
+    if (opts.isChild) return person.familyMemberId === seatId;
+    if (opts.isManager && opts.householdMemberIds) {
+      return Boolean(
+        person.familyMemberId && opts.householdMemberIds.has(String(person.familyMemberId)),
+      );
+    }
+    if (person.familyMemberId === seatId) return true;
+    // Legacy unowned companions: managers only.
+    return !person.familyMemberId && Boolean(opts.isManager);
+  });
+}
+
 export function findCompanion(state: CompanionState, id: string | null): CompanionProfile | null {
   if (!id) return null;
   return state.companions.find((person) => person.id === id) ?? null;
 }
 
-/** General is always available. Opening the room does not create a companion. */
-export function generalCompanion(state: CompanionState, space: CompanionSpace): CompanionProfile {
-  return (
-    liveCompanions(state, space).find((person) => person.domain === "general") ?? {
-      id: `general-${space}`,
-      name: "General",
-      domain: "general",
-      purposeId: "general",
-      brief: null,
-      toneNote: null,
-      connectors: [],
-      space,
-      agentId: null,
-      conversationId: null,
-      hue: 255,
-      faceSeed: 0,
-      avatarPhoto: null,
-      tone: { ...DEFAULT_TONE },
-      toneName: "measured",
-      callOut: [],
-      lastMemory: null,
-      lastLine: null,
-      lastAt: null,
-      resume: null,
-      familyMemberId: null,
-      createdAt: "",
-      archivedAt: null,
-    }
-  );
+/** General is always available — one room per family seat when a seat is active. */
+export function generalCompanion(
+  state: CompanionState,
+  space: CompanionSpace,
+  seatId?: string | null,
+): CompanionProfile {
+  const people = liveCompanions(state, space).filter((person) => person.domain === "general");
+  if (seatId) {
+    const owned = people.find((person) => person.familyMemberId === seatId);
+    if (owned) return owned;
+  } else {
+    const shared = people.find((person) => !person.familyMemberId) ?? people[0];
+    if (shared) return shared;
+  }
+  return {
+    id: seatId ? `general-${space}-${seatId}` : `general-${space}`,
+    name: "General",
+    domain: "general",
+    purposeId: "general",
+    brief: null,
+    toneNote: null,
+    connectors: [],
+    space,
+    agentId: null,
+    conversationId: null,
+    parentConversationId: null,
+    hue: 255,
+    faceSeed: 0,
+    avatarPhoto: null,
+    tone: { ...DEFAULT_TONE },
+    toneName: "measured",
+    callOut: [],
+    lastMemory: null,
+    lastLine: null,
+    lastAt: null,
+    resume: null,
+    familyMemberId: seatId ?? null,
+    createdAt: "",
+    archivedAt: null,
+  };
 }
 
 /** Persist the General room only when a message actually needs a backing agent. */
-export function ensureGeneralCompanion(space: CompanionSpace): CompanionProfile {
-  const person = generalCompanion(getCompanionState(), space);
+export function ensureGeneralCompanion(
+  space: CompanionSpace,
+  seatId?: string | null,
+): CompanionProfile {
+  const activeSeat =
+    seatId !== undefined
+      ? seatId
+      : (() => {
+          try {
+            return localStorage.getItem("arrab.family.activeMemberId");
+          } catch {
+            return null;
+          }
+        })();
+  const person = generalCompanion(getCompanionState(), space, activeSeat);
   if (person.createdAt) return person;
-  return addCompanion({ name: "General", domain: "general", purposeId: "general", space });
+  return addCompanion({
+    name: "General",
+    domain: "general",
+    purposeId: "general",
+    space,
+    familyMemberId: activeSeat,
+  });
 }
 
 export function addCompanion(input: {
@@ -854,6 +1245,15 @@ export function addCompanion(input: {
   /** Stable face seed — presets pass this so the catalog portrait matches. */
   faceSeed?: number;
   hue?: number;
+  /** Assign to a household member (Family plans). Overrides active-profile default. */
+  familyMemberId?: string | null;
+  avatarPhoto?: string | null;
+  erpId?: string | null;
+  chatModel?: string | null;
+  temperature?: number | null;
+  maxTokens?: number | null;
+  greeting?: string | null;
+  tone?: CompanionTone;
 }): CompanionProfile {
   const purposeId = resolvePurposeIdFromDomain(input.domain, input.purposeId);
   const purpose = purposeRegistryById(purposeId);
@@ -878,6 +1278,7 @@ export function addCompanion(input: {
     id: newId("comp"),
     agentId: null,
     conversationId: null,
+    parentConversationId: null,
     name: input.name.trim(),
     domain: input.domain,
     purposeId,
@@ -887,16 +1288,26 @@ export function addCompanion(input: {
     hue: input.hue ?? 0,
     faceSeed: portrait.faceSeed,
     // Lock a unique vector face at birth so new companions never share one.
-    avatarPhoto: portrait.avatarPhoto,
+    avatarPhoto: input.avatarPhoto?.trim() || portrait.avatarPhoto,
     space: input.space ?? "personal",
-    tone: input.toneName ? { ...TONE_PRESETS[input.toneName] } : { ...DEFAULT_TONE },
+    tone: input.tone
+      ? clampTone(input.tone)
+      : input.toneName
+        ? { ...TONE_PRESETS[input.toneName] }
+        : { ...DEFAULT_TONE },
     toneName: input.toneName ?? purpose?.toneName ?? "measured",
+    erpId: input.erpId ?? null,
+    chatModel: input.chatModel ?? null,
+    temperature: input.temperature ?? null,
+    maxTokens: input.maxTokens ?? null,
+    greeting: input.greeting ?? null,
     callOut: input.callOut ?? [],
     lastMemory: null,
     lastLine: null,
     lastAt: null,
     resume: null,
     familyMemberId: (() => {
+      if (input.familyMemberId !== undefined) return input.familyMemberId;
       try {
         return localStorage.getItem("arrab.family.activeMemberId");
       } catch {
@@ -927,6 +1338,72 @@ export function updateCompanion(id: string, patch: Partial<CompanionProfile>): v
     const person = draft.companions.find((item) => item.id === id);
     if (person) Object.assign(person, patch);
   });
+}
+
+/**
+ * Isolate parent coaching from the child’s chat.
+ * Moves any shared conversation into `parentConversationId` so kids never load it.
+ */
+export function claimParentCoachConversation(person: CompanionProfile): CompanionProfile {
+  const latest = findCompanion(getCompanionState(), person.id) ?? person;
+  if (latest.parentConversationId) return latest;
+  if (latest.conversationId) {
+    const movedId = latest.conversationId;
+    updateCompanion(latest.id, {
+      parentConversationId: movedId,
+      conversationId: null,
+      // Clear resume so the kid room doesn’t reopen mid parent sentence.
+      resume: null,
+      lastLine: null,
+    });
+    scrubConversationFromChatTabs(latest.id, movedId);
+    return {
+      ...latest,
+      parentConversationId: movedId,
+      conversationId: null,
+      resume: null,
+      lastLine: null,
+    };
+  }
+  return latest;
+}
+
+/** Transient room flag — never persisted on CompanionProfile. */
+export type CompanionRoomProfile = CompanionProfile & {
+  parentCoachLane?: boolean;
+};
+
+/** Room profile for the active family seat — kids never receive the parent coach thread. */
+export function companionRoomForSeat(
+  person: CompanionProfile,
+  input: {
+    parentCoach: boolean;
+    tabConversationId?: string | null;
+    /** Child seat: move any pre-split shared thread into the parent lane. */
+    claimSharedForChild?: boolean;
+  },
+): CompanionRoomProfile {
+  const shouldClaim =
+    input.parentCoach ||
+    (Boolean(input.claimSharedForChild) && Boolean(person.familyMemberId));
+  const scoped = shouldClaim ? claimParentCoachConversation(person) : person;
+  if (input.parentCoach) {
+    return {
+      ...scoped,
+      conversationId: input.tabConversationId ?? scoped.parentConversationId,
+      parentCoachLane: true,
+    };
+  }
+  // Never hand the parent lane to a child seat, even if a stale tab still points at it.
+  const tabId = input.tabConversationId ?? scoped.conversationId;
+  if (tabId && scoped.parentConversationId && tabId === scoped.parentConversationId) {
+    return { ...scoped, conversationId: null, parentCoachLane: false };
+  }
+  return {
+    ...scoped,
+    conversationId: tabId,
+    parentCoachLane: false,
+  };
 }
 
 /** Set or clear a companion's photo. Passing null goes back to the generated face. */
@@ -986,7 +1463,8 @@ export function claimStudioAdminAccount(accountId: string): void {
 export function setCompanionTone(id: string, tone: Partial<CompanionTone>): void {
   update((draft) => {
     const person = draft.companions.find((item) => item.id === id);
-    if (person) person.tone = { ...person.tone, ...tone };
+    if (!person) return;
+    person.tone = clampTone({ ...person.tone, ...tone });
   });
 }
 
@@ -998,7 +1476,7 @@ export function applyCompanionToneStyle(
   update((draft) => {
     const person = draft.companions.find((item) => item.id === id);
     if (!person) return;
-    person.tone = { ...tone };
+    person.tone = clampTone(tone);
     person.toneName = toneName;
   });
 }
@@ -1006,8 +1484,99 @@ export function applyCompanionToneStyle(
 export function resetCompanionTone(id: string): void {
   update((draft) => {
     const person = draft.companions.find((item) => item.id === id);
-    if (person) person.tone = { ...TONE_PRESETS[person.toneName] };
+    if (!person) return;
+    const style = matchToneStyleId(person.tone);
+    const chip = style ? TONE_STYLE_CHIPS.find((item) => item.id === style) : null;
+    person.tone = clampTone(chip?.tone ?? TONE_PRESETS[person.toneName]);
   });
+}
+
+/**
+ * Adjust tone from what the operator says in chat ("be blunter", "go easier", …).
+ * Returns true when sliders changed so the next reply uses the new voice.
+ */
+export function applySpokenToneAdjustments(id: string, message: string): boolean {
+  const text = message.trim();
+  if (text.length < 3) return false;
+  const lower = text.toLowerCase();
+  const patch: Partial<CompanionTone> = {};
+
+  const bump = (key: keyof CompanionTone, delta: number) => {
+    const current = getCompanionState().companions.find((item) => item.id === id)?.tone;
+    const base = clampTone(current);
+    patch[key] = Math.max(0, Math.min(100, (patch[key] ?? base[key]) + delta));
+  };
+
+  if (
+    /\b(be\s+)?(more\s+)?(blunt|direct|straight|honest)\b/i.test(lower) ||
+    /كن\s*(أكثر\s*)?(مباشر|صارح|صريح)/.test(text)
+  ) {
+    bump("bluntness", 25);
+    bump("criticism", 15);
+  }
+  if (
+    /\b(go\s+easier|be\s+(gentler|softer|kinder)|tone\s+it\s+down|less\s+harsh)\b/i.test(lower) ||
+    /كن\s*(ألطف|أهدى|أرق)|خف[ّف]\s*اللهجة/.test(text)
+  ) {
+    bump("bluntness", -25);
+    bump("warmth", 15);
+    bump("criticism", -15);
+  }
+  if (
+    /\b(don'?t\s+joke|no\s+humour|no\s+humor|be\s+serious)\b/i.test(lower) ||
+    /بلا\s*مزح|بدون\s*فكاهة|كن\s*جاد/.test(text)
+  ) {
+    bump("humour", -40);
+  }
+  if (
+    /\b(more\s+(humour|humor|jokes)|be\s+funnier|lighten\s+up)\b/i.test(lower) ||
+    /أكثر\s*مرح|كن\s*أخف/.test(text)
+  ) {
+    bump("humour", 25);
+  }
+  if (
+    /\b(be\s+shorter|keep\s+it\s+short|briefer|tl;?dr)\b/i.test(lower) ||
+    /اختصر|رد\s*قصير/.test(text)
+  ) {
+    bump("replyLength", -30);
+    bump("pace", 15);
+  }
+  if (
+    /\b(more\s+detail|longer\s+answer|explain\s+more|go\s+deeper)\b/i.test(lower) ||
+    /فص[ّل]|أكثر\s*تفصيلاً|اشرح\s*أكثر/.test(text)
+  ) {
+    bump("replyLength", 30);
+  }
+  if (
+    /\b(more\s+formal|be\s+professional)\b/i.test(lower) ||
+    /كن\s*رسمياً|بأسلوب\s*مهني/.test(text)
+  ) {
+    bump("formality", 25);
+    bump("humour", -10);
+  }
+  if (
+    /\b(more\s+casual|be\s+informal|relax\s+the\s+tone)\b/i.test(lower) ||
+    /كن\s*عفوي|بأسلوب\s*ودي/.test(text)
+  ) {
+    bump("formality", -25);
+  }
+  if (
+    /\b(warmer|more\s+supportive|be\s+nicer)\b/i.test(lower) ||
+    /كن\s*أدفأ|أكثر\s*دعماً/.test(text)
+  ) {
+    bump("warmth", 25);
+  }
+  if (
+    /\b(less\s+praise|skip\s+the\s+fluff|no\s+pep\s+talk)\b/i.test(lower) ||
+    /بلا\s*مديح|بدون\s*تشجيع\s*فارغ/.test(text)
+  ) {
+    bump("warmth", -20);
+    bump("bluntness", 10);
+  }
+
+  if (!Object.keys(patch).length) return false;
+  setCompanionTone(id, patch);
+  return true;
 }
 
 export function toggleCallOut(id: string, topic: string): void {
@@ -1037,37 +1606,6 @@ export function companionInstructions(
   facts: CompanionFact[],
   locale: "en" | "ar" = "en",
 ): string {
-  const bluntness =
-    person.tone.bluntness > 66
-      ? "Be direct."
-      : person.tone.bluntness > 33
-        ? "Be honest but gentle."
-        : "Be careful; ask before judging.";
-  const humour = person.tone.humour > 60 ? "Light dry humour ok." : "Minimal humour.";
-  const length =
-    person.tone.replyLength > 66
-      ? "Full answers when needed."
-      : person.tone.replyLength > 33
-        ? "2–3 sentences."
-        : "1–2 lines max.";
-  const warmth =
-    person.tone.warmth > 66
-      ? "Warm and encouraging."
-      : person.tone.warmth > 33
-        ? "Steady warmth."
-        : "Reserved; keep emotional distance.";
-  const formality =
-    person.tone.formality > 66
-      ? "Professional register."
-      : person.tone.formality > 33
-        ? "Natural spoken register."
-        : "Casual, like a close friend.";
-  const callOut = person.callOut.length
-    ? `Call out: ${person.callOut.join(", ")}.`
-    : "Do not moralise unprompted.";
-  const toneNote = person.toneNote?.trim()
-    ? `Style notes from the operator: ${person.toneNote.trim().slice(0, 400)}`
-    : null;
   const known = facts
     .filter((fact) => fact.shared || fact.companionId === person.id)
     .slice(0, 8)
@@ -1076,7 +1614,7 @@ export function companionInstructions(
   const brainBits = brainContextSnippet("individual", person.id, locale, 6);
   const purposeId = person.purposeId || resolvePurposeIdFromDomain(person.domain);
   const purpose = purposeRegistryById(purposeId);
-  const brief = (person.brief?.trim() || purpose?.brief || "").slice(0, 600);
+  const brief = (person.brief?.trim() || purpose?.brief || "").slice(0, 8000);
   const connectors = person.connectors?.filter(Boolean) ?? [];
   const watches = person.domain.trim();
   const isGeneral = purposeId === "general" || watches === "general";
@@ -1111,9 +1649,9 @@ export function companionInstructions(
       ? "UI locale is Arabic — prefer Arabic names/labels when speaking about the product UI."
       : "UI locale is English — prefer English names/labels when speaking about the product UI.",
     "You may use web_search, scrape_page, and fetch_url for live research when helpful.",
-    "Deliverables when useful: preview_html and generate_pdf (in-app preview).",
-    `Tone: ${bluntness} ${humour} ${length} ${warmth} ${formality} ${callOut}`,
-    toneNote,
+    "Deliverables when useful: generate_pdf, generate_docx (Word), generate_presentation (slides), generate_image, preview_html, export_csv.",
+    "To understand PDFs, Word docs, or images on the desk, call read_document.",
+    formatToneDirective(person, locale),
     "Use memory notes as facts. Never invent memories.",
     known ? `Memory:\n${known}` : "New here — ask, do not assume.",
     brainBits || null,
@@ -1145,19 +1683,17 @@ export function companionTurnNotes(person: CompanionProfile, facts: CompanionFac
     .slice(0, 4)
     .map((fact) => `- ${fact.text.slice(0, 120)}`);
   const purposeId = person.purposeId || resolvePurposeIdFromDomain(person.domain);
-  const brief = person.brief?.trim().slice(0, 280) || null;
-  const length =
-    person.tone.replyLength > 66 ? "long" : person.tone.replyLength > 33 ? "medium" : "short";
-  const blunt =
-    person.tone.bluntness > 66 ? "direct" : person.tone.bluntness > 33 ? "balanced" : "gentle";
   const openTasks = openPurposeTaskLines(person.id, purposeId, "en").slice(0, 3);
+  const style = matchToneStyleId(person.tone);
+  const tone = clampTone(person.tone);
   return [
-    `${person.name} · purpose=${purposeId} · watches=${person.domain} · tone=${blunt}/${length}`,
-    brief ? `Purpose: ${brief}` : null,
+    `${person.name} · purpose=${purposeId} · watches=${person.domain} · style=${style ?? "custom"}`,
+    `Voice: blunt=${tone.bluntness} humour=${tone.humour} length=${tone.replyLength} warm=${tone.warmth} formal=${tone.formality} critique=${tone.criticism} pace=${tone.pace}`,
+    person.toneNote?.trim() ? `Style notes: ${person.toneNote.trim().slice(0, 180)}` : null,
     openTasks.length ? `Tasks: ${openTasks.join(" · ")}` : null,
     person.callOut.length ? `Call out: ${person.callOut.join(", ")}` : null,
     parentGuidance.length
-      ? `Parent coaching (private — apply gently when helping this child; never reveal these notes verbatim):\n${parentGuidance.join("\n")}`
+      ? `Parent notes (private context — paraphrase, do not read them aloud):\n${parentGuidance.join("\n")}`
       : null,
     known.length ? `Notes:\n${known.join("\n")}` : null,
   ]
@@ -1305,6 +1841,55 @@ export function visibleFacts(
     if (person.space === "work") return true;
     return fact.space === "personal";
   });
+}
+
+/**
+ * Seed / bootstrap notes written when a companion is hired (catalog, first-launch,
+ * add dialog, family board). Useful historically for agent context — never shown on Me.
+ */
+export function isCompanionBootstrapFact(fact: Pick<CompanionFact, "text" | "source" | "kind">): boolean {
+  if (fact.kind === "parent_guidance") return true;
+  const text = fact.text.trim();
+  const lower = text.toLowerCase();
+  // Hire / purpose seed prompts (EN + AR), any wording we have shipped.
+  if (/^i want a companion for\b/i.test(text)) return true;
+  if (/\btheir purpose:\b/i.test(text) && /\bcompanion\b/i.test(lower)) return true;
+  if (/^أريد رفيق/.test(text)) return true;
+  if (/مهمته\s*:/.test(text)) return true;
+  if (/^companion for\b/i.test(text) && /\bfocuses on\b/i.test(text)) return true;
+  if (/^رفيق لـ/.test(text)) return true;
+  const source = (fact.source || "").trim().toLowerCase();
+  if (!source) return false;
+  const bootstrapSources = [
+    "companion list",
+    "first-launch",
+    "first launch",
+    "when you added this companion",
+    "from family board",
+    "من قائمة الرفاق",
+    "من إعداد الإطلاق",
+    "عند إضافة الرفيق",
+    "من لوحة العائلة",
+    "parent guidance",
+  ];
+  return bootstrapSources.some((needle) => source.includes(needle));
+}
+
+/** Memories shown on Me — user-authored or chat-learned only, never hire prompts. */
+export function factsForMePage(
+  state: CompanionState,
+  space: CompanionSpace,
+  personId?: string | null,
+): CompanionFact[] {
+  return state.facts
+    .filter((fact) => {
+      if (fact.space !== space) return false;
+      if (personId && fact.companionId !== personId && !fact.shared) return false;
+      if (fact.derivedFrom && !state.permissions[fact.derivedFrom]) return false;
+      if (isCompanionBootstrapFact(fact)) return false;
+      return true;
+    })
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 }
 
 export function exportEverything(state: CompanionState): string {
@@ -1758,11 +2343,19 @@ function dismissKey(card: {
 /**
  * At most three cards, one per subject that actually needs them.
  * A card that has been waved away three times never comes back.
+ * Pass `allowedCompanionIds` to hard-isolate board cards to the active seat.
  */
-export function boardCards(state: CompanionState, space: CompanionSpace): BoardCard[] {
+export function boardCards(
+  state: CompanionState,
+  space: CompanionSpace,
+  allowedCompanionIds?: Set<string> | null,
+): BoardCard[] {
   const cards: BoardCard[] = [];
+  const allow = (companionId: string) =>
+    !allowedCompanionIds || allowedCompanionIds.has(companionId);
 
   for (const nudge of liveNudges(state, space)) {
+    if (!allow(nudge.companionId)) continue;
     cards.push({
       id: `card-${nudge.id}`,
       companionId: nudge.companionId,
@@ -1779,9 +2372,11 @@ export function boardCards(state: CompanionState, space: CompanionSpace): BoardC
   for (const item of acceptedWork(state, space)) {
     if (!item.suggestedTime) continue;
     if (new Date(item.suggestedTime).getTime() > Date.now() + 86_400_000) continue;
+    const companionId = item.companionId ?? liveCompanions(state, space)[0]?.id ?? "";
+    if (!allow(companionId)) continue;
     cards.push({
       id: `card-${item.id}`,
-      companionId: item.companionId ?? liveCompanions(state, space)[0]?.id ?? "",
+      companionId,
       line: item.text,
       action: needsTaskOrThought(item) ? "Task or thought?" : "Do it now",
       source: item.capturedFrom,
@@ -1794,9 +2389,11 @@ export function boardCards(state: CompanionState, space: CompanionSpace): BoardC
 
   for (const thread of state.threads) {
     if (thread.archived || thread.space !== space || !thread.open) continue;
+    const companionId = thread.companionId ?? liveCompanions(state, space)[0]?.id ?? "";
+    if (!allow(companionId)) continue;
     cards.push({
       id: `card-${thread.id}`,
-      companionId: thread.companionId ?? liveCompanions(state, space)[0]?.id ?? "",
+      companionId,
       line: thread.open,
       action: "Open",
       source: thread.title,

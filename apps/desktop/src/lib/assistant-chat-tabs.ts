@@ -16,8 +16,13 @@ type AssistantChatTabsState = {
 
 const STORAGE_PREFIX = "arrab.assistant.chatTabs.v1:";
 
-function storageKey(companionId: string) {
-  return `${STORAGE_PREFIX}${companionId}`;
+/** `chat` = kid/self room; `parent` = parent coaching — never share storage. */
+export type AssistantChatTabLane = "chat" | "parent";
+
+function storageKey(companionId: string, lane: AssistantChatTabLane = "chat") {
+  return lane === "parent"
+    ? `${STORAGE_PREFIX}${companionId}:parent`
+    : `${STORAGE_PREFIX}${companionId}`;
 }
 
 function newTab(title: string, conversationId: string | null = null): AssistantChatTab {
@@ -39,9 +44,12 @@ function defaultState(seedConversationId: string | null, title: string): Assista
   };
 }
 
-function readRaw(companionId: string): AssistantChatTabsState | null {
+function readRaw(
+  companionId: string,
+  lane: AssistantChatTabLane = "chat",
+): AssistantChatTabsState | null {
   try {
-    const raw = localStorage.getItem(storageKey(companionId));
+    const raw = localStorage.getItem(storageKey(companionId, lane));
     if (!raw) return null;
     const parsed = JSON.parse(raw) as Partial<AssistantChatTabsState>;
     if (!Array.isArray(parsed.tabs) || parsed.tabs.length === 0) return null;
@@ -69,9 +77,13 @@ function readRaw(companionId: string): AssistantChatTabsState | null {
   }
 }
 
-function writeRaw(companionId: string, state: AssistantChatTabsState) {
+function writeRaw(
+  companionId: string,
+  state: AssistantChatTabsState,
+  lane: AssistantChatTabLane = "chat",
+) {
   try {
-    localStorage.setItem(storageKey(companionId), JSON.stringify(state));
+    localStorage.setItem(storageKey(companionId, lane), JSON.stringify(state));
   } catch {
     // Private browsing / quota — keep in-memory only.
   }
@@ -81,12 +93,31 @@ export function readAssistantChatTabs(
   companionId: string,
   seedConversationId: string | null,
   defaultTitle: string,
+  lane: AssistantChatTabLane = "chat",
 ): AssistantChatTabsState {
-  return readRaw(companionId) ?? defaultState(seedConversationId, defaultTitle);
+  return readRaw(companionId, lane) ?? defaultState(seedConversationId, defaultTitle);
 }
 
-export function writeAssistantChatTabs(companionId: string, state: AssistantChatTabsState) {
-  writeRaw(companionId, state);
+export function writeAssistantChatTabs(
+  companionId: string,
+  state: AssistantChatTabsState,
+  lane: AssistantChatTabLane = "chat",
+) {
+  writeRaw(companionId, state, lane);
+}
+
+/** Drop a conversation from the kid/self tab lane so children never reopen it. */
+export function scrubConversationFromChatTabs(companionId: string, conversationId: string) {
+  if (!conversationId) return;
+  const state = readRaw(companionId, "chat");
+  if (!state) return;
+  let changed = false;
+  const tabs = state.tabs.map((tab) => {
+    if (tab.conversationId !== conversationId) return tab;
+    changed = true;
+    return { ...tab, conversationId: null };
+  });
+  if (changed) writeRaw(companionId, { ...state, tabs }, "chat");
 }
 
 export function createAssistantChatTab(title: string, conversationId: string | null = null) {

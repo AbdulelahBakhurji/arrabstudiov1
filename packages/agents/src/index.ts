@@ -11,6 +11,7 @@ export {
   type AgentRunRequest,
   type AgentRunResult,
   type AgentRuntime,
+  type AgentSkillTools,
   type AgentStreamEvent,
   type AgentSshTools,
   type AgentToolContext,

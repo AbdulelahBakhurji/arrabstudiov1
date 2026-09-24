@@ -28,6 +28,7 @@ import {
   type OrgSecurityEvent,
   type OrgSecurityEventKind,
   type OrgWorkforceSnapshot,
+  type StudioAccountRecord,
   type Task,
   type TeamId,
   type UpdateOrgDepartmentRequest,
@@ -197,7 +198,26 @@ export class OrgWorkforceService {
     private readonly clock: Clock = systemClock,
   ) {}
 
-  permissionsFor(employee: OrgEmployeeRecord | null) {
+  /**
+   * Capability map for an org employee seat.
+   * `null` means “no employee header” — treated as full admin only when a verified
+   * studio account session is also present (individual / family owner path).
+   * Anonymous callers must never reach here with admin rights.
+   */
+  permissionsFor(employee: OrgEmployeeRecord | null, accountOwner = false) {
+    if (!employee && !accountOwner) {
+      return {
+        canAdminister: false,
+        canAssignWork: false,
+        canHireAgents: false,
+        canManageTeams: false,
+        canViewDirectory: false,
+        canViewAllChats: false,
+        canViewAllTasks: false,
+        canViewAllAgents: false,
+        canViewAudit: false,
+      };
+    }
     const role = employee?.role ?? "admin";
     const isAdmin = !employee || role === "admin";
     const isManager = isAdmin || role === "manager";
@@ -218,8 +238,14 @@ export class OrgWorkforceService {
     employee: OrgEmployeeRecord | null,
     capability: keyof ReturnType<OrgWorkforceService["permissionsFor"]>,
     detail = "Permission denied",
+    account: StudioAccountRecord | null = null,
+    /** Empty studio (no account yet) — local operator has full admin. */
+    allowOpenWorkspace = false,
   ): void {
-    const permissions = this.permissionsFor(employee);
+    const permissions = this.permissionsFor(
+      employee,
+      Boolean(account) || allowOpenWorkspace,
+    );
     if (!permissions[capability]) {
       void this.audit("permission.denied", {
         actor: employee,

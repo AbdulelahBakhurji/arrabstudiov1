@@ -124,6 +124,8 @@ export function AgentsOfficeHost({ onBack, departments = [] }: Props) {
 
   useEffect(() => {
     const onMsg = (event: MessageEvent) => {
+      // Only accept messages from the local Agents Office iframe.
+      if (event.origin !== OFFICE_URL) return;
       const data = event?.data;
       if (!data || typeof data !== "object") return;
 
@@ -140,7 +142,7 @@ export function AgentsOfficeHost({ onBack, departments = [] }: Props) {
         const source = iframeRef.current?.contentWindow;
         const reply = (payload: { reply?: string; error?: string }) => {
           try {
-            source?.postMessage({ type: "arrab:office-chat-reply", id, ...payload }, "*");
+            source?.postMessage({ type: "arrab:office-chat-reply", id, ...payload }, OFFICE_URL);
           } catch {
             /* iframe gone */
           }

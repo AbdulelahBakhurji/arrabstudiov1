@@ -74,7 +74,15 @@ class FakeMoyasar implements MoyasarClient {
     metadata: { planId: "pro" },
   };
 
-  async createInvoice(): Promise<MoyasarInvoice> {
+  async createInvoice(input: {
+    metadata?: Record<string, string>;
+  }): Promise<MoyasarInvoice> {
+    if (input.metadata) {
+      this.invoice = {
+        ...this.invoice,
+        metadata: { ...this.invoice.metadata, ...input.metadata },
+      };
+    }
     return this.invoice;
   }
 
@@ -99,6 +107,105 @@ describe("billing + releases", () => {
     const confirmed = await billing.confirmInvoice("inv_test");
     expect(confirmed.account?.planId).toBe("pro");
     expect(confirmed.entitlements.tokenLimit).toBe(2_000_000);
+  });
+
+  it("pauses chat on billing day until the same plan is paid again", async () => {
+    const context = await createApiContext(testEnv);
+    await context.accounts.connect({
+      email: "renew@arrab.studio",
+      password: "securepass",
+      displayName: "Renewer",
+    });
+    await context.accounts.applyPlan("pro");
+
+    const account = await context.persistence.accounts.get();
+    expect(account).toBeTruthy();
+    const expired = {
+      ...account!,
+      periodStart: "2026-01-01T00:00:00.000Z",
+      periodEnd: "2026-02-01T00:00:00.000Z",
+      subscriptionStatus: "active" as const,
+      updatedAt: "2026-02-02T00:00:00.000Z",
+    };
+    await context.persistence.accounts.upsert(expired);
+
+    // Simulate “today” after the billing day.
+    const frozen = {
+      isoNow: () => "2026-02-10T12:00:00.000Z",
+    };
+    const { AccountService } = await import("./account-service.js");
+    const { randomIdGenerator } = await import("@arrab/core");
+    const accounts = new AccountService(
+      context.persistence,
+      testEnv.publicBaseUrl,
+      testEnv.authWebUrl,
+      randomIdGenerator,
+      frozen,
+    );
+
+    const entitlements = await accounts.buildEntitlements(
+      await context.persistence.accounts.get(),
+    );
+    expect(entitlements.pauseMode).toBe("payment_required");
+    expect(entitlements.overLimit).toBe(true);
+    expect(entitlements.subscriptionStatus).toBe("past_due");
+
+    await expect(accounts.assertWithinQuota()).rejects.toThrow(/billing was due/i);
+
+    const billing = new BillingService(accounts, new FakeMoyasar(), testEnv.siteUrl);
+    const renew = await billing.checkout("pro");
+    expect(renew.checkoutUrl).toContain("checkout.moyasar.com");
+
+    const confirmed = await billing.confirmInvoice("inv_test");
+    expect(confirmed.entitlements.pauseMode).toBeNull();
+    expect(confirmed.entitlements.subscriptionStatus).toBe("active");
+    expect(confirmed.account?.periodEnd > "2026-02-10T12:00:00.000Z").toBe(true);
+  });
+
+  it("pauses Free plan chat at month end until a paid plan is purchased", async () => {
+    const context = await createApiContext(testEnv);
+    await context.accounts.connect({
+      email: "free@arrab.studio",
+      password: "securepass",
+      displayName: "Free User",
+    });
+
+    const account = await context.persistence.accounts.get();
+    expect(account?.planId).toBe("free");
+    await context.persistence.accounts.upsert({
+      ...account!,
+      periodStart: "2026-01-01T00:00:00.000Z",
+      periodEnd: "2026-02-01T00:00:00.000Z",
+      subscriptionStatus: "trialing",
+      updatedAt: "2026-02-02T00:00:00.000Z",
+    });
+
+    const frozen = { isoNow: () => "2026-02-10T12:00:00.000Z" };
+    const { AccountService } = await import("./account-service.js");
+    const { randomIdGenerator } = await import("@arrab/core");
+    const accounts = new AccountService(
+      context.persistence,
+      testEnv.publicBaseUrl,
+      testEnv.authWebUrl,
+      randomIdGenerator,
+      frozen,
+    );
+
+    const entitlements = await accounts.buildEntitlements(
+      await context.persistence.accounts.get(),
+    );
+    expect(entitlements.pauseMode).toBe("payment_required");
+    expect(entitlements.planId).toBe("free");
+    await expect(accounts.assertWithinQuota()).rejects.toThrow(/billing was due/i);
+
+    const billing = new BillingService(accounts, new FakeMoyasar(), testEnv.siteUrl);
+    await expect(billing.checkout("free")).rejects.toThrow(/free month ended/i);
+
+    const upgrade = await billing.checkout("pro");
+    expect(upgrade.checkoutUrl).toContain("checkout.moyasar.com");
+    const confirmed = await billing.confirmInvoice("inv_test");
+    expect(confirmed.account?.planId).toBe("pro");
+    expect(confirmed.entitlements.pauseMode).toBeNull();
   });
 
   it("lists a published dmg from the releases directory", async () => {

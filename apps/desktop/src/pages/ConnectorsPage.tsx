@@ -1,5 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, LoaderCircle, Plus, RefreshCw, X } from "lucide-react";
+import { Check, LoaderCircle, LogIn, Plus, RefreshCw, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import type { ConnectorProvider, ConnectorPublic } from "@arrab/shared";
 import { ConnectorBrandIcon } from "@/components/ConnectorBrandIcon";
@@ -9,6 +9,9 @@ import { arrabApi, ApiRequestError } from "@/lib/api";
 import { openExternalUrl } from "@/lib/desktop";
 import { notifyStudio } from "@/lib/notify";
 import { isTauriRuntime } from "@/lib/terminal";
+import { useFamilyProfile } from "@/lib/use-family-profile";
+import { useSignedInAccount } from "@/lib/use-signed-in-account";
+import { clearGuestLocalMode } from "@/lib/guest-mode";
 import { cn } from "@/lib/utils";
 
 function isOAuthBrowserProvider(provider: ConnectorProvider | null | undefined): boolean {
@@ -183,6 +186,8 @@ const TOKEN_HINTS: Record<ConnectorProvider, string> = {
 
 export function ConnectorsPage() {
   const { t } = useLanguage();
+  const { signedIn } = useSignedInAccount();
+  const { active: familyActive, isChild } = useFamilyProfile();
   const [searchParams, setSearchParams] = useSearchParams();
   const [items, setItems] = useState<ConnectorPublic[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -211,16 +216,26 @@ export function ConnectorsPage() {
   const panelRef = useRef<HTMLElement | null>(null);
 
   const load = useCallback(() => {
+    if (!signedIn) {
+      setItems([]);
+      return;
+    }
     setError(null);
     void arrabApi
       .connectors()
       .then((response) => {
-        setItems(response.items);
+        // Seat isolation on the client too — never show another profile's links
+        // (or legacy unowned rows) on this family seat.
+        const seatId = familyActive?.id ?? null;
+        const nextItems = seatId
+          ? response.items.filter((item) => item.familyMemberId === seatId)
+          : response.items;
+        setItems(nextItems);
       })
       .catch((err: unknown) => {
         setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
       });
-  }, [t]);
+  }, [t, familyActive?.id, signedIn]);
 
   useEffect(() => {
     load();
@@ -230,7 +245,7 @@ export function ConnectorsPage() {
         oauthPollRef.current = null;
       }
     };
-  }, [load]);
+  }, [load, familyActive?.id]);
 
   // When browser OAuth finishes, deep link focuses the app — refresh connectors.
   useEffect(() => {
@@ -387,8 +402,12 @@ export function ConnectorsPage() {
       void arrabApi
         .connectors()
         .then((response) => {
-          setItems(response.items);
-          const match = response.items.find((item) => {
+          const seatId = familyActive?.id ?? null;
+          const next = seatId
+            ? response.items.filter((item) => item.familyMemberId === seatId)
+            : response.items;
+          setItems(next);
+          const match = next.find((item) => {
             if (item.provider !== provider || item.status !== "connected") return false;
             if (!before.has(item.id)) return true;
             const stamp = Date.parse(item.lastVerifiedAt || item.connectedAt || "");
@@ -508,6 +527,26 @@ export function ConnectorsPage() {
 
   const selectedMeta = CATALOG.find((item) => item.provider === selected);
 
+  if (!signedIn) {
+    return (
+      <Surface className="connector-shell">
+        <div className="relative mx-auto flex min-h-[50vh] max-w-md flex-col items-center justify-center gap-4 px-6 py-16 text-center">
+          <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">{t("connectors")}</p>
+          <h1 className="text-2xl font-semibold tracking-tight text-white">{t("connectorsNeedSignIn")}</h1>
+          <p className="text-sm leading-relaxed text-neutral-400">{t("amSignInBody")}</p>
+          <button
+            type="button"
+            className="inline-flex h-11 items-center justify-center gap-2 rounded-full bg-white px-5 text-sm font-semibold text-black"
+            onClick={() => clearGuestLocalMode()}
+          >
+            <LogIn className="size-4" strokeWidth={1.8} />
+            {t("signInAccount")}
+          </button>
+        </div>
+      </Surface>
+    );
+  }
+
   return (
     <Surface className="connector-shell">
       <div className="connector-atmosphere pointer-events-none absolute inset-0" />
@@ -519,8 +558,15 @@ export function ConnectorsPage() {
               {t("connectorsTitle")}
             </h1>
             <p className="mt-2 max-w-2xl text-[14px] leading-relaxed text-[var(--color-muted)]">
-              {t("connectorsBody")}
+              {familyActive
+                ? t("connectorsBodySeat").replace("{name}", familyActive.displayName)
+                : t("connectorsBody")}
             </p>
+            {isChild ? (
+              <p className="mt-2 max-w-2xl text-[13px] leading-relaxed text-[var(--color-warn)]">
+                {t("connectorsBodyKidHint")}
+              </p>
+            ) : null}
           </div>
         </header>
 

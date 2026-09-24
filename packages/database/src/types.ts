@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import type { ErpCompanion } from "@arrab/shared";
 import type {
   Activity,
   Agent,
@@ -168,6 +169,15 @@ export interface WorkspaceContext {
 
 export type PersistenceKind = "memory" | "file" | "postgres";
 
+export interface ErpCompanionRepository {
+  list(): Promise<ErpCompanion[]>;
+  getById(id: string): Promise<ErpCompanion | null>;
+  getByExternalId(externalId: string): Promise<ErpCompanion | null>;
+  insert(item: ErpCompanion): Promise<ErpCompanion>;
+  replace(item: ErpCompanion): Promise<ErpCompanion | null>;
+  delete(id: string): Promise<boolean>;
+}
+
 export interface Persistence {
   readonly kind: PersistenceKind;
   readonly workspaceId: WorkspaceId;
@@ -198,6 +208,7 @@ export interface Persistence {
   familyMembers: FamilyMemberRepository;
   familyGuidance: FamilyGuidanceRepository;
   familyHouseholdMeta: FamilyHouseholdMetaRepository;
+  erpCompanions: ErpCompanionRepository;
 }
 
 export const LOCAL_ORGANIZATION_ID = "org_local_studio";

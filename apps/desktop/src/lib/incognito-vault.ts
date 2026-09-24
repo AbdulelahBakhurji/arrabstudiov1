@@ -136,11 +136,12 @@ export function isIncognitoUnlocked(): boolean {
 
 export function lockIncognitoVault(): void {
   unlockedKey = null;
+  clearIncognitoApiIds();
 }
 
 export async function createIncognitoVault(password: string): Promise<void> {
-  if (password.trim().length < 6) {
-    throw new Error("Password must be at least 6 characters");
+  if (password.trim().length < 8) {
+    throw new Error("Password must be at least 8 characters");
   }
   if (await incognitoVaultExists()) {
     throw new Error("Vault already exists");
@@ -181,8 +182,8 @@ export async function changeIncognitoPassword(
   currentPassword: string,
   nextPassword: string,
 ): Promise<void> {
-  if (nextPassword.trim().length < 6) {
-    throw new Error("Password must be at least 6 characters");
+  if (nextPassword.trim().length < 8) {
+    throw new Error("Password must be at least 8 characters");
   }
   await unlockIncognitoVault(currentPassword);
   const sessions = await listIncognitoSessions();
@@ -287,23 +288,23 @@ export function newIncognitoSessionId(): string {
 
 const API_IDS_KEY = "arrab.incognito.apiIds";
 
+/** In-memory only — never leave API conversation ids in plaintext localStorage. */
+const memoryApiIds = new Set<string>();
+
 export function rememberIncognitoApiId(apiConversationId: string): void {
+  memoryApiIds.add(apiConversationId);
   try {
-    const raw = JSON.parse(localStorage.getItem(API_IDS_KEY) ?? "[]") as string[];
-    const next = [...new Set([...raw, apiConversationId])];
-    localStorage.setItem(API_IDS_KEY, JSON.stringify(next));
+    // Migrate/clear any legacy plaintext list from older builds.
+    localStorage.removeItem(API_IDS_KEY);
   } catch {
     // ignore
   }
 }
 
 export function forgetIncognitoApiId(apiConversationId: string): void {
+  memoryApiIds.delete(apiConversationId);
   try {
-    const raw = JSON.parse(localStorage.getItem(API_IDS_KEY) ?? "[]") as string[];
-    localStorage.setItem(
-      API_IDS_KEY,
-      JSON.stringify(raw.filter((id) => id !== apiConversationId)),
-    );
+    localStorage.removeItem(API_IDS_KEY);
   } catch {
     // ignore
   }
@@ -311,14 +312,15 @@ export function forgetIncognitoApiId(apiConversationId: string): void {
 
 export function listIncognitoApiIds(): Set<string> {
   try {
-    const raw = JSON.parse(localStorage.getItem(API_IDS_KEY) ?? "[]") as string[];
-    return new Set(raw.filter((id) => typeof id === "string"));
+    localStorage.removeItem(API_IDS_KEY);
   } catch {
-    return new Set();
+    // ignore
   }
+  return new Set(memoryApiIds);
 }
 
 export function clearIncognitoApiIds(): void {
+  memoryApiIds.clear();
   try {
     localStorage.removeItem(API_IDS_KEY);
   } catch {
