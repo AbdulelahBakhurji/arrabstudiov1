@@ -111,6 +111,8 @@ export function EncryptionPanel() {
         <span className={cn("st-badge", state === "unlocked" && "is-ok")}>{badge}</span>
       </header>
       <div className="st-rows">
+        {state === "unknown" ? <p className="st-row-desc">{t("e2eeUnavailable")}</p> : null}
+
         {state === "needs-setup" ? (
           <div className="st-rows" style={{ gap: 10, paddingBlock: 4 }}>
             {field(t("e2eePassphrase"), passphrase, setPassphrase, "new-password")}

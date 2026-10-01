@@ -850,6 +850,12 @@ class MemorySealedVaultRepository implements SealedVaultRepository {
     }));
   }
 
+  async purgeWorkspace(): Promise<void> {
+    this.snapshot.sealedKeys = {};
+    this.snapshot.sealedChats = {};
+    this.snapshot.sealedDeleted = {};
+  }
+
   async deleteAll(ownerKey: string): Promise<void> {
     delete this.snapshot.sealedKeys[ownerKey];
     delete this.snapshot.sealedChats[ownerKey];

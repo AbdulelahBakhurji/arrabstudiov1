@@ -136,6 +136,11 @@ export class SealedVaultService {
     return { ok: true };
   }
 
+  /** Account removed or replaced: nobody inherits the previous account's ciphertext. */
+  async purgeAll(): Promise<void> {
+    await this.persistence.sealedVault.purgeWorkspace();
+  }
+
   /** Forgot-passphrase reset: the old ciphertext is unrecoverable, so drop it all. */
   async reset(): Promise<{ ok: true }> {
     await this.persistence.sealedVault.deleteAll(await this.ownerKey());

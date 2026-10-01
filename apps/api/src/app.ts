@@ -366,6 +366,8 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
   connectors.setFamilyHousehold(familyHousehold);
   const sealedVault = new SealedVaultService(persistence);
   sealedVault.setFamilyHousehold(familyHousehold);
+  accounts.onAccountReset(() => connectors.purgeAll());
+  accounts.onAccountReset(() => sealedVault.purgeAll());
   const conversations = new ConversationService(
     persistence,
     aiGateway,

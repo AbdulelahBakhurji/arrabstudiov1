@@ -2060,6 +2060,12 @@ class PostgresSealedVaultRepository {
     return result.rows.map((row) => ({ id: row.chat_id, deletedAt: iso(row.deleted_at) }));
   }
 
+  async purgeWorkspace(): Promise<void> {
+    for (const table of ["sealed_keys", "sealed_chats", "sealed_chat_tombstones"]) {
+      await this.pool.query(`delete from ${table} where workspace_id = $1`, [this.workspaceId]);
+    }
+  }
+
   async deleteAll(ownerKey: string): Promise<void> {
     for (const table of ["sealed_keys", "sealed_chats", "sealed_chat_tombstones"]) {
       await this.pool.query(`delete from ${table} where workspace_id = $1 and owner_key = $2`, [

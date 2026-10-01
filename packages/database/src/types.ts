@@ -213,6 +213,8 @@ export interface SealedVaultRepository {
   listDeleted(ownerKey: string): Promise<Array<{ id: string; deletedAt: string }>>;
   /** Wipe the user's whole vault (key + chats + tombstones). */
   deleteAll(ownerKey: string): Promise<void>;
+  /** Wipe every user's vault in this workspace (the account was removed or replaced). */
+  purgeWorkspace(): Promise<void>;
 }
 
 export interface ControlDeskRepository {

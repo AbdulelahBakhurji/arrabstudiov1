@@ -50,4 +50,5 @@ export const encryptionEn = {
     e2eeUnlockPromptBody: "Enter your encryption passphrase to read your chat history on this device.",
     e2eeLater: "Not now",
     e2eeServerNote: "AI replies are generated in the cloud, so each message is sent over TLS and used only in memory for that reply — it is never stored unencrypted.",
+  e2eeUnavailable: "Encryption is not available yet: this Arrab server has not been updated. Update the API, then reopen Settings.",
 } as const;

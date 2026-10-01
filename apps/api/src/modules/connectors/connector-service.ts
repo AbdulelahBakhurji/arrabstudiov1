@@ -266,6 +266,33 @@ export class ConnectorService {
     return seatId;
   }
 
+  /**
+   * Connector rows that belong to the current account. A row older than the account was
+   * left behind by a previous account on this studio — it must never be shown or used.
+   */
+  private async visibleRows(): Promise<ConnectorSecretRecord[]> {
+    const rows = await this.persistence.connectors.list();
+    const account = await this.persistence.accounts.get();
+    if (!account) return rows;
+    return rows.filter((row) => row.connectedAt >= account.createdAt);
+  }
+
+  /** Account was removed or replaced: nothing it connected may survive for the next account. */
+  async purgeAll(): Promise<{ removed: number }> {
+    const rows = await this.persistence.connectors.list();
+    for (const record of rows) {
+      if (record.provider === "openwa") {
+        const secret = parseOpenWaSecret(this.openConnector(record).secret);
+        if (secret) await logoutOpenWaSession(secret);
+      }
+      await this.persistence.connectors.delete(record.id);
+    }
+    for (const binding of await this.persistence.bindings.list()) {
+      await this.persistence.bindings.deleteByProject(binding.projectId);
+    }
+    return { removed: rows.length };
+  }
+
   /** Org employee making this request; null for the account owner and non-org callers. */
   private activeEmployeeId(): string | null {
     return currentRequestActor().employeeId;
@@ -291,6 +318,10 @@ export class ConnectorService {
   }
 
   private async assertSeatCanAccess(record: ConnectorSecretRecord): Promise<void> {
+    const account = await this.persistence.accounts.get();
+    if (account && record.connectedAt < account.createdAt) {
+      throw new ForbiddenError("This connector belongs to a previous account");
+    }
     if (!this.familyHousehold || !(await this.familyHousehold.isFamilyPlanActive())) {
       if (!this.ownedBy(record, null)) {
         throw new ForbiddenError("This connector belongs to another user");
@@ -347,7 +378,7 @@ export class ConnectorService {
       record.familyMemberId ?? null,
       record.accountLabel,
     );
-    const existing = (await this.persistence.connectors.list()).find((item) => {
+    const existing = (await this.visibleRows()).find((item) => {
       if (item.provider !== record.provider) return false;
       return this.ownedBy(item, seatId);
     });
@@ -377,7 +408,7 @@ export class ConnectorService {
   }
 
   async list(): Promise<ConnectorPublic[]> {
-    const items = await this.persistence.connectors.list();
+    const items = await this.visibleRows();
     if (!this.familyHousehold || !(await this.familyHousehold.isFamilyPlanActive())) {
       return items.filter((item) => this.ownedBy(item, null)).map(toPublic);
     }
@@ -838,7 +869,7 @@ export class ConnectorService {
       await this.activeSeatId(),
       input.label?.trim() || verified.login,
     );
-    const existing = (await this.persistence.connectors.list()).find((item) => {
+    const existing = (await this.visibleRows()).find((item) => {
       if (item.provider !== provider) return false;
       return this.ownedBy(item, seatId);
     });
@@ -1069,7 +1100,7 @@ export class ConnectorService {
    */
   async resolveFinnhubAccess(): Promise<{ apiKey: string; accountLabel: string } | null> {
     const seatId = await this.activeSeatId();
-    const items = await this.persistence.connectors.list();
+    const items = await this.visibleRows();
     const match = items.find((item) => {
       if (item.provider !== "finnhub" || item.status !== "connected") return false;
       return this.ownedBy(item, seatId);
@@ -1371,7 +1402,7 @@ export class ConnectorService {
         .update(`${this.persistence.workspaceId}:${ownerKey ?? "owner"}:openwa-webhook`)
         .digest("hex")
         .slice(0, 32);
-    const existing = (await this.persistence.connectors.list()).find((item) => {
+    const existing = (await this.visibleRows()).find((item) => {
       if (item.provider !== "openwa") return false;
       return this.ownedBy(item, seatId);
     });
@@ -1418,7 +1449,7 @@ export class ConnectorService {
       throw new ForbiddenError("A child profile cannot link WhatsApp");
     }
     const seatId = await this.activeSeatId();
-    const existing = (await this.persistence.connectors.list()).find((item) => {
+    const existing = (await this.visibleRows()).find((item) => {
       if (item.provider !== "openwa") return false;
       return this.ownedBy(item, seatId);
     });
@@ -1510,7 +1541,7 @@ export class ConnectorService {
         .map((item) => item.phoneNumberId)
         .filter(Boolean),
     );
-    const connectors = await this.persistence.connectors.list();
+    const connectors = await this.visibleRows();
     const byPhone = new Map<string, string>();
     for (const record of connectors) {
       if (record.provider !== "whatsapp") continue;
@@ -1569,7 +1600,7 @@ export class ConnectorService {
    */
   async signOutCurrentUser(): Promise<{ removed: number }> {
     const seatId = await this.activeSeatId();
-    const owned = (await this.persistence.connectors.list()).filter((item) =>
+    const owned = (await this.visibleRows()).filter((item) =>
       this.ownedBy(item, seatId),
     );
     const bindings = await this.persistence.bindings.list();

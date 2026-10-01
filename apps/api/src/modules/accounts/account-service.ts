@@ -102,6 +102,16 @@ function toPublic(account: StudioAccountRecord): AccountPublic {
 
 export class AccountService {
   private readonly pendingWebAuth = new Map<string, PendingWebAuth>();
+  private readonly resetHooks: Array<() => Promise<unknown>> = [];
+
+  /** Run when the account is removed or a new one is created (private data must not carry over). */
+  onAccountReset(hook: () => Promise<unknown>): void {
+    this.resetHooks.push(hook);
+  }
+
+  private async resetAccountScopedData(): Promise<void> {
+    for (const hook of this.resetHooks) await hook();
+  }
 
   constructor(
     private readonly persistence: Persistence,
@@ -354,6 +364,8 @@ export class AccountService {
       throw new ValidationError("An account is already connected. Sign out first.");
     }
 
+    // A brand-new account starts clean — never inherit a previous account's connectors or chats.
+    await this.resetAccountScopedData();
     const now = this.clock.isoNow();
     const period = billingPeriod(new Date(now));
     const sessionToken = randomBytes(32).toString("hex");
@@ -483,6 +495,7 @@ export class AccountService {
   }
 
   async disconnect(): Promise<AccountStatusResponse> {
+    await this.resetAccountScopedData();
     await this.persistence.accounts.delete();
     return this.status();
   }
@@ -626,6 +639,7 @@ export class AccountService {
       );
     } else {
       accountCreated = true;
+      await this.resetAccountScopedData();
       account = {
         id: brandId(this.ids.next("acc")),
         workspaceId: this.persistence.workspaceId,
