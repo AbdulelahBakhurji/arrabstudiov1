@@ -30,6 +30,7 @@ export const organizationAr = {
     saveTaughtSkill: "حفظ المهارة",
     hqLiveMap: "خريطة مباشرة",
     hqLiveMapTitle: "الخريطة المباشرة",
+    hqLiveMapLoading: "جارٍ بناء مكتبك المباشر…",
     hqMapLiveOffice: "المكتب المباشر",
     hqMapConnectedTo: "متصل بـ",
     hqMapAgents: "موظفون",

@@ -103,6 +103,8 @@ export function AgentsOfficeHost({ onBack, departments = [] }: Props) {
   const [url, setUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(true);
+  /** The office URL resolves before its 3D scene is drawn; keep the loader up until the frame loads. */
+  const [frameReady, setFrameReady] = useState(false);
   const [connectors, setConnectors] = useState<OfficeConnectorSync[]>([]);
   const rosterKey = useMemo(
     () =>
@@ -122,12 +124,24 @@ export function AgentsOfficeHost({ onBack, departments = [] }: Props) {
     [connectors, departments],
   );
 
+  // Never leave the loader up forever if the office build predates the ready message.
+  useEffect(() => {
+    if (!url || frameReady) return;
+    const timer = window.setTimeout(() => setFrameReady(true), 15_000);
+    return () => window.clearTimeout(timer);
+  }, [url, frameReady]);
+
   useEffect(() => {
     const onMsg = (event: MessageEvent) => {
       // Only accept messages from the local Agents Office iframe.
       if (event.origin !== OFFICE_URL) return;
       const data = event?.data;
       if (!data || typeof data !== "object") return;
+
+      if (data.type === "arrab:office-ready") {
+        setFrameReady(true);
+        return;
+      }
 
       if (data.type === "arrab:open-connectors") {
         navigate(href("/connectors"));
@@ -208,6 +222,7 @@ export function AgentsOfficeHost({ onBack, departments = [] }: Props) {
           /* office still boots even if sync fails once */
         }
         if (!alive) return;
+        setFrameReady(false);
         setUrl(`${base}/studio?arrab=${Date.now()}`);
       } catch (err: unknown) {
         if (!alive) return;
@@ -253,10 +268,14 @@ export function AgentsOfficeHost({ onBack, departments = [] }: Props) {
       </div>
 
       <div className="relative min-h-0 flex-1 bg-transparent">
-        {busy ? (
-          <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 text-[var(--color-foreground)]">
+        {!error && (busy || (url && !frameReady)) ? (
+          <div
+            className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-3 bg-[var(--color-surface)] text-[var(--color-foreground)]"
+            role="status"
+            aria-live="polite"
+          >
             <Loader2 className="size-6 animate-spin opacity-70" />
-            <p className="text-sm">Starting Agents Office...</p>
+            <p className="text-sm">{t("hqLiveMapLoading")}</p>
           </div>
         ) : null}
 

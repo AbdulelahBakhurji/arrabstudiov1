@@ -130,6 +130,46 @@ function settle<T>(promise: Promise<T>, fallback: T): Promise<T> {
   );
 }
 
+type WorkforceFetch = {
+  a: { items: Agent[] };
+  tm: { items: Team[] };
+  p: { items: Project[] };
+  m: { items: TeamMembership[] };
+  tk: { items: Task[] };
+  kn: { items: Knowledge[] };
+  runs: { items: TaskRun[] };
+  ap: { items: Approval[] };
+  act: { items: Activity[] };
+};
+
+let sharedFetch: Promise<WorkforceFetch> | null = null;
+
+/**
+ * Every Workforce surface mounts this hook, and each used to fire its own 9-request load.
+ * Concurrent callers now share one in-flight fetch; `fresh` (after a roster change) starts a new one.
+ */
+function fetchWorkforceShared(fresh: boolean): Promise<WorkforceFetch> {
+  if (sharedFetch && !fresh) return sharedFetch;
+  const run: Promise<WorkforceFetch> = (async () => {
+    const [a, tm, p, m, tk, kn, runs, ap, act] = await Promise.all([
+      settle(arrabApi.agents(), { items: [] as Agent[] }),
+      settle(arrabApi.teams(), { items: [] as Team[] }),
+      settle(arrabApi.projects(), { items: [] as Project[] }),
+      settle(arrabApi.memberships(), { items: [] as TeamMembership[] }),
+      settle(arrabApi.tasks(), { items: [] as Task[] }),
+      settle(arrabApi.knowledge(), { items: [] as Knowledge[] }),
+      settle(arrabApi.taskRuns(), { items: [] as TaskRun[] }),
+      settle(arrabApi.pendingApprovals(), { items: [] as Approval[] }),
+      settle(arrabApi.activity({ limit: 200 }), { items: [] as Activity[] }),
+    ]);
+    return { a, tm, p, m, tk, kn, runs, ap, act };
+  })().finally(() => {
+    if (sharedFetch === run) sharedFetch = null;
+  });
+  sharedFetch = run;
+  return run;
+}
+
 export function useWorkforceData({ poll = true }: { poll?: boolean } = {}) {
   const { t } = useLanguage();
   const [loading, setLoading] = useState(true);
@@ -163,18 +203,8 @@ export function useWorkforceData({ poll = true }: { poll?: boolean } = {}) {
     [t],
   );
 
-  const load = useCallback(async () => {
-    const [a, tm, p, m, tk, kn, runs, ap, act] = await Promise.all([
-      settle(arrabApi.agents(), { items: [] as Agent[] }),
-      settle(arrabApi.teams(), { items: [] as Team[] }),
-      settle(arrabApi.projects(), { items: [] as Project[] }),
-      settle(arrabApi.memberships(), { items: [] as TeamMembership[] }),
-      settle(arrabApi.tasks(), { items: [] as Task[] }),
-      settle(arrabApi.knowledge(), { items: [] as Knowledge[] }),
-      settle(arrabApi.taskRuns(), { items: [] as TaskRun[] }),
-      settle(arrabApi.pendingApprovals(), { items: [] as Approval[] }),
-      settle(arrabApi.activity({ limit: 200 }), { items: [] as Activity[] }),
-    ]);
+  const load = useCallback(async (opts?: { fresh?: boolean }) => {
+    const { a, tm, p, m, tk, kn, runs, ap, act } = await fetchWorkforceShared(Boolean(opts?.fresh));
     let people = filterLiveWorkforceAgents(a.items);
     try {
       people = await collapseDefaultSoloDupes(people, t("chatSoloDefaultName"));
@@ -226,7 +256,7 @@ export function useWorkforceData({ poll = true }: { poll?: boolean } = {}) {
 
   useEffect(() => {
     void load();
-    const onRoster = () => void load();
+    const onRoster = () => void load({ fresh: true });
     window.addEventListener(ROSTER_EVENT, onRoster);
     return () => window.removeEventListener(ROSTER_EVENT, onRoster);
   }, [load]);
@@ -418,7 +448,7 @@ export function useWorkforceData({ poll = true }: { poll?: boolean } = {}) {
           title: status === "approved" ? t("approvalGranted") : t("wxApprovalRejected"),
           tone: "success",
         });
-        void load();
+        void load({ fresh: true });
       } catch (error) {
         fail(error);
         void refreshLive();
@@ -440,7 +470,7 @@ export function useWorkforceData({ poll = true }: { poll?: boolean } = {}) {
         } else {
           await arrabApi.updateAgent(agent.id, { status: "active" });
         }
-        void load();
+        void load({ fresh: true });
       } catch (error) {
         fail(error);
       }
@@ -463,7 +493,7 @@ export function useWorkforceData({ poll = true }: { poll?: boolean } = {}) {
       try {
         const agent = await arrabApi.createAgent(body);
         setAgents((prev) => [agent, ...prev.filter((item) => item.id !== agent.id)]);
-        await load();
+        await load({ fresh: true });
         announceRoster();
         return agent;
       } catch (error) {
@@ -527,7 +557,7 @@ export function useWorkforceData({ poll = true }: { poll?: boolean } = {}) {
         if (teamId && !memberships.some((m) => m.agentId === agentId && m.teamId === teamId)) {
           await arrabApi.addTeamMember(teamId, { agentId });
         }
-        await load();
+        await load({ fresh: true });
         announceRoster();
       } catch (error) {
         fail(error);
@@ -640,7 +670,7 @@ export function useWorkforceData({ poll = true }: { poll?: boolean } = {}) {
           await arrabApi.addTeamMember(team.id, { agentId: agent.id });
         }
       }
-      void load();
+      void load({ fresh: true });
       return team.id;
     } catch (error) {
       fail(error);
@@ -700,7 +730,7 @@ export function useWorkforceData({ poll = true }: { poll?: boolean } = {}) {
     allHands,
     agentById,
     agentName,
-    reload: load,
+    reload: () => load({ fresh: true }),
     refreshLive,
     loadUsage,
     createTask,

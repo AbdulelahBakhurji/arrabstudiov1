@@ -30,6 +30,7 @@ export const organizationEn = {
     saveTaughtSkill: "Save skill",
     hqLiveMap: "Live map",
     hqLiveMapTitle: "Live map",
+    hqLiveMapLoading: "Building your live office…",
     hqMapLiveOffice: "Live office",
     hqMapConnectedTo: "Connected to",
     hqMapAgents: "Agents",

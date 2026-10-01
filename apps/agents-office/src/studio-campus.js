@@ -1328,4 +1328,19 @@ function retarget(sG, mG) {
   });
 
   window.CC = { openDept, openAgent, flyOverview, syncPeople };
+
+  // Tell the embedding app the scene is on screen (the iframe "load" event fires far earlier).
+  // rAF does not run in hidden tabs, so a short timer backs it up; whichever fires first wins.
+  let announced = false;
+  const announceReady = () => {
+    if (announced) return;
+    announced = true;
+    try {
+      window.parent?.postMessage({ type: 'arrab:office-ready' }, '*');
+    } catch {
+      /* not embedded */
+    }
+  };
+  requestAnimationFrame(() => requestAnimationFrame(announceReady));
+  setTimeout(announceReady, 1200);
 })();
