@@ -9,8 +9,8 @@ import {
   Field,
   PageHeader,
   fieldControlClassName,
-} from "@/components/EmptyState";
-import { arrabApi, ApiRequestError } from "@/lib/api";
+} from "@/shared/ui/EmptyState";
+import { arrabApi, ApiRequestError } from "@/core/api/api";
 
 export function TeamsPage() {
   const [items, setItems] = useState<Team[] | null>(null);

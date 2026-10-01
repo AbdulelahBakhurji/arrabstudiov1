@@ -1,16 +1,16 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import type { Agent, Conversation, Message } from "@arrab/shared";
-import { ApiErrorState, PageHeader } from "@/components/EmptyState";
-import { arrabApi, ApiRequestError } from "@/lib/api";
+import { ApiErrorState, PageHeader } from "@/shared/ui/EmptyState";
+import { arrabApi, ApiRequestError } from "@/core/api/api";
 import {
   listCachedChats,
   loadBestMessages,
   loadChatHistory,
   mergeRemoteConversations,
   usePersistedChat,
-} from "@/lib/chat-history";
-import { cn } from "@/lib/utils";
+} from "@/domains/chat/chat-history";
+import { cn } from "@/shared/lib/utils";
 
 export function ConversationsPage() {
   const { conversationId } = useParams();

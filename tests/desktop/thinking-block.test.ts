@@ -1,8 +1,8 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LanguageProvider } from "@/i18n/LanguageProvider";
-import { ThinkingBlock, useThoughtTraces, type ThoughtTrace } from "@/components/ThinkingBlock";
+import { LanguageProvider } from "@/shared/i18n/LanguageProvider";
+import { ThinkingBlock, useThoughtTraces, type ThoughtTrace } from "@/domains/chat/ui/ThinkingBlock";
 
 const testDom = await vi.hoisted(async () => {
   const { JSDOM } = await import("jsdom");

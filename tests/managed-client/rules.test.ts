@@ -8,26 +8,26 @@ import {
   storeUrlFor,
   buildNumberFor,
   formatBackAt,
-} from "../../apps/desktop/src/lib/managed-client/updates";
+} from "../../apps/desktop/src/domains/managed/client/updates";
 import {
   createCommandRouter,
   createHandledIds,
   type CommandEffects,
-} from "../../apps/desktop/src/lib/managed-client/commands";
-import { isAllowlistedUrl, parseDeepLink } from "../../apps/desktop/src/lib/managed-client/allowlist";
+} from "../../apps/desktop/src/domains/managed/client/commands";
+import { isAllowlistedUrl, parseDeepLink } from "../../apps/desktop/src/domains/managed/client/allowlist";
 import {
   applyCompanionPolicy,
   canStartChatWith,
   companionAvailability,
-} from "../../apps/desktop/src/lib/managed-client/companions";
-import { levelForRatio, limitStatus, serverLimitMessage } from "../../apps/desktop/src/lib/managed-client/limits";
-import { createNotificationHandler } from "../../apps/desktop/src/lib/managed-client/notifications";
+} from "../../apps/desktop/src/domains/managed/client/companions";
+import { levelForRatio, limitStatus, serverLimitMessage } from "../../apps/desktop/src/domains/managed/client/limits";
+import { createNotificationHandler } from "../../apps/desktop/src/domains/managed/client/notifications";
 import {
   parseCompanionPolicy,
   parseMaintenance,
   parseNotification,
   type CompanionPolicy,
-} from "../../apps/desktop/src/lib/managed-client/types";
+} from "../../apps/desktop/src/domains/managed/client/types";
 
 describe("version compare", () => {
   it("uses semver, not string order", () => {

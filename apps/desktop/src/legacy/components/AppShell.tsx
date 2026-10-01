@@ -9,9 +9,9 @@ import {
   UsersRound,
 } from "lucide-react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
-import logoTall from "@/assets/logotall.png";
-import { TitleBar } from "@/components/TitleBar";
-import { cn } from "@/lib/utils";
+import logoTall from "@/shared/assets/logotall.png";
+import { TitleBar } from "@/app/shell/TitleBar";
+import { cn } from "@/shared/lib/utils";
 
 const nav = [
   { to: "/", label: "Home", icon: House, end: true },

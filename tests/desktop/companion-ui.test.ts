@@ -2,16 +2,16 @@ import { act, createElement, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { LanguageProvider } from "@/i18n/LanguageProvider";
-import { RoleProvider } from "@/roles/RoleProvider";
-import { CompanionsPage } from "@/pages/CompanionsPage";
+import { LanguageProvider } from "@/shared/i18n/LanguageProvider";
+import { RoleProvider } from "@/app/roles/RoleProvider";
+import { CompanionsPage } from "@/domains/companions/pages/CompanionsPage";
 import {
   COMPANION_DRAFT_KEY,
   COMPANION_FOCUS_KEY,
   ensureGeneralCompanion,
   forgetEverything,
-} from "@/lib/companions";
-import { createCompanionDraftStore } from "@/lib/companion-drafts";
+} from "@/domains/companions/companions";
+import { createCompanionDraftStore } from "@/domains/companions/companion-drafts";
 
 // Install a DOM before React DOM is imported. Explicit setup also works when
 // this isolated project uses a Vitest runtime from a parent workspace.
@@ -38,7 +38,7 @@ const mocked = vi.hoisted(() => ({
     resolve: () => void;
   }>,
 }));
-vi.mock("@/lib/api", () => ({
+vi.mock("@/core/api/api", () => ({
   arrabApi: {
     aiStatus: vi.fn(async () => ({ configured: true })),
     familyGuidanceForCompanion: vi.fn(async () => ({ items: [] })),
@@ -51,7 +51,7 @@ vi.mock("@/lib/api", () => ({
     })),
   },
 }));
-vi.mock("@/lib/use-signed-in-account", () => ({
+vi.mock("@/domains/account/use-signed-in-account", () => ({
   useSignedInAccount: () => ({ signedIn: true }),
 }));
 

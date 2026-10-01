@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@/lib/api", () => ({
+vi.mock("@/core/api/api", () => ({
   arrabApi: {
     companionState: vi.fn(async () => ({ updatedAt: null, state: null })),
     putCompanionState: vi.fn(async (body: unknown) => body),
@@ -8,29 +8,29 @@ vi.mock("@/lib/api", () => ({
   },
 }));
 
-vi.mock("@/lib/local-secure", () => ({
+vi.mock("@/core/storage/local-secure", () => ({
   looksEncryptedLocal: () => false,
   openLocalJson: async (value: unknown) => value,
   sealLocalJson: async (value: unknown) => value,
 }));
 
-vi.mock("@/lib/guest-mode", () => ({
+vi.mock("@/domains/account/guest-mode", () => ({
   clearGuestLocalMode: () => undefined,
   enableGuestLocalMode: () => undefined,
 }));
 
-import { arrabApi } from "@/lib/api";
+import { arrabApi } from "@/core/api/api";
 import {
   clearAccountSession,
   writeAccountSession,
-} from "@/lib/account-session";
-import { resolveAssistantChatTabs } from "@/lib/assistant-chat-tabs";
+} from "@/domains/account/account-session";
+import { resolveAssistantChatTabs } from "@/domains/chat/assistant-chat-tabs";
 import {
   addCompanion,
   forgetEverything,
   getCompanionState,
   syncCompanionsFromCloud,
-} from "@/lib/companions";
+} from "@/domains/companions/companions";
 
 const TOKEN_A = "a".repeat(40);
 const TOKEN_B = "b".repeat(40);

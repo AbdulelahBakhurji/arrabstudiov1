@@ -1,7 +1,7 @@
 import type { ComponentType } from "react";
 import type { LucideIcon } from "lucide-react";
 import type { PlanAudience } from "@arrab/shared";
-import type { MessageKey } from "@/i18n/messages";
+import type { MessageKey } from "@/shared/i18n/messages";
 
 export type FeatureKind = "page";
 

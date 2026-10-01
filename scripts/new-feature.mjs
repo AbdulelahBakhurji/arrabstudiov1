@@ -111,7 +111,7 @@ mkdirSync(moduleDir, { recursive: true });
 
 const audienceLiteral = audiences.map((a) => `"${a}"`).join(", ");
 
-const pageStub = `import { useLanguage } from "@/i18n/LanguageProvider";
+const pageStub = `import { useLanguage } from "@/shared/i18n/LanguageProvider";
 
 /**
  * ${pascal} — scaffolded by \`pnpm new:feature ${name}\`.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isApprovalId, sanitizeCompanionAsk } from "../../apps/desktop/src/lib/ask-guard";
+import { isApprovalId, sanitizeCompanionAsk } from "../../apps/desktop/src/domains/chat/ask-guard";
 
 describe("sanitizeCompanionAsk", () => {
   it("keeps a normal request", () => {

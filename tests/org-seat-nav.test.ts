@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { navForRole, orgSeatCanOpen } from "@/roles/catalog";
+import { navForRole, orgSeatCanOpen } from "@/app/roles/catalog";
 
 const keys = (seatRole: "admin" | "manager" | "member" | null) =>
   navForRole("organization", { orgSeatRole: seatRole }).map((item) => item.key);

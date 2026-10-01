@@ -1,5 +1,5 @@
 import type { PlanAudience } from "@arrab/shared";
-import type { MessageKey } from "@/i18n/messages";
+import type { MessageKey } from "@/shared/i18n/messages";
 import type { LucideIcon } from "lucide-react";
 import {
   Bell,

@@ -6,7 +6,7 @@ import {
   homePathForAudience,
   navForRole,
   studioModeFromAudience,
-} from "../apps/desktop/src/roles/catalog.ts";
+} from "../apps/desktop/src/app/roles/catalog.ts";
 
 describe("plan → studio shell", () => {
   it("maps Team, Business, and Enterprise to the organization shell", () => {

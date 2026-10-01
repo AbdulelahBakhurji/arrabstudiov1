@@ -10,9 +10,9 @@ import {
   Field,
   PageHeader,
   fieldControlClassName,
-} from "@/components/EmptyState";
-import { Button } from "@/components/ui/button";
-import { arrabApi, ApiRequestError } from "@/lib/api";
+} from "@/shared/ui/EmptyState";
+import { Button } from "@/shared/ui/primitives/button";
+import { arrabApi, ApiRequestError } from "@/core/api/api";
 
 export function EmployeesPage() {
   const [items, setItems] = useState<Agent[] | null>(null);

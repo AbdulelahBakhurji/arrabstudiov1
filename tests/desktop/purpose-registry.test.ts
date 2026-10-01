@@ -4,8 +4,8 @@ import {
   resolvePurposeIdFromDomain,
   tasksForPurpose,
   playbookText,
-} from "../../apps/desktop/src/lib/purpose-registry";
-import { COMPANION_PRESETS } from "../../apps/desktop/src/lib/companion-catalog";
+} from "../../apps/desktop/src/domains/companions/purpose-registry";
+import { COMPANION_PRESETS } from "../../apps/desktop/src/domains/companions/companion-catalog";
 
 describe("purpose registry (Master Blueprint)", () => {
   it("registers every studio and chat purpose with templates and playbook", () => {

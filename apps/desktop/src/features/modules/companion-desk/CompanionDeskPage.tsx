@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import type { CompanionDeskView, DeskJob, DeskPace } from "@arrab/shared";
-import { arrabApi } from "@/lib/api";
-import { useLanguage } from "@/i18n/LanguageProvider";
-import { professionalDuty, professionalPresets } from "@/lib/professional-companions";
-import { useSignedInAccount } from "@/lib/use-signed-in-account";
-import { isTauriRuntime, openCompanionSandbox, runLocalCommand, runSandboxCommand } from "@/lib/terminal";
+import { arrabApi } from "@/core/api/api";
+import { useLanguage } from "@/shared/i18n/LanguageProvider";
+import { professionalDuty, professionalPresets } from "@/domains/companions/professional-companions";
+import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
+import { isTauriRuntime, openCompanionSandbox, runLocalCommand, runSandboxCommand } from "@/core/platform/terminal";
 
 const copy = {
   en: {

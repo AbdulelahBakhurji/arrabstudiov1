@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Conversation, Message } from "@arrab/shared";
 
-vi.mock("@/lib/device-store", () => {
+vi.mock("@/core/storage/device-store", () => {
   const data = new Map<string, string>();
   return {
     deviceStoreGet: async (ns: string, key: string) => data.get(`${ns}/${key}`) ?? null,
@@ -21,7 +21,7 @@ import {
   setupE2ee,
   unlockE2ee,
   type SealedTranscript,
-} from "@/lib/e2ee";
+} from "@/domains/encryption/e2ee";
 
 /** A server that, like the real one, only ever holds opaque strings. */
 function fakeServer() {

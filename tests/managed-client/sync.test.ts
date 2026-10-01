@@ -6,7 +6,7 @@ import {
   pollDelayMs,
   type SyncTransport,
   type Timers,
-} from "../../apps/desktop/src/lib/managed-client/sync";
+} from "../../apps/desktop/src/domains/managed/client/sync";
 
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 

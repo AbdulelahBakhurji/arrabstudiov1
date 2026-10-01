@@ -4,8 +4,8 @@ import {
   parseSyncResponse,
   parseSyncResponseText,
   type SyncRequest,
-} from "../../apps/desktop/src/lib/managed-client/types";
-import { createSseParser, toLiveEvent } from "../../apps/desktop/src/lib/managed-client/events";
+} from "../../apps/desktop/src/domains/managed/client/types";
+import { createSseParser, toLiveEvent } from "../../apps/desktop/src/domains/managed/client/events";
 
 const exampleResponse = {
   serverTime: "2026-09-24T15:00:00Z",

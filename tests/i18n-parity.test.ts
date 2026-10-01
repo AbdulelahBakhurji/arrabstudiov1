@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { messages } from "../apps/desktop/src/i18n/messages.ts";
+import { messages } from "../apps/desktop/src/shared/i18n/messages.ts";
 
 describe("i18n", () => {
   it("every English key has an Arabic translation", () => {

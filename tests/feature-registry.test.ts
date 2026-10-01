@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { navForRole } from "../apps/desktop/src/roles/catalog.ts";
+import { navForRole } from "../apps/desktop/src/app/roles/catalog.ts";
 import { RESERVED_FEATURE_PATHS } from "../apps/desktop/src/features/types.ts";
 import { STUDIO_FEATURES, pageFeaturesFor } from "../apps/desktop/src/features/registry.ts";
 
