@@ -12218,3 +12218,44 @@ html.theme-light .acm-plan {
   font-size: 11px;
   cursor: pointer;
 }
+
+/* Notification bell — Do Not Disturb */
+.mc-bell-action.is-snoozed {
+  color: #fcd34d;
+  background: color-mix(in srgb, #fcd34d 14%, transparent);
+}
+.mc-bell-dnd,
+.mc-bell-snooze {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0 0.35rem 0.35rem;
+  padding: 0.4rem 0.55rem;
+  border-radius: 0.6rem;
+  background: var(--overlay-1);
+  color: var(--color-muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+.mc-bell-dnd span {
+  flex: 1;
+  min-width: 0;
+}
+.mc-bell-dnd button,
+.mc-bell-snooze button {
+  border: 0;
+  border-radius: 0.45rem;
+  padding: 0.25rem 0.55rem;
+  background: color-mix(in srgb, var(--color-accent, #93c5fd) 14%, transparent);
+  color: var(--color-accent, #93c5fd);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mc-bell-snooze {
+  flex-wrap: wrap;
+}
+.mc-bell-dnd button:hover,
+.mc-bell-snooze button:hover {
+  background: color-mix(in srgb, var(--color-accent, #93c5fd) 24%, transparent);
+}

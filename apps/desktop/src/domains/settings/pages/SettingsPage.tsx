@@ -1429,6 +1429,44 @@ export function SettingsPage() {
                 />
               </SettingsCard>
 
+              <SettingsCard title={t("quietHoursTitle")} description={t("quietHoursBody")}>
+                <Toggle
+                  label={t("quietHoursEnabled")}
+                  description={t("quietHoursEnabledBody")}
+                  checked={prefs.quietHoursEnabled}
+                  onChange={(value) => updatePref("quietHoursEnabled", value)}
+                />
+                {prefs.quietHoursEnabled ? (
+                  <>
+                    <SettingRow title={t("quietHoursWindow")} description={t("quietHoursWindowBody")}>
+                      <div className="st-actions">
+                        <input
+                          type="time"
+                          className="st-input"
+                          aria-label={t("quietHoursFrom")}
+                          value={prefs.quietStart}
+                          onChange={(event) => event.target.value && updatePref("quietStart", event.target.value)}
+                        />
+                        <span aria-hidden>→</span>
+                        <input
+                          type="time"
+                          className="st-input"
+                          aria-label={t("quietHoursTo")}
+                          value={prefs.quietEnd}
+                          onChange={(event) => event.target.value && updatePref("quietEnd", event.target.value)}
+                        />
+                      </div>
+                    </SettingRow>
+                    <Toggle
+                      label={t("quietAllowApprovals")}
+                      description={t("quietAllowApprovalsBody")}
+                      checked={prefs.quietAllowApprovals}
+                      onChange={(value) => updatePref("quietAllowApprovals", value)}
+                    />
+                  </>
+                ) : null}
+              </SettingsCard>
+
               <SettingsCard title={t("settingsSystem")}>
                 <Toggle
                   label={t("notifyAgentPresence")}

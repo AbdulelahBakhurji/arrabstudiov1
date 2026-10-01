@@ -9,6 +9,14 @@ export type StudioPrefs = {
   notifyAgentPresence: boolean;
   /** Toast / OS banner when a new desktop build is published. */
   notifyAppUpdates: boolean;
+  /** Quiet hours: suppress interruptions between quietStart and quietEnd (HH:MM, may wrap midnight). */
+  quietHoursEnabled: boolean;
+  quietStart: string;
+  quietEnd: string;
+  /** Approvals (an agent waiting on you) may still interrupt during quiet time. */
+  quietAllowApprovals: boolean;
+  /** Do Not Disturb snooze: epoch ms until which interruptions are held, 0 = off. */
+  dndUntil: number;
   /** Check GitHub releases for a newer Arrab Studio on launch. */
   autoCheckUpdates: boolean;
   privacyLocalNotes: boolean;
@@ -51,6 +59,11 @@ export const defaultPrefs = (): StudioPrefs => ({
   notifyCowork: false,
   notifyAgentPresence: true,
   notifyAppUpdates: true,
+  quietHoursEnabled: false,
+  quietStart: "22:00",
+  quietEnd: "07:00",
+  quietAllowApprovals: true,
+  dndUntil: 0,
   autoCheckUpdates: true,
   privacyLocalNotes: true,
   privacyAnalytics: false,

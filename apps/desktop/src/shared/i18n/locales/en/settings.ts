@@ -84,6 +84,16 @@ export const settingsEn = {
       "A calm place to manage seats, pause kids, and guide their companions.",
     notifyAgentPresenceBody:
       "Floating macOS card with the agent’s face, live progress ring, and cinematic states — always on top while they work.",
+    quietHoursTitle: "Quiet hours",
+    quietHoursBody: "Hold pop-ups, banners and sounds at night. Everything still lands in your notification bell.",
+    quietHoursEnabled: "Turn on quiet hours",
+    quietHoursEnabledBody: "Repeats every day on this device.",
+    quietHoursWindow: "Quiet from",
+    quietHoursWindowBody: "Works across midnight, for example 22:00 to 07:00.",
+    quietHoursFrom: "Start time",
+    quietHoursTo: "End time",
+    quietAllowApprovals: "Let approvals through",
+    quietAllowApprovalsBody: "An agent waiting for your decision can still interrupt.",
     notifyAppUpdatesBody: "Notify when a new Arrab Studio desktop build is available.",
     settingsUpdates: "Updates",
     settingsUpdatesBody:

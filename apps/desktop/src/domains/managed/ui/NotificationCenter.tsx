@@ -14,6 +14,7 @@ import {
   Plug,
   Users,
   Trash2,
+  BellOff,
 } from "lucide-react";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { dismissManagedNotification, openManagedNotification } from "@/domains/managed/client/client";
@@ -26,9 +27,13 @@ import {
   markNotificationRead,
   ensureStudioInboxSeeded,
   removeNotification,
+  setUnreadBadge,
   subscribeNotificationInbox,
+  takePendingOsLink,
   type NotificationInboxItem,
 } from "@/domains/notifications/notify";
+import { isSnoozed, snoozeUntil, type SnoozeChoice } from "@/domains/notifications/notification-policy";
+import { readPrefs, subscribePrefs, updatePrefs } from "@/shared/lib/prefs";
 import { cn } from "@/shared/lib/utils";
 
 type BellItem = {
@@ -114,6 +119,34 @@ export function NotificationCenter() {
   const menuId = useId();
   const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
   const now = Date.now();
+  const [dndUntil, setDndUntil] = useState(() => readPrefs().dndUntil);
+  const [snoozeOpen, setSnoozeOpen] = useState(false);
+  const snoozed = isSnoozed({ dndUntil }, now);
+
+  useEffect(() => subscribePrefs((prefs) => setDndUntil(prefs.dndUntil)), []);
+
+  // Re-render the moment a snooze ends so the banner and bell state clear on their own.
+  useEffect(() => {
+    if (!snoozed) return;
+    const timer = window.setTimeout(() => setDndUntil(0), Math.max(0, dndUntil - Date.now()) + 250);
+    return () => window.clearTimeout(timer);
+  }, [dndUntil, snoozed]);
+
+  const snooze = (choice: SnoozeChoice) => {
+    updatePrefs({ dndUntil: snoozeUntil(choice) });
+    setSnoozeOpen(false);
+  };
+
+  // Native notification clicks aren't reported on every OS: focusing the app soon after one
+  // opens what it pointed at.
+  useEffect(() => {
+    const onFocus = () => {
+      const href = takePendingOsLink();
+      if (href) navigate(href);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [navigate]);
 
   useEffect(() => subscribeNotificationInbox(setLocalInbox), []);
 
@@ -185,6 +218,10 @@ export function NotificationCenter() {
   const unread = items.filter((item) => !item.read).length;
   const visible = filter === "unread" ? items.filter((item) => !item.read) : items;
 
+  useEffect(() => {
+    setUnreadBadge(unread);
+  }, [unread]);
+
   const openItem = (item: BellItem) => {
     if (item.source === "managed" && item.managed) {
       markInboxRead(item.managed.id);
@@ -230,7 +267,7 @@ export function NotificationCenter() {
         className={cn("mc-bell-trigger", open && "is-open", unread > 0 && "has-unread")}
       >
         <span className="relative inline-flex">
-          <Bell className="size-4" strokeWidth={1.7} />
+          {snoozed ? <BellOff className="size-4" strokeWidth={1.7} /> : <Bell className="size-4" strokeWidth={1.7} />}
           {unread > 0 ? (
             <span className="mc-bell-dot" aria-hidden>
               {unread > 9 ? "9+" : unread}
@@ -264,6 +301,16 @@ export function NotificationCenter() {
                   </div>
                 </div>
                 <div className="mc-bell-head-actions">
+                  <button
+                    type="button"
+                    className={cn("mc-bell-action is-quiet", snoozed && "is-snoozed")}
+                    onClick={() => (snoozed ? snooze("off") : setSnoozeOpen((value) => !value))}
+                    title={snoozed ? t("mcDndResume") : t("mcDnd")}
+                    aria-label={snoozed ? t("mcDndResume") : t("mcDnd")}
+                    aria-expanded={snoozeOpen}
+                  >
+                    <BellOff size={13} strokeWidth={1.9} />
+                  </button>
                   {unread > 0 ? (
                     <button type="button" className="mc-bell-action" onClick={markAll} title={t("mcMarkAllRead")}>
                       <CheckCheck size={14} strokeWidth={1.9} />
@@ -277,6 +324,39 @@ export function NotificationCenter() {
                   ) : null}
                 </div>
               </header>
+
+              {snoozed ? (
+                <div className="mc-bell-dnd" role="status">
+                  <BellOff size={13} strokeWidth={1.9} aria-hidden />
+                  <span>
+                    {t("mcDndUntil").replace(
+                      "{time}",
+                      new Intl.DateTimeFormat(ar ? "ar-SA" : "en-US", { hour: "numeric", minute: "2-digit" }).format(
+                        new Date(dndUntil),
+                      ),
+                    )}
+                  </span>
+                  <button type="button" onClick={() => snooze("off")}>
+                    {t("mcDndResume")}
+                  </button>
+                </div>
+              ) : snoozeOpen ? (
+                <div className="mc-bell-snooze" role="group" aria-label={t("mcDnd")}>
+                  {(["30m", "1h", "4h", "tomorrow"] as const).map((choice) => (
+                    <button key={choice} type="button" onClick={() => snooze(choice)}>
+                      {t(
+                        choice === "30m"
+                          ? "mcSnooze30"
+                          : choice === "1h"
+                            ? "mcSnooze1h"
+                            : choice === "4h"
+                              ? "mcSnooze4h"
+                              : "mcSnoozeTomorrow",
+                      )}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
 
               <div className="mc-bell-tabs" role="tablist" aria-label={t("mcNotifications")}>
                 <button

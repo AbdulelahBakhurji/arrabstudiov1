@@ -2,6 +2,12 @@ import { readPrefs } from "../../shared/lib/prefs";
 import { showAgentPresence, updateAgentPresence, hideAgentPresence } from "./agent-presence";
 import { humanizeApprovalCopy, sanitizePresenceText } from "./approval-copy";
 import { isTauriRuntime } from "../../core/platform/terminal";
+import {
+  badgeTitle,
+  createOsThrottle,
+  createPendingLink,
+  deliveryFor,
+} from "./notification-policy";
 
 export type StudioToastTone = "info" | "success" | "warn" | "approval";
 
@@ -132,7 +138,12 @@ export function unreadNotificationCount(): number {
   return inboxCache.filter((item) => !item.read).length;
 }
 
-export function pushToast(toast: Omit<StudioToast, "id" | "createdAt"> & { id?: string }): void {
+/**
+ * `silent` keeps the item in the bell inbox without interrupting (quiet hours / snooze).
+ */
+export function pushToast(
+  toast: Omit<StudioToast, "id" | "createdAt"> & { id?: string; silent?: boolean },
+): void {
   const payload: StudioToast = {
     id: toast.id ?? crypto.randomUUID(),
     title: toast.title,
@@ -145,6 +156,7 @@ export function pushToast(toast: Omit<StudioToast, "id" | "createdAt"> & { id?: 
     createdAt: Date.now(),
   };
   rememberNotification(payload);
+  if (toast.silent) return;
   window.dispatchEvent(new CustomEvent(TOAST_EVENT_NAME, { detail: payload }));
 }
 
@@ -169,16 +181,30 @@ async function pingCompanionPanel(): Promise<void> {
   }
 }
 
+const osThrottle = createOsThrottle();
+const pendingLink = createPendingLink();
+
+/**
+ * Desktop notification plugins can't report clicks on every OS, so remember where the last
+ * one pointed: if the user focuses the app right after, take them there.
+ */
+export function takePendingOsLink(): string | null {
+  return pendingLink.take();
+}
+
 /** Native OS notification that stays in macOS Notification Center / Windows Action Center. */
 async function sendOsNotification(input: {
   title: string;
   body?: string;
   tag?: string;
   sticky?: boolean;
+  href?: string;
 }): Promise<void> {
   const cleanTitle = sanitizePresenceText(input.title, "Arrab Studio");
   const cleanBody = sanitizePresenceText(input.body, "") || undefined;
   const tag = input.tag || `arrab-${cleanTitle.slice(0, 40)}`;
+  if (!osThrottle.allow(tag)) return;
+  pendingLink.set(input.href);
 
   if (isTauriRuntime()) {
     try {
@@ -225,14 +251,10 @@ export async function notifyStudio(input: {
   approvalId?: string | null;
 }): Promise<void> {
   const prefs = readPrefs();
-  const allowed =
-    (input.kind === "approvals" && prefs.notifyApprovals) ||
-    (input.kind === "teamLaunch" && prefs.notifyTeamLaunch) ||
-    (input.kind === "connector" && prefs.notifyConnector) ||
-    (input.kind === "cowork" && prefs.notifyCowork) ||
-    (input.kind === "agent" && prefs.notifyAgentPresence);
-
-  if (!allowed) {
+  const delivery = deliveryFor(input.kind, prefs);
+  const enabled = deliveryFor(input.kind, { ...prefs, quietHoursEnabled: false, dndUntil: 0 });
+  // A kind the user switched off never reaches the inbox; a kind held by quiet time still does.
+  if (!enabled.toast && !enabled.os && !enabled.presence) {
     return;
   }
 
@@ -255,10 +277,11 @@ export async function notifyStudio(input: {
     sticky: isApproval,
     durationMs: isApproval ? 12_000 : 5200,
     kind: input.kind,
+    silent: !delivery.toast,
   });
 
   const wantPresence =
-    prefs.notifyAgentPresence &&
+    delivery.presence &&
     (input.kind === "agent" ||
       input.kind === "approvals" ||
       input.kind === "teamLaunch" ||
@@ -291,12 +314,15 @@ export async function notifyStudio(input: {
     }
   }
 
-  void sendOsNotification({
-    title: copy.title,
-    body: copy.body || undefined,
-    tag: input.approvalId ? `approval-${input.approvalId}` : `arrab-${input.kind}-${copy.title.slice(0, 24)}`,
-    sticky: isApproval,
-  });
+  if (delivery.os) {
+    void sendOsNotification({
+      title: copy.title,
+      body: copy.body || undefined,
+      tag: input.approvalId ? `approval-${input.approvalId}` : `arrab-${input.kind}-${copy.title.slice(0, 24)}`,
+      sticky: isApproval,
+      href: input.href,
+    });
+  }
 
   if (isApproval) {
     void pingCompanionPanel();
@@ -334,4 +360,32 @@ export async function ensureNotificationPermission(): Promise<NotificationPermis
     return Notification.permission;
   }
   return Notification.requestPermission();
+}
+
+// ---------------------------------------------------------------------------
+// Unread badge — macOS dock badge; Windows/Linux taskbar label "(3) Arrab Studio".
+// ---------------------------------------------------------------------------
+
+let lastBadge = -1;
+
+async function applyBadge(unread: number): Promise<void> {
+  if (!isTauriRuntime() || unread === lastBadge) return;
+  lastBadge = unread;
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const win = getCurrentWindow();
+    const isMac = /Mac/i.test(navigator.userAgent) && !/Windows/i.test(navigator.userAgent);
+    if (isMac) {
+      await win.setBadgeCount(unread > 0 ? unread : undefined);
+    } else {
+      await win.setTitle(badgeTitle(unread));
+    }
+  } catch {
+    /* badge is best-effort */
+  }
+}
+
+/** Set the dock / taskbar badge to the total unread count (local + managed). */
+export function setUnreadBadge(unread: number): void {
+  void applyBadge(Math.max(0, Math.floor(unread)));
 }
