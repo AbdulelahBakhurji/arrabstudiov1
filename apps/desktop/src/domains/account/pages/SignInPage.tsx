@@ -9,7 +9,6 @@ import { enableGuestLocalMode } from "@/core/session/guest-mode";
 import { cancelAllWebAuthPolls, pollWebAuthUntilDone, resumePendingWebAuth } from "@/domains/account/web-auth";
 import { openExternalUrl } from "@/core/platform/desktop";
 import { pushToast } from "@/domains/notifications/notify";
-import { ToastHost } from "@/domains/notifications/ui/ToastHost";
 
 export function SignInPage({
   onSignedIn,
@@ -235,7 +234,6 @@ export function SignInPage({
           </div>
         </div>
       </div>
-      <ToastHost />
     </div>
   );
 }

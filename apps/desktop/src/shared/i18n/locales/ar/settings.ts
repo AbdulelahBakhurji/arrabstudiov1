@@ -91,6 +91,7 @@ export const settingsAr = {
     quietHoursTo: "وقت الانتهاء",
     quietAllowApprovals: "السماح بالموافقات",
     quietAllowApprovalsBody: "الوكيل الذي ينتظر قرارك يستطيع مقاطعتك.",
+    dndBody: "أوقف التنبيهات لفترة. لا شيء يُحفظ؛ تصلك الموافقات إن سمحت بذلك أدناه.",
     notifyAppUpdatesBody: "نبّه عند توفر إصدار جديد من عراب ستيديو لسطح المكتب.",
     settingsUpdates: "التحديثات",
     settingsUpdatesBody: "تحقق من إصدار أحدث لعراب ستيديو وحمّل المثبّت لهذا الجهاز.",

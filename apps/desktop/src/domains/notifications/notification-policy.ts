@@ -125,9 +125,3 @@ export function createPendingLink(ttlMs = 60_000) {
     },
   };
 }
-
-/** Title-bar / taskbar label: "(3) Arrab Studio". Capped so a runaway count stays readable. */
-export function badgeTitle(unread: number, base = "Arrab Studio"): string {
-  if (unread <= 0) return base;
-  return `(${unread > 99 ? "99+" : unread}) ${base}`;
-}

@@ -3,169 +3,46 @@ import { showAgentPresence, updateAgentPresence, hideAgentPresence } from "./age
 import { humanizeApprovalCopy, sanitizePresenceText } from "./approval-copy";
 import { isTauriRuntime } from "../../core/platform/terminal";
 import {
-  badgeTitle,
   createOsThrottle,
   createPendingLink,
   deliveryFor,
+  isQuietNow,
 } from "./notification-policy";
 
 export type StudioToastTone = "info" | "success" | "warn" | "approval";
 
+/**
+ * Alerts are device notifications only (macOS Notification Center / Windows Action Center).
+ * There is deliberately no in-app toast stack or bell inbox.
+ */
 export type StudioToast = {
-  id: string;
+  id?: string;
   title: string;
   body?: string;
   tone?: StudioToastTone;
+  /** Where focusing the app right after the notification should take the user. */
   href?: string;
-  /** Keep until user dismisses (approvals). */
+  /** Approvals: do not auto-dismiss where the OS supports it. */
   sticky?: boolean;
-  /** ms before auto-dismiss; ignored when sticky. */
+  /** Retained for caller compatibility; the OS controls banner duration. */
   durationMs?: number;
   kind?: "approvals" | "teamLaunch" | "connector" | "cowork" | "agent" | "system";
-  createdAt: number;
 };
-
-export type NotificationInboxItem = StudioToast & {
-  read: boolean;
-};
-
-const TOAST_EVENT = "arrab:toast";
-const INBOX_EVENT = "arrab:notification-inbox";
-const APPROVALS_CHANGED = "arrab:approvals-changed";
-const INBOX_KEY = "arrab.notificationInbox.v1";
-const INBOX_MAX = 40;
-
-const TOAST_EVENT_NAME = TOAST_EVENT;
-
-function loadInbox(): NotificationInboxItem[] {
-  try {
-    const raw = localStorage.getItem(INBOX_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as NotificationInboxItem[];
-    return Array.isArray(parsed) ? parsed.slice(0, INBOX_MAX) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveInbox(items: NotificationInboxItem[]): void {
-  try {
-    localStorage.setItem(INBOX_KEY, JSON.stringify(items.slice(0, INBOX_MAX)));
-  } catch {
-    /* ignore */
-  }
-}
-
-let inboxCache = loadInbox();
-
-function broadcastInbox(): void {
-  window.dispatchEvent(new CustomEvent(INBOX_EVENT, { detail: inboxCache }));
-}
-
-function rememberNotification(toast: StudioToast): void {
-  inboxCache = [
-    { ...toast, read: false },
-    ...inboxCache.filter((item) => item.id !== toast.id),
-  ].slice(0, INBOX_MAX);
-  saveInbox(inboxCache);
-  broadcastInbox();
-}
-
-export function getNotificationInbox(): NotificationInboxItem[] {
-  return inboxCache;
-}
-
-export function subscribeNotificationInbox(
-  listener: (items: NotificationInboxItem[]) => void,
-): () => void {
-  const handler = (event: Event) => {
-    listener((event as CustomEvent<NotificationInboxItem[]>).detail);
-  };
-  listener(inboxCache);
-  window.addEventListener(INBOX_EVENT, handler);
-  return () => window.removeEventListener(INBOX_EVENT, handler);
-}
-
-export function markNotificationRead(id: string): void {
-  inboxCache = inboxCache.map((item) => (item.id === id ? { ...item, read: true } : item));
-  saveInbox(inboxCache);
-  broadcastInbox();
-}
-
-export function markAllNotificationsRead(): void {
-  inboxCache = inboxCache.map((item) => ({ ...item, read: true }));
-  saveInbox(inboxCache);
-  broadcastInbox();
-}
-
-export function clearNotificationInbox(): void {
-  inboxCache = [];
-  saveInbox(inboxCache);
-  broadcastInbox();
-}
-
-export function removeNotification(id: string): void {
-  inboxCache = inboxCache.filter((item) => item.id !== id);
-  saveInbox(inboxCache);
-  broadcastInbox();
-}
-
-const WELCOME_SEED_KEY = "arrab.notificationWelcome.v1";
-
-/** One-time seed so the title-bar bell is never an empty dead control on first launch. */
-export function ensureStudioInboxSeeded(locale: "en" | "ar" = "en"): void {
-  try {
-    if (localStorage.getItem(WELCOME_SEED_KEY)) return;
-    localStorage.setItem(WELCOME_SEED_KEY, "1");
-  } catch {
-    return;
-  }
-  if (inboxCache.some((item) => item.id === "studio-welcome")) return;
-  pushToast({
-    id: "studio-welcome",
-    title: locale === "ar" ? "الإشعارات جاهزة" : "Notifications are ready",
-    body:
-      locale === "ar"
-        ? "تظهر هنا تنبيهات الاستوديو والتحديثات والموافقات."
-        : "Studio alerts, updates, and approvals show up here.",
-    tone: "info",
-    kind: "system",
-    durationMs: 4200,
-  });
-}
-
-export function unreadNotificationCount(): number {
-  return inboxCache.filter((item) => !item.read).length;
-}
 
 /**
- * `silent` keeps the item in the bell inbox without interrupting (quiet hours / snooze).
+ * Send a device notification for something the user just did or that needs their attention.
+ * Honors Do Not Disturb / quiet hours, except warnings and approvals.
  */
-export function pushToast(
-  toast: Omit<StudioToast, "id" | "createdAt"> & { id?: string; silent?: boolean },
-): void {
-  const payload: StudioToast = {
-    id: toast.id ?? crypto.randomUUID(),
+export function pushToast(toast: StudioToast): void {
+  const urgent = toast.tone === "warn" || toast.tone === "approval" || Boolean(toast.sticky);
+  if (!urgent && isQuietNow(readPrefs())) return;
+  void sendOsNotification({
     title: toast.title,
     body: toast.body,
-    tone: toast.tone ?? "info",
+    tag: toast.id ?? `arrab-${toast.kind ?? "system"}-${toast.title.slice(0, 40)}`,
+    sticky: Boolean(toast.sticky),
     href: toast.href,
-    sticky: toast.sticky,
-    durationMs: toast.durationMs,
-    kind: toast.kind ?? "system",
-    createdAt: Date.now(),
-  };
-  rememberNotification(payload);
-  if (toast.silent) return;
-  window.dispatchEvent(new CustomEvent(TOAST_EVENT_NAME, { detail: payload }));
-}
-
-export function subscribeToasts(listener: (toast: StudioToast) => void): () => void {
-  const onToast = (event: Event) => {
-    listener((event as CustomEvent<StudioToast>).detail);
-  };
-  window.addEventListener(TOAST_EVENT_NAME, onToast);
-  return () => window.removeEventListener(TOAST_EVENT_NAME, onToast);
+  });
 }
 
 async function pingCompanionPanel(): Promise<void> {
@@ -253,7 +130,7 @@ export async function notifyStudio(input: {
   const prefs = readPrefs();
   const delivery = deliveryFor(input.kind, prefs);
   const enabled = deliveryFor(input.kind, { ...prefs, quietHoursEnabled: false, dndUntil: 0 });
-  // A kind the user switched off never reaches the inbox; a kind held by quiet time still does.
+  // A kind the user switched off is dropped entirely; quiet time holds it (nothing is queued).
   if (!enabled.toast && !enabled.os && !enabled.presence) {
     return;
   }
@@ -268,17 +145,6 @@ export async function notifyStudio(input: {
         };
 
   const isApproval = input.kind === "approvals";
-  pushToast({
-    id: input.approvalId ? `approval-${input.approvalId}` : undefined,
-    title: copy.title,
-    body: copy.body || undefined,
-    href: input.href,
-    tone: isApproval ? "approval" : "info",
-    sticky: isApproval,
-    durationMs: isApproval ? 12_000 : 5200,
-    kind: input.kind,
-    silent: !delivery.toast,
-  });
 
   const wantPresence =
     delivery.presence &&
@@ -360,32 +226,4 @@ export async function ensureNotificationPermission(): Promise<NotificationPermis
     return Notification.permission;
   }
   return Notification.requestPermission();
-}
-
-// ---------------------------------------------------------------------------
-// Unread badge — macOS dock badge; Windows/Linux taskbar label "(3) Arrab Studio".
-// ---------------------------------------------------------------------------
-
-let lastBadge = -1;
-
-async function applyBadge(unread: number): Promise<void> {
-  if (!isTauriRuntime() || unread === lastBadge) return;
-  lastBadge = unread;
-  try {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    const win = getCurrentWindow();
-    const isMac = /Mac/i.test(navigator.userAgent) && !/Windows/i.test(navigator.userAgent);
-    if (isMac) {
-      await win.setBadgeCount(unread > 0 ? unread : undefined);
-    } else {
-      await win.setTitle(badgeTitle(unread));
-    }
-  } catch {
-    /* badge is best-effort */
-  }
-}
-
-/** Set the dock / taskbar badge to the total unread count (local + managed). */
-export function setUnreadBadge(unread: number): void {
-  void applyBadge(Math.max(0, Math.floor(unread)));
 }

@@ -111,16 +111,14 @@ export async function clearLocalStudioData(_options?: { keepAppearance?: boolean
     import("@/domains/encryption/incognito-vault").then(({ wipeAllIncognitoVaults }) => wipeAllIncognitoVaults()),
   ]);
 
-  const [{ clearAllBrainPartitions }, { clearNotificationInbox }, { clearProfessionalGroups }, { forgetEverything }] =
+  const [{ clearAllBrainPartitions }, { clearProfessionalGroups }, { forgetEverything }] =
     await Promise.all([
       import("@/domains/brain/second-brain"),
-      import("@/domains/notifications/notify"),
       import("@/domains/companions/professional-groups"),
       import("@/domains/companions/companions"),
     ]);
 
   clearAllBrainPartitions();
-  clearNotificationInbox();
   clearProfessionalGroups();
   forgetEverything();
 

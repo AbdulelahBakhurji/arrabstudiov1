@@ -94,6 +94,7 @@ export const settingsEn = {
     quietHoursTo: "End time",
     quietAllowApprovals: "Let approvals through",
     quietAllowApprovalsBody: "An agent waiting for your decision can still interrupt.",
+    dndBody: "Hold alerts for a while. Nothing is queued; approvals can still come through if allowed below.",
     notifyAppUpdatesBody: "Notify when a new Arrab Studio desktop build is available.",
     settingsUpdates: "Updates",
     settingsUpdatesBody:

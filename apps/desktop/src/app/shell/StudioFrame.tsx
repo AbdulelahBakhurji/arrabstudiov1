@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Languages, Moon, Sun, User } from "lucide-react";
-import { ToastHost } from "@/domains/notifications/ui/ToastHost";
+import { takePendingOsLink } from "@/domains/notifications/notify";
 import { AppUpdateWatcher } from "@/domains/managed/ui/AppUpdateWatcher";
 import { ManagedClientHost } from "@/domains/managed/ui/ManagedClientHost";
 import { MaintenanceBanner } from "@/domains/managed/ui/MaintenanceBanner";
-import { NotificationCenter } from "@/domains/managed/ui/NotificationCenter";
 import { UpdateAvailableBanner } from "@/domains/managed/ui/UpdateAvailableBanner";
 import { AgentPresenceHost } from "@/domains/companions/ui/AgentPresenceHost";
 import { AccountMenu } from "@/domains/account/ui/AccountMenu";
@@ -108,6 +107,17 @@ export function StudioFrame() {
   const seat = useOrgSeatCapabilities();
   const orgSeatRole = seat.employee ? seat.role : null;
   const navigate = useNavigate();
+
+  // Native notification clicks aren't reported on every OS: focusing the app soon after one
+  // opens whatever it pointed at.
+  useEffect(() => {
+    const onFocus = () => {
+      const href = takePendingOsLink();
+      if (href) navigate(href);
+    };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [navigate]);
   const location = useLocation();
   const { account, status, refresh: refreshSignedIn, signedIn } = useSignedInAccount();
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -423,7 +433,6 @@ export function StudioFrame() {
           className="brand-mark h-[26px] w-auto max-w-[150px] object-contain object-left"
         />
         <div className="no-drag ml-auto flex items-center gap-2">
-          <NotificationCenter />
           <Tooltip delayDuration={120}>
             <TooltipTrigger asChild>
               <button
@@ -592,7 +601,6 @@ export function StudioFrame() {
           </div>
         </div>
       ) : null}
-      <ToastHost />
           {signedIn && isFamily ? <GuardianCoachingHost /> : null}
           <E2eeWatcher signedIn={signedIn && Boolean(account)} />
       <AppUpdateWatcher />

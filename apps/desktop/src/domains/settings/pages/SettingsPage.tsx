@@ -50,6 +50,7 @@ import {
   pushToast,
 } from "@/domains/notifications/notify";
 import { demoAgentPresence } from "@/domains/notifications/agent-presence";
+import { isSnoozed, snoozeUntil } from "@/domains/notifications/notification-policy";
 import {
   clearCrashLog,
   defaultPrefs,
@@ -1430,6 +1431,47 @@ export function SettingsPage() {
               </SettingsCard>
 
               <SettingsCard title={t("quietHoursTitle")} description={t("quietHoursBody")}>
+                <SettingRow
+                  title={t("mcDnd")}
+                  description={
+                    isSnoozed(prefs, Date.now())
+                      ? t("mcDndUntil").replace(
+                          "{time}",
+                          new Intl.DateTimeFormat(locale === "ar" ? "ar-SA" : "en-US", {
+                            hour: "numeric",
+                            minute: "2-digit",
+                          }).format(new Date(prefs.dndUntil)),
+                        )
+                      : t("dndBody")
+                  }
+                >
+                  <div className="st-actions">
+                    {isSnoozed(prefs, Date.now()) ? (
+                      <button type="button" className="st-btn is-primary" onClick={() => updatePref("dndUntil", 0)}>
+                        {t("mcDndResume")}
+                      </button>
+                    ) : (
+                      (["30m", "1h", "4h", "tomorrow"] as const).map((choice) => (
+                        <button
+                          key={choice}
+                          type="button"
+                          className="st-btn"
+                          onClick={() => updatePref("dndUntil", snoozeUntil(choice))}
+                        >
+                          {t(
+                            choice === "30m"
+                              ? "mcSnooze30"
+                              : choice === "1h"
+                                ? "mcSnooze1h"
+                                : choice === "4h"
+                                  ? "mcSnooze4h"
+                                  : "mcSnoozeTomorrow",
+                          )}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </SettingRow>
                 <Toggle
                   label={t("quietHoursEnabled")}
                   description={t("quietHoursEnabledBody")}

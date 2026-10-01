@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  badgeTitle,
   createOsThrottle,
   createPendingLink,
   deliveryFor,
@@ -97,13 +96,5 @@ describe("pending deep link", () => {
     expect(link.take(61_000)).toBeNull();
     link.set(undefined, 0);
     expect(link.take(1)).toBeNull();
-  });
-});
-
-describe("badge title", () => {
-  it("shows the unread count and caps it", () => {
-    expect(badgeTitle(0)).toBe("Arrab Studio");
-    expect(badgeTitle(3)).toBe("(3) Arrab Studio");
-    expect(badgeTitle(250)).toBe("(99+) Arrab Studio");
   });
 });
