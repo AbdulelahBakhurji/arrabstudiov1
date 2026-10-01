@@ -1,5 +1,5 @@
 import { buildApp, createApiContext } from "./app.js";
-import { loadApiEnv, loadDotEnv } from "./config/env.js";
+import { loadApiEnv, loadDotEnv } from "./platform/config/env.js";
 
 async function main(): Promise<void> {
   loadDotEnv();

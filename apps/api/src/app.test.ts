@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { buildApp, createApiContext } from "./app.js";
-import type { ApiEnv } from "./config/env.js";
+import type { ApiEnv } from "./platform/config/env.js";
 
 const testEnv: ApiEnv = {
   host: "127.0.0.1",

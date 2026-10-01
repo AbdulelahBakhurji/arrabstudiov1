@@ -1,4 +1,4 @@
-import { SealedVaultService } from "./services/sealed-vault-service.js";
+import { SealedVaultService } from "./modules/encryption/sealed-vault-service.js";
 import cors from "@fastify/cors";
 import {
   AnthropicMessagesAdapter,
@@ -27,30 +27,30 @@ import {
 import { ValidationError } from "@arrab/core";
 import { orgSeatLimitForPlan } from "@arrab/shared";
 import Fastify, { type FastifyInstance } from "fastify";
-import type { ApiEnv } from "./config/env.js";
-import { configureFieldCrypto } from "./lib/field-crypto.js";
-import { registerErrorHandler } from "./plugins/error-handler.js";
-import { registerSecurity } from "./plugins/security.js";
-import { registerV1Routes } from "./routes/v1.js";
-import { registerErpRoutes } from "./routes/erp.js";
-import { registerClientRoutes } from "./routes/client.js";
-import { ControlNotificationComposer } from "./services/control-notification-composer.js";
-import { ErpCompanionService } from "./services/erp-companion-service.js";
-import { ControlNotificationService, ControlDeskService } from "./services/control-notification-service.js";
-import { ConversationService } from "./services/conversation-service.js";
-import { ConnectorService } from "./services/connector-service.js";
-import { AccountService } from "./services/account-service.js";
-import { BillingService } from "./services/billing-service.js";
-import { createMoyasarClient } from "./services/moyasar.js";
-import { GoalService } from "./services/goal-service.js";
-import { TaskExecutionService } from "./services/task-execution-service.js";
-import { DeskService } from "./services/desk-service.js";
-import { CrewService } from "./services/crew-service.js";
-import { OrgWorkforceService } from "./services/org-workforce-service.js";
-import { WorkforceBlueprintService } from "./services/workforce-blueprint-service.js";
-import { FamilyHouseholdService } from "./services/family-household-service.js";
-import { WorkspaceCommandService } from "./services/workspace-commands.js";
-import { WorkspaceQueryService } from "./services/workspace-query.js";
+import type { ApiEnv } from "./platform/config/env.js";
+import { configureFieldCrypto } from "./platform/crypto/field-crypto.js";
+import { registerErrorHandler } from "./platform/http/error-handler.js";
+import { registerSecurity } from "./platform/http/security.js";
+import { registerV1Routes } from "./http/v1.js";
+import { registerErpRoutes } from "./modules/erp/erp.routes.js";
+import { registerClientRoutes } from "./modules/control/client.routes.js";
+import { ControlNotificationComposer } from "./modules/control/control-notification-composer.js";
+import { ErpCompanionService } from "./modules/erp/erp-companion-service.js";
+import { ControlNotificationService, ControlDeskService } from "./modules/control/control-notification-service.js";
+import { ConversationService } from "./modules/conversations/conversation-service.js";
+import { ConnectorService } from "./modules/connectors/connector-service.js";
+import { AccountService } from "./modules/accounts/account-service.js";
+import { BillingService } from "./modules/billing/billing-service.js";
+import { createMoyasarClient } from "./modules/billing/moyasar.js";
+import { GoalService } from "./modules/workspace/goal-service.js";
+import { TaskExecutionService } from "./modules/workspace/task-execution-service.js";
+import { DeskService } from "./modules/desk/desk-service.js";
+import { CrewService } from "./modules/organization/crew-service.js";
+import { OrgWorkforceService } from "./modules/organization/org-workforce-service.js";
+import { WorkforceBlueprintService } from "./modules/organization/workforce-blueprint-service.js";
+import { FamilyHouseholdService } from "./modules/family/family-household-service.js";
+import { WorkspaceCommandService } from "./modules/workspace/workspace-commands.js";
+import { WorkspaceQueryService } from "./modules/workspace/workspace-query.js";
 
 export interface ApiContext {
   env: ApiEnv;
