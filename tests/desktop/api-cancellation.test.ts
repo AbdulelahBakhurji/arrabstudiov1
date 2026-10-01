@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { arrabApi } from "../../apps/desktop/src/lib/api";
 
+vi.mock("../../apps/desktop/src/lib/user-skills", () => ({
+  ensureSkillCatalogWarm: async () => [],
+  applySkillsToSendBody: <T>(body: T) => body,
+}));
+
 beforeEach(() => {
   vi.stubGlobal("window", { setTimeout, clearTimeout });
 });

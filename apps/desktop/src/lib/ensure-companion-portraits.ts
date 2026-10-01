@@ -19,6 +19,8 @@ const PRESET_HUES: Record<string, number> = {
   "arrab-assistant": 258,
   "web-designer": 268,
   "phone-designer": 336,
+  "game-designer": 168,
+  "3d-modeler": 24,
   brand: 28,
   copywriter: 188,
   sleep: 248,

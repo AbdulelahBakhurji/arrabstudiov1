@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="arrab_channel_updates">Updates</string>
+  <string name="arrab_channel_security">Security</string>
+  <string name="arrab_channel_companions">Companions</string>
+  <string name="arrab_channel_general">General</string>
+  <string name="arrab_action_open">Open</string>
+  <string name="arrab_action_update_now">Update now</string>
+</resources>

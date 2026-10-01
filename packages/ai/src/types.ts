@@ -43,6 +43,11 @@ export interface AiCompletionRequest {
   temperature?: number;
   /** Native function/tool calling definitions (OpenAI-compatible). */
   tools?: readonly AiToolDefinition[];
+  /**
+   * Ask reasoning-capable models to think first and stream that reasoning.
+   * Omitted = the provider's fastest mode (no extra reasoning requested).
+   */
+  reasoning?: "low" | "medium" | "high";
 }
 
 export interface AiTokenUsage {
@@ -61,6 +66,8 @@ export interface AiCompletion {
 
 export type AiStreamChunk =
   | { type: "token"; text: string }
+  /** Model reasoning (never part of the stored answer). */
+  | { type: "thinking"; text: string }
   | { type: "done"; completion: AiCompletion };
 
 export interface ModelProviderAdapter {

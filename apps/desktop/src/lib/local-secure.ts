@@ -1,7 +1,9 @@
 /**
  * On-device workspace vault — encrypts companions + chat caches at rest.
- * Key material never leaves the device store.
+ * Key material is partitioned by signed-in account so switching accounts
+ * never opens another account's sealed chats.
  */
+import { accountPartitionAliases, accountPartitionId, subscribeAccountPartition } from "./account-partition";
 import {
   decryptJson,
   encryptJson,
@@ -10,27 +12,59 @@ import {
   randomKeyB64,
   type CryptoEnvelopeV1,
 } from "./crypto-envelope";
-import { deviceStoreGet, deviceStoreSet } from "./device-store";
+import { deviceStoreGet, deviceStoreRemove, deviceStoreSet } from "./device-store";
 
 const KEY_NS = "secure";
-const KEY_ID = "workspace.aes.v1";
+const LEGACY_KEY_ID = "workspace.aes.v1";
 
 let cachedKey: CryptoKey | null = null;
+let cachedPartition: string | null = null;
 
-async function loadOrCreateRawKey(): Promise<string> {
-  const existing = await deviceStoreGet(KEY_NS, KEY_ID);
+function keyIdFor(partition: string): string {
+  return `${LEGACY_KEY_ID}.${partition}`;
+}
+
+async function loadOrCreateRawKey(partition: string): Promise<string> {
+  const id = keyIdFor(partition);
+  const existing = await deviceStoreGet(KEY_NS, id);
   if (existing && existing.length >= 40) {
     return existing;
   }
+  // Adopt older colon-style or pre-partition device keys into this account.
+  if (partition !== "guest") {
+    for (const alias of accountPartitionAliases()) {
+      if (alias === partition) continue;
+      const aliasKey = await deviceStoreGet(KEY_NS, keyIdFor(alias));
+      if (aliasKey && aliasKey.length >= 40) {
+        await deviceStoreSet(KEY_NS, id, aliasKey);
+        await deviceStoreRemove(KEY_NS, keyIdFor(alias));
+        return aliasKey;
+      }
+    }
+    const legacy = await deviceStoreGet(KEY_NS, LEGACY_KEY_ID);
+    if (legacy && legacy.length >= 40) {
+      await deviceStoreSet(KEY_NS, id, legacy);
+      return legacy;
+    }
+  }
   const created = randomKeyB64();
-  await deviceStoreSet(KEY_NS, KEY_ID, created);
+  await deviceStoreSet(KEY_NS, id, created);
   return created;
 }
 
+function resetKeyCache(): void {
+  cachedKey = null;
+  cachedPartition = null;
+}
+
+subscribeAccountPartition(resetKeyCache);
+
 export async function getWorkspaceCryptoKey(): Promise<CryptoKey> {
-  if (cachedKey) return cachedKey;
-  const raw = await loadOrCreateRawKey();
+  const partition = accountPartitionId();
+  if (cachedKey && cachedPartition === partition) return cachedKey;
+  const raw = await loadOrCreateRawKey(partition);
   cachedKey = await importRawAesKey(raw);
+  cachedPartition = partition;
   return cachedKey;
 }
 
@@ -49,4 +83,12 @@ export async function openLocalJson<T = unknown>(value: unknown): Promise<T> {
 
 export function looksEncryptedLocal(value: unknown): boolean {
   return isCryptoEnvelope(value);
+}
+
+/** Drop this account's workspace AES key (local sealed data becomes unreadable). */
+export async function wipeWorkspaceVaultKey(): Promise<void> {
+  for (const part of accountPartitionAliases()) {
+    await deviceStoreRemove(KEY_NS, keyIdFor(part));
+  }
+  resetKeyCache();
 }

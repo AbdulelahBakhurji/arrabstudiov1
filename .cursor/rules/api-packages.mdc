@@ -1,0 +1,12 @@
+---
+description: API and shared-package conventions
+globs: apps/api/**/*.{ts,js} packages/**/*.ts
+alwaysApply: false
+---
+
+# API and packages
+
+- Add types to `packages/shared`, export from `index.ts`, then persist / service / route.
+- Services live in `apps/api/src/services/`. HTTP in `apps/api/src/routes/`.
+- Desktop must not invent response shapes the API does not own.
+- Migrations belong in `packages/database`. Do not store provider keys on the client.

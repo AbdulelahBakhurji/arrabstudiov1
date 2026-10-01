@@ -1,11 +1,27 @@
 /**
  * Menu-bar companion panel — photos, progress, readable approvals.
  */
-import { useCallback, useEffect, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { emit, listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
-import { ArrowUp, ChevronDown, Sparkles } from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { ArrowUp, Check, Plus, Sparkles, X } from "lucide-react";
+import arrabSymbol from "@/assets/symbol.png";
 import { arrabApi } from "@/lib/api";
+import { messages } from "@/i18n/messages";
+import { APP_VERSION } from "@/lib/managed-client/app-version";
+import { applyCompanionPolicy, companionAvailability } from "@/lib/managed-client/companions";
+import { limitStatus } from "@/lib/managed-client/limits";
+import { readCachedPolicy } from "@/lib/managed-client/store";
+import { maintenanceView } from "@/lib/managed-client/updates";
 import type { Activity, Agent, Approval, TaskRun } from "@arrab/shared";
 import { PhotoAvatar } from "@/components/companions/CompanionFace";
 import {
@@ -101,6 +117,21 @@ function purposeLabel(purposeId: string | null | undefined, domain: string): str
   return "Companion";
 }
 
+/** Why the ask field is closed right now, per what Arrab Control last told the main window. */
+function panelAskBlock(selected: LiveRow | null): string | null {
+  const t = messages[localStorage.getItem("arrab.locale") === "ar" ? "ar" : "en"];
+  const { config, maintenance } = readCachedPolicy();
+  const view = maintenanceView(APP_VERSION, maintenance, false);
+  if (view.updateMode === "blocking") return t.mcUpdateRequiredBar;
+  if (view.readOnly) return t.mcReadOnlySend;
+  if (config?.features.menuBarAsk === false) return t.mcPanelAskOff;
+  if (selected && !companionAvailability(selected, config?.companions ?? []).enabled) {
+    return t.mcCompanionUnavailable;
+  }
+  if (limitStatus(config?.limits).level === "blocked") return t.mcUsageLimitReached;
+  return null;
+}
+
 function companionProgress(c: CompanionProfile): LiveRow {
   const ageMs = c.lastAt ? Date.now() - new Date(c.lastAt).getTime() : null;
   const fresh = ageMs != null && ageMs < 1000 * 60 * 30;
@@ -149,7 +180,7 @@ function agentProgress(
   let progress = 0.08;
   let status = agent.specialty || agent.role || "Ready";
   let activityLine = "";
-  let lastAt: string | null = run?.createdAt ?? act?.createdAt ?? null;
+  const lastAt: string | null = run?.createdAt ?? act?.createdAt ?? null;
 
   if (run?.status === "awaiting_approval") {
     state = "needs_you";
@@ -226,6 +257,21 @@ function faceStateFor(state: LiveRow["state"]) {
   return "quiet" as const;
 }
 
+function stateLabel(state: LiveRow["state"]): string {
+  if (state === "needs_you") return "Needs you";
+  if (state === "working") return "Working";
+  if (state === "done") return "Done";
+  return "Ready";
+}
+
+function readPanelTheme(): "light" | "dark" {
+  try {
+    return window.localStorage.getItem("arrab.theme") === "light" ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
 export function CompanionPanelApp() {
   const [approvals, setApprovals] = useState<Approval[]>([]);
   const [presence, setPresence] = useState<AgentPresencePayload | null>(null);
@@ -234,60 +280,84 @@ export function CompanionPanelApp() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [selected, setSelected] = useState<LiveRow | null>(null);
-  const [pickerOpen, setPickerOpen] = useState(false);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [taskDraft, setTaskDraft] = useState("");
   const [assignBusy, setAssignBusy] = useState(false);
   const [assignNote, setAssignNote] = useState<string | null>(null);
+  const [offline, setOffline] = useState(false);
+  const [theme, setTheme] = useState(readPanelTheme);
+  const stackRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const stripRef = useRef<HTMLDivElement | null>(null);
+
+  const selected = liveRows.find((row) => row.id === selectedId) ?? liveRows[0] ?? null;
+  const askBlock = panelAskBlock(selected);
 
   const refresh = useCallback(async () => {
-    setError(null);
+    setTheme(readPanelTheme());
     const isOrg = readStoredRole() === "organization";
     setOrgMode(isOrg);
+    setOffline(typeof navigator !== "undefined" && navigator.onLine === false);
     try {
       const pending = await arrabApi.pendingApprovals();
       setApprovals(pending.items);
-
-      if (isOrg) {
-        const [agentsRes, activityRes, report] = await Promise.all([
-          arrabApi.agents().catch(() => ({ items: [] as Agent[] })),
-          arrabApi.activity().catch(() => ({ items: [] as Activity[] })),
-          arrabApi.reportSummary().catch(() => null),
-        ]);
-        const runs = report?.recentTaskRuns ?? [];
-        const agents = agentsRes.items.filter(
-          (a) => a.status === "active" || a.status === "draft" || a.status === "paused",
-        );
-        const rows = agents
-          .map((a) => agentProgress(a, runs, activityRes.items))
-          .sort((a, b) => {
-            const rank = (s: LiveRow["state"]) =>
-              s === "needs_you" ? 0 : s === "working" ? 1 : s === "done" ? 2 : 3;
-            return rank(a.state) - rank(b.state);
-          });
-        setLiveRows(rows.slice(0, 12));
-      } else {
-        await syncCompanionsFromCloud().catch(() => undefined);
-        const state = getCompanionState();
-        const comps = state.companions.filter((c) => !c.archivedAt);
-        setLiveRows(comps.map(companionProgress).slice(0, 10));
-      }
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Couldn’t load panel");
-    } finally {
-      setReady(true);
+    } catch {
+      // A failed approvals poll is not the same as being offline.
     }
+
+    if (isOrg) {
+      const [agentsRes, activityRes, report] = await Promise.all([
+        arrabApi.agents().catch(() => ({ items: [] as Agent[] })),
+        arrabApi.activity().catch(() => ({ items: [] as Activity[] })),
+        arrabApi.reportSummary().catch(() => null),
+      ]);
+      const runs = report?.recentTaskRuns ?? [];
+      const agents = agentsRes.items.filter(
+        (a) => a.status === "active" || a.status === "draft" || a.status === "paused",
+      );
+      const rows = agents
+        .map((a) => agentProgress(a, runs, activityRes.items))
+        .sort((a, b) => {
+          const rank = (s: LiveRow["state"]) =>
+            s === "needs_you" ? 0 : s === "working" ? 1 : s === "done" ? 2 : 3;
+          return rank(a.state) - rank(b.state);
+        });
+      setLiveRows(applyCompanionPolicy(rows, readCachedPolicy().config?.companions ?? []).slice(0, 12));
+    } else {
+      // Companions live on this Mac first; the cloud sync only freshens them.
+      await syncCompanionsFromCloud().catch(() => undefined);
+      const state = getCompanionState();
+      const comps = applyCompanionPolicy(
+        state.companions.filter((c) => !c.archivedAt),
+        readCachedPolicy().config?.companions ?? [],
+      );
+      setLiveRows(comps.map(companionProgress).slice(0, 12));
+    }
+    setReady(true);
   }, []);
 
   useEffect(() => {
     void refresh();
-    let unsubs: Array<() => void> = [];
-    const onApprovalsChanged = () => void refresh();
-    window.addEventListener("arrab:approvals-changed", onApprovalsChanged);
-    window.addEventListener("companion-panel:refresh", onApprovalsChanged);
+    const unsubs: Array<() => void> = [];
+    const onChanged = () => void refresh();
+    const onStorage = (event: StorageEvent) => {
+      if (event.key === "arrab.theme") setTheme(readPanelTheme());
+    };
+    const onOnline = () => setOffline(false);
+    const onNetOffline = () => setOffline(true);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onNetOffline);
+    window.addEventListener("arrab:approvals-changed", onChanged);
+    window.addEventListener("companion-panel:refresh", onChanged);
+    window.addEventListener("storage", onStorage);
     void (async () => {
       try {
-        unsubs.push(await listen("companion-panel:refresh", () => void refresh()));
+        unsubs.push(
+          await listen("companion-panel:refresh", () => {
+            void refresh();
+            window.setTimeout(() => inputRef.current?.focus(), 40);
+          }),
+        );
         unsubs.push(await listen("arrab:approvals-changed", () => void refresh()));
         unsubs.push(
           await listen<AgentPresencePayload>("agent-presence:update", (event) => {
@@ -297,36 +367,75 @@ export function CompanionPanelApp() {
             }
           }),
         );
-        unsubs.push(
-          await listen("agent-presence:hide", () => {
-            setPresence(null);
-          }),
-        );
+        unsubs.push(await listen("agent-presence:hide", () => setPresence(null)));
       } catch {
         // outside Tauri
       }
     })();
-    // Silent poll — never shows Loading again after first paint.
     const timer = window.setInterval(() => void refresh(), 8_000);
     return () => {
       window.clearInterval(timer);
-      window.removeEventListener("arrab:approvals-changed", onApprovalsChanged);
-      window.removeEventListener("companion-panel:refresh", onApprovalsChanged);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onNetOffline);
+      window.removeEventListener("arrab:approvals-changed", onChanged);
+      window.removeEventListener("companion-panel:refresh", onChanged);
+      window.removeEventListener("storage", onStorage);
       for (const off of unsubs) off();
     };
   }, [refresh]);
 
   useEffect(() => {
-    if (!selected && liveRows[0]) setSelected(liveRows[0]);
-  }, [liveRows, selected]);
+    document.documentElement.dataset.theme = theme;
+  }, [theme]);
+
+  // The native window follows the content height. After a user drag it stays put.
+
+  function beginDrag(event: ReactPointerEvent<HTMLElement>) {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("button, input, textarea, a")) return;
+    void getCurrentWindow()
+      .startDragging()
+      .catch(() => undefined);
+  }
+  useEffect(() => {
+    const node = stackRef.current;
+    if (!node) return;
+    let last = 0;
+    const fit = () => {
+      const height = Math.ceil(node.getBoundingClientRect().height);
+      if (Math.abs(height - last) < 2) return;
+      last = height;
+      void invoke("companion_panel_fit", { height }).catch(() => undefined);
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
-    const pickerH = pickerOpen ? Math.min(Math.max(liveRows.length, 1), 6) * 56 + 12 : 0;
-    const approvalH = approvals.length > 0 ? 72 : 0;
-    const noteH = assignNote || error ? 28 : 0;
-    const height = 96 + pickerH + approvalH + noteH;
-    void invoke("companion_panel_fit", { height }).catch(() => undefined);
-  }, [pickerOpen, approvals.length, assignNote, error, liveRows.length]);
+    if (!assignNote) return;
+    const timer = window.setTimeout(() => setAssignNote(null), 3_200);
+    return () => window.clearTimeout(timer);
+  }, [assignNote]);
+
+  function choose(row: LiveRow) {
+    setSelectedId(row.id);
+    setAssignNote(null);
+    setError(null);
+    inputRef.current?.focus();
+    const tile = stripRef.current?.querySelector<HTMLElement>(`[data-row="${row.id}"]`);
+    tile?.scrollIntoView({ behavior: "smooth", inline: "nearest", block: "nearest" });
+  }
+
+  function openStudio(target: "new-companion" | "chat") {
+    void invoke("companion_panel_open_studio", { target }).catch(() => undefined);
+  }
+
+  function hidePanel() {
+    void invoke("companion_panel_hide").catch(() => undefined);
+  }
 
   async function resolve(approval: Approval, status: "approved" | "rejected") {
     setBusyId(approval.id);
@@ -336,14 +445,15 @@ export function CompanionPanelApp() {
       await emit(PRESENCE_RESOLVE_EVENT, request);
       setApprovals((current) => current.filter((item) => item.id !== approval.id));
       window.setTimeout(() => void refresh(), 600);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Resolve failed");
+    } catch {
+      setError("That decision didn’t go through. Try again in a moment.");
     } finally {
       setBusyId(null);
     }
   }
 
   async function submitTask() {
+    if (askBlock) return;
     if (!selected || !taskDraft.trim() || assignBusy) return;
     setAssignBusy(true);
     setAssignNote(null);
@@ -363,9 +473,40 @@ export function CompanionPanelApp() {
       setTaskDraft("");
       void refresh();
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Couldn’t assign task");
+      const reallyOffline = typeof navigator !== "undefined" && navigator.onLine === false;
+      setError(
+        reallyOffline
+          ? `${selected.name} will pick this up once you’re back online.`
+          : err instanceof Error && err.message
+            ? err.message
+            : `Couldn’t reach ${selected.name}. Try again in a moment.`,
+      );
     } finally {
       setAssignBusy(false);
+    }
+  }
+
+  function onKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Escape") {
+      hidePanel();
+      return;
+    }
+    if ((event.metaKey || event.ctrlKey) && /^[1-9]$/.test(event.key)) {
+      const row = liveRows[Number(event.key) - 1];
+      if (row) {
+        event.preventDefault();
+        choose(row);
+      }
+      return;
+    }
+    if (!taskDraft && (event.key === "ArrowLeft" || event.key === "ArrowRight") && selected) {
+      const index = liveRows.findIndex((row) => row.id === selected.id);
+      const step = event.key === "ArrowRight" ? 1 : -1;
+      const next = liveRows[(index + step + liveRows.length) % liveRows.length];
+      if (next) {
+        event.preventDefault();
+        choose(next);
+      }
     }
   }
 
@@ -373,141 +514,230 @@ export function CompanionPanelApp() {
   const approvalCopy = firstApproval
     ? humanizeApprovalCopy({ title: firstApproval.title, detail: firstApproval.detail })
     : null;
+  const noun = orgMode ? "agent" : "companion";
+  const status =
+    error ??
+    assignNote ??
+    (presence && presence.state === "needs_you" && !firstApproval
+      ? `${presence.agentName} is waiting on you`
+      : null);
 
   return (
-    <div className="ask-root">
-      <form
-        className="ask-bar"
-        data-tauri-drag-region
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submitTask();
-        }}
-      >
-        <button
-          type="button"
-          className="ask-mark"
-          aria-label={pickerOpen ? "Hide companions" : "Choose companion"}
-          onClick={() => setPickerOpen((open) => !open)}
-        >
-          {selected ? (
-            <PhotoAvatar
-              src={portraitFor(selected)}
-              name={selected.name}
-              size="sm"
-              state={faceStateFor(selected.state)}
-              fallbackHue={selected.hue}
-              fallbackSeed={selected.faceSeed}
-            />
-          ) : (
-            <Sparkles size={18} strokeWidth={1.8} />
-          )}
-        </button>
-        <input
-          className="ask-input"
-          value={taskDraft}
-          disabled={assignBusy || !selected}
-          placeholder={
-            selected
-              ? `Ask ${selected.name}`
-              : ready
-                ? "What can I help you with today?"
-                : "Loading companions…"
-          }
-          onChange={(event) => setTaskDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              setPickerOpen(false);
-              void invoke("companion_panel_hide").catch(() => undefined);
-            }
-          }}
-        />
-        <button
-          type="button"
-          className="ask-who"
-          onClick={() => setPickerOpen((open) => !open)}
-        >
-          <span>{selected?.name ?? (orgMode ? "Agent" : "Companion")}</span>
-          <ChevronDown size={14} strokeWidth={2} />
-        </button>
-        <button
-          type="submit"
-          className="ask-send"
-          aria-label="Send"
-          disabled={assignBusy || !selected || !taskDraft.trim()}
-        >
-          <ArrowUp size={16} strokeWidth={2.4} />
-        </button>
-      </form>
-
-      {pickerOpen ? (
-        <div className="ask-picker" role="listbox" aria-label={orgMode ? "Agents" : "Companions"}>
-          {liveRows.length === 0 ? (
-            <div className="ask-empty">{ready ? "No one here yet" : "Loading…"}</div>
-          ) : (
-            liveRows.map((row) => (
-              <button
-                key={row.id}
-                type="button"
-                role="option"
-                aria-selected={selected?.id === row.id}
-                className={`ask-person${selected?.id === row.id ? " is-on" : ""}`}
-                onClick={() => {
-                  setSelected(row);
-                  setPickerOpen(false);
-                  setAssignNote(null);
-                }}
-              >
-                <PhotoAvatar
-                  src={portraitFor(row)}
-                  name={row.name}
-                  size="sm"
-                  state={faceStateFor(row.state)}
-                  fallbackHue={row.hue}
-                  fallbackSeed={row.faceSeed}
-                />
-                <span className="ask-person-copy">
-                  <strong>{row.name}</strong>
-                  <small>{row.status}{row.lastAt ? ` · ${formatRelative(row.lastAt)}` : ""}</small>
-                </span>
-              </button>
-            ))
-          )}
-        </div>
-      ) : null}
-
-      {presence && presence.state === "needs_you" && !firstApproval ? (
-        <p className="ask-note">{presence.agentName} is waiting on you</p>
-      ) : null}
-      {assignNote ? <p className="ask-note">{assignNote}</p> : null}
-      {error ? <p className="ask-note is-error">{error}</p> : null}
-
-      {firstApproval && approvalCopy ? (
-        <div className="ask-permit">
-          <div className="ask-permit-copy">
-            <strong>{approvalCopy.title}</strong>
-            <span>
-              {approvals.length > 1 ? `${approvals.length} need a decision` : "Needs your approval"}
-            </span>
+    <div className="cp-root">
+      <div className="cp-stack" ref={stackRef}>
+        {firstApproval && approvalCopy ? (
+          <div className="cp-permit" role="alert">
+            <span className="cp-permit-pulse" aria-hidden />
+            <div className="cp-permit-copy">
+              <strong>{approvalCopy.title}</strong>
+              <span>
+                {approvals.length > 1
+                  ? `${approvals.length} decisions waiting`
+                  : "Waiting for your approval"}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="cp-btn"
+              disabled={busyId === firstApproval.id}
+              onClick={() => void resolve(firstApproval, "rejected")}
+            >
+              Decline
+            </button>
+            <button
+              type="button"
+              className="cp-btn is-primary"
+              disabled={busyId === firstApproval.id}
+              onClick={() => void resolve(firstApproval, "approved")}
+            >
+              Approve
+            </button>
           </div>
-          <button
-            type="button"
-            className="ask-permit-btn"
-            disabled={busyId === firstApproval.id}
-            onClick={() => void resolve(firstApproval, "rejected")}
+        ) : null}
+
+        <section className="cp-card">
+          <header
+            className="cp-head"
+            data-tauri-drag-region
+            title={messages[localStorage.getItem("arrab.locale") === "ar" ? "ar" : "en"].companionPanelDrag}
+            onPointerDown={beginDrag}
           >
-            Decline
-          </button>
-          <button
-            type="button"
-            className="ask-permit-btn is-go"
-            disabled={busyId === firstApproval.id}
-            onClick={() => void resolve(firstApproval, "approved")}
+            <span className="cp-drag" data-tauri-drag-region aria-hidden>
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
+              <i />
+            </span>
+            <img className="cp-logo" src={arrabSymbol} alt="" draggable={false} />
+            <span className="cp-title" data-tauri-drag-region>
+              {orgMode ? "Your agents" : "Your companions"}
+            </span>
+            {liveRows.length > 0 ? (
+              <span className="cp-count" data-tauri-drag-region>
+                {liveRows.length}
+              </span>
+            ) : null}
+            {offline && ready ? (
+              <span
+                className="cp-offline"
+                data-tauri-drag-region
+                title="Showing what’s saved on this Mac"
+              >
+                <span className="cp-offline-dot" aria-hidden />
+                Offline
+              </span>
+            ) : null}
+            <span className="cp-head-space" data-tauri-drag-region />
+            <button type="button" className="cp-ghost no-drag" onClick={() => openStudio("chat")}>
+              Open Studio
+            </button>
+            <button type="button" className="cp-icon no-drag" aria-label="Close" onClick={hidePanel}>
+              <X size={14} strokeWidth={2.2} />
+            </button>
+          </header>
+
+          <div
+            className="cp-strip"
+            ref={stripRef}
+            role="listbox"
+            aria-label={orgMode ? "Agents" : "Companions"}
           >
-            Approve
-          </button>
-        </div>
-      ) : null}
+            {!ready && liveRows.length === 0
+              ? [0, 1, 2, 3].map((n) => (
+                  <div key={n} className="cp-tile is-skeleton" aria-hidden>
+                    <span className="cp-portrait" />
+                    <span className="cp-skel-line" />
+                  </div>
+                ))
+              : liveRows.map((row, index) => {
+                  const on = selected?.id === row.id;
+                  return (
+                    <button
+                      key={row.id}
+                      type="button"
+                      role="option"
+                      aria-selected={on}
+                      data-row={row.id}
+                      data-state={row.state}
+                      className={`cp-tile${on ? " is-on" : ""}`}
+                      style={{ "--tile-hue": row.hue } as CSSProperties}
+                      title={row.activity ?? row.status}
+                      onClick={() => choose(row)}
+                    >
+                      <span className="cp-portrait">
+                        <PhotoAvatar
+                          src={portraitFor(row)}
+                          name={row.name}
+                          size="lg"
+                          state={faceStateFor(row.state)}
+                          fallbackHue={row.hue}
+                          fallbackSeed={row.faceSeed}
+                        />
+                        <span className="cp-state-dot" aria-hidden />
+                        {index < 9 ? <kbd className="cp-hotkey">⌘{index + 1}</kbd> : null}
+                      </span>
+                      <span className="cp-tile-name">{row.name}</span>
+                      <span className="cp-tile-state">
+                        {row.lastAt && row.state !== "idle"
+                          ? `${stateLabel(row.state)} · ${formatRelative(row.lastAt)}`
+                          : stateLabel(row.state)}
+                      </span>
+                    </button>
+                  );
+                })}
+            {!orgMode ? (
+              <button
+                type="button"
+                className={`cp-tile is-new${liveRows.length === 0 && ready ? " is-lonely" : ""}`}
+                onClick={() => openStudio("new-companion")}
+              >
+                <span className="cp-portrait">
+                  <span className="cp-new-ring">
+                    <Plus size={20} strokeWidth={2} />
+                  </span>
+                </span>
+                <span className="cp-tile-name">
+                  {liveRows.length === 0 ? "Create your first" : "New companion"}
+                </span>
+                <span className="cp-tile-state">Opens in Studio</span>
+              </button>
+            ) : null}
+          </div>
+
+          <form
+            className="cp-ask"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void submitTask();
+            }}
+          >
+            <span className="cp-ask-who">
+              {selected ? (
+                <PhotoAvatar
+                  src={portraitFor(selected)}
+                  name={selected.name}
+                  size="sm"
+                  state={faceStateFor(selected.state)}
+                  fallbackHue={selected.hue}
+                  fallbackSeed={selected.faceSeed}
+                />
+              ) : (
+                <Sparkles size={16} strokeWidth={1.8} />
+              )}
+            </span>
+            <input
+              ref={inputRef}
+              className="cp-input"
+              value={taskDraft}
+              autoFocus
+              disabled={assignBusy || !selected || Boolean(askBlock)}
+              placeholder={
+                askBlock
+                  ? askBlock
+                  : selected
+                  ? `Ask ${selected.name} anything…`
+                  : ready
+                    ? `Create a ${noun} to get started`
+                    : `Loading ${noun}s…`
+              }
+              onChange={(event) => setTaskDraft(event.target.value)}
+              onKeyDown={onKeyDown}
+            />
+            <button
+              type="submit"
+              className="cp-send"
+              aria-label="Send"
+              disabled={assignBusy || !selected || !taskDraft.trim() || Boolean(askBlock)}
+            >
+              {assignBusy ? <span className="cp-spinner" aria-hidden /> : <ArrowUp size={16} strokeWidth={2.4} />}
+            </button>
+          </form>
+
+          <footer className="cp-foot">
+            {status ? (
+              <span className={`cp-status${error ? " is-error" : " is-ok"}`} role="status">
+                {error ? null : <Check size={12} strokeWidth={2.6} />}
+                {status}
+              </span>
+            ) : (
+              <span className="cp-hints">
+                <kbd>↵</kbd> send
+                <kbd>←</kbd>
+                <kbd>→</kbd> switch
+                <kbd>esc</kbd> close
+              </span>
+            )}
+            {selected?.activity ? (
+              <span className="cp-activity" title={selected.activity}>
+                {selected.activity}
+              </span>
+            ) : null}
+          </footer>
+        </section>
+      </div>
     </div>
   );
 }
+

@@ -3,10 +3,10 @@ import {
   ArrowUp,
   ArrowUpRight,
   Check,
-  ChevronDown,
   Ellipsis,
   EyeOff,
   Maximize2,
+  MessageCircle,
   Minimize2,
   Plus,
   Search,
@@ -28,6 +28,8 @@ import {
   SessionModeMenu,
 } from "@/components/SessionModeMenu";
 import { filesToDraftParts } from "@/lib/composer-attachments";
+import { listDir } from "@/lib/fs";
+import { isTauriRuntime, pickFolder } from "@/lib/terminal";
 import {
   detectSuggestedMode,
   readSessionMode,
@@ -36,6 +38,8 @@ import {
 } from "@/lib/session-mode";
 
 import { useLanguage } from "@/i18n/LanguageProvider";
+import { userAskedForComputer } from "@/lib/professional-companions";
+import { companionDisplayName } from "@/lib/companion-catalog";
 import { useRole } from "@/roles/RoleProvider";
 import { audienceFromPlanId } from "@/roles/catalog";
 import { useFamilyProfile } from "@/lib/use-family-profile";
@@ -53,8 +57,11 @@ import {
 } from "@/lib/companion-suggestions";
 import {
   addFact,
-  answerNudge,
+  addCompanion,
+  canAddCompanion,
+  clearProfessionalCompanions,
   birthSuggestion,
+  clearLiveNudges,
   captureWork,
   COMPANION_DRAFT_KEY,
   COMPANION_FOCUS_KEY,
@@ -63,16 +70,16 @@ import {
   findCompanion,
   generalCompanion,
   getCompanionState,
-  ignoreNudge,
   isSensitiveNow,
   liveCompanions,
-  liveNudges,
   relativeTime,
   updateCompanion,
   addParentGuidanceFact,
   useCompanionState,
   claimParentCoachConversation,
   companionRoomForSeat,
+  readCompanionChatTabs,
+  writeCompanionChatTabs,
   type CompanionProfile,
 } from "@/lib/companions";
 import {
@@ -88,21 +95,31 @@ import {
   ToneDetails,
 } from "@/components/companions/CompanionDetails";
 import { CompanionCatalog } from "@/components/companions/CompanionCatalog";
+import { ProfessionalRoster, ProfessionalScreen, professionalLabel, useProfessionalDesk } from "@/components/companions/ProfessionalWorkspace";
+import {
+  clearProfessionalGroups,
+  findProfessionalGroup,
+  touchProfessionalGroup,
+  type ProfessionalGroup,
+} from "@/lib/professional-groups";
 import { FamilyCompanionWizard } from "@/components/companions/FamilyCompanionWizard";
-import { AskParentCompanionSheet } from "@/components/AskParentCompanionSheet";
+import { AskParentCompanionSheet } from "@/components/family/AskParentCompanionSheet";
 import { ensureCompanionCloudRoom } from "@/components/companions/useCompanionRoom";
 import { CompanionConnectSheet } from "@/components/companions/CompanionConnectSheet";
+import { WhatsAppConnectSheet } from "@/components/companions/WhatsAppConnectSheet";
 import {
   CompanionChatRail,
   type ChatRailMenuAction,
 } from "@/components/companions/CompanionChatRail";
 import { IncognitoRoom } from "@/components/companions/IncognitoRoom";
 import { useCompanionRoom } from "@/components/companions/useCompanionRoom";
+import { purposeLine } from "@/lib/purpose-registry";
 import { AgentSteps } from "@/components/AgentSteps";
+import { ThinkingBlock } from "@/components/ThinkingBlock";
 import { companionRoomKey } from "@/lib/companion-drafts";
 import {
   createAssistantChatTab,
-  readAssistantChatTabs,
+  resolveAssistantChatTabs,
   titleFromMessage,
   writeAssistantChatTabs,
 } from "@/lib/assistant-chat-tabs";
@@ -125,6 +142,18 @@ import {
 import { notifyStudio, pushToast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 import { useEnsureRealisticPortraits } from "@/lib/ensure-companion-portraits";
+import { useCompanionPolicies, useManagedCompanions, useSendGate } from "@/lib/managed-client/hooks";
+import { companionAvailability } from "@/lib/managed-client/companions";
+import { setManagedPresence } from "@/lib/managed-client/store";
+import { FOCUS_COMPANION_EVENT } from "@/components/managed/ManagedClientHost";
+import { CompanionBadge, CompanionNotice } from "@/components/managed/MaintenanceBanner";
+import { UsageMeter } from "@/components/managed/UsageMeter";
+import { AudiencePulse, FaceStatusDot } from "@/components/shared/AudiencePulse";
+import {
+  getDowntime,
+  isWithinDowntime,
+  useGuardianStore,
+} from "@/lib/guardian-store";
 export function CompanionsPage() {
   const { t, locale } = useLanguage();
   const ar = locale === "ar";
@@ -143,6 +172,7 @@ export function CompanionsPage() {
   } = useFamilyProfile();
   const isFamilyChild = familyLive && isFamilyChildSeat;
   const isFamilyManager = familyLive && isFamilyManagerSeat;
+  const guardianStore = useGuardianStore();
 
   useEffect(() => {
     if (familyLive) refreshFamily();
@@ -185,8 +215,18 @@ export function CompanionsPage() {
   const [connectFamily, setConnectFamily] = useState<ConnectFamily | null>(null);
   const [connectBusy, setConnectBusy] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [whatsappConnectOpen, setWhatsappConnectOpen] = useState(false);
   const [queuedQuery, setQueuedQuery] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
+  const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
+  const [workspaceFolder, setWorkspaceFolder] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem("arrab.companion.workspaceFolder");
+    } catch {
+      return null;
+    }
+  });
+  const [folderTree, setFolderTree] = useState("");
   const [modeApprove, setModeApprove] = useState<{
     mode: SessionMode;
     pendingText: string;
@@ -249,6 +289,9 @@ export function CompanionsPage() {
       (familyLive || selected.space === space),
   );
   const active = selectedAllowed && selected ? selected : general;
+  useEffect(() => {
+    clearLiveNudges();
+  }, [space, active.id]);
   const coachingKidName =
     familyLive && isFamilyManager && active.familyMemberId
       ? kidByMemberId.get(String(active.familyMemberId)) ?? null
@@ -260,18 +303,31 @@ export function CompanionsPage() {
     : active.conversationId;
   const defaultChatTitle = ar ? "محادثة" : "Chat";
   const [chatTabs, setChatTabs] = useState(() =>
-    readAssistantChatTabs(active.id, coachSeed, defaultChatTitle, chatTabLane),
+    resolveAssistantChatTabs(
+      active.id,
+      coachSeed,
+      defaultChatTitle,
+      chatTabLane,
+      readCompanionChatTabs(active.id, chatTabLane),
+    ),
   );
   const [tabsCompanionId, setTabsCompanionId] = useState(active.id);
   const [tabsLane, setTabsLane] = useState(chatTabLane);
-  if (tabsCompanionId !== active.id || tabsLane !== chatTabLane) {
+  useEffect(() => {
+    if (tabsCompanionId === active.id && tabsLane === chatTabLane) return;
     setTabsCompanionId(active.id);
     setTabsLane(chatTabLane);
     titledTabRef.current = null;
     setChatTabs(
-      readAssistantChatTabs(active.id, coachSeed, defaultChatTitle, chatTabLane),
+      resolveAssistantChatTabs(
+        active.id,
+        coachSeed,
+        defaultChatTitle,
+        chatTabLane,
+        readCompanionChatTabs(active.id, chatTabLane),
+      ),
     );
-  }
+  }, [active.id, chatTabLane, tabsCompanionId, tabsLane, coachSeed, defaultChatTitle]);
   const activeTab =
     chatTabs.tabs.find((tab) => tab.id === chatTabs.activeId) ?? chatTabs.tabs[0]!;
   const roomCompanion = useMemo(
@@ -287,18 +343,25 @@ export function CompanionsPage() {
   const { lines, draft, setDraft, mode, setMode, busy, loading, agentSteps, thinkingLabel } =
     room;
   const studioKind = studioKindForCompanion(active, state);
-  const nameOf = (person: CompanionProfile) =>
-    person.domain === "general" ? t("compGeneral") : person.name;
+  const nameOf = (person: CompanionProfile) => {
+    const custom = professionalLabel(person.domain);
+    if (custom) return custom;
+    return person.domain === "general" ? t("compGeneral") : companionDisplayName(person, locale);
+  };
   const birth = birthSuggestion(state);
-  const nudge = liveNudges(state, space).find((item) => item.companionId === active.id);
   const sensitive = isSensitiveNow(state) || detectSensitive(draft);
   const composerSuggestions = companionComposerSuggestions(active);
   const welcomeSuggestions = companionWelcomeSuggestions(active);
+  // Arrab Control decides which companions are listed and in what order.
+  const listedPeople = useManagedCompanions(people);
+  const companionPolicies = useCompanionPolicies();
+  const sendGate = useSendGate(active);
   const facePeople =
-    active.domain !== "general" && !people.slice(0, 8).some((person) => person.id === active.id)
-      ? [...people.slice(0, 7), active]
-      : people.slice(0, 8);
-  const matchingPeople = [general, ...people].filter((person) =>
+    active.domain !== "general" &&
+    !listedPeople.slice(0, 8).some((person) => person.id === active.id)
+      ? [...listedPeople.slice(0, 7), active]
+      : listedPeople.slice(0, 8);
+  const matchingPeople = [general, ...listedPeople].filter((person) =>
     `${nameOf(person)} ${person.domain}`.toLowerCase().includes(search.toLowerCase()),
   );
 
@@ -319,6 +382,24 @@ export function CompanionsPage() {
     sessionStorage.removeItem(COMPANION_DRAFT_KEY);
     // Consume the board handoff only on entry.
   }, []);
+
+  useEffect(() => {
+    setManagedPresence({ activeCompanionId: active.agentId ?? active.id });
+  }, [active.agentId, active.id]);
+
+  useEffect(() => () => setManagedPresence({ activeCompanionId: null }), []);
+
+  useEffect(() => {
+    const onFocusCompanion = (event: Event) => {
+      const person = findCompanion(getCompanionState(), (event as CustomEvent<string>).detail);
+      if (!person) return;
+      sessionStorage.removeItem(COMPANION_FOCUS_KEY);
+      setSpace(person.space);
+      setActiveId(person.id);
+    };
+    window.addEventListener(FOCUS_COMPANION_EVENT, onFocusCompanion);
+    return () => window.removeEventListener(FOCUS_COMPANION_EVENT, onFocusCompanion);
+  }, [setSpace]);
 
   useEffect(() => {
     if (!roomFullscreen) return;
@@ -359,8 +440,50 @@ export function CompanionsPage() {
 
   useEffect(() => {
     writeAssistantChatTabs(active.id, chatTabs, chatTabLane);
+    if (chatTabs.tabs.some((tab) => tab.conversationId) || chatTabs.tabs.length > 1) {
+      writeCompanionChatTabs(active.id, chatTabs, chatTabLane);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatTabs, chatTabLane]);
+
+  useEffect(() => {
+    const accountTabs = readCompanionChatTabs(active.id, chatTabLane);
+    if (!accountTabs?.tabs.some((tab) => tab.conversationId)) return;
+    setChatTabs((current) =>
+      current.tabs.some((tab) => tab.conversationId) ? current : accountTabs,
+    );
+  }, [state.assistantChatTabs, active.id, chatTabLane]);
+
+  useEffect(() => {
+    if (workspaceFolder) {
+      localStorage.setItem("arrab.companion.workspaceFolder", workspaceFolder);
+    } else {
+      localStorage.removeItem("arrab.companion.workspaceFolder");
+    }
+  }, [workspaceFolder]);
+
+  useEffect(() => {
+    if (!workspaceFolder || !isTauriRuntime()) {
+      setFolderTree("");
+      return;
+    }
+    let cancelled = false;
+    void listDir(workspaceFolder, "")
+      .then((listed) => {
+        if (cancelled) return;
+        const names = listed.entries
+          .slice(0, 40)
+          .map((entry) => `${entry.kind === "dir" ? "dir" : "file"} ${entry.path}`)
+          .join("\n");
+        setFolderTree(names ? `PC folder: ${workspaceFolder}\n${names}` : `PC folder: ${workspaceFolder}`);
+      })
+      .catch(() => {
+        if (!cancelled) setFolderTree(`PC folder: ${workspaceFolder}`);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceFolder]);
 
   useEffect(() => {
     if (parentCoachMode) {
@@ -420,6 +543,7 @@ export function CompanionsPage() {
     if (person.space && person.space !== space) {
       setSpace(person.space);
     }
+    setActiveGroupId(null);
     setActiveId(person.domain === "general" ? null : person.id);
     setAllOpen(false);
     setSearch("");
@@ -619,6 +743,8 @@ export function CompanionsPage() {
   const send = async (overrideText?: string, opts?: { skipModeCheck?: boolean }) => {
     const text = (overrideText ?? draft).trim();
     if (!text) return;
+    // The current reply always finishes; a new send waits for maintenance, updates and limits.
+    if (sendGate.blocked) return;
     if (modeApprove && !opts?.skipModeCheck) return;
 
     if (busy) {
@@ -668,19 +794,56 @@ export function CompanionsPage() {
     const coachKid = coachingKidName;
     const coachAuthor = familyActive?.displayName ?? "Parent";
     const coachMemberId = active.familyMemberId;
+    const folderHint = workspaceFolder
+      ? {
+          kind: "folder" as const,
+          folderPath: workspaceFolder,
+          treeSummary: folderTree || `PC folder: ${workspaceFolder}`,
+        }
+      : null;
+    const wantsComputer =
+      showProfessionalDesk && signedIn && userAskedForComputer(text);
+    if (wantsComputer) powerComputerOn();
+    const groupMembers =
+      activeGroup?.memberIds
+        .map((id) => findCompanion(getCompanionState(), id))
+        .filter((person): person is CompanionProfile => Boolean(person)) ?? [];
+    const groupDirective =
+      showProfessionalDesk && activeGroup && groupMembers.length >= 2
+        ? [
+            `GROUP DESK CHAT "${activeGroup.title}".`,
+            `Members present: ${groupMembers.map((person) => `${person.name} (${person.domain})`).join("; ")}.`,
+            "Coordinate a useful reply for the user. When several members should speak, attribute short lines with their names.",
+            "Do not invent actions outside this group. Drafts only until the user approves.",
+          ].join(" ")
+        : null;
+    const desktopDirective =
+      showProfessionalDesk && signedIn && (computerPowered || wantsComputer)
+        ? "You have a sealed computer available on this desk. When they ask you to browse, open files, notes, terminal, or use the computer, add one hidden line: [[desktop: open chrome https://example.com]] or [[desktop: open finder]] or [[desktop: open notes]] or [[desktop: open terminal]] or [[desktop: ls]]. It runs on that sealed desktop and is removed from the chat. Never invent that you used the computer without that line. If the computer is off, still emit the line so it can wake."
+        : showProfessionalDesk && signedIn
+          ? "Their sealed computer is OFF unless they turn it on or clearly ask you to use Chrome, Finder, Terminal, Notes, or the computer. If they ask, emit [[desktop: …]] so it wakes. Do not pretend you used the computer otherwise."
+          : null;
     const response = room.send(overrideText ? text : undefined, {
-      workspaceHint: coachKid
-        ? {
-            operatorDirectives: [
-              `PARENT COACHING SESSION: The speaker is a parent, not the child.`,
-              `Child's name: ${coachKid}.`,
-              `Listen, ask clarifying questions, and remember guidance about how ${coachKid} feels, what helps, and what to avoid.`,
-              `When ${coachKid} chats later, apply this coaching gently — never quote parent notes verbatim to the child.`,
-              `Speak as ${active.name}, the companion helping the parent support ${coachKid}.`,
-            ].join(" "),
-            sessionNotes: `Parent coaching about ${coachKid}. Capture feelings, habits, and what the companion should do.`,
-          }
-        : undefined,
+      workspaceHint: {
+        ...folderHint,
+        ...((desktopDirective || groupDirective) && !coachKid
+          ? {
+              operatorDirectives: [groupDirective, desktopDirective].filter(Boolean).join(" "),
+            }
+          : {}),
+        ...(coachKid
+          ? {
+              operatorDirectives: [
+                `PARENT COACHING SESSION: The speaker is a parent, not the child.`,
+                `Child's name: ${coachKid}.`,
+                `Listen, ask clarifying questions, and remember guidance about how ${coachKid} feels, what helps, and what to avoid.`,
+                `When ${coachKid} chats later, apply this coaching gently — never quote parent notes verbatim to the child.`,
+                `Speak as ${active.name}, the companion helping the parent support ${coachKid}.`,
+              ].join(" "),
+              sessionNotes: `Parent coaching about ${coachKid}. Capture feelings, habits, and what the companion should do.`,
+            }
+          : {}),
+      },
     });
     composerRef.current?.focus({ preventScroll: true });
     const reply = await response;
@@ -716,7 +879,15 @@ export function CompanionsPage() {
     followReplyRef.current = true;
     const kind = studioKind;
     const companionId = active.id;
-    const reply = await room.send(text);
+    const reply = await room.send(text, {
+      workspaceHint: workspaceFolder
+        ? {
+            kind: "folder",
+            folderPath: workspaceFolder,
+            treeSummary: folderTree || `PC folder: ${workspaceFolder}`,
+          }
+        : undefined,
+    });
     if (kind && reply) {
       handoffToStudio(kind, companionId, reply, text);
       return;
@@ -824,6 +995,119 @@ export function CompanionsPage() {
     }
   }
 
+  const showProfessionalDesk = space === "work" && !isFamilyChild;
+  const { desk: proDesk, reload: reloadProDesk } = useProfessionalDesk(showProfessionalDesk);
+  const [agentPanel, setAgentPanel] = useState(false);
+  const [sandboxMaximized, setSandboxMaximized] = useState(false);
+  const [computerPowered, setComputerPowered] = useState(false);
+  const activeGroup = findProfessionalGroup(activeGroupId);
+
+  // Professional desk starts empty — wipe leftover work companions once.
+  useEffect(() => {
+    if (!showProfessionalDesk) return;
+    try {
+      if (localStorage.getItem("arrab.pro.clearedRoster.v2") === "1") return;
+      localStorage.setItem("arrab.pro.clearedRoster.v2", "1");
+    } catch {
+      return;
+    }
+    clearProfessionalCompanions();
+    clearProfessionalGroups();
+    setActiveGroupId(null);
+    setActiveId(null);
+    setAgentPanel(false);
+    setComputerPowered(false);
+    setSandboxMaximized(false);
+  }, [showProfessionalDesk]);
+
+  function powerComputerOn() {
+    if (!signedIn) return;
+    setComputerPowered(true);
+    setAgentPanel(true);
+  }
+
+  function powerComputerOff() {
+    setComputerPowered(false);
+    setSandboxMaximized(false);
+  }
+
+  function openProfessionalCompanion(person: CompanionProfile) {
+    setActiveGroupId(null);
+    if (busy) return;
+    followReplyRef.current = true;
+    closeIncognito();
+    if (person.space && person.space !== space) {
+      setSpace(person.space);
+    }
+    setActiveId(person.domain === "general" ? null : person.id);
+    setAllOpen(false);
+    setSearch("");
+    setQueuedQuery(null);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
+  function openProfessionalGroup(group: ProfessionalGroup) {
+    const host =
+      group.memberIds.map((id) => findCompanion(getCompanionState(), id)).find(Boolean) ?? null;
+    if (!host || busy) return;
+    followReplyRef.current = true;
+    closeIncognito();
+    setActiveGroupId(group.id);
+    touchProfessionalGroup(group.id);
+    if (host.space && host.space !== space) {
+      setSpace(host.space);
+    }
+    setActiveId(host.id);
+    setAgentPanel(false);
+    setAllOpen(false);
+    setSearch("");
+    setQueuedQuery(null);
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }
+
+  useEffect(() => {
+    if (!showProfessionalDesk) {
+      setAgentPanel(false);
+      setComputerPowered(false);
+      setSandboxMaximized(false);
+      setActiveGroupId(null);
+    }
+  }, [showProfessionalDesk]);
+
+  useEffect(() => {
+    setComputerPowered(false);
+    setSandboxMaximized(false);
+  }, [active.id]);
+
+  useEffect(() => {
+    if (!activeGroupId) return;
+    const group = findProfessionalGroup(activeGroupId);
+    if (!group || !group.memberIds.includes(active.id)) {
+      setActiveGroupId(null);
+    }
+  }, [activeGroupId, active.id]);
+
+  // Companion [[desktop:]] lines wake the computer for signed-in users.
+  useEffect(() => {
+    if (!showProfessionalDesk || !signedIn) return;
+    const onDrive = (event: Event) => {
+      const detail = (event as CustomEvent<{ companionId?: string; profileId?: string }>).detail;
+      const hit =
+        detail?.companionId === active.domain ||
+        detail?.companionId === active.id ||
+        detail?.profileId === active.id;
+      if (!hit) return;
+      powerComputerOn();
+    };
+    window.addEventListener("arrab:companion-computer", onDrive);
+    return () => window.removeEventListener("arrab:companion-computer", onDrive);
+  }, [showProfessionalDesk, signedIn, active.id, active.domain]);
+
+  const liveScreen =
+    [...lines].reverse().find(
+      (line) => line.who === "companion" && line.text.trim() && (!line.companionId || line.companionId === active.id),
+    )?.text ?? null;
+
   return (
     <>
       {adding ? (
@@ -869,12 +1153,67 @@ export function CompanionsPage() {
           />
         )
       ) : (
-    <div className={cn("cp-ui cp-chat", roomFullscreen && "chat-org-fullscreen cp-chat-fullscreen")}>
-      {!roomFullscreen ? (
+    <div
+      className={cn(
+        "cp-ui cp-chat",
+        showProfessionalDesk && "is-professional",
+        showProfessionalDesk && agentPanel && "is-agent-panel",
+        showProfessionalDesk && agentPanel && computerPowered && sandboxMaximized && "is-sandbox-maximized",
+        roomFullscreen && !showProfessionalDesk && "chat-org-fullscreen cp-chat-fullscreen",
+      )}
+    >
+      {!roomFullscreen || showProfessionalDesk ? (
       <header className="cp-chat-heading">
         <div>
-          <p className="cp-eyebrow">ARRAB / COMPANIONS</p>
+          <p className="cp-eyebrow">
+            {familyLive
+              ? `ARRAB / ${t("familyChatEyebrow").toUpperCase()}`
+              : "ARRAB / COMPANIONS"}
+          </p>
           <h1>{t("chat")}</h1>
+          {familyLive ? (
+            <p className="fb-chat-lead">
+              {isFamilyChild ? t("familyChatLeadKid") : t("familyChatLeadManager")}
+            </p>
+          ) : null}
+          {familyLive && isFamilyManager && familySnapshot ? (
+            <AudiencePulse
+              items={[
+                {
+                  id: "companions",
+                  label: t("pulseCompanions"),
+                  value: people.length,
+                  tone: "live",
+                },
+                {
+                  id: "paused",
+                  label: t("pulsePaused"),
+                  value: familySnapshot.members.filter((m) => m.role === "child" && m.isPaused).length,
+                  tone: familySnapshot.members.some((m) => m.role === "child" && m.isPaused)
+                    ? "warn"
+                    : "default",
+                },
+                {
+                  id: "quiet",
+                  label: t("pulseQuietNow"),
+                  value: familySnapshot.members.filter(
+                    (m) => m.role === "child" && isWithinDowntime(getDowntime(m.id)),
+                  ).length,
+                  tone: familySnapshot.members.some(
+                    (m) => m.role === "child" && isWithinDowntime(getDowntime(m.id)),
+                  )
+                    ? "live"
+                    : "default",
+                },
+                {
+                  id: "approvals",
+                  label: t("pulseApprovals"),
+                  value: guardianStore.approvals.filter((a) => a.status === "pending").length,
+                  tone: guardianStore.approvals.some((a) => a.status === "pending") ? "warn" : "ok",
+                },
+              ]}
+            />
+          ) : null}
         </div>
         <SpaceSwitch
           value={space}
@@ -902,7 +1241,22 @@ export function CompanionsPage() {
           </button>
         </div>
       )}
-      {!roomFullscreen ? (
+      {showProfessionalDesk ? (
+        <ProfessionalRoster
+          activeId={activeGroupId ? null : active.id === general.id ? null : active.id}
+          activeGroupId={activeGroupId}
+          people={people}
+          desk={proDesk}
+          onOpenCompanion={openProfessionalCompanion}
+          onOpenGroup={openProfessionalGroup}
+          onCreateCompanion={() => {
+            setActiveGroupId(null);
+            setBirthDomain("");
+            setAdding(true);
+          }}
+          onInspect={() => setAgentPanel(true)}
+        />
+      ) : !roomFullscreen ? (
       <div className="cp-face-bar">
         <div className="cp-face-list" aria-label={t("companions")}>
           {[general, ...facePeople].map((person) => (
@@ -913,8 +1267,22 @@ export function CompanionsPage() {
               aria-pressed={!incognitoOpen && active.id === person.id}
               onClick={() => choose(person)}
             >
-              <PersonAvatar person={person} active={!incognitoOpen && active.id === person.id} size="lg" />
-              <strong>{nameOf(person)}</strong>
+              <span className="aud-face-wrap">
+                <PersonAvatar person={person} active={!incognitoOpen && active.id === person.id} size="lg" />
+                {(() => {
+                  const seat = familySnapshot?.members.find((m) => m.id === person.familyMemberId);
+                  if (!seat || seat.role !== "child") return null;
+                  if (seat.isPaused) return <FaceStatusDot tone="warn" label={t("familyPaused")} />;
+                  if (isWithinDowntime(getDowntime(seat.id))) {
+                    return <FaceStatusDot tone="quiet" label={t("familyFaceQuiet")} />;
+                  }
+                  return null;
+                })()}
+              </span>
+              <strong>
+                {nameOf(person)}{" "}
+                <CompanionBadge badge={companionAvailability(person, companionPolicies).badge} />
+              </strong>
             </button>
           ))}
           {space === "personal" ? (
@@ -980,7 +1348,7 @@ export function CompanionsPage() {
           </button>
           )}
         </div>
-        <button className="cp-button cp-all" disabled={busy} onClick={() => setAllOpen(true)}>
+        <button className="cp-button cp-all" disabled={busy} onClick={() => { setSearch(""); setAllOpen(true); }}>
           <Ellipsis size={19} />
           {ar ? "كل الرفاق" : "All companions"}
         </button>
@@ -989,26 +1357,57 @@ export function CompanionsPage() {
       {incognitoOpen && space === "personal" ? (
         <IncognitoRoom onExit={closeIncognito} />
       ) : (
-      <section className="cp-room" aria-label={nameOf(active)}>
+      <section className="cp-room" aria-label={activeGroup?.title ?? nameOf(active)}>
         <header className="cp-room-header">
           <div className="cp-room-person">
-            <PersonAvatar person={active} size="sm" />
-            <strong>{nameOf(active)}</strong>
-            <span className="cp-muted">
-              {studioKind
-                ? ar
-                  ? "وكيل استوديو — بعد الانتهاء نفتح صفحته"
-                  : "Studio agent — opens their page when done"
-                : parentCoachMode
-                  ? `${t("familyChatCoachEyebrow")} · ${coachingKidName}`
-                  : active.domain === "general"
-                    ? ar
-                      ? "ابدأ من حيث أنت"
-                      : "Start wherever you are"
-                    : active.domain}
+            <span className="aud-face-wrap">
+              <PersonAvatar person={active} size="sm" state={busy ? "speaking" : undefined} />
+              {busy ? <em className="aud-face-dot is-ok" aria-hidden /> : null}
             </span>
+            <div className="cp-room-person-copy">
+              {showProfessionalDesk && activeGroup ? (
+                <strong>{activeGroup.title}</strong>
+              ) : showProfessionalDesk && active.domain !== "general" ? (
+                <button
+                  type="button"
+                  className="pro-name-btn"
+                  aria-expanded={agentPanel}
+                  onClick={() => setAgentPanel((open) => !open)}
+                >
+                  <strong>{nameOf(active)}</strong>
+                </button>
+              ) : (
+                <strong>{nameOf(active)}</strong>
+              )}
+              {showProfessionalDesk ? null : (
+              <span className="cp-muted">
+                {studioKind
+                  ? ar
+                    ? "وكيل استوديو — بعد الانتهاء نفتح صفحته"
+                    : "Studio agent — opens their page when done"
+                  : parentCoachMode
+                    ? `${t("familyChatCoachEyebrow")} · ${coachingKidName}`
+                    : active.domain === "general"
+                      ? ar
+                        ? "ابدأ من حيث أنت"
+                        : "Start wherever you are"
+                      : purposeLine(active.domain, ar)}
+              </span>
+              )}
+            </div>
           </div>
           <div className="cp-room-actions">
+            {signedIn && !isFamilyChild ? (
+              <button
+                type="button"
+                className="cp-button"
+                disabled={busy}
+                onClick={() => setWhatsappConnectOpen(true)}
+              >
+                <MessageCircle size={15} aria-hidden />
+                {t("whatsappConnectButton")}
+              </button>
+            ) : null}
             {studioKind ? (
               <button
                 type="button"
@@ -1046,6 +1445,22 @@ export function CompanionsPage() {
             </button>
           </div>
         </header>
+        {(() => {
+          const roomSeat =
+            familySnapshot?.members.find((m) => m.id === active.familyMemberId) ?? familyActive;
+          if (!familyLive || !roomSeat) return null;
+          if (roomSeat.isPaused) {
+            return (
+              <p className="aud-notice is-warn">
+                {t("familyChatPausedNotice").replace("{name}", roomSeat.displayName)}
+              </p>
+            );
+          }
+          if (roomSeat.role === "child" && isWithinDowntime(getDowntime(roomSeat.id))) {
+            return <p className="aud-notice is-quiet">{t("familyChatQuietNotice")}</p>;
+          }
+          return null;
+        })()}
         {studioKind && !busy ? (
           <p className="cp-studio-handoff">
             {ar
@@ -1053,19 +1468,21 @@ export function CompanionsPage() {
               : "Tell them what to build — when they finish, we’ll take you to their Studio page."}
           </p>
         ) : null}
-        <div className="cp-room-body">
-          <CompanionChatRail
-            tabs={chatTabs.tabs}
-            activeId={activeTab.id}
-            companionHue={active.hue}
-            companionName={nameOf(active)}
-            ar={ar}
-            disabled={busy}
-            onSelect={selectChatTab}
-            onNew={addChatTab}
-            onAction={onChatRailAction}
-            onRename={renameChatTab}
-          />
+        <div className={cn("cp-room-body", showProfessionalDesk && agentPanel && "is-agent-chat")}>
+          {showProfessionalDesk && agentPanel ? null : (
+            <CompanionChatRail
+              tabs={chatTabs.tabs}
+              activeId={activeTab.id}
+              companionHue={active.hue}
+              companionName={nameOf(active)}
+              ar={ar}
+              disabled={busy}
+              onSelect={selectChatTab}
+              onNew={addChatTab}
+              onAction={onChatRailAction}
+              onRename={renameChatTab}
+            />
+          )}
           <div className="cp-room-main">
           <div
             ref={scrollRef}
@@ -1082,8 +1499,15 @@ export function CompanionsPage() {
           {loading ? <p className="cp-muted">{t("loading")}</p> : null}
           {!lines.length && !loading && !draft.trim() ? (
             <div className="cp-chat-welcome">
-              <span className="cp-welcome-icon">
-                <Sparkles size={30} strokeWidth={1.25} />
+              <span
+                className={cn("cp-welcome-icon", active.domain !== "general" && "is-face")}
+                aria-hidden
+              >
+                {active.domain === "general" ? (
+                  <Sparkles size={30} strokeWidth={1.25} />
+                ) : (
+                  <PersonAvatar person={active} size="lg" />
+                )}
               </span>
               <p className="cp-eyebrow">
                 {parentCoachMode
@@ -1174,15 +1598,20 @@ export function CompanionsPage() {
               >
                 {line.who === "companion" ? <PersonAvatar person={speaker} size="sm" /> : null}
                 <div>
-                  <p className="cp-message-author">
-                    {line.who === "me" ? (ar ? "أنت" : "You") : nameOf(speaker)}
-                    <time dateTime={line.at}>
-                      {new Date(line.at).toLocaleTimeString(locale, {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                      })}
-                    </time>
-                  </p>
+                  <div className="cp-message-top">
+                    <p className="cp-message-author">
+                      {line.who === "me" ? (ar ? "أنت" : "You") : nameOf(speaker)}
+                      <time dateTime={line.at}>
+                        {new Date(line.at).toLocaleTimeString(locale, {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </time>
+                    </p>
+                    {line.who === "companion" && room.thoughts[line.id] ? (
+                      <ThinkingBlock trace={room.thoughts[line.id]!} className="cp-message-thought" />
+                    ) : null}
+                  </div>
                   <div className="cp-message-text">
                     {line.who === "companion" ? <ChatMarkdown content={line.text} /> : line.text}
                   </div>
@@ -1233,18 +1662,24 @@ export function CompanionsPage() {
           })}
           {(busy || agentSteps.length > 0) && lines.at(-1)?.who !== "companion" ? (
             <div className="cp-agent-activity" role="status" aria-live="polite">
-              <div className="cp-agent-activity-head">
+              <div className="cp-think-row">
                 <PersonAvatar person={active} size="sm" state="speaking" />
-                <span className="cp-agent-activity-name">{nameOf(active)}</span>
+                <div className="cp-think-beside">
+                  <span className="cp-agent-activity-name">{nameOf(active)}</span>
+                  {room.liveThought ? (
+                    <ThinkingBlock trace={room.liveThought} />
+                  ) : (
+                    <AgentSteps
+                      steps={
+                        agentSteps.length > 0
+                          ? agentSteps
+                          : [{ id: "thinking", title: "thinking", status: "running" }]
+                      }
+                      thinkingLabel={thinkingLabel || `${t("thinking")}…`}
+                    />
+                  )}
+                </div>
               </div>
-              <AgentSteps
-                steps={
-                  agentSteps.length > 0
-                    ? agentSteps
-                    : [{ id: "thinking", title: "thinking", status: "running" }]
-                }
-                thinkingLabel={thinkingLabel || `${t("thinking")}…`}
-              />
             </div>
           ) : null}
           </div>
@@ -1279,32 +1714,6 @@ export function CompanionsPage() {
               >
                 <X size={14} />
               </button>
-            </div>
-          ) : null}
-          {nudge && !draft.trim() && !busy && !sensitive ? (
-            <div className={`cp-nudge cp-nudge-${nudge.level}`}>
-              <div className="cp-meta">
-                {nameOf(active)} · {nudge.source}
-              </div>
-              <p>{nudge.text}</p>
-              <div className="cp-actions">
-                {nudge.answers?.map((answer) => (
-                  <button
-                    key={answer}
-                    className="cp-button"
-                    onClick={() => {
-                      answerNudge(nudge.id);
-                      setDraft(answer);
-                      composerRef.current?.focus();
-                    }}
-                  >
-                    {answer}
-                  </button>
-                ))}
-                <button className="cp-text-button" onClick={() => ignoreNudge(nudge.id)}>
-                  {t("compDismiss")}
-                </button>
-              </div>
             </div>
           ) : null}
           {room.notice ? (
@@ -1387,6 +1796,7 @@ export function CompanionsPage() {
               ) : null}
             </div>
           ) : null}
+          <CompanionNotice availability={sendGate.availability} />
           <div className="cp-composer-toolbar">
             <div className="cp-actions">
               {composerSuggestions.map((suggestion) => (
@@ -1446,12 +1856,27 @@ export function CompanionsPage() {
               onDismiss={() => room.clearSuggestedSessionMode()}
             />
           ) : null}
+          <UsageMeter status={sendGate.limits} />
+          {workspaceFolder ? (
+            <div className="cp-folder-chip">
+              <span title={workspaceFolder}>
+                {ar ? "المجلد" : "Folder"} · {workspaceFolder.split(/[/\\]/).pop()}
+              </span>
+              <button type="button" onClick={() => setWorkspaceFolder(null)} aria-label={ar ? "إزالة المجلد" : "Remove folder"}>
+                <X size={12} />
+              </button>
+            </div>
+          ) : null}
           <div className="cp-composer">
             <ComposerPlusMenu
               open={plusOpen}
               onOpenChange={setPlusOpen}
-              onUploadImages={() => imageInputRef.current?.click()}
-              onUploadFiles={() => fileInputRef.current?.click()}
+              onUploadImages={() => {
+                if (!sendGate.uploadsBlocked) imageInputRef.current?.click();
+              }}
+              onUploadFiles={() => {
+                if (!sendGate.uploadsBlocked) fileInputRef.current?.click();
+              }}
               onWebSearch={() =>
                 setDraft((current) =>
                   current.trim().startsWith("/web")
@@ -1459,6 +1884,13 @@ export function CompanionsPage() {
                     : `/web ${current.trim()}`.trim() + " ",
                 )
               }
+              onConnectFolder={() => {
+                if (!isTauriRuntime()) return;
+                void pickFolder().then((path) => {
+                  if (path) setWorkspaceFolder(path);
+                });
+              }}
+              features={{ folder: true, create: true }}
               onCreate={(kind: ComposerCreateKind) => {
                 const prompt = composerCreatePrompt(kind, ar ? "ar" : "en");
                 setDraft((current) => {
@@ -1471,7 +1903,6 @@ export function CompanionsPage() {
                 });
                 requestAnimationFrame(() => composerRef.current?.focus());
               }}
-              features={{ folder: false, create: true }}
             />
             <SessionModeMenu disabled={busy || loading} />
             <input
@@ -1506,15 +1937,6 @@ export function CompanionsPage() {
                 event.target.value = "";
               }}
             />
-            <button
-              className="cp-composer-person"
-              disabled={busy}
-              onClick={() => setAllOpen(true)}
-              aria-label={t("compTapToChange")}
-            >
-              <PersonAvatar person={active} size="sm" />
-              <ChevronDown size={12} />
-            </button>
             <textarea
               ref={composerRef}
               rows={1}
@@ -1555,7 +1977,7 @@ export function CompanionsPage() {
               <button
                 className="cp-send"
                 onClick={() => void send()}
-                disabled={!draft.trim() || loading || Boolean(modeApprove)}
+                disabled={!draft.trim() || loading || Boolean(modeApprove) || sendGate.blocked}
                 aria-label={busy ? t("chatQueuedLabel") : t("compSend")}
               >
                 <ArrowUp size={20} />
@@ -1575,13 +1997,17 @@ export function CompanionsPage() {
                     : "Enter to send · Shift + Enter for a new line"}
             </span>
             <span>
-              {draft.trim()
-                ? ar
-                  ? "المسودة محفوظة في هذه الجلسة"
-                  : "Draft saved in this session"
-                : ar
-                  ? "على راحتك."
-                  : "At your pace."}
+              {lines.length === 1
+                ? t("chatMessageCountOne")
+                : lines.length > 1
+                  ? t("chatMessageCount").replace("{n}", String(lines.length))
+                  : draft.trim()
+                    ? ar
+                      ? "المسودة محفوظة في هذه الجلسة"
+                      : "Draft saved in this session"
+                    : ar
+                      ? "على راحتك."
+                      : "At your pace."}
             </span>
           </div>
         </div>
@@ -1589,6 +2015,32 @@ export function CompanionsPage() {
         </div>
       </section>
       )}
+      {showProfessionalDesk && agentPanel && !activeGroup && active.domain !== "general" ? (
+        <ProfessionalScreen
+          person={active}
+          desk={proDesk}
+          liveText={liveScreen}
+          speaking={busy}
+          onChanged={() => void reloadProDesk()}
+          onClose={() => {
+            setSandboxMaximized(false);
+            setAgentPanel(false);
+          }}
+          sandboxMaximized={sandboxMaximized}
+          onToggleSandboxMaximize={() => setSandboxMaximized((open) => !open)}
+          computerPowered={computerPowered}
+          signedIn={signedIn}
+          onPowerComputer={powerComputerOn}
+          onPowerOffComputer={powerComputerOff}
+          onQuickAction={(prompt, needsComputer) => {
+            if (needsComputer) powerComputerOn();
+            setDraft(prompt);
+            setAgentPanel(true);
+            requestAnimationFrame(() => composerRef.current?.focus());
+          }}
+        />
+      ) : null}
+
       <CompanionModal
         open={allOpen}
         onClose={() => setAllOpen(false)}
@@ -1609,11 +2061,13 @@ export function CompanionsPage() {
             <button
               key={person.id}
               onClick={() => choose(person)}
-              aria-pressed={active.id === person.id}
             >
               <PersonAvatar person={person} size="md" />
               <span>
-                <strong>{nameOf(person)}</strong>
+                <strong>
+                  {nameOf(person)}{" "}
+                  <CompanionBadge badge={companionAvailability(person, companionPolicies).badge} />
+                </strong>
                 <small>
                   {person.lastLine ||
                     person.lastMemory ||
@@ -1621,11 +2075,10 @@ export function CompanionsPage() {
                       ? ar
                         ? "بداية لكل موضوع"
                         : "A starting point for anything"
-                      : person.domain)}
+                      : purposeLine(person.domain, ar))}
                 </small>
               </span>
               <time>{relativeTime(person.lastAt, locale)}</time>
-              {active.id === person.id ? <Check size={16} /> : null}
             </button>
           ))}
         </div>
@@ -1677,6 +2130,19 @@ export function CompanionsPage() {
       </CompanionModal>
     </div>
       )}
+      {whatsappConnectOpen ? (
+        <WhatsAppConnectSheet
+          companionId={active.domain}
+          companionName={nameOf(active)}
+          onClose={() => setWhatsappConnectOpen(false)}
+          onConnected={() => {
+            pushToast({
+              title: t("whatsappConnectConnected"),
+              body: t("whatsappConnectBody"),
+            });
+          }}
+        />
+      ) : null}
       {connectFamily ? (
         <CompanionConnectSheet
           family={connectFamily}

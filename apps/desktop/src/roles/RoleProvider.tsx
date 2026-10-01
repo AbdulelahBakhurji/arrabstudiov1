@@ -1,13 +1,22 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Outlet, useLocation } from "react-router-dom";
-import type { PlanAudience } from "@arrab/shared";
-import { ROLE_PATH } from "@/roles/catalog";
-import { readAccountSessionToken } from "@/lib/account-session";
 import {
-  createContext,
   useCallback,
   useContext,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  createContext,
+  type ReactNode,
 } from "react";
+import { Outlet, useLocation } from "react-router-dom";
+import type { PlanAudience } from "@arrab/shared";
+import {
+  audienceFromAccountSignals,
+  ROLE_PATH,
+} from "@/roles/catalog";
+import { readAccountSessionToken } from "@/lib/account-session";
+import { isGuestLocalMode, subscribeGuestMode } from "@/lib/guest-mode";
+import { useSignedInAccount } from "@/lib/use-signed-in-account";
 
 const STORAGE_KEY = "arrab.studioRole";
 
@@ -23,14 +32,18 @@ type RoleContextValue = {
 
 const RoleContext = createContext<RoleContextValue | null>(null);
 
+function hasCloudSession(): boolean {
+  return Boolean(readAccountSessionToken()?.trim()) && !isGuestLocalMode();
+}
+
 export function readStoredRole(): PlanAudience {
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (saved === "family") {
-      // Family chrome is account-bound — never keep it after sign-out.
-      return readAccountSessionToken() ? "family" : "individual";
+    // Organization / family chrome is account-bound — never for guests.
+    if (!hasCloudSession()) {
+      return "individual";
     }
-    if (saved === "organization" || saved === "individual") {
+    if (saved === "family" || saved === "organization" || saved === "individual") {
       return saved;
     }
   } catch {
@@ -48,6 +61,10 @@ function persistRole(role: PlanAudience) {
 }
 
 function roleFromPath(pathname: string): PlanAudience {
+  // Guests / signed-out never inherit organization from a URL hash.
+  if (!hasCloudSession()) {
+    return "individual";
+  }
   if (pathname.includes("/organizations")) {
     return "organization";
   }
@@ -57,6 +74,28 @@ function roleFromPath(pathname: string): PlanAudience {
     return stored === "family" ? "family" : "individual";
   }
   return readStoredRole();
+}
+
+/**
+ * Business / Team / Enterprise pages require a signed-in cloud org plan.
+ * Guests and personal plans stay on the individuals shell.
+ */
+function roleFromPlanOrPath(
+  pathname: string,
+  signals: {
+    planId?: string | null;
+    planCategory?: string | null;
+    planName?: string | null;
+  },
+  cloudSignedIn: boolean,
+): PlanAudience {
+  if (!cloudSignedIn) {
+    return "individual";
+  }
+  if (signals.planId || signals.planCategory || signals.planName) {
+    return audienceFromAccountSignals(signals);
+  }
+  return roleFromPath(pathname);
 }
 
 function rolePathFor(role: PlanAudience): string {
@@ -111,10 +150,26 @@ export function RoleProvider({
   return <RoleContext.Provider value={value}>{children}</RoleContext.Provider>;
 }
 
-/** Reads /individuals or /organizations from the URL and provides role to the whole studio shell. */
+/** Plan audience when cloud-signed-in; guests always get the individuals shell. */
 export function RoleFromPath() {
   const { pathname } = useLocation();
-  const role = roleFromPath(pathname);
+  const { account, status, signedIn } = useSignedInAccount();
+  const guestLocal = useSyncExternalStore(
+    subscribeGuestMode,
+    isGuestLocalMode,
+    () => false,
+  );
+  const cloudSignedIn = signedIn && !guestLocal;
+  const entitlements = status?.entitlements;
+  const role = roleFromPlanOrPath(
+    pathname,
+    {
+      planId: entitlements?.planId ?? account?.planId ?? null,
+      planCategory: entitlements?.planCategory ?? account?.planCategory ?? null,
+      planName: entitlements?.planName ?? account?.planName ?? null,
+    },
+    cloudSignedIn,
+  );
   return (
     <RoleProvider role={role}>
       <Outlet />

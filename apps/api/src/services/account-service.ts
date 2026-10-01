@@ -22,6 +22,8 @@ import {
   type SignInAccountRequest,
   type StudioAccountRecord,
   type SubscriptionPlanId,
+  type TokenTopUpPack,
+  type TokenUsageLevel,
   type UpdateAccountProfileRequest,
   type StartWebAuthResponse,
   type PollWebAuthResponse,
@@ -63,6 +65,20 @@ function billingPeriod(now = new Date()): { start: string; end: string } {
   const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
   return { start: start.toISOString(), end: end.toISOString() };
+}
+
+function activeTopUpTokens(account: StudioAccountRecord): number {
+  return (account.tokenTopUps ?? [])
+    .filter((entry) => entry.periodEnd === account.periodEnd)
+    .reduce((sum, entry) => sum + Math.max(0, entry.tokens), 0);
+}
+
+function usageLevel(used: number, limit: number): TokenUsageLevel {
+  if (limit <= 0 || used >= limit) return "exhausted";
+  const ratio = used / limit;
+  if (ratio >= 0.95) return "critical";
+  if (ratio >= 0.8) return "low";
+  return "ok";
 }
 
 function normalizeEmail(email: string): string {
@@ -141,14 +157,23 @@ export class AccountService {
         pauseMode: null,
         periodStart: period.start,
         periodEnd: period.end,
+        planTokenLimit: null,
+        topUpTokens: 0,
+        deepseekCreditHalalas: 0,
+        otherCreditHalalas: 0,
+        usageLevel: "ok",
+        canTopUp: false,
       };
     }
 
     const current = await this.ensurePeriod(account);
     const plan = SUBSCRIPTION_PLANS[current.planId];
     const tokensUsed = await this.periodTokensUsed(current.periodStart, current.periodEnd);
-    const tokenLimit = plan.monthlyTokenLimit;
-    const overLimit = tokenLimit !== null && tokensUsed >= tokenLimit;
+    const planTokenLimit = plan.monthlyTokenLimit;
+    const topUpTokens = activeTopUpTokens(current);
+    const tokenLimit = planTokenLimit + topUpTokens;
+    const tokensRemaining = Math.max(0, tokenLimit - tokensUsed);
+    const overLimit = tokensUsed >= tokenLimit;
     const freeTier = current.planId === "free" || current.planId === "family_free";
     const paymentDue =
       current.subscriptionStatus === "past_due" ||
@@ -163,20 +188,23 @@ export class AccountService {
         subscriptionStatus: current.subscriptionStatus === "canceled" ? "canceled" : "past_due",
         tokenLimit,
         tokensUsed,
-        tokensRemaining: tokenLimit === null ? null : Math.max(0, tokenLimit - tokensUsed),
+        tokensRemaining,
         overLimit: true,
         pauseMode: "payment_required",
         periodStart: current.periodStart,
         periodEnd: current.periodEnd,
+        planTokenLimit,
+        topUpTokens,
+        deepseekCreditHalalas: current.modelCredit?.deepseekHalalas ?? 0,
+        otherCreditHalalas: current.modelCredit?.otherHalalas ?? 0,
+        usageLevel: "exhausted",
+        canTopUp: false,
       };
     }
 
-    // Mid-period: Free / Family Free still meter usage but do not hard-pause on token ceilings.
-    const pauseMode = !overLimit || freeTier
-      ? null
-      : tokenLimit === 0
-        ? "upgrade_required"
-        : "upgrade_or_wait";
+    // Every plan pauses when its pool (plan + usage packs) is used up. Free can only
+    // upgrade or add usage; paid plans can also wait for the monthly reset.
+    const pauseMode = !overLimit ? null : freeTier ? "upgrade_required" : "upgrade_or_wait";
     return {
       connected: true,
       planId: current.planId,
@@ -184,16 +212,72 @@ export class AccountService {
       subscriptionStatus: freeTier ? "trialing" : current.subscriptionStatus,
       tokenLimit,
       tokensUsed,
-      tokensRemaining: tokenLimit === null ? null : Math.max(0, tokenLimit - tokensUsed),
-      overLimit: freeTier ? false : overLimit,
+      tokensRemaining,
+      overLimit,
       pauseMode,
       periodStart: current.periodStart,
       periodEnd: current.periodEnd,
+      planTokenLimit,
+      topUpTokens,
+      deepseekCreditHalalas: current.modelCredit?.deepseekHalalas ?? 0,
+      otherCreditHalalas: current.modelCredit?.otherHalalas ?? 0,
+      usageLevel: usageLevel(tokensUsed, tokenLimit),
+      canTopUp: true,
     };
   }
 
-  async status(): Promise<AccountStatusResponse> {
-    const account = await this.persistence.accounts.get();
+  /** Adds a paid usage pack to the current period. Applying the same invoice twice is a no-op. */
+  async addTopUp(pack: TokenTopUpPack, invoiceId: string): Promise<AccountStatusResponse> {
+    const account = await this.ensurePeriod(await this.requireConnectedAccount());
+    const existing = account.tokenTopUps ?? [];
+    if (existing.some((entry) => entry.invoiceId === invoiceId)) {
+      return this.status();
+    }
+    const now = this.clock.isoNow();
+    const updated: StudioAccountRecord = {
+      ...account,
+      tokenTopUps: [
+        // Packs from earlier periods no longer count; keep a short history only.
+        ...existing.filter((entry) => entry.periodEnd === account.periodEnd).slice(-49),
+        {
+          invoiceId,
+          packId: pack.id,
+          tokens: pack.tokens,
+          purchasedAt: now,
+          periodEnd: account.periodEnd,
+        },
+      ],
+      updatedAt: now,
+    };
+    await this.persistence.accounts.upsert(updated);
+    return this.status();
+  }
+
+  /** Adds custom credit: 10% DeepSeek, 60% other models. The same invoice is applied once. */
+  async addModelCredit(
+    quote: { deepseekHalalas: number; otherHalalas: number },
+    invoiceId: string,
+  ): Promise<AccountStatusResponse> {
+    const account = await this.ensurePeriod(await this.requireConnectedAccount());
+    const current = account.modelCredit ?? { deepseekHalalas: 0, otherHalalas: 0, appliedInvoiceIds: [] };
+    const applied = current.appliedInvoiceIds ?? [];
+    if (applied.includes(invoiceId)) {
+      return this.status();
+    }
+    const now = this.clock.isoNow();
+    await this.persistence.accounts.upsert({
+      ...account,
+      modelCredit: {
+        deepseekHalalas: current.deepseekHalalas + quote.deepseekHalalas,
+        otherHalalas: current.otherHalalas + quote.otherHalalas,
+        appliedInvoiceIds: [...applied, invoiceId].slice(-50),
+      },
+      updatedAt: now,
+    });
+    return this.status();
+  }
+
+  async statusFor(account: StudioAccountRecord | null): Promise<AccountStatusResponse> {
     const entitlements = await this.buildEntitlements(account);
     return {
       connected: Boolean(account),
@@ -201,6 +285,10 @@ export class AccountService {
       entitlements,
       plans: Object.values(SUBSCRIPTION_PLANS),
     };
+  }
+
+  async status(): Promise<AccountStatusResponse> {
+    return this.statusFor(await this.persistence.accounts.get());
   }
 
   async assertWithinQuota(): Promise<AccountEntitlements> {
@@ -233,7 +321,7 @@ export class AccountService {
 
     if (entitlements.pauseMode === "upgrade_or_wait") {
       throw new QuotaExceededError(
-        `Paused — ${entitlements.planName} token limit reached (${used} / ${limit}). Upgrade to keep working, or wait until ${renews} when your monthly allowance resets.`,
+        `Paused — ${entitlements.planName} token limit reached (${used} / ${limit}). Add usage or upgrade to keep working, or wait until ${renews} when your monthly allowance resets.`,
       );
     }
 
@@ -244,7 +332,7 @@ export class AccountService {
     }
 
     throw new QuotaExceededError(
-      `Paused — Free plan token limit reached (${used} / ${limit}). Upgrade to a paid plan to continue. Free does not unlock more tokens until you upgrade.`,
+      `Paused — ${entitlements.planName} token limit reached (${used} / ${limit}). Add usage or upgrade to a paid plan to continue.`,
     );
   }
 
@@ -374,7 +462,7 @@ export class AccountService {
     if (!account) {
       throw new UnauthorizedError("Session expired. Sign in with email and password");
     }
-    return this.status();
+    return this.statusFor(account);
   }
 
   async applyPlan(planId: SubscriptionPlanId): Promise<AccountStatusResponse> {

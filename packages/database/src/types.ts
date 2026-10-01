@@ -1,5 +1,12 @@
 import type { Pool } from "pg";
-import type { ErpCompanion } from "@arrab/shared";
+import type {
+  ErpCompanion,
+  ControlNotification,
+  ControlClient,
+  ControlConnector,
+  ControlMaintenance,
+  CompanionDeskState,
+} from "@arrab/shared";
 import type {
   Activity,
   Agent,
@@ -178,6 +185,46 @@ export interface ErpCompanionRepository {
   delete(id: string): Promise<boolean>;
 }
 
+export interface ControlNotificationRepository {
+  listRecent(limit: number): Promise<ControlNotification[]>;
+  insert(item: ControlNotification): Promise<ControlNotification>;
+  getById(id: string): Promise<ControlNotification | null>;
+  replace(item: ControlNotification): Promise<ControlNotification | null>;
+}
+
+export interface CompanionDeskRepository {
+  get(): Promise<CompanionDeskState>;
+  save(state: CompanionDeskState): Promise<CompanionDeskState>;
+}
+
+export interface CrewRepository {
+  get(): Promise<import("@arrab/shared").CrewState>;
+  save(state: import("@arrab/shared").CrewState): Promise<import("@arrab/shared").CrewState>;
+}
+
+/** Opaque ciphertext store for the zero-knowledge chat vault, keyed per user. */
+export interface SealedVaultRepository {
+  getKey(ownerKey: string): Promise<import("@arrab/shared").WrappedChatKey | null>;
+  putKey(ownerKey: string, key: import("@arrab/shared").WrappedChatKey): Promise<void>;
+  listChats(ownerKey: string): Promise<import("@arrab/shared").SealedChat[]>;
+  /** Last write wins by `updatedAt`; a tombstoned id older than the write is revived. */
+  putChat(ownerKey: string, chat: import("@arrab/shared").SealedChat): Promise<void>;
+  deleteChat(ownerKey: string, id: string, deletedAt: string): Promise<void>;
+  listDeleted(ownerKey: string): Promise<Array<{ id: string; deletedAt: string }>>;
+  /** Wipe the user's whole vault (key + chats + tombstones). */
+  deleteAll(ownerKey: string): Promise<void>;
+}
+
+export interface ControlDeskRepository {
+  getPolicy(): Promise<ControlMaintenance | null>;
+  setPolicy(policy: ControlMaintenance): Promise<ControlMaintenance>;
+  upsertClient(client: ControlClient): Promise<ControlClient>;
+  listClients(): Promise<ControlClient[]>;
+  listConnectors(): Promise<ControlConnector[]>;
+  upsertConnector(entry: ControlConnector): Promise<ControlConnector>;
+  deleteConnector(provider: string): Promise<boolean>;
+}
+
 export interface Persistence {
   readonly kind: PersistenceKind;
   readonly workspaceId: WorkspaceId;
@@ -209,6 +256,11 @@ export interface Persistence {
   familyGuidance: FamilyGuidanceRepository;
   familyHouseholdMeta: FamilyHouseholdMetaRepository;
   erpCompanions: ErpCompanionRepository;
+  controlNotifications: ControlNotificationRepository;
+  controlDesk: ControlDeskRepository;
+  companionDesk: CompanionDeskRepository;
+  crew: CrewRepository;
+  sealedVault: SealedVaultRepository;
 }
 
 export const LOCAL_ORGANIZATION_ID = "org_local_studio";

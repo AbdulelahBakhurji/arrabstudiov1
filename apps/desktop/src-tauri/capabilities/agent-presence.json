@@ -1,0 +1,14 @@
+{
+  "identifier": "agent-presence",
+  "description": "Presence chip. Cannot create windows, open links, or use the tray.",
+  "windows": ["agent-presence"],
+  "permissions": [
+    "core:event:default",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-size",
+    "core:window:allow-set-position",
+    "core:webview:deny-internal-toggle-devtools"
+  ]
+}

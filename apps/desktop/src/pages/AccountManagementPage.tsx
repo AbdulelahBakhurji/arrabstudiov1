@@ -13,10 +13,9 @@ import {
   UserRound,
   UsersRound,
 } from "lucide-react";
-import type { AccountStatusResponse, PlanAudience, SubscriptionPlanId } from "@arrab/shared";
+import type { AccountStatusResponse, SubscriptionPlanId } from "@arrab/shared";
 import { SUBSCRIPTION_PLANS } from "@arrab/shared";
-import { PlansCatalog } from "@/components/PlansCatalog";
-import { FamilyHouseholdPanel } from "@/components/FamilyHouseholdPanel";
+import { FamilyHouseholdPanel } from "@/components/family/FamilyHouseholdPanel";
 import { Surface } from "@/components/StudioFrame";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError } from "@/lib/api";
@@ -29,7 +28,7 @@ import {
 } from "@/lib/account-session";
 import { useSignedInAccount } from "@/lib/use-signed-in-account";
 import { liveCompanions, useCompanionState } from "@/lib/companions";
-import { openExternalUrl } from "@/lib/desktop";
+import { openPlansPage } from "@/lib/desktop";
 import { pushToast } from "@/lib/notify";
 import { useOrgSeatCapabilities } from "@/lib/org-seat";
 import { clearGuestLocalMode, isGuestLocalMode, subscribeGuestMode } from "@/lib/guest-mode";
@@ -47,7 +46,14 @@ function formatTokens(value: number | null | undefined, unlimited: string): stri
 }
 
 /** Plan allowance as Cursor-style multiplier (never raw token counts on plan UI). */
-function planUsageTier(planId: SubscriptionPlanId | null | undefined): string {
+function knownPlanId(planId: string | null | undefined): SubscriptionPlanId | null {
+  return planId && Object.prototype.hasOwnProperty.call(SUBSCRIPTION_PLANS, planId)
+    ? (planId as SubscriptionPlanId)
+    : null;
+}
+
+function planUsageTier(rawPlanId: string | null | undefined): string {
+  const planId = knownPlanId(rawPlanId);
   if (!planId || !SUBSCRIPTION_PLANS[planId]) return "1×";
   const base = SUBSCRIPTION_PLANS.free.monthlyTokenLimit || 100_000;
   const mult = Math.max(1, Math.round(SUBSCRIPTION_PLANS[planId].monthlyTokenLimit / base));
@@ -115,9 +121,6 @@ export function AccountManagementPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
-  const [subscribeCode, setSubscribeCode] = useState("");
-  const [planAudience, setPlanAudience] = useState<PlanAudience>("individual");
-  const [checkoutBusy, setCheckoutBusy] = useState<SubscriptionPlanId | null>(null);
   const hasSession = Boolean(readAccountSessionToken());
   const statusRef = useRef<AccountStatusResponse | null>(null);
   statusRef.current = status;
@@ -196,7 +199,11 @@ export function AccountManagementPage() {
 
   const isSignedIn = Boolean(signedInAccount) && !guestLocal;
   const account = isSignedIn ? (status?.account ?? null) : null;
-  const entitlements = status?.entitlements ?? null;
+  const rawEntitlements = isSignedIn ? (status?.entitlements ?? null) : null;
+  const entitlements =
+    rawEntitlements?.connected && !rawEntitlements.planName.trim().toLowerCase().startsWith("local")
+      ? rawEntitlements
+      : null;
   const planId = isSignedIn ? (account?.planId ?? entitlements?.planId ?? null) : null;
   // Cloud quota only when signed in — local / guest shows zero cloud usage.
   const used = isSignedIn ? (entitlements?.tokensUsed ?? 0) : 0;
@@ -206,14 +213,8 @@ export function AccountManagementPage() {
   const profileDirty = Boolean(account && displayName.trim() && displayName.trim() !== account.displayName);
   const periodDaysLeft = entitlements ? daysUntil(entitlements.periodEnd) : null;
   const planFeatures = useMemo(() => {
-    if (!planId || !SUBSCRIPTION_PLANS[planId]) return [];
-    return SUBSCRIPTION_PLANS[planId].features.slice(0, 6);
-  }, [planId]);
-
-  useEffect(() => {
-    if (!planId) return;
-    const audience = SUBSCRIPTION_PLANS[planId]?.audience;
-    if (audience) setPlanAudience(audience);
+    const known = knownPlanId(planId);
+    return known ? SUBSCRIPTION_PLANS[known].features.slice(0, 6) : [];
   }, [planId]);
 
   const isFamilyPlan = audienceFromPlanId(planId) === "family";
@@ -288,47 +289,6 @@ export function AccountManagementPage() {
   function discardProfile() {
     if (account) {
       setDisplayName(account.displayName);
-    }
-  }
-
-  async function activateCode() {
-    if (!subscribeCode.trim()) {
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await arrabApi.activateSubscription({ code: subscribeCode.trim() });
-      setStatus(next);
-      setSubscribeCode("");
-      broadcastAccount();
-      pushToast({
-        title: t("subscriptionActivated"),
-        body: next.account?.planName,
-        tone: "success",
-      });
-    } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function startCheckout(plan: SubscriptionPlanId) {
-    setCheckoutBusy(plan);
-    setError(null);
-    try {
-      const checkout = await arrabApi.billingCheckout({ planId: plan });
-      await openExternalUrl(checkout.checkoutUrl);
-      pushToast({
-        title: t("amCheckoutOpened"),
-        body: checkout.amountLabel,
-        tone: "info",
-      });
-    } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
-    } finally {
-      setCheckoutBusy(null);
     }
   }
 
@@ -523,7 +483,7 @@ export function AccountManagementPage() {
                   </div>
 
                   <p className="text-2xl font-semibold tracking-tight text-white">
-                    {entitlements?.planName ?? "—"}
+                    {account?.planName ?? entitlements?.planName ?? "—"}
                   </p>
                   {entitlements ? (
                     <p className="mt-2 text-xs text-neutral-500">
@@ -799,7 +759,7 @@ export function AccountManagementPage() {
                 <div className="mb-5 flex flex-wrap items-center gap-2">
                   <span className="inline-flex items-center gap-1.5 rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs text-white">
                     <BadgeCheck className="size-3.5 text-emerald-300" strokeWidth={1.8} />
-                    {entitlements?.planName ?? t("accountNotConnected")}
+                    {account?.planName ?? entitlements?.planName ?? t("accountNotConnected")}
                   </span>
                   <span className="rounded-md border border-white/10 px-2.5 py-1 text-xs capitalize text-neutral-400">
                     {statusLabel(entitlements?.subscriptionStatus ?? account?.subscriptionStatus)}
@@ -830,61 +790,15 @@ export function AccountManagementPage() {
                   </div>
                 ) : null}
 
-                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
-                  <p className="text-sm font-medium text-white">{t("activateSubscription")}</p>
-                  <p className="mt-1 text-xs text-neutral-500">{t("subscriptionCodesHint")}</p>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <input
-                      value={subscribeCode}
-                      onChange={(event) => setSubscribeCode(event.target.value)}
-                      placeholder="PRO-ARRAB"
-                      className="field max-w-xs font-mono text-xs"
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") {
-                          event.preventDefault();
-                          void activateCode();
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      disabled={busy || !subscribeCode.trim()}
-                      onClick={() => void activateCode()}
-                      className="h-9 rounded-lg bg-white px-4 text-sm font-medium text-black disabled:opacity-40"
-                    >
-                      {t("applySubscription")}
-                    </button>
-                  </div>
-                </div>
-
-                {planId && planId !== "free" && planId !== "family_free" ? (
-                  <div className="mt-4">
-                    <button
-                      type="button"
-                      disabled={checkoutBusy !== null}
-                      onClick={() => void startCheckout(planId)}
-                      className="inline-flex h-9 items-center gap-2 rounded-lg border border-white/12 px-4 text-sm text-white transition hover:bg-white/5 disabled:opacity-40"
-                    >
-                      <CreditCard className="size-3.5" strokeWidth={1.8} />
-                      {checkoutBusy ? t("amCheckoutOpening") : t("amOpenCheckout")}
-                    </button>
-                  </div>
-                ) : null}
+                <button
+                  type="button"
+                  onClick={() => void openPlansPage()}
+                  className="inline-flex h-9 items-center gap-2 rounded-lg bg-white px-4 text-sm font-medium text-black"
+                >
+                  {t("managePlansOnWebsite")}
+                  <ArrowUpRight className="size-3.5" strokeWidth={1.8} />
+                </button>
               </Panel>
-
-              <PlansCatalog
-                audience={planAudience}
-                onAudienceChange={setPlanAudience}
-                currentPlanId={planId}
-                signedIn={Boolean(account)}
-                lockAudience={Boolean(planId)}
-                onAccountChanged={(next) => {
-                  setStatus(next);
-                  broadcastAccount();
-                }}
-                onNeedSignIn={() => undefined}
-                variant="settings"
-              />
             </div>
           ) : null}
 

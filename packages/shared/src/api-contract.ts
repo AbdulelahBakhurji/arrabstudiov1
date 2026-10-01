@@ -2,6 +2,7 @@ import type {
   AccountEntitlements,
   AccountPublic,
   SubscriptionPlanId,
+  TokenTopUpPackId,
 } from "./account.js";
 import type {
   Activity,
@@ -48,6 +49,10 @@ export interface ApiMetaResponse {
     tokensRemaining: number | null;
     overLimit: boolean;
     pauseMode: "upgrade_required" | "upgrade_or_wait" | "payment_required" | null;
+  };
+  /** Platform-held connector capabilities (secrets stay on the API host). */
+  connectors?: {
+    openWaServerManaged: boolean;
   };
 }
 
@@ -176,6 +181,11 @@ export interface SendMessageRequest {
    * read_skill_file only when relevant.
    */
   skillLibrary?: SkillLibraryEntry[] | null;
+  /**
+   * Extended thinking effort for reasoning-capable models. The reasoning is
+   * streamed as `thinking` events and never stored in the transcript.
+   */
+  thinking?: "low" | "medium" | "high" | null;
 }
 
 export interface SkillLibraryEntry {
@@ -303,6 +313,7 @@ export type ConnectorProvider =
   | "email"
   | "ssh"
   | "whatsapp"
+  | "openwa"
   | "finnhub"
   | "whoop"
   | "fitbit"
@@ -330,6 +341,29 @@ export interface ConnectorResource {
   name: string;
   url: string | null;
   kind: string;
+}
+
+/** POST /v1/connectors/openwa/link/start */
+export interface OpenWaLinkStartRequest {
+  companionId?: string;
+  companionName?: string;
+}
+
+export interface OpenWaLinkStartResponse {
+  sessionId: string;
+  status: string;
+  qrCode: string | null;
+  connectorId: string;
+  phone: string | null;
+}
+
+/** GET /v1/connectors/openwa/link/status */
+export interface OpenWaLinkStatusResponse {
+  status: string;
+  qrCode: string | null;
+  phone: string | null;
+  connectorId: string | null;
+  connected: boolean;
 }
 
 export interface ConnectConnectorRequest {
@@ -640,6 +674,35 @@ export interface BillingCheckoutResponse {
   amountLabel: string;
 }
 
+export interface BillingTopUpRequest {
+  packId?: TokenTopUpPackId;
+  /** Custom amount in SAR. VAT is not included. */
+  amountSar?: number;
+}
+
+export interface BillingTopUpResponse {
+  packId: TokenTopUpPackId;
+  tokens: number;
+  invoiceId: string;
+  checkoutUrl: string;
+  amountHalalas: number;
+  currency: "SAR";
+  amountLabel: string;
+}
+
+export interface BillingCustomCreditResponse {
+  amountSar: number;
+  amountHalalas: number;
+  deepseekHalalas: number;
+  otherHalalas: number;
+  profitHalalas: number;
+  vatIncluded: false;
+  invoiceId: string;
+  checkoutUrl: string;
+  currency: "SAR";
+  amountLabel: string;
+}
+
 export interface BillingConfirmRequest {
   invoiceId: string;
 }
@@ -782,3 +845,50 @@ export interface ResolveApprovalRequest {
   toolResultAttestation?: string | null;
 }
 
+
+/**
+ * Zero-knowledge chat vault. The server stores only ciphertext: a passphrase-wrapped
+ * chat key and AES-GCM sealed transcripts. It can never decrypt either.
+ */
+export interface WrappedChatKey {
+  v: 1;
+  kdf: "pbkdf2-sha256";
+  iterations: number;
+  /** base64 */
+  salt: string;
+  iv: string;
+  /** base64 AES-GCM ciphertext of the raw 256-bit chat key. */
+  ct: string;
+  /** Short non-secret fingerprint of the chat key so devices can detect a mismatch. */
+  fingerprint: string;
+}
+
+/** GET /v1/e2ee/key */
+export interface E2eeKeyResponse {
+  wrappedKey: WrappedChatKey | null;
+}
+
+/** PUT /v1/e2ee/key — `replace` is required to overwrite an existing key (passphrase change). */
+export interface E2eePutKeyRequest {
+  wrappedKey: WrappedChatKey;
+  replace?: boolean;
+}
+
+export interface SealedChat {
+  id: string;
+  /** base64 AES-GCM envelope (iv + ciphertext) — opaque to the server. */
+  sealed: string;
+  updatedAt: string;
+}
+
+/** GET /v1/e2ee/chats?since= */
+export interface E2eeChatsResponse {
+  items: SealedChat[];
+  /** Ids deleted since `since` so other devices drop them. */
+  deleted: string[];
+}
+
+/** PUT /v1/e2ee/chats/:id */
+export interface E2eePutChatRequest {
+  sealed: string;
+}

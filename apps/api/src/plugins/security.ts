@@ -1,3 +1,4 @@
+import { runWithRequestActor } from "../lib/request-actor.js";
 import { UnauthorizedError, AppError, type AuthPrincipal } from "@arrab/core";
 import type { OrgEmployeeRecord, StudioAccountRecord } from "@arrab/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -43,8 +44,12 @@ const PUBLIC_PREFIXES = [
   "/v1/connectors/google_calendar/oauth/callback",
   "/v1/connectors/figma/oauth/callback",
   "/v1/connectors/whatsapp/webhook",
+  // OpenWA gateway callback — authenticated by its HMAC signature, not a studio session.
+  "/v1/connectors/openwa/webhook",
   "/v1/org/employees/sign-in",
   "/v1/family/members/sign-in",
+  // Managed-client sync must reach maintenance/update policy before sign-in; it gates notices itself.
+  "/v1/client/",
 ] as const;
 
 function extractAccountToken(request: FastifyRequest): string | null {
@@ -158,6 +163,11 @@ export async function registerSecurity(
     if (!isPublicPath(request.url, prefix) && !bare.startsWith("/erp/") && bare !== "/erp") {
       await requireStudioSession(request, accounts);
     }
+  });
+
+  // Callback-style so AsyncLocalStorage covers the route handler (async hooks can't guarantee it).
+  app.addHook("preHandler", (request, _reply, done) => {
+    runWithRequestActor({ employeeId: request.orgEmployee?.id ?? null }, done);
   });
 
   // Never echo secrets in structured logs.

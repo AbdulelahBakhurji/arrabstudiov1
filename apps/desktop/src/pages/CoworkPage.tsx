@@ -45,6 +45,7 @@ import { IncognitoRoom } from "@/components/companions/IncognitoRoom";
 import { PersonAvatar } from "@/components/companions/CompanionUI";
 import { ArtifactsPanel, extractArtifacts } from "@/components/ArtifactsPanel";
 import { AgentSteps, friendlyToolTitle, type AgentStep } from "@/components/AgentSteps";
+import { ThinkingBlock, useThoughtTraces } from "@/components/ThinkingBlock";
 import { humanizeApprovalCopy } from "@/lib/approval-copy";
 import { MentionComposer } from "@/components/MentionComposer";
 import { Surface } from "@/components/StudioFrame";
@@ -203,6 +204,8 @@ function folderName(path: string): string {
   return parts[parts.length - 1] ?? path;
 }
 
+const COWORK_LIVE_THOUGHT = "cowork-live";
+
 export function CoworkPage({ asWorkplace = false }: { asWorkplace?: boolean } = {}) {
   const { t } = useLanguage();
   const prefs = useStudioPrefs();
@@ -228,6 +231,8 @@ export function CoworkPage({ asWorkplace = false }: { asWorkplace?: boolean } = 
   const [pendingApproval, setPendingApproval] = useState<Approval | null>(null);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [streamDraft, setStreamDraft] = useState("");
+  const thoughts = useThoughtTraces();
+  const liveThought = thoughts.traces[COWORK_LIVE_THOUGHT];
   const [mentions, setMentions] = useState<WorkspaceMention[]>([]);
   const [workspaceRules, setWorkspaceRules] = useState<string | null>(null);
   const [checkpoints, setCheckpoints] = useState<EditCheckpoint[]>([]);
@@ -532,13 +537,7 @@ export function CoworkPage({ asWorkplace = false }: { asWorkplace?: boolean } = 
         } catch {
           // ignore
         }
-        for (const agent of active) {
-          try {
-            await arrabApi.addTeamMember(teamId, { agentId: agent.id });
-          } catch {
-            // already a member
-          }
-        }
+        // Do not auto-seat the whole studio roster into Desk crew — that flooded Ops with junk companions.
       }
 
       const tabs: AgentTab[] = [
@@ -1622,6 +1621,7 @@ export function CoworkPage({ asWorkplace = false }: { asWorkplace?: boolean } = 
     ]);
     setPendingApproval(null);
     setStreamDraft("");
+    thoughts.drop(COWORK_LIVE_THOUGHT);
     if (!overrideContent) {
       setDraft("");
       setMentions([]);
@@ -1640,8 +1640,13 @@ export function CoworkPage({ asWorkplace = false }: { asWorkplace?: boolean } = 
           },
         },
         {
+          onThinking: (text) => {
+            if (controller.signal.aborted) return;
+            thoughts.append(COWORK_LIVE_THOUGHT, text);
+          },
           onToken: (text) => {
             if (controller.signal.aborted) return;
+            thoughts.finish(COWORK_LIVE_THOUGHT);
             setStreamDraft((current) => {
               if (!current) {
                 setAgentSteps((steps) =>
@@ -1798,6 +1803,7 @@ export function CoworkPage({ asWorkplace = false }: { asWorkplace?: boolean } = 
       if (!isTransientApiError(message)) setError(message);
       setDraft(content);
     } finally {
+      thoughts.finish(COWORK_LIVE_THOUGHT);
       if (streamAbortRef.current === controller) {
         streamAbortRef.current = null;
         setSending(false);
@@ -2493,6 +2499,7 @@ export function CoworkPage({ asWorkplace = false }: { asWorkplace?: boolean } = 
                       </div>
                     </div>
                   ) : null}
+                  {liveThought && (sending || streamDraft) ? <ThinkingBlock trace={liveThought} /> : null}
                   {streamDraft ? (
                     <MessageBubble
                       message={{

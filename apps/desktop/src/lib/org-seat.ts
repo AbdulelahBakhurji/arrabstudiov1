@@ -1,6 +1,6 @@
 /**
  * Org seat capabilities — single source for Live Map, assign, billing, Workplace.
- * Billing owner (no employee seat) = full admin. Employee seats use role.
+ * Billing owner (no employee seat) = full admin. Seats never administer; role sets assign access.
  */
 import { useSyncExternalStore } from "react";
 import {
@@ -39,17 +39,17 @@ export function resolveOrgSeatCapabilities(
     };
   }
   const role = employee.role;
-  const canAdminister = role === "admin";
+  // Administration stays with the account owner — seat sessions never see it.
   const canAssignWork = role === "admin" || role === "manager";
   return {
     employee,
     role,
-    canAdminister,
+    canAdminister: false,
     canAssignWork,
-    canOpenLiveMap: canAdminister,
-    canViewOrgBilling: canAdminister,
-    canViewOwnUsageOnly: !canAdminister,
-    canHireAgents: canAdminister,
+    canOpenLiveMap: role === "admin",
+    canViewOrgBilling: false,
+    canViewOwnUsageOnly: true,
+    canHireAgents: false,
   };
 }
 

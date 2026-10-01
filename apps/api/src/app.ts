@@ -1,3 +1,4 @@
+import { SealedVaultService } from "./services/sealed-vault-service.js";
 import cors from "@fastify/cors";
 import {
   AnthropicMessagesAdapter,
@@ -23,6 +24,8 @@ import {
   type DatabaseConnection,
   type Persistence,
 } from "@arrab/database";
+import { ValidationError } from "@arrab/core";
+import { orgSeatLimitForPlan } from "@arrab/shared";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { ApiEnv } from "./config/env.js";
 import { configureFieldCrypto } from "./lib/field-crypto.js";
@@ -30,7 +33,10 @@ import { registerErrorHandler } from "./plugins/error-handler.js";
 import { registerSecurity } from "./plugins/security.js";
 import { registerV1Routes } from "./routes/v1.js";
 import { registerErpRoutes } from "./routes/erp.js";
+import { registerClientRoutes } from "./routes/client.js";
+import { ControlNotificationComposer } from "./services/control-notification-composer.js";
 import { ErpCompanionService } from "./services/erp-companion-service.js";
+import { ControlNotificationService, ControlDeskService } from "./services/control-notification-service.js";
 import { ConversationService } from "./services/conversation-service.js";
 import { ConnectorService } from "./services/connector-service.js";
 import { AccountService } from "./services/account-service.js";
@@ -38,7 +44,10 @@ import { BillingService } from "./services/billing-service.js";
 import { createMoyasarClient } from "./services/moyasar.js";
 import { GoalService } from "./services/goal-service.js";
 import { TaskExecutionService } from "./services/task-execution-service.js";
+import { DeskService } from "./services/desk-service.js";
+import { CrewService } from "./services/crew-service.js";
 import { OrgWorkforceService } from "./services/org-workforce-service.js";
+import { WorkforceBlueprintService } from "./services/workforce-blueprint-service.js";
 import { FamilyHouseholdService } from "./services/family-household-service.js";
 import { WorkspaceCommandService } from "./services/workspace-commands.js";
 import { WorkspaceQueryService } from "./services/workspace-query.js";
@@ -51,6 +60,7 @@ export interface ApiContext {
   aiGateway: RegistryAiGateway;
   chatRuntime: GatewayChatRuntime;
   defaultModel: string;
+  primaryProviderId: string;
   queries: WorkspaceQueryService;
   commands: WorkspaceCommandService;
   conversations: ConversationService;
@@ -61,6 +71,10 @@ export interface ApiContext {
   taskExecution: TaskExecutionService;
   orgWorkforce: OrgWorkforceService;
   familyHousehold: FamilyHouseholdService;
+  sealedVault: SealedVaultService;
+  desk: DeskService;
+  crew: CrewService;
+  workforceBlueprint: WorkforceBlueprintService;
 }
 
 export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
@@ -332,6 +346,11 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     env.finnhubApiKey?.trim() || null,
     env.finnhubWebhookSecret?.trim() || null,
     genericOAuth,
+    env.openwaWebhookSecret?.trim() || null,
+    env.publicBaseUrl,
+    env.apiRoutePrefix,
+    env.openwaBaseUrl,
+    env.openwaApiKey?.trim() || null,
   );
   const accounts = new AccountService(
     persistence,
@@ -345,6 +364,8 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
   );
   const familyHousehold = new FamilyHouseholdService(persistence, accounts);
   connectors.setFamilyHousehold(familyHousehold);
+  const sealedVault = new SealedVaultService(persistence);
+  sealedVault.setFamilyHousehold(familyHousehold);
   const conversations = new ConversationService(
     persistence,
     aiGateway,
@@ -361,7 +382,39 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     aiGateway,
     accounts,
   );
-  const orgWorkforce = new OrgWorkforceService(persistence);
+  const desk = new DeskService(
+    persistence,
+    aiGateway,
+    accounts,
+    familyHousehold,
+    resolvedDefaultModel,
+    undefined,
+    undefined,
+    async (input) => {
+      const connector = await connectors.findConnectedWhatsApp();
+      if (!connector) throw new ValidationError("Connect WhatsApp before this message can leave");
+      const sent = await connectors.sendWhatsApp(connector.id, { to: input.to, text: input.text });
+      return { messageId: sent.messageId };
+    },
+  );
+  const crew = new CrewService(
+    persistence,
+    aiGateway,
+    accounts,
+    familyHousehold,
+    resolvedDefaultModel,
+  );
+  const orgWorkforce = new OrgWorkforceService(persistence, undefined, undefined, async () => {
+    const status = await accounts.status();
+    const planId = status.entitlements?.planId ?? status.account?.planId ?? null;
+    return planId ? orgSeatLimitForPlan(planId) : null;
+  });
+  const workforceBlueprint = new WorkforceBlueprintService(
+    persistence,
+    aiGateway,
+    accounts,
+    resolvedDefaultModel,
+  );
 
   return {
     env,
@@ -371,6 +424,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     aiGateway,
     chatRuntime,
     defaultModel: resolvedDefaultModel,
+    primaryProviderId,
     queries,
     commands,
     conversations,
@@ -381,6 +435,10 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     taskExecution,
     orgWorkforce,
     familyHousehold,
+    sealedVault,
+    desk,
+    crew,
+    workforceBlueprint,
   };
 }
 
@@ -452,17 +510,28 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
   });
 
   const routePrefix = context.env.apiRoutePrefix;
-  const whatsappWebhookPaths = new Set(
-    ["/v1/connectors/whatsapp/webhook"].concat(
-      routePrefix ? [`${routePrefix}/v1/connectors/whatsapp/webhook`] : [],
-      ["/r/nmpi6uidtpkh1bdf/v1/connectors/whatsapp/webhook"],
+  const signedWebhookPaths = new Set(
+    [
+      "/v1/connectors/whatsapp/webhook",
+      "/v1/connectors/openwa/webhook",
+    ].concat(
+      routePrefix
+        ? [
+            `${routePrefix}/v1/connectors/whatsapp/webhook`,
+            `${routePrefix}/v1/connectors/openwa/webhook`,
+          ]
+        : [],
+      [
+        "/r/nmpi6uidtpkh1bdf/v1/connectors/whatsapp/webhook",
+        "/r/nmpi6uidtpkh1bdf/v1/connectors/openwa/webhook",
+      ],
     ),
   );
 
-  // Capture raw body for Meta WhatsApp webhook HMAC (X-Hub-Signature-256).
+  // Capture raw body for signed connector webhooks (Meta + OpenWA HMAC).
   app.addHook("preParsing", async (request, _reply, payload) => {
     const path = request.url.split("?")[0] ?? request.url;
-    if (request.method !== "POST" || !whatsappWebhookPaths.has(path)) {
+    if (request.method !== "POST" || !signedWebhookPaths.has(path)) {
       return payload;
     }
     const chunks: Buffer[] = [];
@@ -486,17 +555,35 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     taskExecution: context.taskExecution,
     orgWorkforce: context.orgWorkforce,
     familyHousehold: context.familyHousehold,
+    sealedVault: context.sealedVault,
+    desk: context.desk,
+    crew: context.crew,
+    workforceBlueprint: context.workforceBlueprint,
     gateway: context.aiGateway,
     persistence: context.persistence.kind,
     workspaceId: context.persistence.workspaceId,
     defaultModel: context.defaultModel,
     bedrockModels: context.env.bedrockModels,
     openRouterModels: context.env.openRouterModels,
+    openRouterApiKey: context.env.openRouterApiKey,
     primaryProviderId: context.env.primaryProviderId,
     bedrockRegion: context.env.bedrockRegion,
     releasesDir: context.env.releasesDir,
     publicBaseUrl: context.env.siteUrl,
+    openWaServerManaged: Boolean(context.env.openwaApiKey?.trim()),
   };
+
+  // Shared across route mounts so ack batching and dedupe see every request.
+  const controlNotifications = new ControlNotificationService(context.persistence.controlNotifications);
+  const controlDesk = new ControlDeskService(context.persistence.controlDesk);
+  const notificationComposer = new ControlNotificationComposer(context.aiGateway, () =>
+    context.aiGateway.listProviders().some((provider) => provider.id === context.primaryProviderId)
+      ? { providerId: context.primaryProviderId, model: context.defaultModel }
+      : null,
+  );
+  app.addHook("onClose", async () => {
+    await controlNotifications.flushAcks();
+  });
 
   const registerCoreRoutes = async (instance: FastifyInstance) => {
     instance.get("/health", async () => ({
@@ -505,13 +592,23 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
       time: new Date().toISOString(),
     }));
     registerV1Routes(instance, v1Options);
+    registerClientRoutes(instance, {
+      notifications: controlNotifications,
+      desk: controlDesk,
+      accounts: context.accounts,
+    });
     registerErpRoutes(instance, {
       companions: new ErpCompanionService(context.persistence.erpCompanions),
+      notifications: controlNotifications,
+      composer: notificationComposer,
+      desk: controlDesk,
       accounts: context.accounts,
       erpToken: context.env.erpToken,
       erpTokenScopes: context.env.erpTokenScopes ?? [
         "companions:read",
         "companions:write",
+        "notifications:write",
+        "connectors:write",
       ],
     });
   };

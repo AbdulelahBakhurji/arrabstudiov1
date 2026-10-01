@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { Conversation, Message } from "@arrab/shared";
+import { accountPartitionAliases, accountPartitionId, subscribeAccountPartition } from "./account-partition";
 import {
   deviceStoreClear,
   deviceStoreGetJson,
@@ -8,6 +9,7 @@ import {
   deviceStoreSetJson,
 } from "./device-store";
 import { looksEncryptedLocal, openLocalJson, sealLocalJson } from "./local-secure";
+import { deleteSealedChat, pullSealedChats, queueSealedChatPush } from "./e2ee";
 
 export type CachedChat = {
   conversation: Conversation;
@@ -15,8 +17,21 @@ export type CachedChat = {
   savedAt: string;
 };
 
+function partitionPrefix(part = accountPartitionId()): string {
+  return `acct.${part}.`;
+}
+
 function chatKey(id: string): string {
-  return id.replace(/[^A-Za-z0-9._-]/g, "_");
+  return `${partitionPrefix()}${id.replace(/[^A-Za-z0-9._-]/g, "_")}`;
+}
+
+function isCurrentPartitionKey(key: string): boolean {
+  return accountPartitionAliases().some((part) => key.startsWith(partitionPrefix(part)));
+}
+
+/** Legacy flat keys (pre account partition) — adopt once into the signed-in account. */
+function isLegacyChatKey(key: string): boolean {
+  return !key.startsWith("acct.");
 }
 
 async function writeCachedChat(key: string, payload: CachedChat): Promise<void> {
@@ -40,6 +55,22 @@ async function readCachedChat(key: string): Promise<CachedChat | null> {
   return cached;
 }
 
+async function adoptLegacyChatsIfNeeded(): Promise<void> {
+  const partition = accountPartitionId();
+  if (partition === "guest") return;
+  const keys = await deviceStoreKeys("chats");
+  const legacy = keys.filter(isLegacyChatKey);
+  if (legacy.length === 0) return;
+  // Only adopt if this account has no partitioned chats yet.
+  if (keys.some(isCurrentPartitionKey)) return;
+  for (const key of legacy) {
+    const cached = await readCachedChat(key);
+    if (!cached) continue;
+    await writeCachedChat(chatKey(cached.conversation.id), cached);
+    await deviceStoreRemove("chats", key);
+  }
+}
+
 export async function saveChatHistory(
   conversation: Conversation,
   messages: Message[],
@@ -50,16 +81,21 @@ export async function saveChatHistory(
     savedAt: new Date().toISOString(),
   };
   await writeCachedChat(chatKey(conversation.id), payload);
+  // Encrypted sync: other devices get this transcript as ciphertext (no-op while locked).
+  queueSealedChatPush(conversation, messages);
 }
 
 export async function loadChatHistory(id: string): Promise<CachedChat | null> {
+  await adoptLegacyChatsIfNeeded();
   return readCachedChat(chatKey(id));
 }
 
 export async function listCachedChats(): Promise<CachedChat[]> {
+  await adoptLegacyChatsIfNeeded();
   const keys = await deviceStoreKeys("chats");
   const items: CachedChat[] = [];
   for (const key of keys) {
+    if (!isCurrentPartitionKey(key)) continue;
     const cached = await readCachedChat(key);
     if (!cached) continue;
     items.push(cached);
@@ -71,6 +107,44 @@ export async function listCachedChats(): Promise<CachedChat[]> {
 
 export async function deleteChatHistory(id: string): Promise<void> {
   await deviceStoreRemove("chats", chatKey(id));
+  void deleteSealedChat(id);
+}
+
+function lastMessageAt(messages: Message[]): string {
+  return messages.reduce((latest, m) => (m.createdAt > latest ? m.createdAt : latest), "");
+}
+
+/**
+ * Pull transcripts other devices sealed, decrypt them here, and fold them into the local
+ * cache (the newer transcript wins). Returns how many chats changed.
+ */
+export async function syncEncryptedChats(): Promise<number> {
+  let changed = 0;
+  const applied = await pullSealedChats(
+    async ({ conversation, messages }) => {
+      const local = await readCachedChat(chatKey(conversation.id));
+      if (local && lastMessageAt(local.messages) >= lastMessageAt(messages)) return;
+      await writeCachedChat(chatKey(conversation.id), {
+        conversation,
+        messages,
+        savedAt: new Date().toISOString(),
+      });
+      changed += 1;
+    },
+    async (id) => {
+      await deviceStoreRemove("chats", chatKey(id));
+    },
+  );
+  return applied > 0 ? changed : 0;
+}
+
+/** Wipe sealed chat cache for the signed-in account only. */
+export async function clearAccountChatHistory(): Promise<void> {
+  const keys = await deviceStoreKeys("chats");
+  for (const key of keys) {
+    if (!isCurrentPartitionKey(key)) continue;
+    await deviceStoreRemove("chats", key);
+  }
 }
 
 export async function clearChatHistory(): Promise<void> {
@@ -118,4 +192,8 @@ export function usePersistedChat(
     }
     void saveChatHistory(conversation, messages);
   }, [conversation, messages]);
+
+  useEffect(() => subscribeAccountPartition(() => {
+    // Account switched — callers remount conversation state via API session.
+  }), []);
 }

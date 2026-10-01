@@ -116,6 +116,14 @@ export interface ApiEnv {
   whatsappWebhookVerifyToken: string | undefined;
   /** Meta App Secret — used to validate X-Hub-Signature-256 on inbound webhooks. */
   whatsappAppSecret: string | undefined;
+  /** Default OpenWA gateway URL for connector setup hints. */
+  openwaBaseUrl: string;
+  /** HMAC secret for POST /v1/connectors/openwa/webhook (min 16 chars). */
+  openwaWebhookSecret: string | undefined;
+  /** Default OpenWA session name (e.g. arrab). */
+  openwaSessionId: string;
+  /** Platform OpenWA admin/operator API key for one-tap Studio linking (data/.api-key). */
+  openwaApiKey: string | undefined;
   /** Platform Finnhub API key (used when no per-workspace Finnhub connector). */
   finnhubApiKey: string | undefined;
   /** Shared secret for POST /v1/connectors/finnhub/webhook (X-Finnhub-Secret). */
@@ -125,7 +133,7 @@ export interface ApiEnv {
    * Optional so existing local configs keep compiling; writes stay closed until set.
    */
   erpToken?: string | undefined;
-  /** Scopes on ARRAB_ERP_TOKEN. Defaults to companions:read, companions:write. */
+  /** Scopes on ARRAB_ERP_TOKEN. Defaults to companions read/write and notifications:write. */
   erpTokenScopes?: string[];
 }
 
@@ -345,11 +353,15 @@ export function loadApiEnv(): ApiEnv {
     whatsappWebhookVerifyToken: readOptionalEnv("WHATSAPP_WEBHOOK_VERIFY_TOKEN"),
     whatsappAppSecret:
       readOptionalEnv("WHATSAPP_APP_SECRET") ?? readOptionalEnv("META_APP_SECRET"),
+    openwaBaseUrl: readOptionalEnv("OPENWA_BASE_URL", "http://127.0.0.1:2785")!,
+    openwaWebhookSecret: readOptionalEnv("OPENWA_WEBHOOK_SECRET"),
+    openwaSessionId: readOptionalEnv("OPENWA_SESSION_ID", "arrab")!,
+    openwaApiKey: readOptionalEnv("OPENWA_API_KEY"),
     finnhubApiKey: readOptionalEnv("FINNHUB_API_KEY"),
     finnhubWebhookSecret: readOptionalEnv("FINNHUB_WEBHOOK_SECRET"),
     erpToken: readOptionalEnv("ARRAB_ERP_TOKEN"),
     erpTokenScopes: parseCsv(
-      readOptionalEnv("ARRAB_ERP_TOKEN_SCOPES", "companions:read,companions:write"),
+      readOptionalEnv("ARRAB_ERP_TOKEN_SCOPES", "companions:read,companions:write,notifications:write,connectors:write"),
     ),
   };
 }

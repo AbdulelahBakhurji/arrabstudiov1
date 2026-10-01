@@ -9,7 +9,9 @@ import {
   clearAccountSessionIfCurrent,
   readAccountSessionToken,
   subscribeAccountSession,
+  writeAccountId,
 } from "@/lib/account-session";
+import { isGuestLocalMode, subscribeGuestMode } from "@/lib/guest-mode";
 import {
   applySessionFromDeepLink,
   resumePendingWebAuth,
@@ -68,6 +70,7 @@ function writeCache(token: string, status: AccountStatusResponse): void {
   try {
     const value: AccountCache = { token, status, savedAt: Date.now() };
     localStorage.setItem(ACCOUNT_CACHE_KEY, JSON.stringify(value));
+    if (status.account?.id) writeAccountId(status.account.id);
   } catch {
     // ignore quota / private mode
   }
@@ -88,6 +91,7 @@ function hydrateInitialState(): AccountState {
   }
   const cached = readCache(token);
   if (cached?.status?.connected && cached.status.account) {
+    writeAccountId(cached.status.account.id);
     return {
       account: cached.status.account,
       status: cached.status,
@@ -100,8 +104,10 @@ function hydrateInitialState(): AccountState {
 
 function subscribe(listener: () => void): () => void {
   listeners.add(listener);
+  const unsubGuest = subscribeGuestMode(() => listener());
   return () => {
     listeners.delete(listener);
+    unsubGuest();
   };
 }
 
@@ -155,6 +161,7 @@ async function refreshAccount(opts?: { silent?: boolean }): Promise<void> {
         if (readAccountSessionToken() !== token) return;
         if (verified.connected && verified.account) {
           writeCache(token, verified);
+          writeAccountId(verified.account.id);
           setState({
             account: verified.account,
             status: verified,
@@ -280,8 +287,8 @@ export function useSignedInAccount(): {
     account: snap.account,
     status: snap.status,
     loading: snap.loading,
-    // Require a verified account — a bare device token is not enough for gated chrome.
-    signedIn: Boolean(snap.account),
+    // Cloud account only — guest local-only is never "signed in" for org/cloud chrome.
+    signedIn: Boolean(snap.account) && !isGuestLocalMode(),
     refresh,
   };
 }

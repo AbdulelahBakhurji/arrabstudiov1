@@ -1,6 +1,6 @@
 # Arrab Studio — Complete Product Documentation
 
-**Version:** 0.12.1  
+**Version:** 0.13.0  
 **Document type:** Product & platform reference  
 **Source of truth:** Running product in `apps/desktop` + shared contracts in `packages/shared`  
 **Languages:** English / العربية (RTL)  

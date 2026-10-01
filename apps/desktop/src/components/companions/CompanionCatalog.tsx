@@ -3,7 +3,13 @@ import { Check, Pencil, Plus } from "lucide-react";
 import type { ErpCompanion, FamilyMemberPublic } from "@arrab/shared";
 import { ConnectorBrandIcon } from "@/components/ConnectorBrandIcon";
 import { useLanguage } from "@/i18n/LanguageProvider";
-import { COMPANION_PRESETS, companionDisplayBlurb, type CompanionPreset } from "@/lib/companion-catalog";
+import {
+  COMPANION_PRESETS,
+  PRESET_HUES,
+  companionDisplayBlurb,
+  companionDisplayName,
+  type CompanionPreset,
+} from "@/lib/companion-catalog";
 import {
   connectorLabel,
   resolveConnectorProviders,
@@ -47,31 +53,6 @@ function toneFromErp(person: ErpCompanion): CompanionTone | undefined {
     pace: personality.creativity ?? 45,
   };
 }
-
-const PRESET_HUES: Record<string, number> = {
-  health: 162,
-  relationships: 328,
-  sleep: 248,
-  money: 148,
-  parents: 22,
-  career: 198,
-  work: 28,
-  meetings: 210,
-  colleagues: 18,
-  chronicler: 40,
-  "decision-guard": 255,
-  meaning: 48,
-  paperwork: 200,
-  "daily-decisions": 300,
-  study: 208,
-  training: 336,
-  focus: 188,
-  coder: 268,
-  inbox: 48,
-  trader: 158,
-  designer: 312,
-  "ui-designer": 312,
-};
 
 export function CompanionCatalog({
   space,
@@ -200,10 +181,10 @@ export function CompanionCatalog({
       return;
     }
     const person = addCompanion({
-      name: ar ? preset.nameAr : preset.name,
+      name: preset.name,
       domain: preset.domain,
       purposeId: preset.purposeId,
-      brief: ar ? preset.briefAr : preset.brief,
+      brief: preset.brief,
       connectors: preset.connectors,
       space,
       toneName: preset.toneName,
@@ -471,8 +452,8 @@ export function CompanionCatalog({
                       <span className="cp-catalog-disc">
                         <PersonAvatar person={person} size="lg" />
                       </span>
-                      <strong>{person.name}</strong>
-                      <small>{person.domain}</small>
+                      <strong>{companionDisplayName(person, locale)}</strong>
+                      <small>{companionDisplayBlurb(person, locale)}</small>
                     </button>
                   );
                 })}
@@ -488,8 +469,8 @@ export function CompanionCatalog({
                 <PersonAvatar person={selectedPerson} size="xl" />
               </span>
               <div>
-                <h2>{selectedPerson.name}</h2>
-                <p className="cp-muted">{selectedPerson.domain}</p>
+                <h2>{companionDisplayName(selectedPerson, locale)}</h2>
+                <p className="cp-muted">{companionDisplayBlurb(selectedPerson, locale)}</p>
               </div>
             </div>
 

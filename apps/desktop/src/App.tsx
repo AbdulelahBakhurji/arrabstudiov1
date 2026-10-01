@@ -1,4 +1,7 @@
-import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import { HashRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
+import type { ReactNode } from "react";
+import { useOrgSeatCapabilities } from "@/lib/org-seat";
+import { orgSeatCanOpen } from "@/roles/catalog";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AuthGate } from "@/components/AuthGate";
 import { StudioFrame } from "@/components/StudioFrame";
@@ -20,8 +23,11 @@ import { SettingsPage } from "@/pages/SettingsPage";
 import { WorkforcePage } from "@/pages/WorkforcePage";
 import { WorkplacePage } from "@/pages/WorkplacePage";
 import { useSignedInAccount } from "@/lib/use-signed-in-account";
+import { isGuestLocalMode } from "@/lib/guest-mode";
 import { RoleFromPath } from "@/roles/RoleProvider";
-import { homePathForPlanId, ROLE_PATH, studioModeFromPlanId } from "@/roles/catalog";
+import { homePathForAudience, ROLE_PATH, studioModeFromAudience } from "@/roles/catalog";
+import { audienceFromAccountSignals } from "@/roles/catalog";
+import { pageFeaturesFor } from "@/features/registry";
 
 /**
  * Individuals enter chat, with Studio, Board, Work and Me as separate destinations.
@@ -46,8 +52,24 @@ function individualChildRoutes() {
       <Route path="workforce" element={<Navigate to=".." relative="path" replace />} />
       <Route path="desk/:agentId" element={<Navigate to="../.." relative="path" replace />} />
       <Route path="activity" element={<Navigate to="../board" relative="path" replace />} />
+      {pageFeaturesFor("individual").map((feature) => (
+        <Route key={feature.id} path={feature.path} element={<feature.Page />} />
+      ))}
+      {pageFeaturesFor("family")
+        .filter((feature) => !feature.audiences.includes("individual"))
+        .map((feature) => (
+          <Route key={`family-${feature.id}`} path={feature.path} element={<feature.Page />} />
+        ))}
     </>
   );
+}
+
+/** Role gate: a seat whose role lacks this page lands back on the org home. */
+function RequireSeatPage({ navKey, children }: { navKey: string; children: ReactNode }) {
+  const seat = useOrgSeatCapabilities();
+  const seatRole = seat.employee ? seat.role : null;
+  if (!orgSeatCanOpen(seatRole, navKey)) return <Navigate to=".." relative="path" replace />;
+  return <>{children}</>;
 }
 
 function organizationChildRoutes() {
@@ -58,18 +80,36 @@ function organizationChildRoutes() {
       <Route path="chat" element={<ChatPage />} />
       <Route path="brain" element={<SecondBrainPage scope="solo" />} />
       <Route path="cowork" element={<Navigate to="../workplace" relative="path" replace />} />
-      <Route path="workforce" element={<WorkforcePage />} />
+      <Route
+        path="workforce"
+        element={
+          <RequireSeatPage navKey="workforce">
+            <WorkforcePage />
+          </RequireSeatPage>
+        }
+      />
       <Route path="desk/:agentId" element={<EmployeeDeskPage />} />
       <Route path="connectors" element={<ConnectorsPage />} />
-      <Route path="activity" element={<ActivityPage />} />
+      <Route
+        path="activity"
+        element={
+          <RequireSeatPage navKey="activity">
+            <ActivityPage />
+          </RequireSeatPage>
+        }
+      />
       <Route path="account" element={<AccountManagementPage />} />
       <Route path="settings" element={<SettingsPage />} />
       <Route path="studio" element={<Navigate to="../workplace" relative="path" replace />} />
+      {pageFeaturesFor("organization").map((feature) => (
+        <Route key={feature.id} path={feature.path} element={<feature.Page />} />
+      ))}
     </>
   );
 }
 
-/** Land on individuals or orgs from the signed-in plan (free trial / paid). */
+/** Land on individuals or orgs from the signed-in plan (free trial / paid).
+ *  Business / org pages only when cloud-signed-in on a teams-category plan. */
 function PlanHomeRedirect({
   individualSuffix = "",
   organizationSuffix = "",
@@ -77,12 +117,38 @@ function PlanHomeRedirect({
   individualSuffix?: string;
   organizationSuffix?: string;
 }) {
-  const { account, status } = useSignedInAccount();
-  const planId = account?.planId ?? status?.entitlements?.planId ?? null;
-  const mode = studioModeFromPlanId(planId);
-  const home = homePathForPlanId(planId);
+  const { account, status, signedIn } = useSignedInAccount();
+  const cloudSignedIn = signedIn && Boolean(account) && !isGuestLocalMode();
+  if (!cloudSignedIn || !account) {
+    return <Navigate to={`${ROLE_PATH.individual}${individualSuffix}`} replace />;
+  }
+  const audience = audienceFromAccountSignals({
+    planId: status?.entitlements?.planId ?? account.planId ?? null,
+    planCategory: status?.entitlements?.planCategory ?? account.planCategory ?? null,
+    planName: status?.entitlements?.planName ?? account.planName ?? null,
+  });
+  const mode = studioModeFromAudience(audience);
+  const home = homePathForAudience(audience);
   const suffix = mode === "organization" ? organizationSuffix : individualSuffix;
   return <Navigate to={`${home}${suffix}`} replace />;
+}
+
+/** Org shell is cloud-signed-in Business/Team/Enterprise only — never guests. */
+function RequireOrganizationShell({ children }: { children: ReactNode }) {
+  const { account, status, signedIn } = useSignedInAccount();
+  const cloudSignedIn = signedIn && Boolean(account) && !isGuestLocalMode();
+  if (!cloudSignedIn || !account) {
+    return <Navigate to={ROLE_PATH.individual} replace />;
+  }
+  const audience = audienceFromAccountSignals({
+    planId: status?.entitlements?.planId ?? account.planId ?? null,
+    planCategory: status?.entitlements?.planCategory ?? account.planCategory ?? null,
+    planName: status?.entitlements?.planName ?? account.planName ?? null,
+  });
+  if (audience !== "organization") {
+    return <Navigate to={ROLE_PATH.individual} replace />;
+  }
+  return <>{children}</>;
 }
 
 export function App() {
@@ -98,7 +164,16 @@ export function App() {
                     <Route index element={<PlanHomeRedirect />} />
 
                     <Route path="individuals">{individualChildRoutes()}</Route>
-                    <Route path="organizations">{organizationChildRoutes()}</Route>
+                    <Route
+                      path="organizations"
+                      element={
+                        <RequireOrganizationShell>
+                          <Outlet />
+                        </RequireOrganizationShell>
+                      }
+                    >
+                      {organizationChildRoutes()}
+                    </Route>
 
                     <Route path="plans" element={<PlanHomeRedirect />} />
                     <Route

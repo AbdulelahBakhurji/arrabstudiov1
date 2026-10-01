@@ -1,0 +1,16 @@
+{
+  "agcgw": { "url": "connect-dre.dbankcloud.cn" },
+  "client": {
+    "cp_id": "PLACEHOLDER",
+    "product_id": "PLACEHOLDER",
+    "client_id": "PLACEHOLDER",
+    "client_secret": "PLACEHOLDER_NOT_A_REAL_SECRET",
+    "project_id": "PLACEHOLDER",
+    "app_id": "PLACEHOLDER",
+    "api_key": "PLACEHOLDER_NOT_A_REAL_KEY",
+    "package_name": "com.arrab.studio"
+  },
+  "service": {},
+  "region": "DE",
+  "configuration_version": "3.0"
+}

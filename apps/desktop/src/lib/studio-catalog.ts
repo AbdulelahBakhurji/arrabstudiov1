@@ -15,7 +15,13 @@ import {
   purposeRegistryById,
   studioSelectablePurposes,
 } from "@/lib/purpose-registry";
-import { companionPortraitUrl, presetPortraitSeed, allocateStudioCatalogPortrait } from "@/lib/companion-portrait";
+import {
+  companionPortraitUrl,
+  presetPortraitSeed,
+  allocateStudioCatalogPortrait,
+  collectTakenPortraitFiles,
+  portraitFileFromUrl,
+} from "@/lib/companion-portrait";
 
 /**
  * Built-in Studio-selectable purposes — sourced from the Purpose Registry.
@@ -49,8 +55,8 @@ export const STUDIO_DEFAULTS: StudioCatalogEntry[] = [
   {
     id: "web-designer",
     domain: "web-designer",
-    name: "Web Designer",
-    nameAr: "مصمم ويب",
+    name: "Nouf",
+    nameAr: "نوف",
     blurb: "Sites & pages — live web preview, code, and export",
     blurbAr: "مواقع وصفحات — معاينة ويب حية وكود وتصدير",
     brief: purposeRegistryById("web-design")!.brief,
@@ -62,7 +68,7 @@ export const STUDIO_DEFAULTS: StudioCatalogEntry[] = [
     faceSeed: presetPortraitSeed("web-designer"),
     avatarPhoto: companionPortraitUrl({
       seed: presetPortraitSeed("web-designer"),
-      name: "Web Designer",
+      name: "Nouf",
       domain: "web-designer",
     }),
     archivedAt: null,
@@ -71,8 +77,8 @@ export const STUDIO_DEFAULTS: StudioCatalogEntry[] = [
   {
     id: "phone-designer",
     domain: "phone-designer",
-    name: "Phone Designer",
-    nameAr: "مصمم جوال",
+    name: "Lina",
+    nameAr: "لينا",
     blurb: "Mobile screens — phone frame preview and device QR",
     blurbAr: "شاشات جوال — معاينة إطار الهاتف ورمز للجهاز",
     brief: purposeRegistryById("phone-design")!.brief,
@@ -84,8 +90,74 @@ export const STUDIO_DEFAULTS: StudioCatalogEntry[] = [
     faceSeed: presetPortraitSeed("phone-designer"),
     avatarPhoto: companionPortraitUrl({
       seed: presetPortraitSeed("phone-designer"),
-      name: "Phone Designer",
+      name: "Lina",
       domain: "phone-designer",
+    }),
+    archivedAt: null,
+    createdBy: null,
+  },
+  {
+    id: "game-designer",
+    domain: "game-designer",
+    name: "Majed",
+    nameAr: "ماجد",
+    blurb: "Any game — WebGL, Roblox, open folder, AI creates workspace files",
+    blurbAr: "أي لعبة — WebGL وروبلوكس وفتح مجلد والذكاء ينشئ ملفات مساحة العمل",
+    brief: purposeRegistryById("game-design")!.brief,
+    briefAr: purposeRegistryById("game-design")!.briefAr,
+    toneName: "direct",
+    workspace: "ui-designer",
+    purposeId: "game-design",
+    hue: 168,
+    faceSeed: presetPortraitSeed("game-designer"),
+    avatarPhoto: companionPortraitUrl({
+      seed: presetPortraitSeed("game-designer"),
+      name: "Majed",
+      domain: "game-designer",
+    }),
+    archivedAt: null,
+    createdBy: null,
+  },
+  {
+    id: "3d-modeler",
+    domain: "3d-modeler",
+    name: "Rami",
+    nameAr: "رامي",
+    blurb: "Advanced 3D modeling — meshes, materials, shading, studio lights",
+    blurbAr: "نمذجة ثلاثية متقدمة — شبكات ومواد وتظليل وإضاءة استوديو",
+    brief: purposeRegistryById("3d-modeling")!.brief,
+    briefAr: purposeRegistryById("3d-modeling")!.briefAr,
+    toneName: "measured",
+    workspace: "ui-designer",
+    purposeId: "3d-modeling",
+    hue: 24,
+    faceSeed: presetPortraitSeed("3d-modeler"),
+    avatarPhoto: companionPortraitUrl({
+      seed: presetPortraitSeed("3d-modeler"),
+      name: "Rami",
+      domain: "3d-modeler",
+    }),
+    archivedAt: null,
+    createdBy: null,
+  },
+  {
+    id: "markets-terminal",
+    domain: "markets-terminal",
+    name: "Faisal",
+    nameAr: "فيصل",
+    blurb: "Financial expert — search any symbol across NASDAQ, TASI, crypto & more",
+    blurbAr: "خبير مالي — ابحث عن أي رمز عبر ناسداك وتاسي والعملات المشفرة والمزيد",
+    brief: purposeRegistryById("markets-terminal")!.brief,
+    briefAr: purposeRegistryById("markets-terminal")!.briefAr,
+    toneName: "direct",
+    workspace: "markets-terminal",
+    purposeId: "markets-terminal",
+    hue: 38,
+    faceSeed: presetPortraitSeed("markets-terminal"),
+    avatarPhoto: companionPortraitUrl({
+      seed: presetPortraitSeed("markets-terminal"),
+      name: "Faisal",
+      domain: "markets-terminal",
     }),
     archivedAt: null,
     createdBy: null,
@@ -93,8 +165,8 @@ export const STUDIO_DEFAULTS: StudioCatalogEntry[] = [
   {
     id: "brand",
     domain: "brand",
-    name: "Brand",
-    nameAr: "الهوية",
+    name: "Nawaf",
+    nameAr: "نواف",
     blurb: "Voice, palette, and visual direction",
     blurbAr: "الصوت والألوان والتوجيه البصري",
     brief: purposeRegistryById("brand-identity")!.brief,
@@ -106,7 +178,7 @@ export const STUDIO_DEFAULTS: StudioCatalogEntry[] = [
     faceSeed: presetPortraitSeed("brand"),
     avatarPhoto: companionPortraitUrl({
       seed: presetPortraitSeed("brand"),
-      name: "Brand",
+      name: "Nawaf",
       domain: "brand",
     }),
     archivedAt: null,
@@ -115,8 +187,8 @@ export const STUDIO_DEFAULTS: StudioCatalogEntry[] = [
   {
     id: "copywriter",
     domain: "copywriter",
-    name: "Copywriter",
-    nameAr: "كاتب المحتوى",
+    name: "Dana",
+    nameAr: "دانة",
     blurb: "Headlines, sections, and microcopy",
     blurbAr: "العناوين والأقسام والنصوص القصيرة",
     brief: purposeRegistryById("copy-ux")!.brief,
@@ -128,7 +200,7 @@ export const STUDIO_DEFAULTS: StudioCatalogEntry[] = [
     faceSeed: presetPortraitSeed("copywriter"),
     avatarPhoto: companionPortraitUrl({
       seed: presetPortraitSeed("copywriter"),
-      name: "Copywriter",
+      name: "Dana",
       domain: "copywriter",
     }),
     archivedAt: null,
@@ -232,11 +304,14 @@ export function resolveStudioCatalog(
         item.domain === builtin.domain ||
         (builtin.purposeId && item.purposeId === builtin.purposeId),
     );
-    if (index >= 0 && !list[index]!.avatarPhoto?.trim() && builtin.avatarPhoto) {
+    if (index >= 0) {
+      const current = list[index]!;
       list[index] = {
-        ...list[index]!,
-        avatarPhoto: builtin.avatarPhoto,
-        faceSeed: list[index]!.faceSeed || builtin.faceSeed,
+        ...current,
+        name: builtin.name,
+        nameAr: builtin.nameAr,
+        avatarPhoto: current.avatarPhoto?.trim() || builtin.avatarPhoto,
+        faceSeed: current.faceSeed || builtin.faceSeed,
       };
     }
   }
@@ -373,8 +448,12 @@ export function entryFromPurpose(
       .map((person) => person.avatarPhoto)
       .filter(Boolean) as string[],
   ];
+  const requested = input.avatarPhoto?.trim() || null;
+  const requestedFile = requested ? portraitFileFromUrl(requested) : null;
+  const takenFiles = collectTakenPortraitFiles(taken);
+  const canUseRequested = Boolean(requested && requestedFile && !takenFiles.has(requestedFile));
   const portrait =
-    input.avatarPhoto?.trim()
+    canUseRequested
       ? null
       : allocateStudioCatalogPortrait({
           id,
@@ -397,7 +476,7 @@ export function entryFromPurpose(
     purposeId: purpose.id,
     hue: purpose.hue,
     faceSeed: portrait?.faceSeed ?? Math.floor(Math.random() * 4096),
-    avatarPhoto: input.avatarPhoto ?? portrait?.avatarPhoto ?? null,
+    avatarPhoto: canUseRequested ? requested : portrait?.avatarPhoto ?? null,
     archivedAt: null,
     createdBy: input.createdBy ?? null,
   };

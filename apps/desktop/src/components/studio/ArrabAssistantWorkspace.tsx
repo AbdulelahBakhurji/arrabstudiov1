@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowUp,
@@ -23,6 +23,7 @@ import { useRole } from "@/roles/RoleProvider";
 import { useCompanionRoom } from "@/components/companions/useCompanionRoom";
 import { PhotoAvatar } from "@/components/companions/CompanionFace";
 import { ComposerPlusMenu } from "@/components/ComposerPlusMenu";
+import { ThinkingBlock } from "@/components/ThinkingBlock";
 import type { LocalToolArtifact } from "@/lib/agent-local-tools";
 import { filesToDraftParts } from "@/lib/composer-attachments";
 import { arrabApi } from "@/lib/api";
@@ -30,7 +31,7 @@ import { hasLocalModelSelected } from "@/lib/ai-prefs";
 import { companionPortraitUrl } from "@/lib/companion-portrait";
 import {
   createAssistantChatTab,
-  readAssistantChatTabs,
+  resolveAssistantChatTabs,
   titleFromMessage,
   writeAssistantChatTabs,
   type AssistantChatTab,
@@ -47,8 +48,10 @@ import {
   addWorkTask,
   purposeWorkForCompanion,
   setWorkState,
+  readCompanionChatTabs,
   updateCompanion,
   useCompanionState,
+  writeCompanionChatTabs,
   type CompanionProfile,
   type StudioCatalogEntry,
 } from "@/lib/companions";
@@ -86,7 +89,13 @@ export function ArrabAssistantWorkspace({
   const purposeTasks = purposeWorkForCompanion(state, companion.id);
   const defaultChatTitle = ar ? "محادثة" : "Chat";
   const [chatTabs, setChatTabs] = useState(() =>
-    readAssistantChatTabs(companion.id, companion.conversationId, defaultChatTitle),
+    resolveAssistantChatTabs(
+      companion.id,
+      companion.conversationId,
+      defaultChatTitle,
+      "chat",
+      readCompanionChatTabs(companion.id, "chat"),
+    ),
   );
   const activeTab =
     chatTabs.tabs.find((tab) => tab.id === chatTabs.activeId) ?? chatTabs.tabs[0]!;
@@ -124,7 +133,18 @@ export function ArrabAssistantWorkspace({
 
   useEffect(() => {
     writeAssistantChatTabs(companion.id, chatTabs);
+    if (chatTabs.tabs.some((tab) => tab.conversationId) || chatTabs.tabs.length > 1) {
+      writeCompanionChatTabs(companion.id, chatTabs);
+    }
   }, [companion.id, chatTabs]);
+
+  useEffect(() => {
+    const accountTabs = readCompanionChatTabs(companion.id, "chat");
+    if (!accountTabs?.tabs.some((tab) => tab.conversationId)) return;
+    setChatTabs((current) =>
+      current.tabs.some((tab) => tab.conversationId) ? current : accountTabs,
+    );
+  }, [state.assistantChatTabs, companion.id]);
 
   // Bind the active tab’s conversation when switching tabs (not on every conversationId write).
   useEffect(() => {
@@ -540,6 +560,9 @@ export function ArrabAssistantWorkspace({
             </div>
           ) : (
             <div className="st-assist-empty-folder">
+              <span className="st-assist-empty-folder-icon" aria-hidden>
+                <FolderOpen size={20} strokeWidth={1.6} />
+              </span>
               <p>{t("studioAssistantPcHint")}</p>
               <button type="button" className="st-assist-soft-btn" onClick={() => void connectFolder()}>
                 <FolderOpen size={14} strokeWidth={1.7} />
@@ -561,15 +584,18 @@ export function ArrabAssistantWorkspace({
             {ARRAB_ASSISTANT_CONNECTORS.map((provider) => {
               const Icon = connectorIcon(provider);
               const on = connectedProviders.has(provider);
+              const label = connectorLabel(provider, ar);
               return (
-                <span
+                <Link
                   key={provider}
+                  to={href("/connectors")}
                   className={cn("st-assist-chip", on && "is-on")}
-                  title={connectorLabel(provider, ar)}
+                  title={label}
+                  aria-label={label}
                 >
-                  <Icon size={12} strokeWidth={1.7} />
-                  <span>{connectorLabel(provider, ar)}</span>
-                </span>
+                  <Icon size={14} strokeWidth={1.7} />
+                  <span>{label}</span>
+                </Link>
               );
             })}
           </div>
@@ -791,16 +817,24 @@ export function ArrabAssistantWorkspace({
             </div>
           ) : (
             room.lines.map((line) => (
-              <div
-                key={line.id}
-                className={cn("st-bubble st-assist-bubble", line.who === "me" ? "is-me" : "is-them")}
-              >
-                {line.text}
-              </div>
+              <Fragment key={line.id}>
+                {line.who !== "me" && room.thoughts[line.id] ? (
+                  <ThinkingBlock trace={room.thoughts[line.id]!} />
+                ) : null}
+                <div
+                  className={cn("st-bubble st-assist-bubble", line.who === "me" ? "is-me" : "is-them")}
+                >
+                  {line.text}
+                </div>
+              </Fragment>
             ))
           )}
           {room.error ? <p className="st-chat-error">{room.error}</p> : null}
-          {room.busy ? <div className="st-bubble st-assist-bubble is-them is-busy">…</div> : null}
+          {room.liveThought ? (
+            <ThinkingBlock trace={room.liveThought} />
+          ) : room.busy && room.lines.at(-1)?.who === "me" ? (
+            <div className="st-bubble st-assist-bubble is-them is-busy">…</div>
+          ) : null}
           <div ref={chatEnd} />
         </div>
 

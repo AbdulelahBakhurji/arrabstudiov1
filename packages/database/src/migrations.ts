@@ -586,6 +586,94 @@ create unique index if not exists erp_companions_external_id_uidx
   where external_id is not null and external_id <> '';
 `;
 
+export const MIGRATION_027_CONTROL_NOTIFICATIONS = `
+create table if not exists control_notifications (
+  id text primary key,
+  created_at timestamptz not null,
+  document jsonb not null
+);
+
+create index if not exists control_notifications_created_idx
+  on control_notifications (created_at desc);
+`;
+
+export const MIGRATION_028_CONTROL_DESK = `
+create table if not exists control_desk (
+  id text primary key,
+  kind text not null,
+  updated_at timestamptz not null,
+  document jsonb not null
+);
+`;
+
+export const MIGRATION_029_TOKEN_TOP_UPS = `
+alter table studio_accounts
+  add column if not exists token_top_ups jsonb not null default '[]'::jsonb;
+`;
+
+export const MIGRATION_030_FAMILY_GUARDIAN = `
+alter table family_members
+  add column if not exists guardian jsonb;
+`;
+
+export const MIGRATION_031_MODEL_CREDIT = `
+alter table studio_accounts
+  add column if not exists model_credit jsonb not null default '{}'::jsonb;
+`;
+
+export const MIGRATION_032_COMPANION_DESK = `
+create table if not exists companion_desk (
+  workspace_id text primary key references workspaces(id) on delete cascade,
+  updated_at timestamptz not null,
+  document jsonb not null
+);
+`;
+
+export const MIGRATION_033_CREW = `
+create table if not exists crew (
+  workspace_id text primary key references workspaces(id) on delete cascade,
+  updated_at timestamptz not null,
+  document jsonb not null
+);
+`;
+
+/** Per-employee connector isolation for organization seats. */
+export const MIGRATION_034_CONNECTOR_OWNER_EMPLOYEE = `
+alter table connectors
+  add column if not exists owner_employee_id text;
+
+create index if not exists connectors_workspace_employee_idx
+  on connectors (workspace_id, owner_employee_id);
+`;
+
+/** Zero-knowledge chat vault: wrapped key + sealed transcripts (server never holds plaintext). */
+export const MIGRATION_035_SEALED_VAULT = `
+create table if not exists sealed_keys (
+  workspace_id text not null references workspaces(id) on delete cascade,
+  owner_key text not null,
+  wrapped_key jsonb not null,
+  updated_at timestamptz not null default now(),
+  primary key (workspace_id, owner_key)
+);
+
+create table if not exists sealed_chats (
+  workspace_id text not null references workspaces(id) on delete cascade,
+  owner_key text not null,
+  chat_id text not null,
+  sealed text not null,
+  updated_at timestamptz not null,
+  primary key (workspace_id, owner_key, chat_id)
+);
+
+create table if not exists sealed_chat_tombstones (
+  workspace_id text not null references workspaces(id) on delete cascade,
+  owner_key text not null,
+  chat_id text not null,
+  deleted_at timestamptz not null,
+  primary key (workspace_id, owner_key, chat_id)
+);
+`;
+
 export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "001_core", sql: MIGRATION_001_CORE },
   { id: "002_conversations", sql: MIGRATION_002_CONVERSATIONS },
@@ -613,4 +701,13 @@ export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "024_family_member_credentials", sql: MIGRATION_024_FAMILY_MEMBER_CREDENTIALS },
   { id: "025_family_seat_isolation", sql: MIGRATION_025_FAMILY_SEAT_ISOLATION },
   { id: "026_erp_companions", sql: MIGRATION_026_ERP_COMPANIONS },
+  { id: "027_control_notifications", sql: MIGRATION_027_CONTROL_NOTIFICATIONS },
+  { id: "028_control_desk", sql: MIGRATION_028_CONTROL_DESK },
+  { id: "029_token_top_ups", sql: MIGRATION_029_TOKEN_TOP_UPS },
+  { id: "030_family_guardian", sql: MIGRATION_030_FAMILY_GUARDIAN },
+  { id: "031_model_credit", sql: MIGRATION_031_MODEL_CREDIT },
+  { id: "032_companion_desk", sql: MIGRATION_032_COMPANION_DESK },
+  { id: "033_crew", sql: MIGRATION_033_CREW },
+  { id: "034_connector_owner_employee", sql: MIGRATION_034_CONNECTOR_OWNER_EMPLOYEE },
+  { id: "035_sealed_vault", sql: MIGRATION_035_SEALED_VAULT },
 ];

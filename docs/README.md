@@ -1,5 +1,7 @@
 # Documentation
 
+Agents start at the repo-root [AGENTS.md](../AGENTS.md).
+
 | Document | Purpose |
 | --- | --- |
 | [PRODUCT.md](./PRODUCT.md) | **Full product documentation** — plans, features, Family Guardian, connectors, matrix |

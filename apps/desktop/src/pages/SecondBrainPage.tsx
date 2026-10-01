@@ -24,7 +24,6 @@ import { getCompanionState, useCompanionState } from "@/lib/companions";
 import { arrabApi } from "@/lib/api";
 import {
   BRAIN_KIND_COLOR,
-  brainContextSnippet,
   brainLinksForNodes,
   brainNodesForScope,
   companionsForActiveBrain,
@@ -76,18 +75,117 @@ function shortTitle(title: string, max = 18) {
   return `${clean.slice(0, max - 1)}…`;
 }
 
-function edgePath(from: BrainNode, to: BrainNode, w = 1000, h = 640) {
-  const x1 = from.x * w;
-  const y1 = from.y * h;
-  const x2 = to.x * w;
-  const y2 = to.y * h;
+const MAP_W = 1000;
+const MAP_H = 640;
+
+/** Keep rings circular inside the wide canvas, with room for labels. */
+function toCanvas(nx: number, ny: number) {
+  const pad = 78;
+  const size = Math.min(MAP_W, MAP_H) - pad * 2;
+  const ox = (MAP_W - size) / 2;
+  const oy = (MAP_H - size) / 2;
+  return { x: ox + nx * size, y: oy + ny * size };
+}
+
+function fromCanvas(px: number, py: number) {
+  const pad = 78;
+  const size = Math.min(MAP_W, MAP_H) - pad * 2;
+  const ox = (MAP_W - size) / 2;
+  const oy = (MAP_H - size) / 2;
+  return { x: (px - ox) / size, y: (py - oy) / size };
+}
+
+function nodeRadius(kind: BrainNodeKind, active: boolean) {
+  const base = kind === "companion" ? 15 : kind === "project" ? 11 : kind === "session" ? 9 : 8;
+  return base + (active ? 1.5 : 0);
+}
+
+function edgePath(from: BrainNode, to: BrainNode, r1: number, r2: number) {
+  const a = toCanvas(from.x, from.y);
+  const b = toCanvas(to.x, to.y);
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const x1 = a.x + (dx / len) * (r1 + 3);
+  const y1 = a.y + (dy / len) * (r1 + 3);
+  const x2 = b.x - (dx / len) * (r2 + 3);
+  const y2 = b.y - (dy / len) * (r2 + 3);
   const mx = (x1 + x2) / 2;
   const my = (y1 + y2) / 2;
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const cx = mx - dy * 0.12;
-  const cy = my + dx * 0.12;
+  const cx = mx - (y2 - y1) * 0.14;
+  const cy = my + (x2 - x1) * 0.14;
   return `M ${x1} ${y1} Q ${cx} ${cy} ${x2} ${y2}`;
+}
+
+const CHIP_H = 22;
+
+function arabicTitle(text: string) {
+  const letters = text.replace(/\s/g, "");
+  const arabic = letters.match(/[\u0600-\u06FF]/g)?.length ?? 0;
+  return arabic >= 2 && arabic >= letters.length * 0.4;
+}
+
+function chipWidth(text: string) {
+  const sample = text.replace(/\s+/g, " ").trim().slice(0, 36);
+  let width = 20;
+  for (const ch of sample) {
+    if (/[\u0600-\u06FF]/.test(ch)) width += 8;
+    else if (ch === " ") width += 3.2;
+    else width += 6.4;
+  }
+  return Math.min(156, Math.max(48, Math.round(width)));
+}
+
+type ChipBox = { x: number; y: number; w: number; h: number };
+
+function boxesHit(a: ChipBox, b: ChipBox, pad = 5) {
+  return a.x < b.x + b.w + pad && a.x + a.w + pad > b.x && a.y < b.y + b.h + pad && a.y + a.h + pad > b.y;
+}
+
+function placeLabel(
+  item: { cx: number; cy: number; r: number; title: string },
+  taken: ChipBox[],
+  nodes: Array<{ cx: number; cy: number; r: number }>,
+  force: boolean,
+): ChipBox | null {
+  const w = chipWidth(item.title);
+  const h = CHIP_H;
+  const dx = item.cx - MAP_W / 2;
+  const dy = item.cy - MAP_H / 2;
+  const len = Math.hypot(dx, dy);
+  const ux = len < 28 ? 0 : dx / len;
+  const uy = len < 28 ? 1 : dy / len;
+  const offsets: Array<[number, number]> = [];
+  for (const extra of [16, 32, 50]) {
+    const dist = item.r + extra;
+    offsets.push([ux * dist, uy * dist], [-uy * dist * 0.85, ux * dist * 0.85], [uy * dist * 0.85, -ux * dist * 0.85]);
+  }
+  offsets.push([0, item.r + 18], [0, -(item.r + 18)]);
+
+  for (const [ox, oy] of offsets) {
+    const chip: ChipBox = {
+      x: item.cx + ox - w / 2,
+      y: item.cy + oy - h / 2,
+      w,
+      h,
+    };
+    chip.x = Math.max(8, Math.min(MAP_W - w - 8, chip.x));
+    chip.y = Math.max(8, Math.min(MAP_H - h - 8, chip.y));
+    const self = { x: item.cx - item.r, y: item.cy - item.r, w: item.r * 2, h: item.r * 2 };
+    if (boxesHit(chip, self, 1)) continue;
+    if (taken.some((box) => boxesHit(chip, box))) continue;
+    if (nodes.some((node) => boxesHit(chip, { x: node.cx - node.r, y: node.cy - node.r, w: node.r * 2, h: node.r * 2 }, 2))) {
+      continue;
+    }
+    return chip;
+  }
+  if (!force) return null;
+  return {
+    x: Math.max(8, Math.min(MAP_W - w - 8, item.cx - w / 2)),
+    y: Math.max(8, Math.min(MAP_H - h - 8, item.cy + item.r + 12)),
+    w,
+    h,
+  };
 }
 
 async function pullRealChats(input: {
@@ -210,7 +308,6 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
   const [hoverId, setHoverId] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
-  const [tick, setTick] = useState(0);
   const svgRef = useRef<SVGSVGElement>(null);
   const dragRef = useRef<{ id: string; pointerId: number } | null>(null);
   const syncingRef = useRef(false);
@@ -267,11 +364,6 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
       syncBrainFromCompanions(companionState);
     }
   }, [companionState, effectiveScope, seatKey]);
-
-  useEffect(() => {
-    const id = window.setInterval(() => setTick((n) => n + 1), 40);
-    return () => window.clearInterval(id);
-  }, []);
 
   const allScoped = useMemo(
     () => brainNodesForScope(brain, effectiveScope, spaceKey),
@@ -338,7 +430,11 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
     const svg = svgRef.current;
     if (!drag || !svg || drag.pointerId !== event.pointerId) return;
     const rect = svg.getBoundingClientRect();
-    moveBrainNode(drag.id, (event.clientX - rect.left) / rect.width, (event.clientY - rect.top) / rect.height);
+    const point = fromCanvas(
+      ((event.clientX - rect.left) / rect.width) * MAP_W,
+      ((event.clientY - rect.top) / rect.height) * MAP_H,
+    );
+    moveBrainNode(drag.id, point.x, point.y);
   }
 
   function onPointerUp(event: ReactPointerEvent) {
@@ -409,11 +505,11 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
         </header>
 
         <div className="sb-metrics" role="group" aria-label={t("brainHeroTitle")}>
-          <Metric label={t("brainStatProjects")} value={stats.projects} />
-          <Metric label={t("brainStatSessions")} value={stats.sessions} />
-          <Metric label={t("brainStatDecisions")} value={stats.decisions} />
-          <Metric label={t("brainStatFiles")} value={stats.files} />
-          <Metric label={ar ? "أشخاص" : "People"} value={stats.people} />
+          <Metric label={t("brainStatProjects")} value={stats.projects} tone={BRAIN_KIND_COLOR.project} />
+          <Metric label={t("brainStatSessions")} value={stats.sessions} tone={BRAIN_KIND_COLOR.session} />
+          <Metric label={t("brainStatDecisions")} value={stats.decisions} tone={BRAIN_KIND_COLOR.decision} />
+          <Metric label={t("brainStatFiles")} value={stats.files} tone={BRAIN_KIND_COLOR.file} />
+          <Metric label={ar ? "أشخاص" : "People"} value={stats.people} tone={BRAIN_KIND_COLOR.companion} />
         </div>
 
         <div className="sb-console-bar">
@@ -452,10 +548,12 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
                 <p>{t("brainEmptyBody")}</p>
               </div>
             ) : (
+              <div className="sb-stage">
               <svg
                 ref={svgRef}
                 className="sb-canvas"
-                viewBox="0 0 1000 640"
+                viewBox={`0 0 ${MAP_W} ${MAP_H}`}
+                preserveAspectRatio="none"
                 role="img"
                 aria-label={t("brainMapAria")}
                 onPointerDown={onCanvasPointerDown}
@@ -464,8 +562,15 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
                 onPointerLeave={onPointerUp}
               >
                 <defs>
-                  <filter id="sbGlowSoft" x="-40%" y="-40%" width="180%" height="180%">
-                    <feGaussianBlur stdDeviation="3.5" result="blur" />
+                  <pattern id="sbDots" width="28" height="28" patternUnits="userSpaceOnUse">
+                    <circle cx="1" cy="1" r="0.9" className="sb-grid-dot" />
+                  </pattern>
+                  <radialGradient id="sbVignette" cx="50%" cy="46%" r="62%">
+                    <stop offset="0%" className="sb-vignette-inner" />
+                    <stop offset="100%" className="sb-vignette-outer" />
+                  </radialGradient>
+                  <filter id="sbGlowSoft" x="-50%" y="-50%" width="200%" height="200%">
+                    <feGaussianBlur stdDeviation="4" result="blur" />
                     <feMerge>
                       <feMergeNode in="blur" />
                       <feMergeNode in="SourceGraphic" />
@@ -473,85 +578,141 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
                   </filter>
                 </defs>
                 <rect
-                  width="1000"
-                  height="640"
+                  width={MAP_W}
+                  height={MAP_H}
                   className="sb-canvas-bg"
                   onPointerDown={() => {
                     setSelectedId(null);
                     setHoverId(null);
                   }}
                 />
+                <rect width={MAP_W} height={MAP_H} fill="url(#sbVignette)" pointerEvents="none" />
+                <rect width={MAP_W} height={MAP_H} fill="url(#sbDots)" pointerEvents="none" />
+                <g className="sb-cortex" pointerEvents="none">
+                  <circle cx={MAP_W / 2} cy={MAP_H / 2} r={92} />
+                  <circle cx={MAP_W / 2} cy={MAP_H / 2} r={168} />
+                  <circle cx={MAP_W / 2} cy={MAP_H / 2} r={244} />
+                </g>
 
-                {links.map((link, index) => {
+                {links.map((link) => {
                   const from = nodes.find((n) => n.id === link.from);
                   const to = nodes.find((n) => n.id === link.to);
                   if (!from || !to) return null;
                   const lit = isLit("", link);
+                  const d = edgePath(
+                    from,
+                    to,
+                    nodeRadius(from.kind, selectedId === from.id),
+                    nodeRadius(to.kind, selectedId === to.id),
+                  );
+                  const color = BRAIN_KIND_COLOR[from.kind];
                   return (
-                    <path
-                      key={link.id}
-                      d={edgePath(from, to)}
-                      className={cn("sb-edge", lit ? "is-lit" : "is-dim")}
-                      style={{ animationDelay: `${(index % 12) * 0.12}s` }}
-                    />
+                    <g key={link.id} pointerEvents="none">
+                      <path
+                        d={d}
+                        className={cn("sb-edge-glow", focusId && !lit && "is-dim")}
+                        stroke={color}
+                      />
+                      <path
+                        d={d}
+                        className={cn(
+                          "sb-edge",
+                          focusId && lit ? "is-lit" : "is-quiet",
+                          focusId && !lit && "is-dim",
+                        )}
+                        stroke={focusId && lit ? color : undefined}
+                      />
+                    </g>
                   );
                 })}
 
                 {nodes.map((node, index) => {
-                  const breath = Math.sin(tick * 0.045 + index * 0.7) * 2.2;
-                  const cx = node.x * 1000;
-                  const cy = node.y * 640 + breath * 0.35;
+                  const point = toCanvas(node.x, node.y);
                   const active = selectedId === node.id;
                   const lit = isLit(node.id);
-                  const hub = (degree.get(node.id) ?? 0) >= 3;
-                  const showLabel =
-                    active || hoverId === node.id || hub || node.kind === "companion";
-                  const baseR =
-                    node.kind === "project" || node.kind === "companion"
-                      ? 15
-                      : node.kind === "session"
-                        ? 11
-                        : 9;
-                  const r = baseR + (active ? 1.5 : 0) + breath * 0.15;
+                  const hub = node.kind === "companion" || (degree.get(node.id) ?? 0) >= 3;
+                  const r = nodeRadius(node.kind, active);
+                  const color = BRAIN_KIND_COLOR[node.kind];
                   return (
                     <g
                       key={node.id}
                       className={cn("sb-node", active && "is-active", !lit && "is-dim")}
-                      transform={`translate(${cx}, ${cy})`}
+                      transform={`translate(${point.x}, ${point.y})`}
                       onPointerDown={(e) => onPointerDown(node, e)}
                       onPointerEnter={() => setHoverId(node.id)}
                       onPointerLeave={() => setHoverId(null)}
                       style={{ animationDelay: `${Math.min(index, 24) * 0.035}s` }}
                     >
-                      <circle
-                        r={r + 14}
-                        fill={BRAIN_KIND_COLOR[node.kind]}
-                        className="sb-node-aura"
-                        opacity={active ? 0.22 : 0.1}
-                      />
-                      {active || hub ? (
-                        <circle
-                          r={r + 8}
-                          className="sb-node-ring"
-                          stroke={BRAIN_KIND_COLOR[node.kind]}
-                        />
-                      ) : null}
-                      <circle
-                        r={r}
-                        fill={BRAIN_KIND_COLOR[node.kind]}
-                        className="sb-node-core"
-                        filter={active ? "url(#sbGlowSoft)" : undefined}
-                      />
-                      <circle r={Math.max(2.5, r * 0.28)} className="sb-node-dot" />
-                      {showLabel ? (
-                        <text y={r + 18} textAnchor="middle" className="sb-node-label">
-                          {shortTitle(node.title, active ? 24 : 16)}
-                        </text>
-                      ) : null}
+                      <circle r={20} className="sb-node-hit" />
+                      <circle r={r + 11} fill={color} className="sb-node-aura" opacity={active ? 0.22 : 0.1} />
+                      <circle r={r + 4.5} className="sb-node-shell" stroke={color} />
+                      {hub ? <circle r={r + 8} className="sb-node-ring" stroke={color} /> : null}
+                      <circle r={r} fill={color} className="sb-node-core" filter={active || hub ? "url(#sbGlowSoft)" : undefined} />
+                      <circle r={r * 0.42} className="sb-node-sheen" />
+                      <circle r={1.7} className="sb-node-dot" />
                     </g>
                   );
                 })}
               </svg>
+              <div className="sb-chips">
+                {(() => {
+                  const points = nodes.map((node) => {
+                    const point = toCanvas(node.x, node.y);
+                    return {
+                      node,
+                      cx: point.x,
+                      cy: point.y,
+                      r: nodeRadius(node.kind, selectedId === node.id),
+                    };
+                  });
+                  const taken: ChipBox[] = [];
+                  const chips: Array<ChipBox & { id: string; title: string; active: boolean }> = [];
+                  const ranked = [...points].sort((a, b) => {
+                    const rank = (item: (typeof points)[number]) =>
+                      item.node.id === selectedId
+                        ? 6
+                        : item.node.id === hoverId
+                          ? 5
+                          : item.node.kind === "companion"
+                            ? 4
+                            : item.node.kind === "project"
+                              ? 2
+                              : 1;
+                    return rank(b) - rank(a);
+                  });
+                  for (const item of ranked) {
+                    const title = item.node.title.replace(/\s+/g, " ").trim();
+                    const box = placeLabel(
+                      { cx: item.cx, cy: item.cy, r: item.r, title },
+                      taken,
+                      points
+                        .filter((point) => point.node.id !== item.node.id)
+                        .map((point) => ({ cx: point.cx, cy: point.cy, r: point.r })),
+                      item.node.id === selectedId || item.node.id === hoverId,
+                    );
+                    if (!box) continue;
+                    taken.push(box);
+                    chips.push({ ...box, id: item.node.id, title, active: selectedId === item.node.id });
+                  }
+                  return chips.map((chip) => (
+                    <span
+                      key={chip.id}
+                      className={cn("sb-chip", chip.active && "is-active")}
+                      dir={arabicTitle(chip.title) ? "rtl" : "auto"}
+                      lang={arabicTitle(chip.title) ? "ar" : undefined}
+                      style={{
+                        left: `${(chip.x / MAP_W) * 100}%`,
+                        top: `${(chip.y / MAP_H) * 100}%`,
+                        width: `${(chip.w / MAP_W) * 100}%`,
+                        height: `${(chip.h / MAP_H) * 100}%`,
+                      }}
+                    >
+                      <span className="sb-chip-text">{chip.title}</span>
+                    </span>
+                  ));
+                })()}
+              </div>
+              </div>
             )}
           </div>
 
@@ -591,8 +752,8 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
                     {kindLabel(selected.kind, ar)}
                   </span>
                 </div>
-                <h3>{selected.title}</h3>
-                <p className="sb-detail-body">{selected.summary || t("brainNoSummary")}</p>
+                <h3 dir="auto">{selected.title}</h3>
+                <p className="sb-detail-body" dir="auto">{selected.summary || t("brainNoSummary")}</p>
 
                 <dl className="sb-meta">
                   <div>
@@ -631,7 +792,7 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
                         <li key={node.id}>
                           <button type="button" onClick={() => setSelectedId(node.id)}>
                             <i style={{ background: BRAIN_KIND_COLOR[node.kind] }} />
-                            <span>{shortTitle(node.title, 28)}</span>
+                            <span dir="auto">{shortTitle(node.title, 28)}</span>
                             <ArrowUpRight size={12} />
                           </button>
                         </li>
@@ -651,6 +812,21 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
               <div className="sb-inspector-empty">
                 <Brain size={22} strokeWidth={1.4} />
                 <p>{t("brainPickNode")}</p>
+                {allScoped.length ? (
+                  <ul className="sb-quick">
+                    {[...allScoped]
+                      .sort((a, b) => (degree.get(b.id) ?? 0) - (degree.get(a.id) ?? 0))
+                      .slice(0, 6)
+                      .map((node) => (
+                        <li key={node.id}>
+                          <button type="button" onClick={() => setSelectedId(node.id)}>
+                            <i style={{ background: BRAIN_KIND_COLOR[node.kind] }} />
+                            <span dir="auto">{shortTitle(node.title, 26)}</span>
+                          </button>
+                        </li>
+                      ))}
+                  </ul>
+                ) : null}
               </div>
             )}
 
@@ -668,12 +844,6 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
               </ul>
             </div>
 
-            {effectiveScope === "individual" ? (
-              <pre className="sb-context">
-                {brainContextSnippet("individual", null, ar ? "ar" : "en", 3) ||
-                  t("brainContextEmpty")}
-              </pre>
-            ) : null}
           </aside>
         </div>
       </section>
@@ -681,9 +851,10 @@ export function SecondBrainPage({ scope }: { scope: BrainScope }) {
   );
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
+function Metric({ label, value, tone }: { label: string; value: number; tone: string }) {
   return (
     <div className="sb-metric">
+      <i style={{ background: tone }} />
       <span>{label}</span>
       <strong>{value}</strong>
     </div>

@@ -98,6 +98,36 @@ export function clearNotificationInbox(): void {
   broadcastInbox();
 }
 
+export function removeNotification(id: string): void {
+  inboxCache = inboxCache.filter((item) => item.id !== id);
+  saveInbox(inboxCache);
+  broadcastInbox();
+}
+
+const WELCOME_SEED_KEY = "arrab.notificationWelcome.v1";
+
+/** One-time seed so the title-bar bell is never an empty dead control on first launch. */
+export function ensureStudioInboxSeeded(locale: "en" | "ar" = "en"): void {
+  try {
+    if (localStorage.getItem(WELCOME_SEED_KEY)) return;
+    localStorage.setItem(WELCOME_SEED_KEY, "1");
+  } catch {
+    return;
+  }
+  if (inboxCache.some((item) => item.id === "studio-welcome")) return;
+  pushToast({
+    id: "studio-welcome",
+    title: locale === "ar" ? "الإشعارات جاهزة" : "Notifications are ready",
+    body:
+      locale === "ar"
+        ? "تظهر هنا تنبيهات الاستوديو والتحديثات والموافقات."
+        : "Studio alerts, updates, and approvals show up here.",
+    tone: "info",
+    kind: "system",
+    durationMs: 4200,
+  });
+}
+
 export function unreadNotificationCount(): number {
   return inboxCache.filter((item) => !item.read).length;
 }
@@ -152,17 +182,11 @@ async function sendOsNotification(input: {
 
   if (isTauriRuntime()) {
     try {
-      const {
-        isPermissionGranted,
-        requestPermission,
-        sendNotification,
-      } = await import("@tauri-apps/plugin-notification");
-      let granted = await isPermissionGranted();
-      if (!granted) {
-        const permission = await requestPermission();
-        granted = permission === "granted";
-      }
-      if (granted) {
+      // Permission is requested once after sign-in (or from Settings), never from a send.
+      const { isPermissionGranted, sendNotification } = await import(
+        "@tauri-apps/plugin-notification"
+      );
+      if (await isPermissionGranted()) {
         sendNotification({
           title: cleanTitle,
           body: cleanBody,
@@ -277,6 +301,15 @@ export async function notifyStudio(input: {
   if (isApproval) {
     void pingCompanionPanel();
   }
+}
+
+/** OS notification for Arrab Control notices; never prompts for permission. */
+export async function postNativeNotification(input: {
+  title: string;
+  body?: string;
+  tag: string;
+}): Promise<void> {
+  await sendOsNotification(input);
 }
 
 export async function ensureNotificationPermission(): Promise<NotificationPermission | "unsupported"> {

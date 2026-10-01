@@ -1,4 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { PlanLimitsCard } from "@/components/managed/UsageMeter";
+import {
+  NOTIFICATION_CHANNELS,
+  readChannelPrefs,
+  writeChannelPrefs,
+  type ChannelPrefs,
+  type NotificationChannel,
+} from "@/lib/managed-client/notifications";
 import { useSearchParams } from "react-router-dom";
 import {
   CircleUserRound,
@@ -13,11 +21,15 @@ import {
 import appSymbol from "@/assets/symbol.png";
 import "@/styles/settings.css";
 import { Surface } from "@/components/StudioFrame";
-import { FamilyHouseholdPanel } from "@/components/FamilyHouseholdPanel";
+import { FamilyHouseholdPanel } from "@/components/family/FamilyHouseholdPanel";
+import { UsagePacksPanel } from "@/components/UsagePacksPanel";
+import { EncryptionPanel } from "@/components/EncryptionPanel";
 import { useFamilyProfile } from "@/lib/use-family-profile";
 import pkg from "../../package.json";
 import { useRole } from "@/roles/RoleProvider";
+import { audienceFromAccountSignals } from "@/roles/catalog";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import type { MessageKey } from "@/i18n/messages";
 import { useTheme } from "@/theme/ThemeProvider";
 import { arrabApi, ApiRequestError } from "@/lib/api";
 import {
@@ -44,11 +56,20 @@ import {
   readCrashLog,
   readPrefs,
   recordCrash,
+  subscribePrefs,
   writeApiBaseOverride,
   writeApiRoutePrefixOverride,
   writePrefs,
   type StudioPrefs,
 } from "@/lib/prefs";
+import {
+  changeIncognitoPassword,
+  createIncognitoVault,
+  incognitoVaultExists,
+  wipeIncognitoVault,
+} from "@/lib/incognito-vault";
+import { clearAccountChatHistory } from "@/lib/chat-history";
+import { wipeWorkspaceVaultKey } from "@/lib/local-secure";
 import { pickFolder, isTauriRuntime } from "@/lib/terminal";
 import { cn } from "@/lib/utils";
 import type { AccountStatusResponse, AiGatewayStatusResponse } from "@arrab/shared";
@@ -70,10 +91,17 @@ function readSettingsTab(value: string | null): SettingsTab {
   return isSettingsTabId(value) ? value : "general";
 }
 
+const CHANNEL_LABELS: Record<NotificationChannel, MessageKey> = {
+  updates: "mcChannelUpdates",
+  security: "mcChannelSecurity",
+  companions: "mcChannelCompanions",
+  general: "mcChannelGeneral",
+};
+
 export function SettingsPage() {
   const { t, locale, setLocale } = useLanguage();
   const { theme, setTheme } = useTheme();
-  const { role: studioRole, href } = useRole();
+  const { role: pathRole, href } = useRole();
   const { isChild: isFamilyChild } = useFamilyProfile();
   const { account: signedInAccount, status: signedInStatus } = useSignedInAccount();
   const accountId = signedInAccount?.id ?? null;
@@ -82,6 +110,14 @@ export function SettingsPage() {
   /** Cloud session only — guest / local-only must not see account-bound settings. */
   const isSignedIn =
     Boolean(signedInAccount) && signedInStatus?.connected !== false && !guestLocal;
+  const planAudience = audienceFromAccountSignals({
+    planId: signedInStatus?.entitlements?.planId ?? signedInAccount?.planId ?? null,
+    planCategory:
+      signedInStatus?.entitlements?.planCategory ?? signedInAccount?.planCategory ?? null,
+    planName: signedInStatus?.entitlements?.planName ?? signedInAccount?.planName ?? null,
+  });
+  /** Plan wins over a stale path role so Business/Team settings match the org shell. */
+  const studioRole = isSignedIn ? planAudience : pathRole;
   const [searchParams, setSearchParams] = useSearchParams();
   const [tab, setTab] = useState<SettingsTab>(() => readSettingsTab(searchParams.get("tab")));
 
@@ -92,6 +128,12 @@ export function SettingsPage() {
   // Account settings stay inside Settings — do not bounce to /account.
 
   const [prefs, setPrefs] = useState<StudioPrefs>(() => readPrefs());
+  const [channelPrefs, setChannelPrefs] = useState<ChannelPrefs>(() => readChannelPrefs());
+  const updateChannel = (channel: NotificationChannel, value: boolean) => {
+    const next = { ...channelPrefs, [channel]: value };
+    setChannelPrefs(next);
+    writeChannelPrefs(next);
+  };
   const [savedFlash, setSavedFlash] = useState(false);
   const [online, setOnline] = useState<boolean | null>(null);
   const [aiReady, setAiReady] = useState(false);
@@ -132,6 +174,80 @@ export function SettingsPage() {
   const [notifyPermission, setNotifyPermission] = useState<string>(() =>
     typeof Notification === "undefined" ? "unsupported" : Notification.permission,
   );
+  const [vaultExists, setVaultExists] = useState(false);
+  const [vaultBusy, setVaultBusy] = useState(false);
+  const [vaultError, setVaultError] = useState<string | null>(null);
+  const [vaultCurrent, setVaultCurrent] = useState("");
+  const [vaultNext, setVaultNext] = useState("");
+  const [vaultConfirm, setVaultConfirm] = useState("");
+  const [vaultResetOpen, setVaultResetOpen] = useState(false);
+  const [vaultRemoveConfirm, setVaultRemoveConfirm] = useState(false);
+  const [localDataBusy, setLocalDataBusy] = useState(false);
+
+  const refreshVaultStatus = useCallback(() => {
+    void incognitoVaultExists().then(setVaultExists);
+  }, []);
+
+  useEffect(() => {
+    if (tab !== "privacy") return;
+    refreshVaultStatus();
+  }, [tab, refreshVaultStatus, accountId]);
+
+  async function resetVaultPassword() {
+    setVaultError(null);
+    if (vaultNext.trim().length < 8) {
+      setVaultError(t("privacyVaultTooShort"));
+      return;
+    }
+    if (vaultNext !== vaultConfirm) {
+      setVaultError(t("privacyVaultMismatch"));
+      return;
+    }
+    setVaultBusy(true);
+    try {
+      if (vaultExists) {
+        await changeIncognitoPassword(vaultCurrent, vaultNext);
+      } else {
+        await createIncognitoVault(vaultNext);
+      }
+      setVaultCurrent("");
+      setVaultNext("");
+      setVaultConfirm("");
+      setVaultResetOpen(false);
+      refreshVaultStatus();
+      pushToast({ title: t("privacyVaultPasswordUpdated"), tone: "success" });
+    } catch {
+      setVaultError(t("privacyVaultWrongPassword"));
+    } finally {
+      setVaultBusy(false);
+    }
+  }
+
+  async function removeVault() {
+    setVaultBusy(true);
+    setVaultError(null);
+    try {
+      await wipeIncognitoVault();
+      await clearAccountChatHistory();
+      await wipeWorkspaceVaultKey();
+      setVaultResetOpen(false);
+      setVaultRemoveConfirm(false);
+      setVaultCurrent("");
+      setVaultNext("");
+      setVaultConfirm("");
+      const stillThere = await incognitoVaultExists();
+      setVaultExists(stillThere);
+      if (stillThere) {
+        setVaultError(t("privacyVaultRemoveFailed"));
+      } else {
+        pushToast({ title: t("privacyVaultRemoved"), tone: "success" });
+      }
+    } catch {
+      setVaultError(t("privacyVaultRemoveFailed"));
+    } finally {
+      setVaultBusy(false);
+    }
+  }
 
   const loadUsage = useCallback(() => {
     void Promise.all([
@@ -149,9 +265,8 @@ export function SettingsPage() {
           outputTokens: tokens.totals.outputTokens,
           events: tokens.totals.events,
         });
-        if (tokens.entitlements) {
-          setEntitlements(tokens.entitlements);
-        }
+        // /v1/usage reports the shared workspace pool ("Local (not connected)").
+        // A signed-in plan and its usage come only from the account status.
         if (apiMeta) {
           setMeta({
             version: apiMeta.version,
@@ -351,40 +466,57 @@ export function SettingsPage() {
     }
   }, [searchParams, setSearchParams]);
 
-  const agentPercent = useMemo(() => {
+  const billingAccount = isSignedIn
+    ? (signedInStatus?.account ?? accountStatus?.account ?? null)
+    : null;
+  const accountEntitlements = (() => {
     if (!isSignedIn) return null;
-    if (!entitlements || entitlements.tokenLimit === null || entitlements.tokenLimit <= 0) {
+    const candidates = [signedInStatus?.entitlements, entitlements];
+    for (const candidate of candidates) {
+      if (!candidate?.connected) continue;
+      const name = candidate.planName.trim().toLowerCase();
+      // Shared workspace bucket — never the signed-in plan.
+      if (!name || name.startsWith("local")) continue;
+      return candidate;
+    }
+    return null;
+  })();
+  const agentPercent = useMemo(() => {
+    if (!accountEntitlements || accountEntitlements.tokenLimit === null || accountEntitlements.tokenLimit <= 0) {
       return null;
     }
-    return Math.min(100, Math.round((entitlements.tokensUsed / entitlements.tokenLimit) * 100));
-  }, [entitlements, isSignedIn]);
+    return Math.min(
+      100,
+      Math.round((accountEntitlements.tokensUsed / accountEntitlements.tokenLimit) * 100),
+    );
+  }, [accountEntitlements]);
   const planLabel = isSignedIn
-    ? (entitlements?.planName ?? t("accountNotConnected"))
+    ? (billingAccount?.planName ?? accountEntitlements?.planName ?? t("accountNotConnected"))
     : t("accountNotConnected");
-  const tokensUsedValue = isSignedIn
-    ? (entitlements?.tokensUsed ?? tokenUsage.inputTokens + tokenUsage.outputTokens)
-    : 0;
-  const cloudOverLimit = Boolean(isSignedIn && entitlements?.overLimit);
+  const unlimitedPlan = Boolean(accountEntitlements && accountEntitlements.tokenLimit === null);
+  const cloudOverLimit = Boolean(accountEntitlements?.overLimit);
+  const periodEndIso = accountEntitlements?.periodEnd ?? billingAccount?.periodEnd ?? null;
+  const periodStartIso = accountEntitlements?.periodStart ?? billingAccount?.periodStart ?? null;
   const periodLabel = useMemo(() => {
-    if (!isSignedIn || !entitlements?.periodEnd) return null;
+    if (!periodEndIso) return null;
     const localeTag = locale === "ar" ? "ar-SA" : "en-US";
-    return new Date(entitlements.periodEnd).toLocaleDateString(localeTag, {
+    return new Date(periodEndIso).toLocaleDateString(localeTag, {
       month: "short",
       day: "numeric",
       year: "numeric",
     });
-  }, [entitlements?.periodEnd, locale, isSignedIn]);
+  }, [periodEndIso, locale]);
   const billingRangeLabel = useMemo(() => {
-    if (!isSignedIn || !entitlements?.periodStart || !entitlements?.periodEnd) return null;
+    if (!periodStartIso || !periodEndIso) return null;
     const localeTag = locale === "ar" ? "ar-SA" : "en-US";
     const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
-    return `${new Date(entitlements.periodStart).toLocaleDateString(localeTag, opts)} → ${new Date(entitlements.periodEnd).toLocaleDateString(localeTag, opts)}`;
-  }, [entitlements?.periodStart, entitlements?.periodEnd, locale, isSignedIn]);
+    return `${new Date(periodStartIso).toLocaleDateString(localeTag, opts)} → ${new Date(periodEndIso).toLocaleDateString(localeTag, opts)}`;
+  }, [periodStartIso, periodEndIso, locale]);
   const daysLeftInPeriod = useMemo(() => {
-    if (!isSignedIn || !entitlements?.periodEnd) return null;
-    const ms = new Date(entitlements.periodEnd).getTime() - Date.now();
+    if (!periodEndIso) return null;
+    const ms = new Date(periodEndIso).getTime() - Date.now();
     return Math.max(0, Math.ceil(ms / 86_400_000));
-  }, [entitlements?.periodEnd, isSignedIn]);
+  }, [periodEndIso]);
   const memberSinceLabel = useMemo(() => {
     const connectedAt = accountStatus?.account?.connectedAt;
     if (!connectedAt) return null;
@@ -411,6 +543,8 @@ export function SettingsPage() {
     }
   }
 
+  useEffect(() => subscribePrefs(setPrefs), []);
+
   function persistPrefs(next: StudioPrefs) {
     setPrefs(next);
     writePrefs(next);
@@ -427,6 +561,32 @@ export function SettingsPage() {
     const next = defaultPrefs();
     persistPrefs(next);
     void setAlwaysOnTop(false).catch(() => undefined);
+    setSavedFlash(true);
+    window.setTimeout(() => setSavedFlash(false), 1400);
+    pushToast({ title: t("resetPrefsDone"), tone: "success" });
+  }
+
+  async function wipeLocalData() {
+    if (localDataBusy) return;
+    if (!window.confirm(t("clearLocalConfirm"))) {
+      return;
+    }
+    setLocalDataBusy(true);
+    try {
+      await clearLocalStudioData();
+      writeApiBaseOverride(null);
+      writeApiRoutePrefixOverride(null);
+      setPrefs(defaultPrefs());
+      setCoworkFolder(null);
+      setCrashLog([]);
+      void setAlwaysOnTop(false).catch(() => undefined);
+      pushToast({ title: t("clearLocalDone"), tone: "success" });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : t("apiUnavailable");
+      pushToast({ title: t("clearLocalFailed"), body: message, tone: "warn" });
+    } finally {
+      setLocalDataBusy(false);
+    }
   }
 
   async function saveProfile() {
@@ -658,19 +818,6 @@ export function SettingsPage() {
     pushToast({ title: t("testNotifyTitle"), body: t("testNotifyBody"), tone: "success" });
   }
 
-  function wipeLocalData() {
-    if (!window.confirm(t("clearLocalConfirm"))) {
-      return;
-    }
-    clearLocalStudioData();
-    writeApiBaseOverride(null);
-    writeApiRoutePrefixOverride(null);
-    setPrefs(defaultPrefs());
-    setCoworkFolder(null);
-    setCrashLog([]);
-    pushToast({ title: t("clearLocalDone"), tone: "success" });
-  }
-
   return (
     <Surface className="settings-shell st">
       <div className="st-layout">
@@ -730,6 +877,7 @@ export function SettingsPage() {
           {tab === "usage" ? (
             <section className="settings-rise st-page">
               <PageHead title={t("settingsUsage")} body={t("settingsUsageBody")} />
+              <PlanLimitsCard />
 
               {!isSignedIn ? (
                 <SettingsCard>
@@ -753,8 +901,10 @@ export function SettingsPage() {
                     <p className="su-kicker">{t("currentPlan")}</p>
                     <h3>{planLabel}</h3>
                     <div className="su-chips">
-                      {entitlements?.subscriptionStatus ? (
-                        <span className="su-chip">{entitlements.subscriptionStatus}</span>
+                      {(accountEntitlements?.subscriptionStatus ?? billingAccount?.subscriptionStatus) ? (
+                        <span className="su-chip">
+                          {accountEntitlements?.subscriptionStatus ?? billingAccount?.subscriptionStatus}
+                        </span>
                       ) : null}
                       {periodLabel ? (
                         <span className="su-chip is-soft">
@@ -779,34 +929,41 @@ export function SettingsPage() {
                 <div className="su-meter">
                   <div className="su-meter-labels">
                     <span>
-                      {tokensUsedValue.toLocaleString()} {t("usageTokensUsed").toLowerCase()}
+                      {unlimitedPlan
+                        ? t("unlimitedTokens")
+                        : agentPercent == null
+                          ? "—"
+                          : `${agentPercent}%`}
                     </span>
                     <strong>
-                      {agentPercent === null
+                      {unlimitedPlan
                         ? t("unlimitedTokens")
-                        : `${agentPercent}%`}
+                        : agentPercent == null
+                          ? "—"
+                          : `${agentPercent}%`}
                     </strong>
                   </div>
                   <div className="su-meter-track" aria-hidden>
                     <div
-                      className={cn(
+                        className={cn(
                         "su-meter-fill",
                         cloudOverLimit && "is-over",
-                        agentPercent === null && "is-unlimited",
+                        unlimitedPlan && "is-unlimited",
                       )}
                       style={{
-                        width:
-                          agentPercent === null
-                            ? "100%"
-                            : `${Math.max(agentPercent > 0 ? 3 : 0, agentPercent)}%`,
+                        width: unlimitedPlan
+                          ? "100%"
+                          : `${Math.max(agentPercent && agentPercent > 0 ? 3 : 0, agentPercent ?? 0)}%`,
                       }}
                     />
                   </div>
                   <div className="su-meter-foot">
                     <span>
-                      {agentPercent === null
+                      {unlimitedPlan
                         ? t("unlimitedTokens")
-                        : `${agentPercent}% ${t("usageTokensUsed").toLowerCase()}`}
+                        : agentPercent == null
+                          ? "—"
+                          : `${agentPercent}% ${t("usageTokensUsed").toLowerCase()}`}
                     </span>
                     {agentPercent != null ? (
                       <span>
@@ -910,11 +1067,11 @@ export function SettingsPage() {
                       </div>
                     </div>
 
-                    {entitlements ? (
+                    {accountEntitlements ? (
                       <div className="sa-meter">
                         <div className="sa-meter-labels">
                           <span>
-                            {entitlements.tokensUsed.toLocaleString()} {t("usageTokensUsed").toLowerCase()}
+                            {agentPercent === null ? t("unlimitedTokens") : `${agentPercent}%`}
                           </span>
                           <strong>
                             {agentPercent === null
@@ -955,12 +1112,12 @@ export function SettingsPage() {
                   <div className="sa-stats">
                     <div className="sa-stat">
                       <span>{t("currentPlan")}</span>
-                      <strong>{entitlements?.planName ?? accountStatus.account.planName}</strong>
+                      <strong>{planLabel}</strong>
                     </div>
                     <div className="sa-stat">
                       <span>{t("usageRemaining")}</span>
                       <strong className="tabular-nums">
-                        {entitlements?.tokenLimit === null
+                        {unlimitedPlan
                           ? t("unlimitedTokens")
                           : agentPercent == null
                             ? "—"
@@ -976,6 +1133,8 @@ export function SettingsPage() {
                       </strong>
                     </div>
                   </div>
+
+                  {accountEntitlements ? <UsagePacksPanel entitlements={accountEntitlements} /> : null}
 
                   <article className="sa-panel">
                     <p className="sa-kicker">{t("userAccountSettings")}</p>
@@ -1175,6 +1334,15 @@ export function SettingsPage() {
                   onChange={(value) => updatePref("coworkTerminalDock", value)}
                 />
               </SettingsCard>
+
+              <SettingsCard title={t("settingsAiReplies")} description={t("settingsAiRepliesBody")}>
+                <Toggle
+                  label={t("extendedThinking")}
+                  description={t("extendedThinkingHint")}
+                  checked={prefs.aiExtendedThinking}
+                  onChange={(value) => updatePref("aiExtendedThinking", value)}
+                />
+              </SettingsCard>
             </section>
           ) : null}
 
@@ -1303,12 +1471,157 @@ export function SettingsPage() {
                   </div>
                 </SettingRow>
               </SettingsCard>
+
+              <SettingsCard title={t("mcChannelsTitle")}>
+                <p className="mc-muted">{t("mcChannelsHint")}</p>
+                {NOTIFICATION_CHANNELS.map((channel) => (
+                  <Toggle
+                    key={channel}
+                    label={t(CHANNEL_LABELS[channel])}
+                    checked={channelPrefs[channel]}
+                    onChange={(value) => updateChannel(channel, value)}
+                  />
+                ))}
+              </SettingsCard>
             </section>
           ) : null}
 
           {tab === "privacy" ? (
             <section className="settings-rise st-page">
-              <PageHead title={t("settingsPrivacy")} body={t("generalDefaultsBody")} />
+              <PageHead title={t("settingsPrivacy")} body={t("privacyChatsBody")} />
+
+              <EncryptionPanel />
+
+              <SettingsCard title={t("privacyVaultTitle")} description={t("privacyVaultBody")}>
+                <SettingRow
+                  title={t("privacyVaultStatus")}
+                  description={
+                    vaultExists ? t("privacyVaultStatusReady") : t("privacyVaultStatusEmpty")
+                  }
+                >
+                  <span className={cn("st-badge", vaultExists && "is-ok")}>
+                    {vaultExists ? t("privacyVaultOn") : t("privacyVaultOff")}
+                  </span>
+                </SettingRow>
+
+                {vaultResetOpen ? (
+                  <div className="st-rows" style={{ gap: 10, paddingBlock: 4 }}>
+                    {vaultExists ? (
+                      <label className="st-field">
+                        <span>{t("privacyVaultCurrentPassword")}</span>
+                        <input
+                          type="password"
+                          className="st-input"
+                          autoComplete="current-password"
+                          value={vaultCurrent}
+                          onChange={(event) => setVaultCurrent(event.target.value)}
+                          disabled={vaultBusy}
+                        />
+                      </label>
+                    ) : null}
+                    <label className="st-field">
+                      <span>{t("privacyVaultNewPassword")}</span>
+                      <input
+                        type="password"
+                        className="st-input"
+                        autoComplete="new-password"
+                        value={vaultNext}
+                        onChange={(event) => setVaultNext(event.target.value)}
+                        disabled={vaultBusy}
+                      />
+                    </label>
+                    <label className="st-field">
+                      <span>{t("privacyVaultConfirmPassword")}</span>
+                      <input
+                        type="password"
+                        className="st-input"
+                        autoComplete="new-password"
+                        value={vaultConfirm}
+                        onChange={(event) => setVaultConfirm(event.target.value)}
+                        disabled={vaultBusy}
+                      />
+                    </label>
+                    <div className="st-actions">
+                      <button
+                        type="button"
+                        className="st-btn"
+                        disabled={vaultBusy}
+                        onClick={() => {
+                          setVaultResetOpen(false);
+                          setVaultError(null);
+                          setVaultCurrent("");
+                          setVaultNext("");
+                          setVaultConfirm("");
+                        }}
+                      >
+                        {t("cancel")}
+                      </button>
+                      <button
+                        type="button"
+                        className="st-btn is-primary"
+                        disabled={vaultBusy}
+                        onClick={() => void resetVaultPassword()}
+                      >
+                        {vaultExists ? t("privacyVaultResetPassword") : t("privacyVaultCreate")}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <SettingRow
+                    title={t("privacyVaultResetPassword")}
+                    description={t("privacyVaultResetBody")}
+                  >
+                    <button
+                      type="button"
+                      className="st-btn"
+                      disabled={vaultBusy}
+                      onClick={() => {
+                        setVaultResetOpen(true);
+                        setVaultError(null);
+                      }}
+                    >
+                      {vaultExists ? t("privacyVaultResetPassword") : t("privacyVaultCreate")}
+                    </button>
+                  </SettingRow>
+                )}
+
+                <SettingRow title={t("privacyVaultRemove")} description={t("privacyVaultRemoveBody")}>
+                  {vaultRemoveConfirm ? (
+                    <div className="st-actions">
+                      <button
+                        type="button"
+                        className="st-btn"
+                        disabled={vaultBusy}
+                        onClick={() => setVaultRemoveConfirm(false)}
+                      >
+                        {t("cancel")}
+                      </button>
+                      <button
+                        type="button"
+                        className="st-btn is-danger"
+                        disabled={vaultBusy}
+                        onClick={() => void removeVault()}
+                      >
+                        {t("privacyVaultRemoveConfirmAction")}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      className="st-btn is-danger"
+                      disabled={vaultBusy || !vaultExists}
+                      onClick={() => {
+                        setVaultRemoveConfirm(true);
+                        setVaultError(null);
+                      }}
+                    >
+                      {t("privacyVaultRemove")}
+                    </button>
+                  )}
+                </SettingRow>
+
+                {vaultError ? <p className="st-error">{vaultError}</p> : null}
+              </SettingsCard>
 
               <SettingsCard>
                 <Toggle
@@ -1437,13 +1750,18 @@ export function SettingsPage() {
 
               <SettingsCard title={t("generalDangerZone")} tone="danger">
                 <SettingRow title={t("resetPrefs")} description={t("resetPrefsBody")}>
-                  <button type="button" onClick={resetPrefs} className="st-btn">
+                  <button type="button" onClick={resetPrefs} disabled={localDataBusy} className="st-btn">
                     {t("resetPrefs")}
                   </button>
                 </SettingRow>
                 <SettingRow title={t("clearLocalData")} description={t("localDataBody")}>
-                  <button type="button" onClick={wipeLocalData} className="st-btn is-danger">
-                    {t("clearLocalData")}
+                  <button
+                    type="button"
+                    onClick={() => void wipeLocalData()}
+                    disabled={localDataBusy}
+                    className="st-btn is-danger"
+                  >
+                    {localDataBusy ? t("clearLocalWorking") : t("clearLocalData")}
                   </button>
                 </SettingRow>
               </SettingsCard>
@@ -1487,9 +1805,9 @@ export function SettingsPage() {
                 <div className="st-about-copy">
                   <h2>{t("aboutVersion")}</h2>
                   <p>
-                    {studioRole === "individual"
-                      ? t("aboutTaglineIndividual")
-                      : t("aboutTaglineOrganization")}
+                    {studioRole === "organization"
+                      ? t("aboutTaglineOrganization")
+                      : t("aboutTaglineIndividual")}
                   </p>
                 </div>
                 <span className="st-badge">v{pkg.version}</span>
@@ -1530,7 +1848,10 @@ export function SettingsPage() {
               <AppUpdatesPanel />
 
               <p className="st-note">
-                {studioRole === "individual" ? t("aboutLead") : t("aboutLeadOrg")} {t("aboutSecure")}
+                {studioRole === "organization"
+                  ? t("aboutLeadOrg")
+                  : t("aboutLead")}{" "}
+                {t("aboutSecure")}
               </p>
             </section>
           ) : null}

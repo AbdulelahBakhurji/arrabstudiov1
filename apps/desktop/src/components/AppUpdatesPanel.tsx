@@ -1,11 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Download, RefreshCw, Sparkles } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import {
   checkForAppUpdate,
-  openAppUpdate,
+  startDesktopUpdate,
   type AppUpdateInfo,
 } from "@/lib/app-updates";
+import { requestInAppUpdate } from "@/components/managed/UpdatePanel";
 import { pushToast } from "@/lib/notify";
 import { cn } from "@/lib/utils";
 
@@ -16,8 +17,11 @@ export function AppUpdatesPanel({ className }: { className?: string }) {
   const [checking, setChecking] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const checkingRef = useRef(false);
 
   const runCheck = useCallback(async (silent = false) => {
+    if (checkingRef.current) return;
+    checkingRef.current = true;
     setChecking(true);
     setError(null);
     try {
@@ -26,6 +30,7 @@ export function AppUpdatesPanel({ className }: { className?: string }) {
       if (!silent) {
         if (next.available) {
           pushToast({
+            id: "app-update-available",
             title: t("updateAvailable"),
             body: t("updateAvailableBody")
               .replace("{latest}", next.latestVersion)
@@ -34,6 +39,7 @@ export function AppUpdatesPanel({ className }: { className?: string }) {
           });
         } else {
           pushToast({
+            id: "app-update-current",
             title: t("updateUpToDate"),
             body: `v${next.currentVersion}`,
             tone: "success",
@@ -44,9 +50,10 @@ export function AppUpdatesPanel({ className }: { className?: string }) {
       const message = err instanceof Error ? err.message : t("updateCheckFailed");
       setError(message);
       if (!silent) {
-        pushToast({ title: t("updateCheckFailed"), body: message, tone: "warn" });
+        pushToast({ id: "app-update-failed", title: t("updateCheckFailed"), body: message, tone: "warn" });
       }
     } finally {
+      checkingRef.current = false;
       setChecking(false);
     }
   }, [t]);
@@ -59,12 +66,7 @@ export function AppUpdatesPanel({ className }: { className?: string }) {
     if (!info?.available) return;
     setUpdating(true);
     try {
-      await openAppUpdate(info);
-      pushToast({
-        title: t("updateDownloadStarted"),
-        body: info.assetName ?? info.latestVersion,
-        tone: "success",
-      });
+      if (!(await startDesktopUpdate(info))) requestInAppUpdate(info);
     } catch (err) {
       pushToast({
         title: t("updateInstallFailed"),

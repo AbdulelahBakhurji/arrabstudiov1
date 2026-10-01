@@ -2,6 +2,8 @@ import SwiftUI
 
 struct BrainHomeView: View {
   @Environment(\.adaptive) private var adaptive
+  @EnvironmentObject private var session: AppSession
+  @Environment(\.arrab) private var theme
   @State private var filter: BrainNode.Kind? = nil
   @State private var selected: BrainNode?
   @State private var nodes: [BrainNode] = BrainDemo.nodes
@@ -47,16 +49,18 @@ struct BrainHomeView: View {
 
   private var header: some View {
     VStack(alignment: .leading, spacing: 6) {
-      Text("SOLO / BRAIN")
-        .font(.system(size: 10, weight: .bold))
-        .tracking(1.2)
-        .foregroundStyle(ArrabTheme.muted)
-      Text("Brain")
-        .font(.system(size: adaptive.titleSize, weight: .semibold))
-        .foregroundStyle(ArrabTheme.text)
-      Text("Sessions land on a connected map — decisions, files, growth without re-briefing.")
-        .font(.system(size: 13))
-        .foregroundStyle(ArrabTheme.muted)
+      Text(session.localeIsArabic ? "الدماغ" : "BRAIN")
+        .font(ArrabFont.system(size: 10, weight: .bold))
+        .tracking(session.localeIsArabic ? 0 : 1.2)
+        .foregroundStyle(theme.muted)
+      Text(L10n.t(.brain, arabic: session.localeIsArabic))
+        .font(ArrabFont.system(size: adaptive.titleSize, weight: .semibold))
+        .foregroundStyle(theme.text)
+      Text(session.localeIsArabic
+        ? "الجلسات على خريطة متصلة — قرارات وملفات ونمو من غير إعادة شرح."
+        : "Sessions land on a connected map — decisions, files, and growth without re-briefing.")
+        .font(ArrabFont.system(size: 13))
+        .foregroundStyle(theme.muted)
         .fixedSize(horizontal: false, vertical: true)
     }
   }
@@ -67,10 +71,10 @@ struct BrainHomeView: View {
         ForEach(stats, id: \.0) { item in
           VStack(alignment: .leading, spacing: 2) {
             Text(item.0.uppercased())
-              .font(.system(size: 9, weight: .bold))
+              .font(ArrabFont.system(size: 9, weight: .bold))
               .foregroundStyle(ArrabTheme.muted)
             Text("\(item.1)")
-              .font(.system(size: 18, weight: .semibold))
+              .font(ArrabFont.system(size: 18, weight: .semibold))
               .foregroundStyle(ArrabTheme.text)
           }
           .padding(.horizontal, 12)
@@ -98,12 +102,12 @@ struct BrainHomeView: View {
         Spacer(minLength: 8)
         Toggle(isOn: $autoLayout) {
           Text("Auto")
-            .font(.system(size: 11, weight: .medium))
+            .font(ArrabFont.system(size: 11, weight: .medium))
         }
         .toggleStyle(.switch)
         .labelsHidden()
         Text("Auto-layout")
-          .font(.system(size: 11))
+          .font(ArrabFont.system(size: 11))
           .foregroundStyle(ArrabTheme.muted)
       }
     }
@@ -157,7 +161,7 @@ struct BrainMapCanvas: View {
                 .frame(width: 14, height: 14)
                 .shadow(color: color(for: node.kind).opacity(0.55), radius: 6)
               Text(node.title)
-                .font(.system(size: 9, weight: .medium))
+                .font(ArrabFont.system(size: 9, weight: .medium))
                 .foregroundStyle(ArrabTheme.text)
                 .lineLimit(1)
                 .frame(maxWidth: 72)
@@ -210,25 +214,25 @@ struct BrainNodeSheet: View {
     VStack(alignment: .leading, spacing: 14) {
       HStack {
         Text("NODE")
-          .font(.system(size: 11, weight: .bold))
+          .font(ArrabFont.system(size: 11, weight: .bold))
           .foregroundStyle(ArrabTheme.muted)
         Spacer()
         Text("\(total) nodes")
-          .font(.system(size: 11))
+          .font(ArrabFont.system(size: 11))
           .foregroundStyle(ArrabTheme.muted)
       }
       Text(node.kind.rawValue.uppercased())
-        .font(.system(size: 10, weight: .bold))
+        .font(ArrabFont.system(size: 10, weight: .bold))
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
         .background(ArrabTheme.subtle)
         .clipShape(Capsule())
         .foregroundStyle(ArrabTheme.text)
       Text(node.title)
-        .font(.system(size: 20, weight: .semibold))
+        .font(ArrabFont.system(size: 20, weight: .semibold))
         .foregroundStyle(ArrabTheme.text)
       Text(node.summary)
-        .font(.system(size: 14))
+        .font(ArrabFont.system(size: 14))
         .foregroundStyle(ArrabTheme.muted)
       Spacer()
     }

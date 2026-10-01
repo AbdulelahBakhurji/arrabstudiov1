@@ -32,31 +32,44 @@ In Xcode:
 
 Session tokens live in the **Keychain** (`X-Arrab-Account-Session` + Bearer), matching desktop security rules — no provider secrets in the app.
 
-## Tabs (phone-shortened)
+## Individuals shell (matches design frames)
 
-- **Chat** — live conversations + SSE stream (falls back to POST).
-- **Studio** — Arrab Assistant + specialist companions; bottom composer + suggestion chips.
-- **Brain** — connected map, filters, pinch/pan, node sheet.
-- **Tasks** — lightweight checklist.
-- **Me** — account, API URL, PC link, sign out.
+Adaptive chrome for phone → fold → iPad:
+
+- **Phone:** top bar + Chat / Board / Tasks + hamburger drawer
+- **iPad:** permanent side rail (Chat, Board, Tasks, Me) + Arrab top chrome
+- **Chat** — companion strip (Control policy + API agents), welcome card, composer (SSE)
+- **Board / Tasks / Me** — design-frame layouts
+- **Settings** — full grid (usage, account, plans, appearance, notifications, privacy, about…) with Control sync + limits
+- **Connectors** — live `/v1/connectors` + Arrab Control `/erp/connectors` catalog
+- **Sessions / Incognito / Studio / Brain / Companions** — drawer destinations
+- **Managed Control** — sync, SSE, banners, bell inbox, usage meter, remote commands, APNs
+
+`--cp-*` tokens from desktop `companions.css` drive dark and light themes. ERP/Control desk manages companions, connectors, notices, and maintenance that this client consumes.
 
 ## App Store readiness
 
 Already included for Apple review:
 
-- `PrivacyInfo.xcprivacy` (no tracking; email for app functionality only)
-- `ITSAppUsesNonExemptEncryption = false` (HTTPS only / standard crypto)
-- Portrait + landscape; iPhone + iPad (`TARGETED_DEVICE_FAMILY = 1,2`)
-- Adaptive layout via `AdaptiveMetrics` (no fixed phone frame)
+- `PrivacyInfo.xcprivacy` (no tracking; email, name, device id, product interaction for app functionality)
+- `ITSAppUsesNonExemptEncryption = false` (HTTPS / standard crypto)
+- Account **deletion** in Settings → Privacy / About and Account (`POST /v1/account/disconnect`)
+- Privacy Policy, Terms, and Support links on Auth + Settings
+- Face ID / passcode **Lock Studio** (optional)
+- Offline banner + send gating; Dynamic Type; VoiceOver labels; Share/Copy on messages
+- App Icon 1024×1024; iPhone + iPad orientations; multi-scene capable
+- Local network usage string only for optional PC link
+- Portrait + landscape; `TARGETED_DEVICE_FAMILY = 1,2`
 - Deep link scheme `arrab://`
-- Local network only when linking a desk (ATS local networking)
+- Version **1.1.0** (build 2)
 
 Still required before submit:
 
-- App icon 1024×1024 in `Assets.xcassets/AppIcon`
-- App Store screenshots + privacy nutrition labels in App Store Connect
+- App Store Connect privacy nutrition labels (match PrivacyInfo)
 - Production API host with TLS
-- Account deletion / support URL if you collect accounts (align with web/desktop policy)
+- Real Privacy / Terms / Support pages live at arrabai.com
+- Signing Team + distribution certificate
+- Screenshots for phone + iPad
 
 ## Layout
 

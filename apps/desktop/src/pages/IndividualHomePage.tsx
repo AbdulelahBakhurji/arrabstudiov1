@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { applyCompanionPolicy } from "@/lib/managed-client/companions";
+import { useCompanionPolicies } from "@/lib/managed-client/hooks";
 import { ArrowUpRight, MessageSquare, Plus, Sparkles, UsersRound, X } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { useLanguage } from "@/i18n/LanguageProvider";
@@ -6,6 +8,8 @@ import { useRole } from "@/roles/RoleProvider";
 import { workDestination } from "@/lib/work-navigation";
 import {
   boardCards,
+  boardDueWork,
+  boardOpenThreads,
   COMPANION_DRAFT_KEY,
   COMPANION_FOCUS_KEY,
   dismissCard,
@@ -13,10 +17,13 @@ import {
   generalCompanion,
   liveCompanions,
   markOpened,
+  nudgeBudgetLeft,
+  isSensitiveNow,
   returningAfterAbsence,
   runSignals,
   silentCompanions,
   useCompanionState,
+  WEEKLY_NUDGE_CEILING,
   type CompanionProfile,
 } from "@/lib/companions";
 import { kidBoardSuggestions } from "@/lib/companion-suggestions";
@@ -38,6 +45,12 @@ import { FamilyCompanionWizard } from "@/components/companions/FamilyCompanionWi
 import { AddFamilyMemberWizard } from "@/components/family/AddFamilyMemberWizard";
 import { ensureCompanionCloudRoom } from "@/components/companions/useCompanionRoom";
 import { resolveMemberFaceUrl } from "@/lib/family-portraits";
+import { AudiencePulse, FaceStatusDot } from "@/components/shared/AudiencePulse";
+import {
+  getDowntime,
+  isWithinDowntime,
+  useGuardianStore,
+} from "@/lib/guardian-store";
 
 function roleLabel(
   role: FamilyMemberRole,
@@ -99,7 +112,7 @@ export function IndividualHomePage() {
   useEffect(() => {
     runSignals();
     markOpened();
-  }, []);
+  }, [space]);
 
   useEffect(() => {
     if (!familyLive) {
@@ -145,15 +158,19 @@ export function IndividualHomePage() {
     return liveCompanions(state).filter((c) => !c.archivedAt && c.domain !== "general");
   }, [state]);
 
+  const companionPolicies = useCompanionPolicies();
   const companions = useMemo(() => {
-    if (!familyLive || !familyActive) {
-      return liveCompanions(state, space).filter((c) => c.domain !== "general");
-    }
-    if (isFamilyChild) {
-      return householdCompanions.filter((c) => c.familyMemberId === familyActive.id);
-    }
-    return householdCompanions;
-  }, [state, space, familyLive, familyActive, isFamilyChild, householdCompanions]);
+    const pool = (() => {
+      if (!familyLive || !familyActive) {
+        return liveCompanions(state, space).filter((c) => c.domain !== "general");
+      }
+      if (isFamilyChild) {
+        return householdCompanions.filter((c) => c.familyMemberId === familyActive.id);
+      }
+      return householdCompanions;
+    })();
+    return applyCompanionPolicy(pool, companionPolicies);
+  }, [state, space, familyLive, familyActive, isFamilyChild, householdCompanions, companionPolicies]);
 
   const boardAllowedIds = useMemo(() => {
     if (!familyLive || !familyActive) return null;
@@ -169,6 +186,14 @@ export function IndividualHomePage() {
       person.domain !== "general" &&
       (!boardAllowedIds || boardAllowedIds.has(person.id)),
   );
+  const roster = useMemo(() => {
+    const people = liveCompanions(state, space).filter((person) => !person.archivedAt);
+    return people;
+  }, [state, space]);
+  const dueWork = useMemo(() => boardDueWork(state, space), [state, space]);
+  const openThreads = useMemo(() => boardOpenThreads(state, space), [state, space]);
+  const nudgeLeft = nudgeBudgetLeft(state);
+  const general = generalCompanion(state, space, familyLive ? familyActive?.id : null);
 
   const visibleMembers = useMemo(() => {
     if (!isFamilyChild || isManager) return familyMembers;
@@ -210,6 +235,10 @@ export function IndividualHomePage() {
   }, [isFamilyChild, kidCompanions, selectedCompanions, focusCompanionId, selected?.id]);
 
   const seatsAvailable = seatLimit <= 0 || seatsUsed < seatLimit;
+  const guardianStore = useGuardianStore();
+  const pausedKids = childMembers.filter((m) => m.isPaused).length;
+  const quietNow = childMembers.filter((m) => isWithinDowntime(getDowntime(m.id))).length;
+  const pendingApprovals = guardianStore.approvals.filter((a) => a.status === "pending").length;
 
   const urgent = cards.find(
     (card) =>
@@ -274,13 +303,93 @@ export function IndividualHomePage() {
           <CompanionPageHeader title={t("compBoard")} subtitle={t("compBoardSubtitle")}>
             <SpaceSwitch value={space} onChange={setSpace} />
           </CompanionPageHeader>
+          <AudiencePulse
+            className="is-wide"
+            items={[
+              {
+                id: "companions",
+                label: t("pulseCompanions"),
+                value: roster.length,
+                tone: roster.length ? "live" : "default",
+              },
+              {
+                id: "attention",
+                label: t("pulseAttention"),
+                value: cards.length,
+                tone: cards.length ? "ok" : "default",
+              },
+              {
+                id: "due",
+                label: t("compBoardDue"),
+                value: dueWork.length,
+                tone: dueWork.length ? "warn" : "default",
+              },
+              {
+                id: "quiet",
+                label: t("pulseQuiet"),
+                value: quiet.length,
+              },
+            ]}
+          />
           <div className="cp-board-top">
-            <span />
-            <Link className="cp-button" to={href("/")}>
-              <MessageSquare size={15} />
-              {t("chat")}
-            </Link>
+            <p className="cp-muted cp-board-budget">
+              {isSensitiveNow(state)
+                ? t("compNudgeSilenced")
+                : t("compNudgeBudget")
+                    .replace("{left}", String(nudgeLeft))
+                    .replace("{total}", String(WEEKLY_NUDGE_CEILING))}
+            </p>
+            <div className="cp-board-top-actions">
+              <Link className="cp-button" to={href("/studio")}>
+                <Sparkles size={15} />
+                {t("studio")}
+              </Link>
+              <Link className="cp-button" to={href("/")}>
+                <MessageSquare size={15} />
+                {t("chat")}
+              </Link>
+            </div>
           </div>
+
+          {roster.length > 0 ? (
+            <div className="cp-face-bar cp-board-roster" aria-label={t("pulseCompanions")}>
+              <div className="cp-face-list">
+                {roster.map((person) => (
+                  <button
+                    key={person.id}
+                    type="button"
+                    className="cp-face-choice"
+                    onClick={() => openCompanionChat(person)}
+                  >
+                    <PersonAvatar person={person} size="lg" />
+                    <strong>
+                      {person.domain === "general" ? t("compGeneral") : person.name}
+                    </strong>
+                    <small>
+                      {person.resume?.trim()
+                        ? person.resume.trim().slice(0, 28)
+                        : person.lastLine?.trim()
+                          ? person.lastLine.trim().slice(0, 28)
+                          : person.domain === "general"
+                            ? t("compBoardReady")
+                            : person.domain}
+                    </small>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  className="cp-face-choice"
+                  onClick={() => navigate(href("/studio"))}
+                >
+                  <span className="cp-add-face">
+                    <Plus size={21} strokeWidth={1.5} />
+                  </span>
+                  <strong>{t("compBoardAdd")}</strong>
+                  <small>{t("compBoardAddHint")}</small>
+                </button>
+              </div>
+            </div>
+          ) : null}
         </>
       ) : null}
 
@@ -291,6 +400,16 @@ export function IndividualHomePage() {
               <p className="cp-eyebrow">ARRAB / {t("chat").toUpperCase()}</p>
               <h1>{t("familyBoardKidTitle")}</h1>
               <p className="fb-chat-lead">{t("familyBoardKidBody")}</p>
+              <AudiencePulse
+                items={[
+                  {
+                    id: "companions",
+                    label: t("pulseCompanions"),
+                    value: kidCompanions.length,
+                    tone: kidCompanions.length ? "live" : "default",
+                  },
+                ]}
+              />
             </div>
             <Link className="cp-button" to={href("/")}>
               <MessageSquare size={15} />
@@ -402,6 +521,33 @@ export function IndividualHomePage() {
               <p className="cp-eyebrow">ARRAB / {t("compBoard").toUpperCase()}</p>
               <h1>{t("familyBoardTitle")}</h1>
               <p className="fb-chat-lead">{t("familyBoardFamilyLead")}</p>
+              <AudiencePulse
+                items={[
+                  {
+                    id: "seats",
+                    label: t("pulseSeats"),
+                    value: `${seatsUsed}/${seatLimit || "—"}`,
+                  },
+                  {
+                    id: "paused",
+                    label: t("pulsePaused"),
+                    value: pausedKids,
+                    tone: pausedKids > 0 ? "warn" : "default",
+                  },
+                  {
+                    id: "quiet",
+                    label: t("pulseQuietNow"),
+                    value: quietNow,
+                    tone: quietNow > 0 ? "live" : "default",
+                  },
+                  {
+                    id: "approvals",
+                    label: t("pulseApprovals"),
+                    value: pendingApprovals,
+                    tone: pendingApprovals > 0 ? "warn" : "ok",
+                  },
+                ]}
+              />
             </div>
             <div className="fb-chat-heading-actions">
               <div className="sf-seat-pill" title={`${seatsUsed}/${seatLimit || "—"}`}>
@@ -433,8 +579,15 @@ export function IndividualHomePage() {
                     aria-pressed={pressed}
                     onClick={() => selectMember(member)}
                   >
-                    <span className={cn("sf-face-disc", pressed && "is-on")}>
-                      <img src={photoUrl} alt="" className="sf-face-photo" />
+                    <span className="aud-face-wrap">
+                      <span className={cn("sf-face-disc", pressed && "is-on")}>
+                        <img src={photoUrl} alt="" className="sf-face-photo" />
+                      </span>
+                      {member.isPaused ? (
+                        <FaceStatusDot tone="warn" label={t("familyPaused")} />
+                      ) : member.role === "child" && isWithinDowntime(getDowntime(member.id)) ? (
+                        <FaceStatusDot tone="quiet" label={t("familyFaceQuiet")} />
+                      ) : null}
                     </span>
                     <strong title={member.displayName}>{member.displayName}</strong>
                     <small>
@@ -679,16 +832,40 @@ export function IndividualHomePage() {
                 </div>
               </div>
             ) : (
-              <CompanionEmpty title={t("compBoardEmpty")}>{t("compQuietHint")}</CompanionEmpty>
+              <div className="cp-board-empty">
+                <CompanionEmpty title={t("compBoardEmpty")}>{t("compQuietHint")}</CompanionEmpty>
+                <div className="cp-board-empty-actions">
+                  <button
+                    type="button"
+                    className="cp-button"
+                    onClick={() => openCompanionChat(general, undefined)}
+                  >
+                    <MessageSquare size={15} />
+                    {t("compBoardTalkGeneral")}
+                    <ArrowUpRight size={14} />
+                  </button>
+                  <Link className="cp-button" to={href("/studio")}>
+                    <Plus size={15} />
+                    {t("compBoardAdd")}
+                  </Link>
+                  <Link className="cp-button" to={href(`/work?space=${space}`)}>
+                    {t("compCapture")}
+                    <ArrowUpRight size={14} />
+                  </Link>
+                </div>
+              </div>
             )
           ) : (
             <div className="cp-board-grid">
               {cards.map((card) => {
                 const person = findCompanion(state, card.companionId);
+                const isUrgent =
+                  card.level === "critical" ||
+                  card.id === urgent?.id;
                 return (
                   <article
                     key={card.id}
-                    className={`cp-board-card ${card.id === urgent?.id ? "cp-urgent" : ""}`}
+                    className={cn("cp-board-card", isUrgent && "cp-urgent")}
                   >
                     <header>
                       {person ? <PersonAvatar person={person} size="md" /> : null}
@@ -696,7 +873,15 @@ export function IndividualHomePage() {
                         <strong>
                           {person?.domain === "general" ? t("compGeneral") : person?.name}
                         </strong>
-                        <small>{card.source}</small>
+                        <small>
+                          {card.kind === "work"
+                            ? t("compBoardKindWork")
+                            : card.kind === "thread"
+                              ? t("compBoardKindThread")
+                              : card.kind === "birth"
+                                ? t("compBoardKindBirth")
+                                : card.source}
+                        </small>
                       </div>
                       <button
                         className="cp-icon"
@@ -710,6 +895,10 @@ export function IndividualHomePage() {
                     <button
                       className="cp-button"
                       onClick={() => {
+                        if (card.birthDomain) {
+                          navigate(href(`/studio?birth=${encodeURIComponent(card.birthDomain)}`));
+                          return;
+                        }
                         if (card.workId || card.threadId) {
                           navigate(href(workDestination(card)));
                           return;
@@ -719,17 +908,19 @@ export function IndividualHomePage() {
                         navigate(href("/"));
                       }}
                     >
-                      {card.workId
-                        ? ar
-                          ? "راجع المهمة"
-                          : "Review task"
-                        : card.threadId
+                      {card.birthDomain
+                        ? t("compBoardMeet")
+                        : card.workId
                           ? ar
-                            ? "افتح الموضوع"
-                            : "Open topic"
-                          : ar
-                            ? "نتكلم عنها"
-                            : "Let's talk"}
+                            ? "راجع المهمة"
+                            : "Review task"
+                          : card.threadId
+                            ? ar
+                              ? "افتح الموضوع"
+                              : "Open topic"
+                            : ar
+                              ? "نتكلم عنها"
+                              : "Let's talk"}
                       <ArrowUpRight size={15} />
                     </button>
                   </article>
@@ -737,6 +928,74 @@ export function IndividualHomePage() {
               })}
             </div>
           )}
+
+          {!showFamilyBoard && (dueWork.length > 0 || openThreads.length > 0) ? (
+            <div className="cp-board-rails">
+              {dueWork.length > 0 ? (
+                <section className="cp-board-rail" aria-label={t("compBoardDue")}>
+                  <header>
+                    <strong>{t("compBoardDue")}</strong>
+                    <span>{dueWork.length}</span>
+                  </header>
+                  <ul>
+                    {dueWork.slice(0, 5).map((item) => (
+                      <li key={item.id}>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            navigate(
+                              href(
+                                workDestination({
+                                  workId: item.id,
+                                  threadId: null,
+                                  space,
+                                }),
+                              ),
+                            )
+                          }
+                        >
+                          <span>{item.text}</span>
+                          <small>{item.state === "suggested" ? t("compBoardSuggested") : item.capturedFrom}</small>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
+              {openThreads.length > 0 ? (
+                <section className="cp-board-rail" aria-label={t("compBoardThreads")}>
+                  <header>
+                    <strong>{t("compBoardThreads")}</strong>
+                    <span>{openThreads.length}</span>
+                  </header>
+                  <ul>
+                    {openThreads.slice(0, 5).map((thread) => (
+                      <li key={thread.id}>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            navigate(
+                              href(
+                                workDestination({
+                                  workId: null,
+                                  threadId: thread.id,
+                                  space,
+                                }),
+                              ),
+                            )
+                          }
+                        >
+                          <span>{thread.title}</span>
+                          <small>{thread.open}</small>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              ) : null}
+            </div>
+          ) : null}
+
           {quiet.length ? (
             <div className="cp-quiet-people">
               <div>

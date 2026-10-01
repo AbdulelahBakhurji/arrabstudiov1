@@ -57,7 +57,7 @@ export async function pollWebAuthUntilDone(input: {
         return { kind: "cancelled" };
       }
       if (polled.status === "completed" && polled.sessionToken) {
-        writeAccountSession(polled.sessionToken);
+        writeAccountSession(polled.sessionToken, polled.account?.id);
         clearPendingWebAuth();
         if (polled.accountCreated) {
           markPostAuthPlanSetup();

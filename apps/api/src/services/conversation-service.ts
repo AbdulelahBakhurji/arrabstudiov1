@@ -63,6 +63,12 @@ import {
  * still apply them. When the dedicated `skills` field is present, drop that
  * copy (and the synthetic "none" hint it created) to avoid double injection.
  */
+/** Keep the last reply of a period inside the pool, but never so short it is useless. */
+function capToRemainingTokens(maxOutputTokens: number, remaining: number | null): number {
+  if (remaining === null) return maxOutputTokens;
+  return Math.max(256, Math.min(maxOutputTokens, remaining));
+}
+
 function stripSkillsFallback(
   hint: WorkspaceHint | null | undefined,
   hasSkills: boolean,
@@ -506,6 +512,7 @@ export class ConversationService {
     input: SendMessageRequest,
     options?: {
       onToken?: (text: string) => void;
+      onThinking?: (text: string) => void;
       onTool?: (name: string, result: string) => void;
       onToolStart?: (name: string, detail?: string) => void;
       onApproval?: (approval: Approval) => void;
@@ -538,7 +545,7 @@ export class ConversationService {
       };
     }
 
-    await this.accounts.assertWithinQuota();
+    const quota = await this.accounts.assertWithinQuota();
 
     let conversation = await this.persistence.conversations.getById(conversationId);
     if (!conversation) {
@@ -697,7 +704,9 @@ export class ConversationService {
             "Your recent memory notes (treat as facts the operator told you):",
             ...memories
               .slice(0, profile.memories)
-              .map((memory) => `- ${decryptField(memory.content).slice(0, profile.memoryChars)}`),
+              .map((memory) => decryptField(memory.content))
+              .filter((content) => !content.startsWith("[[arrab-safe]]"))
+              .map((content) => `- ${content.slice(0, profile.memoryChars)}`),
           ].join("\n"),
         );
       }
@@ -1028,6 +1037,16 @@ export class ConversationService {
             },
           }
         : null;
+      const reasoning =
+        input.thinking === "low" || input.thinking === "medium" || input.thinking === "high"
+          ? input.thinking
+          : undefined;
+      const baseMaxOutput =
+        typeof input.maxOutputTokens === "number" && input.maxOutputTokens > 0
+          ? Math.min(8_000, Math.round(input.maxOutputTokens))
+          : codingFolder
+            ? Math.max(profile.maxOutputTokens, codingFloor)
+            : profile.maxOutputTokens;
       const runRequest = {
         agent,
         conversationId: conversation.id,
@@ -1035,12 +1054,13 @@ export class ConversationService {
         history,
         model: input.model?.trim() || this.defaultModel,
         systemExtra,
-        maxOutputTokens:
-          typeof input.maxOutputTokens === "number" && input.maxOutputTokens > 0
-            ? Math.min(8_000, Math.round(input.maxOutputTokens))
-            : codingFolder
-              ? Math.max(profile.maxOutputTokens, codingFloor)
-              : profile.maxOutputTokens,
+        // Reasoning tokens share the completion budget on most providers.
+        maxOutputTokens: capToRemainingTokens(
+          reasoning
+            ? Math.max(baseMaxOutput, { low: 2_000, medium: 4_000, high: 8_000 }[reasoning])
+            : baseMaxOutput,
+          quota.tokensRemaining,
+        ),
         temperature:
           typeof input.temperature === "number" &&
           input.temperature >= 0 &&
@@ -1049,6 +1069,7 @@ export class ConversationService {
             : codingFolder
               ? 0.2
               : undefined,
+        reasoning,
         tools: {
           workspaceSummary,
           activeGoal: activeGoalText,
@@ -1079,6 +1100,8 @@ export class ConversationService {
           if (event.type === "token") {
             options.onToken(event.text);
             result.output = (result.output ?? "") + event.text;
+          } else if (event.type === "thinking") {
+            options.onThinking?.(event.text);
           } else if (event.type === "tool_start") {
             options.onToolStart?.(event.name, event.detail);
           } else if (event.type === "tool") {

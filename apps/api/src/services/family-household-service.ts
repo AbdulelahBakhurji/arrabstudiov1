@@ -1,5 +1,6 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import {
+  AppError,
   ForbiddenError,
   NotFoundError,
   UnauthorizedError,
@@ -33,6 +34,21 @@ import {
   type SwitchFamilyProfileResponse,
   type UpdateFamilyMemberRequest,
   type WorkspaceId,
+  FAMILY_GUARDIAN_LIMITS,
+  defaultGuardianPolicy,
+  guardianDayKey,
+  guardianSystemBlock,
+  isQuietHoursActive,
+  mergeGuardianPolicy,
+  recentActivity,
+  screenChildMessage,
+  type AcknowledgeFamilySafetyRequest,
+  type FamilyGuardianState,
+  type FamilyGuardianStatus,
+  type FamilySafetyCategory,
+  type FamilySafetyEvent,
+  type FamilySafetySeverity,
+  type UpdateFamilyGuardianRequest,
 } from "@arrab/shared";
 import type { AccountService } from "./account-service.js";
 import { createHash } from "node:crypto";
@@ -114,7 +130,57 @@ function isManagerRole(role: FamilyMemberRole): boolean {
   return role === "parent" || role === "partner";
 }
 
-function toPublic(member: FamilyMemberRecord): FamilyMemberPublic {
+export type FamilyGuardianErrorCode =
+  | "FAMILY_QUIET_HOURS"
+  | "FAMILY_DAILY_LIMIT"
+  | "FAMILY_SAFETY";
+
+/** 403 with a stable code so clients can show a calm, specific screen. */
+export class FamilyGuardianError extends AppError {
+  constructor(code: FamilyGuardianErrorCode, message: string) {
+    super(code, message, 403, true);
+    this.name = "FamilyGuardianError";
+  }
+}
+
+function guardianStateOf(member: FamilyMemberRecord): FamilyGuardianState | null {
+  if (member.role !== "child") return null;
+  if (member.guardian?.policy) return member.guardian;
+  return {
+    policy: defaultGuardianPolicy(member.ageTier, member.createdAt),
+    safetyEvents: [],
+    activity: [],
+  };
+}
+
+function guardianStatusOf(
+  member: FamilyMemberRecord,
+  viewerIsManager: boolean,
+  now: Date,
+): FamilyGuardianStatus | null {
+  const state = guardianStateOf(member);
+  if (!state) return null;
+  const { policy } = state;
+  const offset = policy.quietHours.utcOffsetMinutes;
+  const today = guardianDayKey(now, offset);
+  const quietHoursActive = isQuietHoursActive(policy.quietHours, now);
+  return {
+    policy: viewerIsManager ? policy : { ...policy, blockedTopics: [] },
+    quietHoursActive,
+    quietHoursUntil: quietHoursActive ? policy.quietHours.end : null,
+    tokensToday: state.activity.find((a) => a.day === today)?.tokens ?? 0,
+    unreadSafety: viewerIsManager
+      ? state.safetyEvents.filter((e) => !e.acknowledgedAt).length
+      : 0,
+    activity: viewerIsManager ? recentActivity(state.activity, now, offset, 7) : [],
+  };
+}
+
+function toPublic(
+  member: FamilyMemberRecord,
+  viewerIsManager = true,
+  now: Date = new Date(),
+): FamilyMemberPublic {
   const remaining = Math.max(0, member.tokenAllowance - member.tokensUsed);
   const usagePercent =
     member.tokenAllowance > 0
@@ -138,6 +204,7 @@ function toPublic(member: FamilyMemberRecord): FamilyMemberPublic {
     tokensRemaining: remaining,
     usagePercent,
     lastActiveAt: member.lastActiveAt,
+    guardian: guardianStatusOf(member, viewerIsManager, now),
     createdAt: member.createdAt,
     updatedAt: member.updatedAt,
   };
@@ -288,6 +355,7 @@ export class FamilyHouseholdService {
         usage: null,
         seatPacks: SEAT_PACKS,
         recentGuidance: [],
+        safety: { unread: 0, events: [] },
         entitlements,
       };
     }
@@ -316,8 +384,17 @@ export class FamilyHouseholdService {
       activeMemberId != null
         ? members.find((m) => m.id === activeMemberId) ?? null
         : null;
+    const viewerIsManager = lockedMemberId
+      ? Boolean(activeSeat && isManagerRole(activeSeat.role))
+      : !activeSeat || isManagerRole(activeSeat.role);
     const guidanceForClient =
       activeSeat && isManagerRole(activeSeat.role) ? recentGuidance : [];
+    const safetyEvents = viewerIsManager
+      ? members
+          .flatMap((m) => guardianStateOf(m)?.safetyEvents ?? [])
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      : [];
+    const now = new Date(this.clock.isoNow());
 
     return {
       available: true,
@@ -326,7 +403,7 @@ export class FamilyHouseholdService {
       seatsUsed: members.length,
       seatLimit,
       extraSeats,
-      members: members.map(toPublic),
+      members: members.map((m) => toPublic(m, viewerIsManager, now)),
       activeMemberId,
       seatLocked: Boolean(lockedMemberId),
       usage: {
@@ -340,6 +417,10 @@ export class FamilyHouseholdService {
       },
       seatPacks: SEAT_PACKS,
       recentGuidance: guidanceForClient,
+      safety: {
+        unread: safetyEvents.filter((e) => !e.acknowledgedAt).length,
+        events: safetyEvents.slice(0, 40),
+      },
       entitlements,
     };
   }
@@ -744,12 +825,179 @@ export class FamilyHouseholdService {
     if (!activeId) return;
     const member = await this.persistence.familyMembers.getById(activeId);
     if (!member) return;
+    const state = guardianStateOf(member);
     await this.persistence.familyMembers.update({
       ...member,
       tokensUsed: member.tokensUsed + tokens,
+      guardian: state ? this.bumpActivity(state, { tokens }) : member.guardian,
       lastActiveAt: this.clock.isoNow(),
       updatedAt: this.clock.isoNow(),
     });
+  }
+
+  private bumpActivity(
+    state: FamilyGuardianState,
+    delta: { messages?: number; tokens?: number; blocked?: number },
+  ): FamilyGuardianState {
+    const day = guardianDayKey(new Date(this.clock.isoNow()), state.policy.quietHours.utcOffsetMinutes);
+    const activity = state.activity.filter((a) => a.day !== day);
+    const current = state.activity.find((a) => a.day === day) ?? {
+      day,
+      messages: 0,
+      tokens: 0,
+      blocked: 0,
+    };
+    activity.push({
+      day,
+      messages: current.messages + (delta.messages ?? 0),
+      tokens: current.tokens + (delta.tokens ?? 0),
+      blocked: current.blocked + (delta.blocked ?? 0),
+    });
+    activity.sort((a, b) => a.day.localeCompare(b.day));
+    return { ...state, activity: activity.slice(-FAMILY_GUARDIAN_LIMITS.activityDays) };
+  }
+
+  /** Active child seat record with its Guardian state, or null for adults / non-family. */
+  private async activeChild(): Promise<{
+    member: FamilyMemberRecord;
+    state: FamilyGuardianState;
+  } | null> {
+    const account = await this.persistence.accounts.get();
+    if (!account || !isFamilyPlanId(account.planId)) return null;
+    const seatId = await this.getActiveMemberId();
+    if (!seatId) return null;
+    const member = await this.persistence.familyMembers.getById(seatId);
+    const state = member ? guardianStateOf(member) : null;
+    return member && state ? { member, state } : null;
+  }
+
+  private async recordSafetyEvent(
+    member: FamilyMemberRecord,
+    state: FamilyGuardianState,
+    event: {
+      category: FamilySafetyCategory;
+      severity: FamilySafetySeverity;
+      labelEn: string;
+      labelAr: string;
+      excerpt?: string | null;
+    },
+    options: { throttleMinutes?: number; countBlocked?: boolean } = {},
+  ): Promise<void> {
+    const nowIso = this.clock.isoNow();
+    const throttle = options.throttleMinutes ?? 0;
+    if (throttle > 0) {
+      const recent = state.safetyEvents.find((e) => e.category === event.category);
+      if (recent && Date.parse(nowIso) - Date.parse(recent.createdAt) < throttle * 60_000) return;
+    }
+    const entry: FamilySafetyEvent = {
+      id: this.ids.next("fsafe"),
+      memberId: member.id,
+      memberName: member.displayName,
+      category: event.category,
+      severity: event.severity,
+      labelEn: event.labelEn,
+      labelAr: event.labelAr,
+      excerpt:
+        state.policy.oversightMode === "full" && event.excerpt
+          ? event.excerpt.slice(0, FAMILY_GUARDIAN_LIMITS.excerptChars)
+          : null,
+      createdAt: nowIso,
+      acknowledgedAt: null,
+    };
+    let next: FamilyGuardianState = {
+      ...state,
+      safetyEvents: [entry, ...state.safetyEvents].slice(0, FAMILY_GUARDIAN_LIMITS.safetyEvents),
+    };
+    if (options.countBlocked) next = this.bumpActivity(next, { blocked: 1 });
+    const fresh = (await this.persistence.familyMembers.getById(member.id)) ?? member;
+    await this.persistence.familyMembers.update({ ...fresh, guardian: next, updatedAt: nowIso });
+  }
+
+  /**
+   * Screen an outgoing child message (hard failsafes + parent's blocked words).
+   * Blocked messages are logged for parents and rejected; allowed ones count toward activity.
+   */
+  async screenMessage(content: string): Promise<void> {
+    const child = await this.activeChild();
+    if (!child) return;
+    const verdict = screenChildMessage(content, child.state.policy);
+    if (!verdict.allowed) {
+      await this.recordSafetyEvent(
+        child.member,
+        child.state,
+        {
+          category: verdict.category,
+          severity: verdict.severity,
+          labelEn: verdict.labelEn,
+          labelAr: verdict.labelAr,
+          excerpt: content,
+        },
+        { countBlocked: true },
+      );
+      throw new FamilyGuardianError(
+        "FAMILY_SAFETY",
+        verdict.category === "self_harm"
+          ? "It sounds like things feel really hard right now. You matter — please talk to a parent or someone you trust. Your family has been gently let know."
+          : `This message can’t be sent (${verdict.labelEn}). If something is worrying you, talk to a parent.`,
+      );
+    }
+    const fresh = (await this.persistence.familyMembers.getById(child.member.id)) ?? child.member;
+    const state = guardianStateOf(fresh) ?? child.state;
+    await this.persistence.familyMembers.update({
+      ...fresh,
+      guardian: this.bumpActivity(state, { messages: 1 }),
+      lastActiveAt: this.clock.isoNow(),
+    });
+  }
+
+  /** Extra system guidance for child-seat chats (age voice, learning mode, house rules). */
+  async guardianPromptBlock(): Promise<string | null> {
+    const child = await this.activeChild();
+    if (!child) return null;
+    return guardianSystemBlock({
+      policy: child.state.policy,
+      ageTier: child.member.ageTier,
+      displayName: child.member.displayName,
+    });
+  }
+
+  async updateGuardian(id: string, body: UpdateFamilyGuardianRequest): Promise<FamilyMemberPublic> {
+    await this.requireManagerSeat();
+    const existing = await this.persistence.familyMembers.getById(id);
+    if (!existing) throw new NotFoundError("Family member not found");
+    const state = guardianStateOf(existing);
+    if (!state) throw new ValidationError("Guardian settings apply to child profiles only");
+    const now = this.clock.isoNow();
+    const policy = mergeGuardianPolicy(state.policy, body ?? {}, now, () =>
+      this.ids.next("grule"),
+    );
+    const updated: FamilyMemberRecord = {
+      ...existing,
+      guardian: { ...state, policy },
+      updatedAt: now,
+    };
+    await this.persistence.familyMembers.update(updated);
+    return toPublic(updated, true, new Date(now));
+  }
+
+  async acknowledgeSafety(body: AcknowledgeFamilySafetyRequest): Promise<FamilyHouseholdSnapshot> {
+    await this.requireManagerSeat();
+    const ids = Array.isArray(body?.ids) ? new Set(body.ids) : null;
+    const now = this.clock.isoNow();
+    for (const member of await this.persistence.familyMembers.list()) {
+      const state = member.guardian;
+      if (member.role !== "child" || !state?.safetyEvents?.length) continue;
+      let changed = false;
+      const safetyEvents = state.safetyEvents.map((event) => {
+        if (event.acknowledgedAt || (ids && !ids.has(event.id))) return event;
+        changed = true;
+        return { ...event, acknowledgedAt: now };
+      });
+      if (changed) {
+        await this.persistence.familyMembers.update({ ...member, guardian: { ...state, safetyEvents } });
+      }
+    }
+    return this.snapshot();
   }
 
   async setActiveMember(memberId: string | null): Promise<void> {
@@ -839,6 +1087,49 @@ export class FamilyHouseholdService {
     if (!member) return;
     if (member.isPaused) {
       throw new ForbiddenError("This family profile is paused by a parent");
+    }
+    const guardian = guardianStateOf(member);
+    if (guardian) {
+      const now = new Date(this.clock.isoNow());
+      const { policy } = guardian;
+      if (isQuietHoursActive(policy.quietHours, now)) {
+        await this.recordSafetyEvent(
+          member,
+          guardian,
+          {
+            category: "quiet_hours",
+            severity: "info",
+            labelEn: "Tried to chat during quiet hours",
+            labelAr: "محاولة محادثة خلال ساعات الهدوء",
+          },
+          { throttleMinutes: 60 },
+        );
+        throw new FamilyGuardianError(
+          "FAMILY_QUIET_HOURS",
+          `Quiet hours are on until ${policy.quietHours.end}. Arrab will be here after that.`,
+        );
+      }
+      if (policy.dailyTokenLimit > 0) {
+        const today = guardianDayKey(now, policy.quietHours.utcOffsetMinutes);
+        const used = guardian.activity.find((a) => a.day === today)?.tokens ?? 0;
+        if (used >= policy.dailyTokenLimit) {
+          await this.recordSafetyEvent(
+            member,
+            guardian,
+            {
+              category: "daily_limit",
+              severity: "info",
+              labelEn: "Reached today’s chat limit",
+              labelAr: "وصل إلى حد المحادثة اليومي",
+            },
+            { throttleMinutes: 12 * 60 },
+          );
+          throw new FamilyGuardianError(
+            "FAMILY_DAILY_LIMIT",
+            "That’s all the chatting for today. Arrab will be ready again tomorrow — or ask a parent for more time.",
+          );
+        }
+      }
     }
     // Family Free trial: seats and chat stay open; token budgets are soft until finalized.
     if (account.planId === "family_free") return;

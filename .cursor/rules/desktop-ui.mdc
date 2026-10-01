@@ -1,0 +1,13 @@
+---
+description: Desktop Studio UI conventions
+globs: apps/desktop/src/**/*.{ts,tsx,css}
+alwaysApply: false
+---
+
+# Desktop UI
+
+- Keep the existing visual language (`cp-`, `sf-`, `gh-`, `studio-claude`). Polish; do not redesign.
+- Routes: `apps/desktop/src/App.tsx`. Nav: `src/roles/catalog.ts`.
+- Family surfaces belong in `src/components/family/`. Organization in `src/components/organization/`. Shared chrome in `src/components/shared/`.
+- Settings tabs are registered in `src/features/settings-tabs.ts`.
+- Feature flags: `src/features/flags.ts` until the slice is stable.

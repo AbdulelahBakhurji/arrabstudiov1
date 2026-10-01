@@ -174,6 +174,64 @@ function extractCompletion(payload: BedrockConverseResponse, request: AiCompleti
   };
 }
 
+type EventStreamMessage = { headers: Record<string, string>; payload: Uint8Array };
+
+/**
+ * Decode `application/vnd.amazon.eventstream` frames:
+ * [total len u32][headers len u32][prelude crc u32][headers][payload][msg crc u32].
+ * Only string headers are kept; other header types are skipped.
+ */
+function decodeEventStreamFrames(buffer: Uint8Array): {
+  messages: EventStreamMessage[];
+  rest: Uint8Array;
+} {
+  const messages: EventStreamMessage[] = [];
+  let offset = 0;
+  const decoder = new TextDecoder();
+  while (buffer.length - offset >= 12) {
+    const view = new DataView(buffer.buffer, buffer.byteOffset + offset);
+    const total = view.getUint32(0);
+    const headersLength = view.getUint32(4);
+    if (total < 16 || buffer.length - offset < total) break;
+    const headers: Record<string, string> = {};
+    let cursor = offset + 12;
+    const headersEnd = cursor + headersLength;
+    while (cursor < headersEnd) {
+      const nameLength = buffer[cursor]!;
+      const name = decoder.decode(buffer.subarray(cursor + 1, cursor + 1 + nameLength));
+      cursor += 1 + nameLength;
+      const type = buffer[cursor]!;
+      cursor += 1;
+      const at = new DataView(buffer.buffer, buffer.byteOffset + cursor);
+      if (type === 7 || type === 6) {
+        const length = at.getUint16(0);
+        if (type === 7) headers[name] = decoder.decode(buffer.subarray(cursor + 2, cursor + 2 + length));
+        cursor += 2 + length;
+      } else {
+        const fixed: Record<number, number> = { 0: 0, 1: 0, 2: 1, 3: 2, 4: 4, 5: 8, 8: 8, 9: 16 };
+        cursor += fixed[type] ?? 0;
+      }
+    }
+    messages.push({ headers, payload: buffer.subarray(headersEnd, offset + total - 4) });
+    offset += total;
+  }
+  return { messages, rest: buffer.subarray(offset) };
+}
+
+type ConverseStreamEvent = {
+  contentBlockIndex?: number;
+  start?: { toolUse?: { toolUseId?: string; name?: string } };
+  delta?: {
+    text?: string;
+    toolUse?: { input?: string };
+    reasoningContent?: { text?: string };
+  };
+  stopReason?: string;
+  usage?: { inputTokens?: number; outputTokens?: number };
+  message?: string;
+  Message?: string;
+};
+
 export class BedrockConverseAdapter implements ModelProviderAdapter {
   readonly id: string;
   readonly kind = "openai_compatible" as const;
@@ -318,7 +376,18 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
         return;
       }
     }
-    // Prefer a real completion (with Nova fallback) then emit tokens quickly.
+    let emitted = false;
+    try {
+      for await (const chunk of this.converseStream(normalized)) {
+        if (chunk.type !== "done") emitted = true;
+        yield chunk;
+      }
+      return;
+    } catch (error) {
+      // Once text reached the user a silent retry would duplicate it.
+      if (emitted) throw error;
+    }
+    // Stream unavailable (model/region) — full completion with Nova fallback.
     const completion = await this.complete(normalized);
     if (completion.message.content && !completion.toolCalls?.length) {
       const text = completion.message.content;
@@ -328,5 +397,117 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
       }
     }
     yield { type: "done", completion };
+  }
+
+  private async *converseStream(request: AiCompletionRequest): AsyncIterable<AiStreamChunk> {
+    const modelId = encodeURIComponent(request.model.model);
+    const body = this.buildBody(request);
+    if (request.reasoning && /anthropic\.claude/i.test(request.model.model)) {
+      const budget = { low: 1024, medium: 4096, high: 8192 }[request.reasoning];
+      body.additionalModelRequestFields = { thinking: { type: "enabled", budget_tokens: budget } };
+      const config = body.inferenceConfig as { maxTokens: number; temperature?: number };
+      config.maxTokens = Math.max(config.maxTokens, budget + 1024);
+      delete config.temperature;
+    }
+    const response = await fetch(`${this.baseUrl}/model/${modelId}/converse-stream`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.apiKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/vnd.amazon.eventstream",
+      },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok || !response.body) {
+      const payload = (await response.json().catch(() => ({}))) as BedrockConverseResponse;
+      throw new AiGatewayError(
+        "PROVIDER_ERROR",
+        payload.message ?? payload.Message ?? `Bedrock stream failed with ${response.status}`,
+        response.status >= 400 && response.status < 500 ? response.status : 502,
+      );
+    }
+
+    const reader = response.body.getReader();
+    const json = new TextDecoder();
+    let pending: Uint8Array = new Uint8Array(0);
+    let full = "";
+    let stopReason: string | null = null;
+    let usage: AiCompletion["usage"] = null;
+    const tools = new Map<number, { id: string; name: string; input: string }>();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const merged = new Uint8Array(pending.length + value.length);
+      merged.set(pending);
+      merged.set(value, pending.length);
+      const { messages, rest } = decodeEventStreamFrames(merged);
+      pending = rest.slice();
+      for (const message of messages) {
+        let event: ConverseStreamEvent = {};
+        try {
+          event = JSON.parse(json.decode(message.payload)) as ConverseStreamEvent;
+        } catch {
+          continue;
+        }
+        if (message.headers[":message-type"] === "exception") {
+          throw new AiGatewayError(
+            "PROVIDER_ERROR",
+            event.message ?? event.Message ?? message.headers[":exception-type"] ?? "Bedrock stream error",
+            502,
+          );
+        }
+        const kind = message.headers[":event-type"];
+        const index = event.contentBlockIndex ?? 0;
+        if (kind === "contentBlockStart" && event.start?.toolUse) {
+          tools.set(index, {
+            id: event.start.toolUse.toolUseId ?? `call_${index}`,
+            name: event.start.toolUse.name ?? "",
+            input: "",
+          });
+        } else if (kind === "contentBlockDelta" && event.delta) {
+          if (event.delta.text) {
+            full += event.delta.text;
+            yield { type: "token", text: event.delta.text };
+          }
+          if (event.delta.reasoningContent?.text) {
+            yield { type: "thinking", text: event.delta.reasoningContent.text };
+          }
+          if (event.delta.toolUse?.input) {
+            const tool = tools.get(index);
+            if (tool) tool.input += event.delta.toolUse.input;
+          }
+        } else if (kind === "messageStop") {
+          stopReason = event.stopReason ?? null;
+        } else if (kind === "metadata" && event.usage) {
+          if (event.usage.inputTokens !== undefined && event.usage.outputTokens !== undefined) {
+            usage = { inputTokens: event.usage.inputTokens, outputTokens: event.usage.outputTokens };
+          }
+        }
+      }
+    }
+
+    const toolCalls: AiToolCall[] = [...tools.values()]
+      .filter((tool) => tool.name)
+      .map((tool) => ({ id: tool.id, name: tool.name, arguments: tool.input || "{}" }));
+    const content = full.trim();
+    if (!content && toolCalls.length === 0) {
+      throw new AiGatewayError("PROVIDER_ERROR", "Bedrock returned an empty completion", 502);
+    }
+    yield {
+      type: "done",
+      completion: {
+        id: `bedrock_${Date.now()}`,
+        model: request.model,
+        message: {
+          role: "assistant",
+          content,
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+        },
+        finishReason: toolCalls.length > 0 ? "tool_calls" : mapFinishReason(stopReason),
+        usage,
+        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      },
+    };
   }
 }

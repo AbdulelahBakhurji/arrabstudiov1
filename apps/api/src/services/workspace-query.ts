@@ -16,6 +16,7 @@ import type {
   TaskRun,
   Team,
   TeamMembership,
+  StudioAccountRecord,
   UsageSummaryResponse,
   Workspace,
 } from "@arrab/shared";
@@ -117,14 +118,22 @@ export class WorkspaceQueryService {
 
   async usageSummary(
     accounts?: AccountService,
-    options?: { allowedAgentIds?: Set<string> | null; includeEntitlements?: boolean },
+    options?: {
+      allowedAgentIds?: Set<string> | null;
+      includeEntitlements?: boolean;
+      account?: StudioAccountRecord | null;
+    },
   ): Promise<UsageSummaryResponse> {
     const allowed = options?.allowedAgentIds ?? null;
     const includeEntitlements = options?.includeEntitlements !== false;
-    // Match Settings plan meter: scope totals to the active billing period so
-    // switching accounts (or periods) never shows another user's lifetime tokens.
+    // Signed-in requests use that account. Never fall back to the shared workspace
+    // bucket, which reports "Local (not connected)" and every event in the period.
     const entitlements = accounts
-      ? await accounts.buildEntitlements(await this.persistence.accounts.get())
+      ? await accounts.buildEntitlements(
+          options && "account" in options
+            ? (options.account ?? null)
+            : await this.persistence.accounts.get(),
+        )
       : undefined;
     const periodStart = entitlements?.periodStart ?? null;
     const periodEnd = entitlements?.periodEnd ?? null;

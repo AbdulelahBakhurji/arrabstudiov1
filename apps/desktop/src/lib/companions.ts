@@ -12,7 +12,8 @@
  */
 import { useSyncExternalStore } from "react";
 import { arrabApi } from "@/lib/api";
-import { ACCOUNT_EVENT, readAccountSessionToken } from "./account-session";
+import { ACCOUNT_EVENT, readAccountId, readAccountSessionToken } from "./account-session";
+import { GUEST_COMPANION_LIMIT, isGuestLocalMode } from "./guest-mode";
 import { looksEncryptedLocal, openLocalJson, sealLocalJson } from "./local-secure";
 import {
   playbookText,
@@ -23,11 +24,20 @@ import {
 import { brainContextSnippet } from "./second-brain";
 import {
   allocateUniquePortrait,
+  collectTakenPortraitFiles,
   portraitFileFromUrl,
+  portraitFileUrl,
+  portraitGenderForDomain,
   presetPortraitFile,
   resolveCompanionPortraitSrc,
 } from "./companion-portrait";
-import { scrubConversationFromChatTabs } from "./assistant-chat-tabs";
+import { COMPANION_PRESETS } from "./companion-catalog";
+import {
+  scrubConversationFromChatTabs,
+  writeAssistantChatTabs,
+  type AssistantChatTabLane,
+  type AssistantChatTabsState,
+} from "./assistant-chat-tabs";
 
 export type CompanionSpace = "personal" | "work";
 export type CompanionToneName = "direct" | "measured";
@@ -187,12 +197,20 @@ export interface CompanionState {
   studioPurposes: StudioPurposeDef[];
   /** Account id allowed to edit/remove Studio companions for everyone. */
   studioAdminAccountId: string | null;
+  /**
+   * Chat tabs (conversation pointers + titles) per companion.
+   * Synced with the account so the same threads reopen after sign-in.
+   */
+  assistantChatTabs: Record<string, Partial<Record<AssistantChatTabLane, AssistantChatTabsState>>>;
 }
 
 /** Purpose playbook key — maps to standing instruction blocks. */
 export type PurposePlaybookKey =
   | "arrab-assistant"
   | "ui-designer"
+  | "game-designer"
+  | "3d-modeler"
+  | "markets-terminal"
   | "inbox"
   | "coder"
   | "brand"
@@ -220,7 +238,7 @@ export interface StudioPurposeDef {
   blurb: string;
   blurbAr: string;
   /** Default workspace for companions created under this purpose. */
-  workspace: "ui-designer" | "arrab-assistant" | "default";
+  workspace: "ui-designer" | "arrab-assistant" | "markets-terminal" | "default";
   /** Seed brief — user can still customize name/photo. */
   brief: string;
   briefAr: string;
@@ -246,7 +264,7 @@ export interface StudioCatalogEntry {
   brief: string;
   briefAr: string;
   toneName: CompanionToneName;
-  workspace: "ui-designer" | "arrab-assistant" | "default";
+  workspace: "ui-designer" | "arrab-assistant" | "markets-terminal" | "default";
   /** Links to a StudioPurposeDef id — extensible after publish. */
   purposeId: string;
   hue: number;
@@ -267,6 +285,10 @@ export interface BoardCard {
   nudgeId: string | null;
   workId: string | null;
   threadId: string | null;
+  /** Optional hint for Board UI chrome. */
+  kind?: "nudge" | "work" | "thread" | "birth" | "checkin";
+  level?: NudgeLevel | null;
+  birthDomain?: string | null;
 }
 
 const STORE_PREFIX = "arrab.companions.v2";
@@ -282,11 +304,37 @@ function hashPartition(raw: string): string {
   return `${Math.abs(h).toString(36)}${raw.length.toString(36)}`.slice(0, 16);
 }
 
-/** One vault per signed-in account. Guests get an empty local vault. */
-function accountPartition(): string {
-  const token = readAccountSessionToken();
-  if (!token) return "guest";
+function readStableAccountId(): string | null {
+  const stored = readAccountId();
+  if (stored) return stored;
+  try {
+    const token = readAccountSessionToken();
+    if (!token) return null;
+    const raw = localStorage.getItem("arrab.account.status.cache");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as {
+      token?: string;
+      status?: { account?: { id?: string } };
+    };
+    if (!parsed?.token || parsed.token !== token) return null;
+    const id = parsed.status?.account?.id?.trim() ?? "";
+    return id || null;
+  } catch {
+    return null;
+  }
+}
+
+function tokenPartitionKey(token: string): string {
   return hashPartition(`acct::${token}`);
+}
+
+/** One vault per signed-in account id. Session tokens rotate; the vault must not. */
+function accountPartition(): string {
+  if (!readAccountSessionToken()) return "guest";
+  const accountId = readStableAccountId();
+  if (accountId) return `id:${hashPartition(`acctid::${accountId}`)}`;
+  const token = readAccountSessionToken();
+  return token ? tokenPartitionKey(token) : "guest";
 }
 
 function storageKey(): string {
@@ -297,26 +345,60 @@ function syncedAtKey(): string {
   return `${SYNCED_AT_PREFIX}.${accountPartition()}`;
 }
 
+function copyVault(fromKey: string, toKey: string, fromSyncKey: string, toSyncKey: string): boolean {
+  try {
+    if (localStorage.getItem(toKey)) return false;
+    const raw = localStorage.getItem(fromKey);
+    if (!raw) return false;
+    localStorage.setItem(toKey, raw);
+    const sync = localStorage.getItem(fromSyncKey);
+    if (sync && !localStorage.getItem(toSyncKey)) {
+      localStorage.setItem(toSyncKey, sync);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Move the old shared vault into this account once.
  * Guests never inherit it — that was the cross-account leak.
  */
 function adoptLegacyVaultIfNeeded(partition: string): void {
   if (partition === "guest") return;
-  try {
-    if (localStorage.getItem(`${STORE_PREFIX}.${partition}`)) return;
-    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
-    if (!legacy) return;
-    localStorage.setItem(`${STORE_PREFIX}.${partition}`, legacy);
-    localStorage.removeItem(LEGACY_STORAGE_KEY);
-    const legacySync = localStorage.getItem(LEGACY_SYNCED_AT_KEY);
-    if (legacySync && !localStorage.getItem(`${SYNCED_AT_PREFIX}.${partition}`)) {
-      localStorage.setItem(`${SYNCED_AT_PREFIX}.${partition}`, legacySync);
+  if (
+    copyVault(
+      LEGACY_STORAGE_KEY,
+      `${STORE_PREFIX}.${partition}`,
+      LEGACY_SYNCED_AT_KEY,
+      `${SYNCED_AT_PREFIX}.${partition}`,
+    )
+  ) {
+    try {
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
       localStorage.removeItem(LEGACY_SYNCED_AT_KEY);
+    } catch {
+      // tests / private mode
     }
-  } catch {
-    // ignore quota / private mode
   }
+}
+
+/**
+ * Session tokens rotate on every sign-in. Copy the current-token vault into
+ * the stable account-id vault once so the same account keeps its companions.
+ */
+function adoptTokenVaultIfNeeded(partition: string): void {
+  if (!partition.startsWith("id:")) return;
+  const token = readAccountSessionToken();
+  if (!token) return;
+  const tokenPart = tokenPartitionKey(token);
+  copyVault(
+    `${STORE_PREFIX}.${tokenPart}`,
+    `${STORE_PREFIX}.${partition}`,
+    `${SYNCED_AT_PREFIX}.${tokenPart}`,
+    `${SYNCED_AT_PREFIX}.${partition}`,
+  );
 }
 
 let activePartition: string | null = null;
@@ -681,6 +763,7 @@ function emptyState(): CompanionState {
     studioCatalog: [],
     studioPurposes: [],
     studioAdminAccountId: null,
+    assistantChatTabs: {},
   };
 }
 
@@ -698,7 +781,7 @@ let pendingVaultSnapshot: CompanionState | null = null;
 
 function remountPartition(): void {
   const next = accountPartition();
-  if (activePartition === next && cache) return;
+  if (activePartition === next) return;
   activePartition = next;
   cache = null;
   localReady = false;
@@ -706,7 +789,10 @@ function remountPartition(): void {
   purposeMigrateDone = false;
   pendingMutations = [];
   pendingVaultSnapshot = null;
-  if (next !== "guest") adoptLegacyVaultIfNeeded(next);
+  if (next !== "guest") {
+    adoptLegacyVaultIfNeeded(next);
+    adoptTokenVaultIfNeeded(next);
+  }
 }
 
 if (typeof window !== "undefined") {
@@ -718,7 +804,7 @@ if (typeof window !== "undefined") {
     purposeMigrateDone = false;
     pendingMutations = [];
     pendingVaultSnapshot = null;
-    void ensureCompanionsReady().then(() => {
+    void syncCompanionsFromCloud().then(() => {
       window.dispatchEvent(new Event(CHANGE_EVENT));
     });
   });
@@ -811,6 +897,40 @@ function migratePurposeTasksOnce(state: CompanionState): void {
   }
 }
 
+/** Ensure live companions never share the same portrait file. */
+function healDuplicatePortraits(state: CompanionState): void {
+  const claimed: string[] = [];
+  for (const person of state.companions) {
+    if (person.archivedAt || person.domain === "general") continue;
+    const taken = collectTakenPortraitFiles(claimed);
+    const current = portraitFileFromUrl(resolveCompanionPortraitSrc(person));
+    const presetFile = presetPortraitFile(person.domain);
+    if (presetFile && !taken.has(presetFile)) {
+      person.avatarPhoto = portraitFileUrl(presetFile);
+      claimed.push(presetFile);
+      continue;
+    }
+    if (current && !taken.has(current)) {
+      if (!person.avatarPhoto?.trim()) {
+        person.avatarPhoto = resolveCompanionPortraitSrc(person);
+      }
+      claimed.push(current);
+      continue;
+    }
+    const portrait = allocateUniquePortrait({
+      domain: person.domain,
+      name: person.name,
+      faceSeed: person.faceSeed,
+      purposeId: person.purposeId ?? undefined,
+      gender: portraitGenderForDomain(person.domain),
+      taken: claimed,
+    });
+    person.avatarPhoto = portrait.avatarPhoto;
+    person.faceSeed = portrait.faceSeed;
+    claimed.push(portrait.file);
+  }
+}
+
 function normalizeState(raw: unknown): CompanionState {
   const parsed = (raw && typeof raw === "object" ? raw : {}) as Partial<CompanionState>;
   const next: CompanionState = { ...emptyState(), ...parsed, version: 2 };
@@ -820,8 +940,14 @@ function normalizeState(raw: unknown): CompanionState {
       (person as CompanionProfile).purposeId
         ? (person as CompanionProfile).purposeId
         : resolvePurposeIdFromDomain(person.domain ?? "custom");
+    const preset = COMPANION_PRESETS.find(
+      (item) => item.domain === String(person.domain ?? "").toLowerCase().trim(),
+    );
+    // Canonical English preset name — UI localizes via companionDisplayName.
+    const name = preset ? preset.name : person.name;
     return {
       ...person,
+      name,
       purposeId,
       brief: person.brief ?? null,
       toneNote: typeof person.toneNote === "string" ? person.toneNote : null,
@@ -842,6 +968,7 @@ function normalizeState(raw: unknown): CompanionState {
       greeting: typeof person.greeting === "string" ? person.greeting : null,
     };
   });
+  healDuplicatePortraits(next);
   next.facts = (Array.isArray(next.facts) ? next.facts : [])
     .filter((fact) => fact && typeof fact.text === "string" && fact.text.trim())
     .map((fact) => ({
@@ -890,7 +1017,9 @@ function normalizeState(raw: unknown): CompanionState {
             ? "ui-designer"
             : entry.workspace === "arrab-assistant"
               ? "arrab-assistant"
-              : "default",
+              : entry.workspace === "markets-terminal"
+                ? "markets-terminal"
+                : "default",
         toneName: entry.toneName === "direct" ? "direct" : "measured",
         purposeId: typeof entry.purposeId === "string" && entry.purposeId ? entry.purposeId : "web-design",
         createdBy: entry.createdBy ?? null,
@@ -907,7 +1036,9 @@ function normalizeState(raw: unknown): CompanionState {
               ? "ui-designer"
               : purpose.workspace === "arrab-assistant"
                 ? "arrab-assistant"
-                : "default",
+                : purpose.workspace === "markets-terminal"
+                  ? "markets-terminal"
+                  : "default",
           toneName: purpose.toneName === "direct" ? "direct" : "measured",
           hue: typeof purpose.hue === "number" ? purpose.hue : 268,
           playbookKey: purpose.playbookKey ?? base?.playbookKey ?? "custom",
@@ -920,7 +1051,51 @@ function normalizeState(raw: unknown): CompanionState {
     : [];
   next.studioAdminAccountId =
     typeof next.studioAdminAccountId === "string" ? next.studioAdminAccountId : null;
+  next.assistantChatTabs = normalizeAssistantChatTabs(next.assistantChatTabs);
   return next;
+}
+
+function normalizeAssistantChatTabs(
+  raw: CompanionState["assistantChatTabs"] | unknown,
+): CompanionState["assistantChatTabs"] {
+  if (!raw || typeof raw !== "object") return {};
+  const out: CompanionState["assistantChatTabs"] = {};
+  for (const [companionId, lanes] of Object.entries(raw as Record<string, unknown>)) {
+    if (!companionId || !lanes || typeof lanes !== "object") continue;
+    const record: Partial<Record<AssistantChatTabLane, AssistantChatTabsState>> = {};
+    for (const lane of ["chat", "parent"] as const) {
+      const value = (lanes as Record<string, unknown>)[lane];
+      const normalized = normalizeTabLane(value);
+      if (normalized) record[lane] = normalized;
+    }
+    if (record.chat || record.parent) out[companionId] = record;
+  }
+  return out;
+}
+
+function normalizeTabLane(raw: unknown): AssistantChatTabsState | null {
+  if (!raw || typeof raw !== "object") return null;
+  const parsed = raw as Partial<AssistantChatTabsState>;
+  if (!Array.isArray(parsed.tabs) || parsed.tabs.length === 0) return null;
+  const tabs = parsed.tabs
+    .filter((item): item is NonNullable<typeof item> => Boolean(item?.id))
+    .map((item) => ({
+      id: String(item.id),
+      title: String(item.title || "Chat").slice(0, 80),
+      conversationId: item.conversationId ? String(item.conversationId) : null,
+      createdAt: String(item.createdAt || nowIso()),
+    }));
+  if (!tabs.length) return null;
+  const activeId =
+    typeof parsed.activeId === "string" && tabs.some((tab) => tab.id === parsed.activeId)
+      ? parsed.activeId
+      : tabs[0]!.id;
+  return {
+    tabs,
+    activeId,
+    railCollapsed: Boolean(parsed.railCollapsed),
+    tabsCollapsed: Boolean(parsed.tabsCollapsed),
+  };
 }
 
 function hydrate(): CompanionState {
@@ -972,6 +1147,15 @@ function scheduleCloudPush(): void {
   }, CLOUD_PUSH_MS);
 }
 
+function stateHasAccountData(state: CompanionState): boolean {
+  return (
+    state.companions.length > 0 ||
+    state.facts.length > 0 ||
+    (state.studioCatalog?.length ?? 0) > 0 ||
+    Object.keys(state.assistantChatTabs ?? {}).length > 0
+  );
+}
+
 async function pushCompanionsToCloud(): Promise<void> {
   if (pushInFlight || suppressCloudPush) return;
   if (!readAccountSessionToken()) return;
@@ -979,6 +1163,7 @@ async function pushCompanionsToCloud(): Promise<void> {
   try {
     await ensureCompanionsReady();
     const state = hydrate();
+    if (!stateHasAccountData(state)) return;
     const updatedAt = nowIso();
     await arrabApi.putCompanionState({ updatedAt, state });
     writeSyncedAt(updatedAt);
@@ -991,11 +1176,13 @@ async function pushCompanionsToCloud(): Promise<void> {
 
 /**
  * Pull companions + chat pointers from the API database.
- * Remote wins only when clearly newer; never wipe local memories on first sync.
+ * Remote wins when local is empty or clearly older; never overwrite the
+ * account's cloud copy with an empty vault after a fresh sign-in.
  */
 export async function syncCompanionsFromCloud(): Promise<void> {
-  if (!readAccountSessionToken()) {
-    remountPartition();
+  remountPartition();
+  // Guests stay on a local-only roster — never pull org/cloud companion state.
+  if (!readAccountSessionToken() || isGuestLocalMode()) {
     await ensureCompanionsReady();
     window.dispatchEvent(new Event(CHANGE_EVENT));
     return;
@@ -1003,34 +1190,42 @@ export async function syncCompanionsFromCloud(): Promise<void> {
   try {
     await ensureCompanionsReady();
     const doc = await arrabApi.companionState();
-    const local = hydrate();
+    let local = hydrate();
     const localSyncedAt = readSyncedAt();
+    const remote =
+      doc.state && typeof doc.state === "object" ? normalizeState(doc.state) : null;
+    const remoteAt = doc.updatedAt ?? "";
+    const localHasData = stateHasAccountData(local);
+    const remoteHasData = Boolean(remote && stateHasAccountData(remote));
+    const remoteNewer = Boolean(remoteAt && localSyncedAt && remoteAt > localSyncedAt);
 
-    if (doc.state && typeof doc.state === "object") {
-      const remote = normalizeState(doc.state);
-      const remoteAt = doc.updatedAt ?? "";
-      const localHasData = local.companions.length > 0 || local.facts.length > 0;
-      const remoteHasData = remote.companions.length > 0 || remote.facts.length > 0;
-      const shouldTakeRemote =
-        Boolean(remoteAt) &&
-        ((!localSyncedAt && !localHasData && remoteHasData) ||
-          (localSyncedAt != null && remoteAt > localSyncedAt) ||
-          (!localHasData && remoteHasData));
-
-      if (shouldTakeRemote) {
+    if (remote && remoteHasData && (!localHasData || remoteNewer)) {
+      suppressCloudPush = true;
+      const merged = mergeAccountCompanionState(remote, local);
+      cache = merged;
+      await writeLocalState(merged);
+      if (remoteAt) writeSyncedAt(remoteAt);
+      hydrateAssistantTabsToLocal(merged);
+      window.dispatchEvent(new Event(CHANGE_EVENT));
+      suppressCloudPush = false;
+      local = merged;
+    } else if (remote && localHasData) {
+      const merged = mergeCompanionPointers(local, remote);
+      if (merged !== local) {
         suppressCloudPush = true;
-        // Keep any local-only facts the remote does not know yet.
-        const merged = mergeFactsPreferLocal(remote, local);
         cache = merged;
         await writeLocalState(merged);
-        if (remoteAt) writeSyncedAt(remoteAt);
+        hydrateAssistantTabsToLocal(merged);
         window.dispatchEvent(new Event(CHANGE_EVENT));
         suppressCloudPush = false;
-        return;
+        local = merged;
       }
     }
 
-    if (local.companions.length > 0 || local.facts.length > 0) {
+    const attached = await attachConversationsFromCloud(local);
+    if (attached) local = attached;
+
+    if (stateHasAccountData(local) && (!remoteHasData || (localHasData && !remoteNewer))) {
       await pushCompanionsToCloud();
     }
   } catch {
@@ -1046,6 +1241,171 @@ function mergeFactsPreferLocal(remote: CompanionState, local: CompanionState): C
     ...remote,
     facts: [...byId.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)),
   };
+}
+
+function tabLaneScore(tabs?: AssistantChatTabsState): number {
+  if (!tabs) return 0;
+  return tabs.tabs.filter((tab) => tab.conversationId).length * 10 + tabs.tabs.length;
+}
+
+function pickRicherTabLane(
+  left?: AssistantChatTabsState,
+  right?: AssistantChatTabsState,
+): AssistantChatTabsState | undefined {
+  if (!left) return right;
+  if (!right) return left;
+  return tabLaneScore(right) > tabLaneScore(left) ? right : left;
+}
+
+function mergeAssistantTabs(
+  remote: CompanionState["assistantChatTabs"] | undefined,
+  local: CompanionState["assistantChatTabs"] | undefined,
+): CompanionState["assistantChatTabs"] {
+  const left = remote ?? {};
+  const right = local ?? {};
+  const ids = new Set([...Object.keys(left), ...Object.keys(right)]);
+  const out: CompanionState["assistantChatTabs"] = {};
+  for (const companionId of ids) {
+    const chat = pickRicherTabLane(left[companionId]?.chat, right[companionId]?.chat);
+    const parent = pickRicherTabLane(left[companionId]?.parent, right[companionId]?.parent);
+    if (chat || parent) out[companionId] = { chat, parent };
+  }
+  return out;
+}
+
+/** Remote profiles + local-only facts/tabs so a new device still sees the account. */
+function mergeAccountCompanionState(remote: CompanionState, local: CompanionState): CompanionState {
+  return {
+    ...mergeFactsPreferLocal(remote, local),
+    assistantChatTabs: mergeAssistantTabs(remote.assistantChatTabs, local.assistantChatTabs),
+  };
+}
+
+/** Keep local profiles; fill missing chat pointers from the account copy. */
+function mergeCompanionPointers(local: CompanionState, remote: CompanionState): CompanionState {
+  const remoteById = new Map(remote.companions.map((person) => [person.id, person]));
+  const localIds = new Set(local.companions.map((person) => person.id));
+  let changed = false;
+  const companions = local.companions.map((person) => {
+    const other = remoteById.get(person.id);
+    if (!other) return person;
+    const conversationId = person.conversationId ?? other.conversationId;
+    const parentConversationId = person.parentConversationId ?? other.parentConversationId;
+    const agentId = person.agentId ?? other.agentId;
+    if (
+      conversationId === person.conversationId &&
+      parentConversationId === person.parentConversationId &&
+      agentId === person.agentId
+    ) {
+      return person;
+    }
+    changed = true;
+    return { ...person, conversationId, parentConversationId, agentId };
+  });
+  const extras = remote.companions.filter((person) => !localIds.has(person.id));
+  if (extras.length) changed = true;
+  const tabs = mergeAssistantTabs(remote.assistantChatTabs, local.assistantChatTabs);
+  if (Object.keys(tabs).length !== Object.keys(local.assistantChatTabs).length) changed = true;
+  if (!changed) return local;
+  return {
+    ...local,
+    companions: [...companions, ...extras],
+    assistantChatTabs: tabs,
+  };
+}
+
+function hydrateAssistantTabsToLocal(state: CompanionState): void {
+  for (const [companionId, lanes] of Object.entries(state.assistantChatTabs)) {
+    if (lanes.chat) writeAssistantChatTabs(companionId, lanes.chat, "chat");
+    if (lanes.parent) writeAssistantChatTabs(companionId, lanes.parent, "parent");
+  }
+}
+
+async function attachConversationsFromCloud(state: CompanionState): Promise<CompanionState | null> {
+  if (!readAccountSessionToken() || !state.companions.length) return null;
+  try {
+    const list = await arrabApi.conversations();
+    const items = list.items ?? [];
+    if (!items.length) return null;
+    const byAgent = new Map<string, typeof items>();
+    for (const item of items) {
+      if (!item.agentId) continue;
+      const bucket = byAgent.get(item.agentId) ?? [];
+      bucket.push(item);
+      byAgent.set(item.agentId, bucket);
+    }
+    let changed = false;
+    const nextTabs = { ...state.assistantChatTabs };
+    const companions = state.companions.map((person) => {
+      const matches = (person.agentId ? byAgent.get(person.agentId) : null)?.filter(
+        (item) => !person.familyMemberId || item.familyMemberId === person.familyMemberId,
+      );
+      if (!matches?.length) return person;
+      matches.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      const latest = matches[0]!;
+      if (!nextTabs[person.id]?.chat) {
+        nextTabs[person.id] = {
+          ...nextTabs[person.id],
+          chat: {
+            tabs: matches.map((item) => ({
+              id: item.id,
+              title: (item.title || person.name || "Chat").slice(0, 80),
+              conversationId: item.id,
+              createdAt: item.createdAt,
+            })),
+            activeId: (person.conversationId &&
+            matches.some((item) => item.id === person.conversationId)
+              ? person.conversationId
+              : latest.id) as string,
+            railCollapsed: false,
+            tabsCollapsed: false,
+          },
+        };
+        changed = true;
+      }
+      if (person.conversationId) return person;
+      changed = true;
+      return { ...person, conversationId: latest.id };
+    });
+    if (!changed) return null;
+    const next = { ...state, companions, assistantChatTabs: nextTabs };
+    suppressCloudPush = true;
+    cache = next;
+    await writeLocalState(next);
+    hydrateAssistantTabsToLocal(next);
+    window.dispatchEvent(new Event(CHANGE_EVENT));
+    suppressCloudPush = false;
+    return next;
+  } catch {
+    return null;
+  }
+}
+
+export function readCompanionChatTabs(
+  companionId: string,
+  lane: AssistantChatTabLane = "chat",
+): AssistantChatTabsState | null {
+  const tabs = cache?.assistantChatTabs ?? pendingVaultSnapshot?.assistantChatTabs ?? {};
+  return tabs[companionId]?.[lane] ?? null;
+}
+
+export function writeCompanionChatTabs(
+  companionId: string,
+  tabs: AssistantChatTabsState,
+  lane: AssistantChatTabLane = "chat",
+): void {
+  const current = cache?.assistantChatTabs?.[companionId]?.[lane];
+  if (current && JSON.stringify(current) === JSON.stringify(tabs)) return;
+  update((draft) => {
+    const existing = draft.assistantChatTabs ?? {};
+    draft.assistantChatTabs = {
+      ...existing,
+      [companionId]: {
+        ...existing[companionId],
+        [lane]: tabs,
+      },
+    };
+  });
 }
 
 function flushPendingMutations(): void {
@@ -1122,6 +1482,22 @@ export function liveCompanions(state: CompanionState, space?: CompanionSpace): C
   return state.companions
     .filter((person) => !person.archivedAt)
     .filter((person) => (space ? person.space === space : true));
+}
+
+/** Named companions that count toward the guest roster cap (General is free). */
+export function countableCompanions(state = getCompanionState()): CompanionProfile[] {
+  return liveCompanions(state).filter((person) => person.domain !== "general");
+}
+
+/** Guests may keep at most GUEST_COMPANION_LIMIT named companions. */
+export function guestCompanionSlotsLeft(state = getCompanionState()): number | null {
+  if (!isGuestLocalMode()) return null;
+  return Math.max(0, GUEST_COMPANION_LIMIT - countableCompanions(state).length);
+}
+
+export function canAddCompanion(state = getCompanionState()): boolean {
+  const left = guestCompanionSlotsLeft(state);
+  return left === null || left > 0;
 }
 
 /**
@@ -1258,6 +1634,14 @@ export function addCompanion(input: {
   const purposeId = resolvePurposeIdFromDomain(input.domain, input.purposeId);
   const purpose = purposeRegistryById(purposeId);
   const state = getCompanionState();
+  // Guest local-only: hard cap on named companions (General room is free).
+  if (
+    isGuestLocalMode() &&
+    input.domain !== "general" &&
+    countableCompanions(state).length >= GUEST_COMPANION_LIMIT
+  ) {
+    throw new Error("guest_companion_limit");
+  }
   const taken = [
     ...state.companions
       .filter((person) => !person.archivedAt && person.domain !== "general")
@@ -1272,23 +1656,44 @@ export function addCompanion(input: {
     name: input.name.trim(),
     faceSeed: input.faceSeed,
     purposeId,
+    gender: portraitGenderForDomain(input.domain),
     taken,
   });
+  const requestedPhoto = input.avatarPhoto?.trim() || null;
+  const requestedFile = requestedPhoto ? portraitFileFromUrl(requestedPhoto) : null;
+  const otherOwnsRequested = Boolean(
+    requestedFile &&
+      (state.companions.some((person) => {
+        if (person.archivedAt || person.domain === "general") return false;
+        if (person.domain.toLowerCase() === input.domain.toLowerCase()) return false;
+        return portraitFileFromUrl(resolveCompanionPortraitSrc(person)) === requestedFile;
+      }) ||
+        state.studioCatalog.some((entry) => {
+          if (entry.archivedAt) return false;
+          if (entry.domain.toLowerCase() === input.domain.toLowerCase()) return false;
+          return portraitFileFromUrl(entry.avatarPhoto) === requestedFile;
+        })),
+  );
+  // Built-ins may keep their dedicated face; new companions never steal an existing one.
+  const useRequested = Boolean(requestedPhoto && requestedFile && !otherOwnsRequested);
+  const preset = COMPANION_PRESETS.find(
+    (item) => item.domain === input.domain.toLowerCase().trim(),
+  );
   const created: CompanionProfile = {
     id: newId("comp"),
     agentId: null,
     conversationId: null,
     parentConversationId: null,
-    name: input.name.trim(),
+    name: (preset?.name || input.name).trim(),
     domain: input.domain,
     purposeId,
     brief: input.brief?.trim() || purpose?.brief || null,
     toneNote: null,
     connectors: [...(input.connectors ?? [])],
     hue: input.hue ?? 0,
-    faceSeed: portrait.faceSeed,
+    faceSeed: useRequested ? (input.faceSeed ?? portrait.faceSeed) : portrait.faceSeed,
     // Lock a unique vector face at birth so new companions never share one.
-    avatarPhoto: input.avatarPhoto?.trim() || portrait.avatarPhoto,
+    avatarPhoto: useRequested ? requestedPhoto : portrait.avatarPhoto,
     space: input.space ?? "personal",
     tone: input.tone
       ? clampTone(input.tone)
@@ -1598,6 +2003,23 @@ export function removeCompanion(id: string): void {
     draft.work = draft.work.filter((item) => item.companionId !== id);
     draft.threads = draft.threads.filter((thread) => thread.companionId !== id);
   });
+}
+
+/**
+ * Wipe every Professional / work-desk companion (not General).
+ * Used when the work desk must start empty — create only via +.
+ */
+export function clearProfessionalCompanions(): number {
+  const doomed = getCompanionState().companions.filter(
+    (person) =>
+      !person.archivedAt &&
+      person.space === "work" &&
+      person.domain !== "general",
+  );
+  for (const person of doomed) {
+    removeCompanion(person.id);
+  }
+  return doomed.length;
 }
 
 /** Turn tone + watches + purpose + connectors + memory into standing agent instructions. */
@@ -2015,6 +2437,15 @@ export function ignoreNudge(id: string): void {
   });
 }
 
+/** Drop composer nudges — chat no longer surfaces them. */
+export function clearLiveNudges(): void {
+  update((draft) => {
+    for (const nudge of draft.nudges) {
+      if (nudge.state === "live") nudge.state = "dead";
+    }
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Work and tasks
 // ---------------------------------------------------------------------------
@@ -2336,8 +2767,9 @@ function dismissKey(card: {
   nudgeId: string | null;
   workId: string | null;
   threadId: string | null;
+  birthDomain?: string | null;
 }): string {
-  return card.nudgeId ?? card.workId ?? card.threadId ?? "unknown";
+  return card.nudgeId ?? card.workId ?? card.threadId ?? card.birthDomain ?? "unknown";
 }
 
 /**
@@ -2353,6 +2785,8 @@ export function boardCards(
   const cards: BoardCard[] = [];
   const allow = (companionId: string) =>
     !allowedCompanionIds || allowedCompanionIds.has(companionId);
+  const seenWork = new Set<string>();
+  const seenThread = new Set<string>();
 
   for (const nudge of liveNudges(state, space)) {
     if (!allow(nudge.companionId)) continue;
@@ -2366,14 +2800,22 @@ export function boardCards(
       nudgeId: nudge.id,
       workId: null,
       threadId: null,
+      kind: "nudge",
+      level: nudge.level,
     });
   }
 
   for (const item of acceptedWork(state, space)) {
-    if (!item.suggestedTime) continue;
-    if (new Date(item.suggestedTime).getTime() > Date.now() + 86_400_000) continue;
+    const dueSoon =
+      item.suggestedTime &&
+      new Date(item.suggestedTime).getTime() <= Date.now() + 86_400_000;
+    const recent =
+      !item.suggestedTime &&
+      Date.now() - new Date(item.createdAt).getTime() < 7 * 86_400_000;
+    if (!dueSoon && !recent) continue;
     const companionId = item.companionId ?? liveCompanions(state, space)[0]?.id ?? "";
-    if (!allow(companionId)) continue;
+    if (!companionId || !allow(companionId)) continue;
+    seenWork.add(item.id);
     cards.push({
       id: `card-${item.id}`,
       companionId,
@@ -2384,13 +2826,37 @@ export function boardCards(
       nudgeId: null,
       workId: item.id,
       threadId: null,
+      kind: "work",
+      level: dueSoon && item.suggestedTime && new Date(item.suggestedTime).getTime() < Date.now()
+        ? "critical"
+        : "line",
+    });
+  }
+
+  for (const item of suggestedWork(state, space)) {
+    if (seenWork.has(item.id)) continue;
+    const companionId = item.companionId ?? liveCompanions(state, space)[0]?.id ?? "";
+    if (!companionId || !allow(companionId)) continue;
+    cards.push({
+      id: `card-sug-${item.id}`,
+      companionId,
+      line: item.text,
+      action: "Review",
+      source: item.capturedFrom,
+      space,
+      nudgeId: null,
+      workId: item.id,
+      threadId: null,
+      kind: "work",
+      level: "whisper",
     });
   }
 
   for (const thread of state.threads) {
     if (thread.archived || thread.space !== space || !thread.open) continue;
     const companionId = thread.companionId ?? liveCompanions(state, space)[0]?.id ?? "";
-    if (!allow(companionId)) continue;
+    if (!companionId || !allow(companionId)) continue;
+    seenThread.add(thread.id);
     cards.push({
       id: `card-${thread.id}`,
       companionId,
@@ -2401,16 +2867,40 @@ export function boardCards(
       nudgeId: null,
       workId: null,
       threadId: thread.id,
+      kind: "thread",
+      level: "line",
     });
+  }
+
+  const birth = birthSuggestion(state);
+  if (birth) {
+    const host =
+      liveCompanions(state, space).find((p) => p.domain === "general") ??
+      liveCompanions(state, space)[0];
+    if (host && allow(host.id)) {
+      cards.push({
+        id: `card-birth-${birth.domain}`,
+        companionId: host.id,
+        line: `You've mentioned ${birth.domain} ${birth.mentions} times — ready for a companion?`,
+        action: "Meet them",
+        source: birth.domain,
+        space,
+        nudgeId: null,
+        workId: null,
+        threadId: null,
+        kind: "birth",
+        level: "line",
+        birthDomain: birth.domain,
+      });
+    }
   }
 
   /** The lit card is whatever is most time-critical, not whatever is newest. */
   const weight = (card: BoardCard): number => {
-    const nudge = state.nudges.find((item) => item.id === card.nudgeId);
-    if (nudge?.level === "critical") return 0;
-    if (card.workId) return 1;
-    if (nudge?.level === "line") return 2;
-    if (card.threadId) return 3;
+    if (card.level === "critical" || card.kind === "birth") return 0;
+    if (card.workId && card.level === "line") return 1;
+    if (card.level === "line" || card.kind === "thread") return 2;
+    if (card.workId) return 3;
     return 4;
   };
 
@@ -2435,6 +2925,9 @@ export function dismissCard(card: BoardCard): void {
         nudge.ignoredCount += 1;
         if (nudge.ignoredCount >= NUDGE_IGNORE_LIMIT) nudge.state = "dead";
       }
+    }
+    if (card.birthDomain) {
+      draft.topics[card.birthDomain] = { count: 0, lastAt: nowIso() };
     }
   });
 }
@@ -2462,6 +2955,35 @@ export function markOpened(): void {
   });
 }
 
+/** Open threads still carrying an unfinished question. */
+export function boardOpenThreads(
+  state: CompanionState,
+  space: CompanionSpace,
+): Array<{ id: string; title: string; open: string; companionId: string | null }> {
+  return state.threads
+    .filter((thread) => !thread.archived && thread.space === space && Boolean(thread.open))
+    .sort((a, b) => (a.touchedAt < b.touchedAt ? 1 : -1))
+    .slice(0, 6)
+    .map((thread) => ({
+      id: thread.id,
+      title: thread.title,
+      open: thread.open ?? "",
+      companionId: thread.companionId,
+    }));
+}
+
+/** Work that belongs on today's Board strip. */
+export function boardDueWork(state: CompanionState, space: CompanionSpace): WorkItem[] {
+  const accepted = acceptedWork(state, space).filter((item) => {
+    if (item.suggestedTime) {
+      return new Date(item.suggestedTime).getTime() <= Date.now() + 86_400_000;
+    }
+    return Date.now() - new Date(item.createdAt).getTime() < 7 * 86_400_000;
+  });
+  const suggested = suggestedWork(state, space);
+  return [...accepted, ...suggested].slice(0, 8);
+}
+
 // ---------------------------------------------------------------------------
 // Local signals — where nudges actually come from
 // ---------------------------------------------------------------------------
@@ -2475,11 +2997,12 @@ export function runSignals(): void {
   const state = hydrate();
   const people = liveCompanions(state);
   if (people.length === 0) return;
+  const general = people.find((person) => person.domain === "general") ?? people[0]!;
 
   for (const item of acceptedWork(state)) {
     if (item.postponeCount >= 3) {
       raiseNudge({
-        companionId: item.companionId ?? people[0]!.id,
+        companionId: item.companionId ?? general.id,
         level: "line",
         text: `"${item.text}" has moved three times.`,
         source: item.capturedFrom,
@@ -2490,7 +3013,7 @@ export function runSignals(): void {
     }
     if (item.suggestedTime && new Date(item.suggestedTime).getTime() < Date.now()) {
       raiseNudge({
-        companionId: item.companionId ?? people[0]!.id,
+        companionId: item.companionId ?? general.id,
         level: "critical",
         text: `${item.text} — the window you picked has passed.`,
         source: item.capturedFrom,
@@ -2500,15 +3023,68 @@ export function runSignals(): void {
   }
 
   for (const person of people) {
+    if (person.domain === "general") continue;
+    if (person.resume?.trim()) {
+      raiseNudge({
+        companionId: person.id,
+        level: "whisper",
+        text: `Pick up with ${person.name}: ${person.resume.trim().slice(0, 120)}`,
+        source: person.domain,
+        space: person.space,
+      });
+    }
     if (!person.lastAt) continue;
     const quietDays = (Date.now() - new Date(person.lastAt).getTime()) / 86_400_000;
-    if (quietDays > 10) {
+    if (quietDays > 5) {
       raiseNudge({
         companionId: person.id,
         level: "whisper",
         text: `${person.name} has not heard from you in ${Math.round(quietDays)} days.`,
         source: person.domain,
         space: person.space,
+      });
+    }
+  }
+
+  const birth = birthSuggestion(state);
+  if (birth) {
+    raiseNudge({
+      companionId: general.id,
+      level: "line",
+      text: `You've brought up ${birth.domain} often — a dedicated companion could hold that.`,
+      source: birth.domain,
+      answers: ["Meet them", "Not now"],
+      space: "personal",
+    });
+  }
+
+  // Soft check-in when the board would otherwise be empty.
+  const after = hydrate();
+  const hasAttention =
+    liveNudges(after).length > 0 ||
+    boardDueWork(after, "personal").length > 0 ||
+    boardDueWork(after, "work").length > 0 ||
+    after.threads.some((thread) => !thread.archived && thread.open);
+  if (!hasAttention && people.length > 0) {
+    for (const boardSpace of ["personal", "work"] as const) {
+      const spaceBusy =
+        liveNudges(after, boardSpace).length > 0 ||
+        boardDueWork(after, boardSpace).length > 0 ||
+        after.threads.some(
+          (thread) => !thread.archived && thread.space === boardSpace && thread.open,
+        );
+      if (spaceBusy) continue;
+      raiseNudge({
+        companionId:
+          people.find((person) => person.space === boardSpace && person.domain === "general")?.id ??
+          general.id,
+        level: "whisper",
+        text:
+          boardSpace === "work"
+            ? "Anything for work today? Capture it or ask a companion."
+            : "What's on your mind? Start wherever you are.",
+        source: "board",
+        space: boardSpace,
       });
     }
   }

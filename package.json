@@ -2,7 +2,7 @@
   "name": "arrab-studio",
   "private": true,
   "type": "module",
-  "version": "0.12.1",
+  "version": "0.15.0",
   "description": "Arrab Studio — build your AI workforce.",
   "packageManager": "pnpm@10.15.1",
   "engines": {
@@ -11,6 +11,7 @@
   "scripts": {
     "dev:api": "pnpm --filter @arrab/api dev",
     "dev:desktop": "bash scripts/dev-desktop.sh",
+    "openwa:setup": "bash scripts/setup-openwa.sh",
     "build": "pnpm --filter \"@arrab/*\" -r --sort build",
     "typecheck": "pnpm --filter \"@arrab/*\" -r --sort typecheck",
     "lint": "eslint .",

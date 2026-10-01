@@ -23,6 +23,9 @@ coverage
 secrets/
 .secrets/
 
+# OpenWA clone (pnpm openwa:setup)
+services/openwa/vendor/
+
 # Logs & OS
 *.log
 .DS_Store
@@ -62,4 +65,3 @@ release/builds/
 # Local scratch / oversized design dumps
 the-studio.html
 *.local.html
-Arrab Studio IOS/

@@ -1,5 +1,7 @@
 /** Pending browser sign-in — survives focus changes until poll completes or expires. */
 export const ACCOUNT_SESSION_KEY = "arrab.account.session";
+/** Stable studio account id — companions and chats stay keyed to this, not the session token. */
+export const ACCOUNT_ID_KEY = "arrab.account.id";
 export const ACCOUNT_EVENT = "arrab:account";
 export const WEB_AUTH_PENDING_KEY = "arrab.account.webAuthPending";
 export const AUTH_DEEP_LINK_EVENT = "arrab:auth-deep-link";
@@ -16,21 +18,65 @@ export function readAccountSessionToken(): string | null {
   }
 }
 
-export function writeAccountSession(token: string): void {
+/** Stable account id for the current session (survives token rotation). */
+export function readAccountId(): string | null {
+  try {
+    const id = localStorage.getItem(ACCOUNT_ID_KEY)?.trim() ?? "";
+    return id || null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeAccountId(accountId: string | null | undefined): void {
+  const trimmed = accountId?.trim() ?? "";
+  if (!trimmed) return;
+  try {
+    if (localStorage.getItem(ACCOUNT_ID_KEY) === trimmed) return;
+    localStorage.setItem(ACCOUNT_ID_KEY, trimmed);
+  } catch {
+    // ignore quota / private mode
+  }
+}
+
+export function writeAccountSession(token: string, accountId?: string | null): void {
   const trimmed = token.trim();
   if (!trimmed || trimmed.length < 20) {
     throw new Error("Refusing to store an invalid account session token");
   }
   localStorage.setItem(ACCOUNT_SESSION_KEY, trimmed);
+  const id = accountId?.trim() ?? "";
+  if (id) {
+    try {
+      localStorage.setItem(ACCOUNT_ID_KEY, id);
+    } catch {
+      // ignore quota / private mode
+    }
+  }
   clearPendingWebAuth();
   // Signed-in users leave guest local-only mode.
   void import("./guest-mode").then(({ clearGuestLocalMode }) => clearGuestLocalMode());
   window.dispatchEvent(new CustomEvent(ACCOUNT_EVENT));
 }
 
+const signOutHooks = new Set<() => void>();
+
+/** Run `fn` synchronously at sign-out, before the session (and account partition) is cleared. */
+export function onAccountSignOut(fn: () => void): void {
+  signOutHooks.add(fn);
+}
+
 export function clearAccountSession(): void {
+  for (const hook of signOutHooks) {
+    try {
+      hook();
+    } catch {
+      // never block sign-out
+    }
+  }
   localStorage.removeItem(ACCOUNT_SESSION_KEY);
   try {
+    localStorage.removeItem(ACCOUNT_ID_KEY);
     localStorage.removeItem("arrab.account.status.cache");
     localStorage.setItem("arrab.studioRole", "individual");
   } catch {

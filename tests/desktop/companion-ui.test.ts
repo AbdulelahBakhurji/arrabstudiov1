@@ -41,6 +41,7 @@ const mocked = vi.hoisted(() => ({
 vi.mock("@/lib/api", () => ({
   arrabApi: {
     aiStatus: vi.fn(async () => ({ configured: true })),
+    familyGuidanceForCompanion: vi.fn(async () => ({ items: [] })),
     createAgent: vi.fn(async () => ({ id: "mock-agent" })),
     updateAgent: vi.fn(async () => ({ id: "mock-agent" })),
     createConversation: vi.fn(async () => ({ id: "mock-conversation" })),

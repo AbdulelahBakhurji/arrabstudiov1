@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+  <string name="arrab_channel_updates">التحديثات</string>
+  <string name="arrab_channel_security">الأمان</string>
+  <string name="arrab_channel_companions">الرفاق</string>
+  <string name="arrab_channel_general">عام</string>
+  <string name="arrab_action_open">فتح</string>
+  <string name="arrab_action_update_now">حدّث الآن</string>
+</resources>

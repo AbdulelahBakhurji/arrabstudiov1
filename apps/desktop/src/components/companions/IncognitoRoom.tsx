@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowUp, EyeOff, Lock, Plus, Settings, Square, Trash2 } from "lucide-react";
 import type { AiGatewayStatusResponse } from "@arrab/shared";
 import { ComposerPlusMenu } from "@/components/ComposerPlusMenu";
+import { ThinkingBlock, useThoughtTraces } from "@/components/ThinkingBlock";
 import { arrabApi } from "@/lib/api";
 import { resolveAiRuntime, resolvePreferredModel } from "@/lib/ai-prefs";
 import { streamOllamaChat } from "@/lib/local-models";
@@ -49,6 +50,8 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
   const [sessions, setSessions] = useState<ListedSession[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<IncognitoMessage[]>([]);
+  const thoughts = useThoughtTraces();
+  const [liveThoughtId, setLiveThoughtId] = useState<string | null>(null);
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
   const [draft, setDraft] = useState("");
@@ -412,6 +415,7 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
         createdAt: new Date().toISOString(),
       };
       const assistantId = crypto.randomUUID();
+      setLiveThoughtId(assistantId);
       let nextMessages = [...messages, userMessage];
       setMessages(nextMessages);
 
@@ -502,8 +506,13 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
           priorMessages,
         },
         {
+          onThinking: (chunk) => {
+            if (controller.signal.aborted) return;
+            thoughts.append(assistantId, chunk);
+          },
           onToken: (token) => {
             if (controller.signal.aborted) return;
+            thoughts.finish(assistantId);
             reply += token;
             const assistant: IncognitoMessage = {
               id: assistantId,
@@ -572,6 +581,10 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
         setDraft(text);
       }
     } finally {
+      setLiveThoughtId((id) => {
+        if (id) thoughts.finish(id);
+        return null;
+      });
       setSending(false);
     }
   }
@@ -805,11 +818,19 @@ export function IncognitoRoom({ onExit }: { onExit?: () => void }) {
                       })}
                     </time>
                   </p>
+                  {message.role === "assistant" && thoughts.traces[message.id] ? (
+                    <ThinkingBlock trace={thoughts.traces[message.id]!} className="cp-message-thought" />
+                  ) : null}
                   <div className="cp-message-text">{message.content}</div>
                 </div>
               </article>
             ))}
-            {sending ? (
+            {sending &&
+            liveThoughtId &&
+            thoughts.traces[liveThoughtId] &&
+            !messages.some((message) => message.id === liveThoughtId) ? (
+              <ThinkingBlock trace={thoughts.traces[liveThoughtId]!} />
+            ) : sending ? (
               <p className="cp-typing" role="status">
                 <span />
                 <span />

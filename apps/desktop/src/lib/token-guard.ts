@@ -96,7 +96,7 @@ export function assertTokensAvailable(): void {
     const limit =
       entitlements.tokenLimit == null ? "unlimited" : entitlements.tokenLimit.toLocaleString();
     throw new ApiRequestError(
-      `Paused — token limit reached (${used} / ${limit}). Upgrade or wait for the next period.`,
+      `Paused — token limit reached (${used} / ${limit}). Add usage or upgrade to keep working.`,
       402,
       "QUOTA_EXCEEDED",
     );

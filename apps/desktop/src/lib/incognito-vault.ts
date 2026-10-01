@@ -1,8 +1,10 @@
 /**
  * Password-encrypted Incognito chat vault.
- * Ciphertext lives only on device (device-store "incognito").
- * The unlock key stays in RAM and is wiped on lock.
+ * Ciphertext lives only on device (device-store "incognito"), partitioned by
+ * signed-in account so switching accounts never opens another vault.
+ * The unlock key stays in RAM and is wiped on lock / account switch.
  */
+import { accountPartitionAliases, accountPartitionId, subscribeAccountPartition } from "./account-partition";
 import {
   deviceStoreClear,
   deviceStoreGet,
@@ -11,8 +13,10 @@ import {
   deviceStoreSet,
 } from "./device-store";
 
-const META_KEY = "vault.meta";
-const SESSION_PREFIX = "session.";
+const META_SUFFIX = "vault.meta";
+const SESSION_SUFFIX = "session.";
+const LEGACY_META_KEY = "vault.meta";
+const LEGACY_SESSION_PREFIX = "session.";
 const PBKDF2_ITERATIONS = 310_000;
 const VERIFIER_PLAIN = "arrab-incognito-v1";
 
@@ -49,6 +53,27 @@ type SessionEnvelope = {
 };
 
 let unlockedKey: CryptoKey | null = null;
+let unlockedPartition: string | null = null;
+
+function partition(): string {
+  return accountPartitionId();
+}
+
+function metaKeyFor(part: string): string {
+  return `${part}.${META_SUFFIX}`;
+}
+
+function metaKey(): string {
+  return metaKeyFor(partition());
+}
+
+function sessionStoreKey(id: string): string {
+  return `${partition()}.${SESSION_SUFFIX}${id}`;
+}
+
+function sessionPrefix(): string {
+  return `${partition()}.${SESSION_SUFFIX}`;
+}
 
 function bytesToB64(bytes: ArrayBuffer | Uint8Array): string {
   const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
@@ -114,8 +139,50 @@ async function decryptBytes(key: CryptoKey, iv: Uint8Array, cipherB64: string): 
   return new Uint8Array(plain);
 }
 
+async function adoptLegacyVaultIfNeeded(): Promise<void> {
+  const part = partition();
+  if (await deviceStoreGet("incognito", metaKey())) return;
+
+  // Prefer migrating an older colon-style partition for this same account.
+  for (const alias of accountPartitionAliases()) {
+    if (alias === part) continue;
+    const aliasMeta = await deviceStoreGet("incognito", metaKeyFor(alias));
+    if (!aliasMeta) continue;
+    await deviceStoreSet("incognito", metaKey(), aliasMeta);
+    await deviceStoreRemove("incognito", metaKeyFor(alias));
+    const aliasPrefix = `${alias}.${SESSION_SUFFIX}`;
+    const keys = await deviceStoreKeys("incognito", aliasPrefix);
+    for (const key of keys) {
+      if (!key.startsWith(aliasPrefix)) continue;
+      const raw = await deviceStoreGet("incognito", key);
+      if (!raw) continue;
+      const id = key.slice(aliasPrefix.length);
+      await deviceStoreSet("incognito", sessionStoreKey(id), raw);
+      await deviceStoreRemove("incognito", key);
+    }
+    return;
+  }
+
+  if (part === "guest") return;
+  const legacyMeta = await deviceStoreGet("incognito", LEGACY_META_KEY);
+  if (!legacyMeta) return;
+  await deviceStoreSet("incognito", metaKey(), legacyMeta);
+  await deviceStoreRemove("incognito", LEGACY_META_KEY);
+  const keys = await deviceStoreKeys("incognito", LEGACY_SESSION_PREFIX);
+  for (const key of keys) {
+    if (!key.startsWith(LEGACY_SESSION_PREFIX)) continue;
+    if (key.includes(".session.")) continue;
+    const raw = await deviceStoreGet("incognito", key);
+    if (!raw) continue;
+    const id = key.slice(LEGACY_SESSION_PREFIX.length);
+    await deviceStoreSet("incognito", sessionStoreKey(id), raw);
+    await deviceStoreRemove("incognito", key);
+  }
+}
+
 async function readMeta(): Promise<VaultMeta | null> {
-  const raw = await deviceStoreGet("incognito", META_KEY);
+  await adoptLegacyVaultIfNeeded();
+  const raw = await deviceStoreGet("incognito", metaKey());
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as VaultMeta;
@@ -131,13 +198,18 @@ export async function incognitoVaultExists(): Promise<boolean> {
 }
 
 export function isIncognitoUnlocked(): boolean {
-  return unlockedKey != null;
+  return unlockedKey != null && unlockedPartition === partition();
 }
 
 export function lockIncognitoVault(): void {
   unlockedKey = null;
+  unlockedPartition = null;
   clearIncognitoApiIds();
 }
+
+subscribeAccountPartition(() => {
+  lockIncognitoVault();
+});
 
 export async function createIncognitoVault(password: string): Promise<void> {
   if (password.trim().length < 8) {
@@ -156,8 +228,9 @@ export async function createIncognitoVault(password: string): Promise<void> {
     verifierIvB64: bytesToB64(iv),
     verifierCipherB64: bytesToB64(cipher),
   };
-  await deviceStoreSet("incognito", META_KEY, JSON.stringify(meta));
+  await deviceStoreSet("incognito", metaKey(), JSON.stringify(meta));
   unlockedKey = key;
+  unlockedPartition = partition();
 }
 
 export async function unlockIncognitoVault(password: string): Promise<void> {
@@ -176,6 +249,7 @@ export async function unlockIncognitoVault(password: string): Promise<void> {
     throw new Error("Wrong password");
   }
   unlockedKey = key;
+  unlockedPartition = partition();
 }
 
 export async function changeIncognitoPassword(
@@ -202,16 +276,38 @@ export async function changeIncognitoPassword(
   }
 }
 
+/** Wipe this account's vault only (other accounts on this device stay). */
 export async function wipeIncognitoVault(options?: { keepUnlocked?: boolean }): Promise<void> {
-  await deviceStoreClear("incognito");
+  const aliases = accountPartitionAliases();
+  const keys = await deviceStoreKeys("incognito");
+  for (const key of keys) {
+    const owned = aliases.some((part) => key === metaKeyFor(part) || key.startsWith(`${part}.`));
+    if (owned) {
+      await deviceStoreRemove("incognito", key);
+    }
+  }
+  // Always hit the known meta keys even if listing missed them.
+  for (const part of aliases) {
+    await deviceStoreRemove("incognito", metaKeyFor(part));
+  }
+  await deviceStoreRemove("incognito", LEGACY_META_KEY);
+  const legacySessions = await deviceStoreKeys("incognito", LEGACY_SESSION_PREFIX);
+  for (const key of legacySessions) {
+    if (key.startsWith(LEGACY_SESSION_PREFIX) && !key.includes(".session.")) {
+      await deviceStoreRemove("incognito", key);
+    }
+  }
   clearIncognitoApiIds();
   if (!options?.keepUnlocked) {
     unlockedKey = null;
+    unlockedPartition = null;
   }
 }
 
 function requireKey(): CryptoKey {
-  if (!unlockedKey) {
+  if (!unlockedKey || unlockedPartition !== partition()) {
+    unlockedKey = null;
+    unlockedPartition = null;
     throw new Error("Vault is locked");
   }
   return unlockedKey;
@@ -221,9 +317,8 @@ export async function listIncognitoSessions(): Promise<
   Array<{ id: string; title: string; updatedAt: string; messageCount: number }>
 > {
   const key = requireKey();
-  const keys = (await deviceStoreKeys("incognito", SESSION_PREFIX)).filter((k) =>
-    k.startsWith(SESSION_PREFIX),
-  );
+  const prefix = sessionPrefix();
+  const keys = (await deviceStoreKeys("incognito", prefix)).filter((k) => k.startsWith(prefix));
   const out: Array<{ id: string; title: string; updatedAt: string; messageCount: number }> = [];
   for (const storeKey of keys) {
     const raw = await deviceStoreGet("incognito", storeKey);
@@ -249,7 +344,7 @@ export async function listIncognitoSessions(): Promise<
 
 export async function loadIncognitoSession(id: string): Promise<IncognitoSession | null> {
   const key = requireKey();
-  const raw = await deviceStoreGet("incognito", `${SESSION_PREFIX}${id}`);
+  const raw = await deviceStoreGet("incognito", sessionStoreKey(id));
   if (!raw) return null;
   try {
     const envelope = JSON.parse(raw) as SessionEnvelope;
@@ -274,12 +369,12 @@ export async function saveIncognitoSession(session: IncognitoSession): Promise<v
     cipherB64: bytesToB64(cipher),
     updatedAt: payload.updatedAt,
   };
-  await deviceStoreSet("incognito", `${SESSION_PREFIX}${session.id}`, JSON.stringify(envelope));
+  await deviceStoreSet("incognito", sessionStoreKey(session.id), JSON.stringify(envelope));
 }
 
 export async function deleteIncognitoSession(id: string): Promise<void> {
   requireKey();
-  await deviceStoreRemove("incognito", `${SESSION_PREFIX}${id}`);
+  await deviceStoreRemove("incognito", sessionStoreKey(id));
 }
 
 export function newIncognitoSessionId(): string {
@@ -294,7 +389,6 @@ const memoryApiIds = new Set<string>();
 export function rememberIncognitoApiId(apiConversationId: string): void {
   memoryApiIds.add(apiConversationId);
   try {
-    // Migrate/clear any legacy plaintext list from older builds.
     localStorage.removeItem(API_IDS_KEY);
   } catch {
     // ignore
@@ -326,4 +420,10 @@ export function clearIncognitoApiIds(): void {
   } catch {
     // ignore
   }
+}
+
+/** Full wipe of every account vault on this device (factory / clear local data). */
+export async function wipeAllIncognitoVaults(): Promise<void> {
+  await deviceStoreClear("incognito");
+  lockIncognitoVault();
 }

@@ -1,19 +1,41 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
+  ArrowLeft,
   ArrowRight,
   Cable,
   Check,
+  CloudCheck,
+  CornerDownLeft,
+  KeyRound,
+  Languages,
   LoaderCircle,
+  Moon,
+  Rocket,
+  Search,
   Sparkles,
+  Sun,
   Users,
+  X,
+  type LucideIcon,
 } from "lucide-react";
-import type { ConnectorProvider, ConnectorPublic } from "@arrab/shared";
+import type { ConnectorProvider } from "@arrab/shared";
 import logoTall from "@/assets/logotall.png";
+import symbolMark from "@/assets/symbol.png";
 import { ConnectorBrandIcon } from "@/components/ConnectorBrandIcon";
+import { ConnectorMark } from "@/components/ConnectorMark";
+import { applyControlCatalog, useControlConnectors } from "@/lib/control-connectors";
 import { useLanguage } from "@/i18n/LanguageProvider";
+import type { MessageKey } from "@/i18n/messages";
+import { useTheme } from "@/theme/ThemeProvider";
 import { useRole } from "@/roles/RoleProvider";
 import { arrabApi } from "@/lib/api";
-import { COMPANION_PRESETS, type CompanionPreset } from "@/lib/companion-catalog";
+import { PhotoAvatar } from "@/components/companions/CompanionFace";
+import { COMPANION_PRESETS, PRESET_HUES, type CompanionPreset } from "@/lib/companion-catalog";
+import {
+  companionPortraitUrl,
+  presetPortraitSeed,
+  resolveCompanionPortraitSrc,
+} from "@/lib/companion-portrait";
 import {
   addCompanion,
   liveCompanions,
@@ -202,15 +224,65 @@ const TOKEN_PLACEHOLDERS: Partial<Record<ConnectorProvider, string>> = {
   ssh: "Password or paste private key",
 };
 
+type ConnectorCategory = "all" | "comms" | "dev" | "workspace" | "health" | "markets";
+
+const CONNECTOR_CATEGORY: Partial<Record<ConnectorProvider, Exclude<ConnectorCategory, "all">>> = {
+  gmail: "comms",
+  outlook: "comms",
+  email: "comms",
+  slack: "comms",
+  whatsapp: "comms",
+  github: "dev",
+  gitlab: "dev",
+  bitbucket: "dev",
+  ssh: "dev",
+  linear: "workspace",
+  notion: "workspace",
+  google_drive: "workspace",
+  google_calendar: "workspace",
+  figma: "workspace",
+  whoop: "health",
+  fitbit: "health",
+  finnhub: "markets",
+};
+
+const CATEGORY_LABELS: Record<ConnectorCategory, MessageKey> = {
+  all: "flsFilterAll",
+  comms: "flsFilterComms",
+  dev: "flsFilterDev",
+  workspace: "flsFilterWorkspace",
+  health: "flsFilterHealth",
+  markets: "flsFilterMarkets",
+};
+
+const ORBIT_INNER: ConnectorProvider[] = ["gmail", "github", "slack", "notion"];
+const ORBIT_OUTER: ConnectorProvider[] = ["linear", "figma", "google_calendar", "whoop", "outlook", "google_drive"];
+
 const STEPS: FirstLaunchStep[] = ["welcome", "connector", "companion", "ready"];
 
+const STEP_META: Record<FirstLaunchStep, { icon: LucideIcon; title: MessageKey; body: MessageKey }> = {
+  welcome: { icon: Sparkles, title: "flsStepWelcome", body: "flsStepWelcomeBody" },
+  connector: { icon: Cable, title: "flsWelcomeItemConnectorShort", body: "flsWelcomeItemConnector" },
+  companion: { icon: Users, title: "flsWelcomeItemCompanionShort", body: "flsWelcomeItemCompanion" },
+  ready: { icon: Rocket, title: "flsWelcomeItemReadyShort", body: "flsWelcomeItemReady" },
+};
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || target.isContentEditable;
+}
+
 export function FirstLaunchSetup({ onFinished }: { onFinished?: () => void }) {
-  const { t, locale } = useLanguage();
+  const { t, locale, toggleLocale } = useLanguage();
+  const { theme, toggleTheme } = useTheme();
   const ar = locale === "ar";
   const { isOrganization } = useRole();
+  const controlCatalog = useControlConnectors();
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<ConnectorCategory>("all");
   const companionState = useCompanionState();
   const [state, setState] = useState(() => readFirstLaunchSetup());
-  const [connectors, setConnectors] = useState<ConnectorPublic[]>([]);
   const [busyProvider, setBusyProvider] = useState<ConnectorProvider | null>(null);
   const [selected, setSelected] = useState<ConnectorProvider | null>(null);
   const [token, setToken] = useState("");
@@ -222,37 +294,10 @@ export function FirstLaunchSetup({ onFinished }: { onFinished?: () => void }) {
 
   useEffect(() => subscribeFirstLaunchSetup(setState), []);
 
-  const loadConnectors = useCallback(async () => {
-    try {
-      const res = await arrabApi.connectors();
-      setConnectors(res.items ?? []);
-    } catch {
-      setConnectors([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadConnectors();
-    const onFocus = () => void loadConnectors();
-    window.addEventListener("focus", onFocus);
-    const timer = window.setInterval(() => void loadConnectors(), 4000);
-    return () => {
-      window.removeEventListener("focus", onFocus);
-      window.clearInterval(timer);
-    };
-  }, [loadConnectors]);
-
-  const connectedProviders = useMemo(
-    () =>
-      new Set(
-        connectors
-          .filter((item) => item.status === "connected")
-          .map((item) => item.provider),
-      ),
-    [connectors],
-  );
-
-  const hasConnector = connectedProviders.size > 0 || state.connectorDone;
+  // Setup runs before sign-in. Never treat leftover workspace links as connected.
+  const connectedProviders = useMemo(() => new Set<ConnectorProvider>(), []);
+  const accountProviders = useMemo(() => new Set<ConnectorProvider>(), []);
+  const hasConnector = state.connectorDone;
   const specialists = useMemo(
     () => [
       ...liveCompanions(companionState, "personal").filter((p) => p.domain !== "general"),
@@ -312,17 +357,10 @@ export function FirstLaunchSetup({ onFinished }: { onFinished?: () => void }) {
     setExtraFieldB("");
   };
 
-  const pickConnector = (provider: ConnectorProvider) => {
-    if (connectedProviders.has(provider) || busyProvider) return;
-    setError(null);
-    if (OAUTH_PROVIDERS.has(provider)) {
-      setSelected(null);
-      resetTokenForm();
-      void connectOAuth(provider as BrowserOAuthProvider);
-      return;
-    }
-    setSelected(provider);
+  const pickConnector = (_provider: ConnectorProvider) => {
+    setSelected(null);
     resetTokenForm();
+    setError(t("flsConnectAfterSignIn"));
   };
 
   const connectSelected = async () => {
@@ -371,7 +409,7 @@ export function FirstLaunchSetup({ onFinished }: { onFinished?: () => void }) {
         config.baseUrl = extraHost.trim();
       }
 
-      const connected = await arrabApi.connectConnector({
+      await arrabApi.connectConnector({
         provider: selected,
         token: trimmed,
         label:
@@ -382,16 +420,7 @@ export function FirstLaunchSetup({ onFinished }: { onFinished?: () => void }) {
               : null,
         config: Object.keys(config).length > 0 ? config : null,
       });
-      markGettingStartedStep(
-        selected === "linear" || selected === "github" ? "linear" : "gmail",
-        true,
-      );
-      await loadConnectors();
-      pushToast({
-        title: t("flsConnectorConnected"),
-        body: connected.provider,
-        tone: "success",
-      });
+      setError(t("flsConnectAfterSignIn"));
       setSelected(null);
       resetTokenForm();
     } catch (err) {
@@ -406,13 +435,6 @@ export function FirstLaunchSetup({ onFinished }: { onFinished?: () => void }) {
   };
 
   const continueFromConnector = () => {
-    if (connectedProviders.size === 0 && !state.connectorDone) {
-      setError(t("flsConnectorRequired"));
-      return;
-    }
-    if (connectedProviders.size > 0) {
-      markGettingStartedStep("gmail", true);
-    }
     updateFirstLaunchSetup({ connectorDone: true, step: "companion" });
   };
 
@@ -423,14 +445,16 @@ export function FirstLaunchSetup({ onFinished }: { onFinished?: () => void }) {
       updateFirstLaunchSetup({ companionDone: true, step: "ready" });
       return;
     }
-    const person = addCompanion({
-      name: ar ? preset.nameAr : preset.name,
+    addCompanion({
+      name: preset.name,
       domain: preset.domain,
       purposeId: preset.purposeId,
-      brief: ar ? preset.briefAr : preset.brief,
+      brief: preset.brief,
       connectors: preset.connectors,
       space,
       toneName: preset.toneName,
+      faceSeed: presetPortraitSeed(preset.id),
+      hue: PRESET_HUES[preset.id],
     });
     markGettingStartedStep("first_person", true);
     pushToast({
@@ -438,6 +462,10 @@ export function FirstLaunchSetup({ onFinished }: { onFinished?: () => void }) {
       body: ar ? preset.nameAr : preset.name,
       tone: "success",
     });
+    updateFirstLaunchSetup({ companionDone: true, step: "ready" });
+  };
+
+  const skipCompanion = () => {
     updateFirstLaunchSetup({ companionDone: true, step: "ready" });
   };
 
@@ -454,339 +482,636 @@ export function FirstLaunchSetup({ onFinished }: { onFinished?: () => void }) {
     }
   }, [specialists.length, state.companionDone, state.step]);
 
+  const stepLabel = t("flsStepOf")
+    .replace("{current}", String(stepIndex + 1))
+    .replace("{total}", String(STEPS.length));
+
+  const curatedConnectors = useMemo(
+    () =>
+      applyControlCatalog(
+        SETUP_CONNECTORS.map((item) => ({
+          provider: item.provider,
+          name: ar ? item.nameAr : item.name,
+          blurb: ar ? item.blurbAr : item.blurb,
+          searchText: [item.name, item.nameAr, item.blurb, item.blurbAr].join(" "),
+        })),
+        controlCatalog,
+        { arabic: ar, keep: connectedProviders },
+      ),
+    [ar, controlCatalog, connectedProviders],
+  );
+
+  const visibleConnectors = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return curatedConnectors.filter((item) => {
+      if (category !== "all" && CONNECTOR_CATEGORY[item.provider] !== category) return false;
+      if (!q) return true;
+      return `${item.name} ${item.blurb} ${item.searchText}`.toLowerCase().includes(q);
+    });
+  }, [category, curatedConnectors, query]);
+
+  const orbitProviders = useMemo(() => {
+    const shown = new Set(curatedConnectors.map((item) => item.provider));
+    return {
+      inner: ORBIT_INNER.filter((provider) => shown.has(provider)),
+      outer: ORBIT_OUTER.filter((provider) => shown.has(provider)),
+    };
+  }, [curatedConnectors]);
+
+  const linkedConnectors = curatedConnectors.filter((item) => connectedProviders.has(item.provider));
+  const accountLinked = linkedConnectors.filter((item) => accountProviders?.has(item.provider));
+  const selectedMeta = selected ? curatedConnectors.find((item) => item.provider === selected) : null;
+
+  const primary: { label: string; enabled: boolean; run: () => void } =
+    state.step === "welcome"
+      ? { label: t("flsGetStarted"), enabled: true, run: () => go("connector") }
+      : state.step === "connector"
+        ? { label: t("flsSkipForNow"), enabled: true, run: continueFromConnector }
+        : state.step === "companion"
+          ? { label: t("flsSkipForNow"), enabled: true, run: skipCompanion }
+          : { label: t("flsEnterApp"), enabled: true, run: finish };
+
+  const previousStep = stepIndex > 0 ? STEPS[stepIndex - 1] : null;
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && selected) {
+        setSelected(null);
+        return;
+      }
+      if (event.key !== "Enter" || event.isComposing || isTypingTarget(event.target)) return;
+      if (!primary.enabled) return;
+      event.preventDefault();
+      primary.run();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const footerHint =
+    state.step === "connector"
+      ? connectedProviders.size > 0
+        ? t("flsConnectorCountHint").replace("{count}", String(connectedProviders.size))
+        : t("flsConnectorSkipHint")
+      : state.step === "companion"
+        ? t("flsCompanionSkipHint")
+        : t("flsPrivacyNote");
+
   return (
     <div className="fls" dir={ar ? "rtl" : "ltr"} data-step={state.step}>
       <div className="fls-atmosphere" aria-hidden>
-        <span className="fls-orb fls-orb-a" />
-        <span className="fls-orb fls-orb-b" />
+        <span className="fls-glow fls-glow-a" />
+        <span className="fls-glow fls-glow-b" />
         <span className="fls-mesh" />
-        <span className="fls-vignette" />
+        <span className="fls-noise" />
       </div>
 
-      <div className="fls-shell">
-        <header className="fls-top">
-          <div className="fls-brand">
-            <img src={logoTall} alt={t("brand")} className="fls-logo" />
-          </div>
-          <div className="fls-rail">
-            <ol className="fls-dots" aria-label={t("flsStepOf")
-              .replace("{current}", String(stepIndex + 1))
-              .replace("{total}", String(STEPS.length))}>
-              {STEPS.map((id, index) => (
-                <li key={id} className={cn(index === stepIndex && "is-active", index < stepIndex && "is-done")}>
-                  <span />
-                </li>
-              ))}
-            </ol>
-            <p className="fls-step-label">
-              {t("flsStepOf")
-                .replace("{current}", String(stepIndex + 1))
-                .replace("{total}", String(STEPS.length))}
-            </p>
-          </div>
-          <div className="fls-progress" aria-hidden>
-            <span style={{ width: `${progress}%` }} />
-          </div>
-        </header>
+      <header className="fls-bar" data-tauri-drag-region dir="ltr">
+        <div className="fls-bar-spacer" aria-hidden />
+        <img src={logoTall} alt={t("brand")} className="fls-bar-logo brand-mark" />
+        <span className="fls-bar-sep" aria-hidden />
+        <span className="fls-bar-chip">
+          <span className="fls-bar-pulse" aria-hidden />
+          {t("flsSetupLabel")}
+        </span>
+        <div className="fls-bar-end no-drag">
+          <span className="fls-bar-step">{stepLabel}</span>
+          <button type="button" className="fls-icon-btn" onClick={toggleLocale} aria-label={t("languageHint")}>
+            <Languages size={15} strokeWidth={1.7} />
+          </button>
+          <button
+            type="button"
+            className="fls-icon-btn"
+            onClick={toggleTheme}
+            aria-label={theme === "dark" ? t("themeToLight") : t("themeToDark")}
+          >
+            {theme === "dark" ? <Sun size={15} strokeWidth={1.7} /> : <Moon size={15} strokeWidth={1.7} />}
+          </button>
+        </div>
+      </header>
 
-        {state.step === "welcome" ? (
-          <section className="fls-stage fls-rise" key="welcome">
-            <p className="fls-eyebrow">{t("flsWelcomeKicker")}</p>
-            <h1 className="fls-title">
-              <span className="fls-title-brand">{t("brand")}</span>
-              <span className="fls-title-rest">{t("flsWelcomeTitleLine")}</span>
-            </h1>
-            <p className="fls-lead">{t("flsWelcomeBody")}</p>
-
-            <ol className="fls-path">
-              <li style={{ animationDelay: "80ms" }}>
-                <em>01</em>
-                <div className="fls-path-icon">
-                  <Cable size={18} strokeWidth={1.6} />
-                </div>
-                <div>
-                  <strong>{t("flsWelcomeItemConnectorShort")}</strong>
-                  <span>{t("flsWelcomeItemConnector")}</span>
-                </div>
-              </li>
-              <li style={{ animationDelay: "160ms" }}>
-                <em>02</em>
-                <div className="fls-path-icon">
-                  <Users size={18} strokeWidth={1.6} />
-                </div>
-                <div>
-                  <strong>{t("flsWelcomeItemCompanionShort")}</strong>
-                  <span>{t("flsWelcomeItemCompanion")}</span>
-                </div>
-              </li>
-              <li style={{ animationDelay: "240ms" }}>
-                <em>03</em>
-                <div className="fls-path-icon is-check">
-                  <Check size={18} strokeWidth={1.8} />
-                </div>
-                <div>
-                  <strong>{t("flsWelcomeItemReadyShort")}</strong>
-                  <span>{t("flsWelcomeItemReady")}</span>
-                </div>
-              </li>
-            </ol>
-
-            <div className="fls-actions is-start">
-              <button type="button" className="fls-cta" onClick={() => go("connector")}>
-                {t("flsGetStarted")}
-                <ArrowRight size={16} strokeWidth={2.2} />
-              </button>
-            </div>
-          </section>
-        ) : null}
-
-        {state.step === "connector" ? (
-          <section className="fls-stage fls-rise" key="connector">
-            <p className="fls-eyebrow">
-              <Cable size={13} strokeWidth={1.8} />
-              {t("flsConnectorKicker")}
-            </p>
-            <h1 className="fls-title is-compact">{t("flsConnectorTitle")}</h1>
-            <p className="fls-lead">{t("flsConnectorBodyAll")}</p>
-
-            <div className="fls-connect-grid">
-              {SETUP_CONNECTORS.map((item, index) => {
-                const connected = connectedProviders.has(item.provider);
-                const busy = busyProvider === item.provider;
-                const active = selected === item.provider;
-                return (
+      <div className="fls-body">
+        <aside className="fls-side">
+          <p className="fls-side-label">{t("flsSetupLabel")}</p>
+          <ol className="fls-steps" style={{ ["--fls-fill" as string]: String(stepIndex / (STEPS.length - 1)) }}>
+            {STEPS.map((id, index) => {
+              const meta = STEP_META[id];
+              const Icon = meta.icon;
+              const done = index < stepIndex;
+              const current = index === stepIndex;
+              return (
+                <li key={id} className={cn(done && "is-done", current && "is-current")}>
                   <button
-                    key={item.provider}
                     type="button"
-                    className={cn(
-                      "fls-card",
-                      connected && "is-done",
-                      active && "is-active",
-                    )}
-                    style={{ animationDelay: `${40 + index * 35}ms` }}
-                    disabled={busy || Boolean(busyProvider && busyProvider !== item.provider)}
-                    onClick={() => pickConnector(item.provider)}
+                    className="fls-step"
+                    disabled={!done}
+                    onClick={() => go(id)}
+                    aria-current={current ? "step" : undefined}
                   >
-                    <span className="fls-card-mark">
-                      <ConnectorBrandIcon provider={item.provider} size={24} />
+                    <span className="fls-step-node">
+                      {done ? <Check size={14} strokeWidth={2.4} /> : <Icon size={15} strokeWidth={1.8} />}
                     </span>
-                    <div className="fls-card-copy">
-                      <strong>{ar ? item.nameAr : item.name}</strong>
-                      <span>{ar ? item.blurbAr : item.blurb}</span>
-                    </div>
-                    {busy ? (
-                      <LoaderCircle className="fls-spin" size={16} />
-                    ) : connected ? (
-                      <Check size={16} className="fls-check" />
-                    ) : (
-                      <ArrowRight size={15} className="fls-card-arrow" strokeWidth={1.8} />
-                    )}
+                    <span className="fls-step-copy">
+                      <strong>{t(meta.title)}</strong>
+                      <span>{t(meta.body)}</span>
+                    </span>
+                    <em className="fls-step-status">
+                      {done ? t("flsStatusDone") : current ? t("flsStatusCurrent") : t("flsStatusNext")}
+                    </em>
                   </button>
-                );
-              })}
+                </li>
+              );
+            })}
+          </ol>
+
+          <div className="fls-side-stats">
+            <div>
+              <span>{t("flsConnectorKicker")}</span>
+              <strong>{connectedProviders.size}</strong>
             </div>
+            <div>
+              <span>{t("flsCompanionKicker")}</span>
+              <strong>{specialists.length}</strong>
+            </div>
+          </div>
+        </aside>
 
-            {selected && !OAUTH_PROVIDERS.has(selected) ? (
-              <div className="fls-connect-panel">
-                <div className="fls-connect-panel-head">
-                  <ConnectorBrandIcon provider={selected} size={22} />
-                  <strong>
-                    {ar
-                      ? SETUP_CONNECTORS.find((item) => item.provider === selected)?.nameAr
-                      : SETUP_CONNECTORS.find((item) => item.provider === selected)?.name}
-                  </strong>
-                  <button type="button" className="fls-ghost is-tiny" onClick={() => setSelected(null)}>
-                    {ar ? "إغلاق" : "Close"}
-                  </button>
+        <main className="fls-main">
+          <div className="fls-main-scroll">
+            {state.step === "welcome" ? (
+              <section className="fls-stage fls-welcome" key="welcome">
+                <div className="fls-welcome-copy">
+                  <p className="fls-eyebrow">
+                    <span className="fls-eyebrow-dot" />
+                    {t("flsWelcomeKicker")}
+                  </p>
+                  <h1 className="fls-title">
+                    <span>{t("brand")}</span>
+                    <span className="fls-title-soft">{t("flsWelcomeTitleLine")}</span>
+                  </h1>
+                  <p className="fls-lead">{t("flsWelcomeBody")}</p>
+
+                  <div className="fls-feature-grid">
+                    {(["connector", "companion", "ready"] as const).map((id, index) => {
+                      const meta = STEP_META[id];
+                      const Icon = meta.icon;
+                      return (
+                        <div key={id} className="fls-feature" style={{ animationDelay: `${160 + index * 80}ms` }}>
+                          <span className="fls-feature-index">0{index + 1}</span>
+                          <span className="fls-feature-icon">
+                            <Icon size={16} strokeWidth={1.7} />
+                          </span>
+                          <strong>{t(meta.title)}</strong>
+                          <span>{t(meta.body)}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
 
-                {selected === "email" ? (
-                  <input
-                    type="email"
-                    value={extraUser}
-                    onChange={(event) => setExtraUser(event.target.value)}
-                    placeholder={t("flsEmailAddress")}
-                    autoComplete="off"
-                  />
-                ) : null}
-                {selected === "bitbucket" ? (
-                  <input
-                    type="text"
-                    value={extraUser}
-                    onChange={(event) => setExtraUser(event.target.value)}
-                    placeholder={t("flsBitbucketUser")}
-                    autoComplete="off"
-                  />
-                ) : null}
-                {selected === "ssh" ? (
-                  <>
-                    <input
-                      type="text"
-                      value={extraHost}
-                      onChange={(event) => setExtraHost(event.target.value)}
-                      placeholder={t("flsSshHost")}
-                      autoComplete="off"
-                    />
-                    <input
-                      type="text"
-                      value={extraUser}
-                      onChange={(event) => setExtraUser(event.target.value)}
-                      placeholder={t("flsSshUser")}
-                      autoComplete="off"
-                    />
-                  </>
-                ) : null}
-                {selected === "gitlab" ? (
-                  <input
-                    type="url"
-                    value={extraHost}
-                    onChange={(event) => setExtraHost(event.target.value)}
-                    placeholder={t("flsGitlabBase")}
-                    autoComplete="off"
-                  />
-                ) : null}
-                {selected === "whatsapp" ? (
-                  <>
-                    <input
-                      type="text"
-                      value={extraFieldA}
-                      onChange={(event) => setExtraFieldA(event.target.value)}
-                      placeholder={t("flsWhatsappPhoneId")}
-                      autoComplete="off"
-                    />
-                    <input
-                      type="text"
-                      value={extraFieldB}
-                      onChange={(event) => setExtraFieldB(event.target.value)}
-                      placeholder={t("flsWhatsappWaba")}
-                      autoComplete="off"
-                    />
-                  </>
-                ) : null}
-
-                <div className="fls-linear-row">
-                  <input
-                    type="password"
-                    value={token}
-                    onChange={(event) => setToken(event.target.value)}
-                    placeholder={TOKEN_PLACEHOLDERS[selected] ?? t("flsTokenRequired")}
-                    autoComplete="off"
-                  />
-                  <button
-                    type="button"
-                    className="fls-cta is-compact"
-                    disabled={Boolean(busyProvider)}
-                    onClick={() => void connectSelected()}
-                  >
-                    {busyProvider === selected ? (
-                      <LoaderCircle className="fls-spin" size={14} />
-                    ) : (
-                      t("flsConnect")
-                    )}
-                  </button>
+                <div className="fls-orbit" aria-hidden>
+                  <span className="fls-orbit-ring is-outer" />
+                  <span className="fls-orbit-ring is-mid" />
+                  <span className="fls-orbit-ring is-inner" />
+                  <div className="fls-orbit-track is-inner">
+                    {orbitProviders.inner.map((provider, index) => (
+                      <span
+                        key={provider}
+                        className="fls-orbit-node"
+                        style={{ ["--a" as string]: `${(360 / orbitProviders.inner.length) * index}deg` }}
+                      >
+                        <span className="fls-orbit-chip">
+                          <ConnectorBrandIcon provider={provider} size={18} />
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="fls-orbit-track is-outer">
+                    {orbitProviders.outer.map((provider, index) => (
+                      <span
+                        key={provider}
+                        className="fls-orbit-node"
+                        style={{ ["--a" as string]: `${(360 / orbitProviders.outer.length) * index + 30}deg` }}
+                      >
+                        <span className="fls-orbit-chip">
+                          <ConnectorBrandIcon provider={provider} size={16} />
+                        </span>
+                      </span>
+                    ))}
+                  </div>
+                  <div className="fls-orbit-core">
+                    <img src={symbolMark} alt="" />
+                  </div>
                 </div>
-              </div>
+              </section>
             ) : null}
 
-            {error ? <p className="fls-error">{error}</p> : null}
+            {state.step === "connector" ? (
+              <section className="fls-stage" key="connector">
+                <div className="fls-stage-head">
+                  <div>
+                    <p className="fls-eyebrow">
+                      <Cable size={12} strokeWidth={1.9} />
+                      {t("flsConnectorKicker")}
+                    </p>
+                    <h1 className="fls-title is-compact">{t("flsConnectorTitle")}</h1>
+                    <p className="fls-lead">{t("flsConnectorBodyAll")}</p>
+                  </div>
+                  {connectedProviders.size > 0 ? (
+                    <span className="fls-count-pill">
+                      <Check size={13} strokeWidth={2.4} />
+                      {t("flsLinkedCount").replace("{count}", String(connectedProviders.size))}
+                    </span>
+                  ) : null}
+                </div>
 
-            <div className="fls-actions">
-              <button type="button" className="fls-ghost" onClick={skipConnector}>
-                {t("flsSkipForNow")}
-              </button>
-              <button
-                type="button"
-                className="fls-cta"
-                disabled={connectedProviders.size === 0}
-                onClick={continueFromConnector}
-              >
-                {t("flsContinue")}
-                <ArrowRight size={16} strokeWidth={2.2} />
-              </button>
+                <div className="fls-toolbar">
+                  <label className="fls-search">
+                    <Search size={15} strokeWidth={1.8} />
+                    <input
+                      type="search"
+                      value={query}
+                      onChange={(event) => setQuery(event.target.value)}
+                      placeholder={t("flsSearchConnectors")}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                  </label>
+                  <div className="fls-filters" role="tablist">
+                    {(Object.keys(CATEGORY_LABELS) as ConnectorCategory[]).map((key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        role="tab"
+                        aria-selected={category === key}
+                        className={cn("fls-filter", category === key && "is-on")}
+                        onClick={() => setCategory(key)}
+                      >
+                        {t(CATEGORY_LABELS[key])}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {selected && selectedMeta && !OAUTH_PROVIDERS.has(selected) ? (
+                  <div className="fls-connect-panel">
+                    <div className="fls-connect-panel-head">
+                      <span className="fls-card-mark is-small">
+                        <ConnectorMark provider={selected} logoUrl={selectedMeta.logoUrl} size={18} />
+                      </span>
+                      <div className="fls-connect-panel-title">
+                        <strong>{selectedMeta.name}</strong>
+                        <span>{selectedMeta.blurb}</span>
+                      </div>
+                      <button
+                        type="button"
+                        className="fls-icon-btn"
+                        onClick={() => setSelected(null)}
+                        aria-label={ar ? "إغلاق" : "Close"}
+                      >
+                        <X size={15} strokeWidth={1.8} />
+                      </button>
+                    </div>
+
+                    <div className="fls-connect-fields">
+                      {selected === "email" ? (
+                        <input
+                          type="email"
+                          value={extraUser}
+                          onChange={(event) => setExtraUser(event.target.value)}
+                          placeholder={t("flsEmailAddress")}
+                          autoComplete="off"
+                        />
+                      ) : null}
+                      {selected === "bitbucket" ? (
+                        <input
+                          type="text"
+                          value={extraUser}
+                          onChange={(event) => setExtraUser(event.target.value)}
+                          placeholder={t("flsBitbucketUser")}
+                          autoComplete="off"
+                        />
+                      ) : null}
+                      {selected === "ssh" ? (
+                        <>
+                          <input
+                            type="text"
+                            value={extraHost}
+                            onChange={(event) => setExtraHost(event.target.value)}
+                            placeholder={t("flsSshHost")}
+                            autoComplete="off"
+                          />
+                          <input
+                            type="text"
+                            value={extraUser}
+                            onChange={(event) => setExtraUser(event.target.value)}
+                            placeholder={t("flsSshUser")}
+                            autoComplete="off"
+                          />
+                        </>
+                      ) : null}
+                      {selected === "gitlab" ? (
+                        <input
+                          type="url"
+                          value={extraHost}
+                          onChange={(event) => setExtraHost(event.target.value)}
+                          placeholder={t("flsGitlabBase")}
+                          autoComplete="off"
+                        />
+                      ) : null}
+                      {selected === "whatsapp" ? (
+                        <>
+                          <input
+                            type="text"
+                            value={extraFieldA}
+                            onChange={(event) => setExtraFieldA(event.target.value)}
+                            placeholder={t("flsWhatsappPhoneId")}
+                            autoComplete="off"
+                          />
+                          <input
+                            type="text"
+                            value={extraFieldB}
+                            onChange={(event) => setExtraFieldB(event.target.value)}
+                            placeholder={t("flsWhatsappWaba")}
+                            autoComplete="off"
+                          />
+                        </>
+                      ) : null}
+                    </div>
+
+                    <form
+                      className="fls-secret-row"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void connectSelected();
+                      }}
+                    >
+                      <label className="fls-secret">
+                        <KeyRound size={14} strokeWidth={1.8} />
+                        <input
+                          type="password"
+                          value={token}
+                          onChange={(event) => setToken(event.target.value)}
+                          placeholder={TOKEN_PLACEHOLDERS[selected] ?? t("flsTokenRequired")}
+                          autoComplete="off"
+                          autoFocus
+                        />
+                      </label>
+                      <button type="submit" className="fls-cta is-compact" disabled={Boolean(busyProvider)}>
+                        {busyProvider === selected ? <LoaderCircle className="fls-spin" size={14} /> : t("flsConnect")}
+                      </button>
+                    </form>
+                  </div>
+                ) : null}
+
+                {error ? <p className="fls-error">{error}</p> : null}
+
+                {accountLinked.length > 0 ? (
+                  <div className="fls-account-note">
+                    <span className="fls-account-note-icon">
+                      <CloudCheck size={16} strokeWidth={1.8} />
+                    </span>
+                    <div>
+                      <strong>
+                        {t("flsAccountLinkedTitle").replace("{count}", String(accountLinked.length))}
+                      </strong>
+                      <span>{t("flsAccountLinkedBody")}</span>
+                    </div>
+                    <span className="fls-summary-stack">
+                      {accountLinked.slice(0, 4).map((item) => (
+                        <span key={item.provider}>
+                          <ConnectorMark provider={item.provider} logoUrl={item.logoUrl} size={13} />
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                ) : null}
+
+                {visibleConnectors.length > 0 ? (
+                  <div className="fls-connect-grid">
+                    {visibleConnectors.map((item, index) => {
+                      const connected = connectedProviders.has(item.provider);
+                      const busy = busyProvider === item.provider;
+                      const active = selected === item.provider;
+                      const oauth = OAUTH_PROVIDERS.has(item.provider);
+                      return (
+                        <button
+                          key={item.provider}
+                          type="button"
+                          className={cn(
+                            "fls-card",
+                            connected && "is-done",
+                            active && "is-active",
+                            item.featured && "is-featured",
+                          )}
+                          style={{ animationDelay: `${Math.min(index, 12) * 28}ms` }}
+                          disabled={busy || Boolean(busyProvider && busyProvider !== item.provider)}
+                          onClick={() => pickConnector(item.provider)}
+                        >
+                          <span className="fls-card-mark">
+                            <ConnectorMark provider={item.provider} logoUrl={item.logoUrl} size={20} />
+                          </span>
+                          <span className="fls-card-copy">
+                            <strong>
+                              {item.name}
+                              {item.featured ? (
+                                <em className="fls-featured">
+                                  <Sparkles size={9} strokeWidth={2.4} />
+                                  {t("flsFeatured")}
+                                </em>
+                              ) : null}
+                            </strong>
+                            <span>{item.blurb}</span>
+                          </span>
+                          <span className="fls-card-side">
+                            {busy ? (
+                              <LoaderCircle className="fls-spin" size={15} />
+                            ) : connected && accountProviders?.has(item.provider) ? (
+                              <span className="fls-tag is-account">
+                                <CloudCheck size={11} strokeWidth={2.2} />
+                                {t("flsFromAccount")}
+                              </span>
+                            ) : connected ? (
+                              <span className="fls-tag is-success">
+                                <Check size={11} strokeWidth={2.6} />
+                                {t("flsConnected")}
+                              </span>
+                            ) : (
+                              <span className="fls-tag">{oauth ? t("flsOAuthBadge") : t("flsTokenBadge")}</span>
+                            )}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="fls-empty">{t("flsNoMatches")}</p>
+                )}
+              </section>
+            ) : null}
+
+            {state.step === "companion" ? (
+              <section className="fls-stage" key="companion">
+                <div className="fls-stage-head">
+                  <div>
+                    <p className="fls-eyebrow">
+                      <Users size={12} strokeWidth={1.9} />
+                      {t("flsCompanionKicker")}
+                    </p>
+                    <h1 className="fls-title is-compact">
+                      {isOrganization ? t("flsCompanionTitleOrg") : t("flsCompanionTitle")}
+                    </h1>
+                    <p className="fls-lead">
+                      {isOrganization ? t("flsCompanionBodyOrg") : t("flsCompanionBody")}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="fls-presets">
+                  {COMPANION_PRESETS.slice(0, 8).map((preset, index) => {
+                    const owned = specialists.some((p) => p.domain.toLowerCase() === preset.domain);
+                    const name = ar ? preset.nameAr : preset.name;
+                    const hue = PRESET_HUES[preset.id] ?? 220;
+                    const seed = presetPortraitSeed(preset.id);
+                    return (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        className={cn("fls-preset", owned && "is-done")}
+                        style={{ animationDelay: `${index * 40}ms`, ["--hue" as string]: String(hue) }}
+                        onClick={() => createCompanion(preset)}
+                      >
+                        <span className="fls-preset-top">
+                          <span className="fls-avatar">
+                            <PhotoAvatar
+                              src={companionPortraitUrl({ seed, name: preset.name, domain: preset.domain, hue, size: 256 })}
+                              name={name}
+                              size="lg"
+                              state={owned ? "contributing" : "quiet"}
+                              fallbackHue={hue}
+                              fallbackSeed={seed}
+                            />
+                          </span>
+                          {owned ? (
+                            <span className="fls-tag is-success">
+                              <Check size={11} strokeWidth={2.6} />
+                              {t("flsStatusDone")}
+                            </span>
+                          ) : (
+                            <ArrowRight size={15} strokeWidth={1.8} className="fls-preset-arrow" />
+                          )}
+                        </span>
+                        <strong>{name}</strong>
+                        <span className="fls-preset-blurb">{ar ? preset.blurbAr : preset.blurb}</span>
+                        {preset.connectors.length > 0 ? (
+                          <span className="fls-preset-tools">
+                            {preset.connectors.slice(0, 3).map((provider) => (
+                              <span key={provider}>
+                                <ConnectorBrandIcon provider={provider} size={12} />
+                              </span>
+                            ))}
+                          </span>
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            ) : null}
+
+            {state.step === "ready" ? (
+              <section className="fls-stage fls-ready" key="ready">
+                <div className="fls-ready-mark" aria-hidden>
+                  <svg viewBox="0 0 96 96">
+                    <circle className="fls-ready-ring" cx="48" cy="48" r="44" />
+                    <path className="fls-ready-tick" d="M31 49.5 43 61l23-26" />
+                  </svg>
+                </div>
+                <p className="fls-eyebrow is-center">
+                  <Sparkles size={12} strokeWidth={1.9} />
+                  {t("flsReadyKicker")}
+                </p>
+                <h1 className="fls-title is-compact is-center">{t("flsReadyTitle")}</h1>
+                <p className="fls-lead is-center">{t("flsReadyBody")}</p>
+
+                <div className="fls-summary">
+                  <div className="fls-summary-card">
+                    <span className="fls-summary-icon">
+                      <Cable size={16} strokeWidth={1.7} />
+                    </span>
+                    <div>
+                      <strong>{t("flsConnectorKicker")}</strong>
+                      <span>{hasConnector && linkedConnectors.length > 0 ? t("flsReadyConnectorOn") : t("flsReadyConnectorSkip")}</span>
+                    </div>
+                    {linkedConnectors.length > 0 ? (
+                      <span className="fls-summary-stack">
+                        {linkedConnectors.slice(0, 4).map((item) => (
+                          <span key={item.provider}>
+                            <ConnectorMark provider={item.provider} logoUrl={item.logoUrl} size={13} />
+                          </span>
+                        ))}
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="fls-summary-card">
+                    <span className="fls-summary-icon">
+                      <Users size={16} strokeWidth={1.7} />
+                    </span>
+                    <div>
+                      <strong>{t("flsCompanionKicker")}</strong>
+                      <span>{t("flsReadyCompanionOn")}</span>
+                    </div>
+                    {specialists.length > 0 ? (
+                      <span className="fls-summary-stack">
+                        {specialists.slice(0, 4).map((person) => (
+                          <span key={person.id} className="is-photo">
+                            <img src={resolveCompanionPortraitSrc(person)} alt={person.name} />
+                          </span>
+                        ))}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+              </section>
+            ) : null}
+          </div>
+
+          <footer className="fls-foot">
+            <div className="fls-foot-progress" aria-hidden>
+              <span style={{ width: `${progress}%` }} />
             </div>
-            {connectedProviders.size > 0 ? (
-              <p className="fls-hint">
-                {t("flsConnectorCountHint").replace("{count}", String(connectedProviders.size))}
-              </p>
-            ) : (
-              <p className="fls-hint">{t("flsConnectorSkipHint")}</p>
-            )}
-          </section>
-        ) : null}
-
-        {state.step === "companion" ? (
-          <section className="fls-stage fls-rise" key="companion">
-            <p className="fls-eyebrow">
-              <Users size={13} strokeWidth={1.8} />
-              {t("flsCompanionKicker")}
-            </p>
-            <h1 className="fls-title is-compact">
-              {isOrganization ? t("flsCompanionTitleOrg") : t("flsCompanionTitle")}
-            </h1>
-            <p className="fls-lead">
-              {isOrganization ? t("flsCompanionBodyOrg") : t("flsCompanionBody")}
-            </p>
-
-            <div className="fls-presets">
-              {COMPANION_PRESETS.slice(0, 8).map((preset, index) => {
-                const owned = specialists.some((p) => p.domain.toLowerCase() === preset.domain);
-                return (
-                  <button
-                    key={preset.id}
-                    type="button"
-                    className={cn("fls-preset", owned && "is-done")}
-                    style={{ animationDelay: `${60 + index * 40}ms` }}
-                    onClick={() => createCompanion(preset)}
-                  >
-                    <strong>{ar ? preset.nameAr : preset.name}</strong>
-                    <span>{ar ? preset.blurbAr : preset.blurb}</span>
-                    {owned ? <Check size={14} className="fls-check" /> : null}
+            <div className="fls-foot-row">
+              {previousStep ? (
+                <button type="button" className="fls-ghost" onClick={() => go(previousStep)}>
+                  {ar ? <ArrowRight size={15} strokeWidth={2} /> : <ArrowLeft size={15} strokeWidth={2} />}
+                  {t("flsBack")}
+                </button>
+              ) : null}
+              <p className="fls-foot-hint">{footerHint}</p>
+              <div className="fls-foot-actions">
+                {state.step === "connector" ? (
+                  <button type="button" className="fls-ghost" onClick={skipConnector}>
+                    {t("flsSkipForNow")}
                   </button>
-                );
-              })}
-            </div>
-
-            {hasCompanion ? (
-              <div className="fls-actions">
-                <button type="button" className="fls-cta" onClick={() => go("ready")}>
-                  {t("flsContinue")}
-                  <ArrowRight size={16} strokeWidth={2.2} />
+                ) : null}
+                <button
+                  type="button"
+                  className={cn("fls-cta", state.step === "ready" && "is-glow")}
+                  disabled={!primary.enabled}
+                  onClick={primary.run}
+                >
+                  {primary.label}
+                  {ar ? <ArrowLeft size={15} strokeWidth={2.2} /> : <ArrowRight size={15} strokeWidth={2.2} />}
+                  {primary.enabled ? (
+                    <kbd className="fls-kbd" aria-hidden>
+                      <CornerDownLeft size={11} strokeWidth={2.2} />
+                    </kbd>
+                  ) : null}
                 </button>
               </div>
-            ) : (
-              <p className="fls-hint">{t("flsCompanionRequired")}</p>
-            )}
-          </section>
-        ) : null}
-
-        {state.step === "ready" ? (
-          <section className="fls-stage fls-rise is-ready" key="ready">
-            <p className="fls-eyebrow">
-              <Sparkles size={13} strokeWidth={1.8} />
-              {t("flsReadyKicker")}
-            </p>
-            <h1 className="fls-title is-compact">{t("flsReadyTitle")}</h1>
-            <p className="fls-lead">{t("flsReadyBody")}</p>
-            <ul className="fls-done-list">
-              <li>
-                <Check size={15} strokeWidth={2} />
-                <span>
-                  {hasConnector ? t("flsReadyConnectorOn") : t("flsReadyConnectorSkip")}
-                </span>
-              </li>
-              <li>
-                <Check size={15} strokeWidth={2} />
-                <span>{t("flsReadyCompanionOn")}</span>
-              </li>
-            </ul>
-            <div className="fls-actions is-start">
-              <button type="button" className="fls-cta is-pulse" onClick={finish}>
-                {t("flsEnterApp")}
-                <ArrowRight size={16} strokeWidth={2.2} />
-              </button>
             </div>
-          </section>
-        ) : null}
+          </footer>
+        </main>
       </div>
     </div>
   );

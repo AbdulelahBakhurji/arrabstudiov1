@@ -295,6 +295,8 @@ export interface ConnectorSecretRecord {
    * (or legacy rows before seat isolation). Kids must never see another seat's connectors.
    */
   familyMemberId: string | null;
+  /** Organization employee who owns this connector; null for the account owner / non-org. */
+  ownerEmployeeId?: string | null;
 }
 
 export interface OperatorProfile extends Timestamps {

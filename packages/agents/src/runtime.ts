@@ -84,6 +84,8 @@ export interface AgentRunRequest {
   /** Cap on completion length — keep low to save spend. */
   maxOutputTokens?: number;
   temperature?: number;
+  /** Ask reasoning-capable models to think first; off keeps replies fastest. */
+  reasoning?: "low" | "medium" | "high";
   /** Safe read-only tool inputs for Phase 12 tool loop. */
   tools?: AgentToolContext | null;
 }
@@ -101,6 +103,7 @@ export interface AgentRunResult {
 
 export type AgentStreamEvent =
   | { type: "token"; text: string }
+  | { type: "thinking"; text: string }
   | { type: "tool_start"; name: string; detail?: string }
   | { type: "tool"; name: string; result: string }
   | { type: "approval_needed"; tool: AgentPendingTool }
@@ -1259,6 +1262,7 @@ export class GatewayChatRuntime implements AgentRuntime {
         maxOutputTokens: request.maxOutputTokens ?? 280,
         temperature: request.temperature ?? 0.4,
         tools: useNativeTools ? activeTools : undefined,
+        reasoning: request.reasoning,
       };
       let completion = null as Awaited<ReturnType<AiGateway["complete"]>> | null;
       let streamedThisRound = false;
@@ -1267,6 +1271,8 @@ export class GatewayChatRuntime implements AgentRuntime {
           if (chunk.type === "token") {
             streamedThisRound = true;
             yield { type: "token", text: chunk.text };
+          } else if (chunk.type === "thinking") {
+            yield { type: "thinking", text: chunk.text };
           } else {
             completion = chunk.completion;
           }

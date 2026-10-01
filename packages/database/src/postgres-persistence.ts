@@ -1,5 +1,7 @@
 import {
   brandId,
+  normalizeCompanionDesk,
+  normalizeCrewState,
   type Activity,
   type ActivityActorType,
   type ActivityId,
@@ -46,6 +48,8 @@ import {
   type Workspace,
   type WorkspaceId,
   type StudioAccountRecord,
+  type TokenTopUpRecord,
+  type ModelCreditBalance,
   type SubscriptionPlanId,
   type SubscriptionStatus,
   type OrgDepartment,
@@ -59,6 +63,14 @@ import {
   type FamilyAgeTier,
   type FamilyGuidanceRecord,
   type ErpCompanion,
+  type ControlNotification,
+  type ControlClient,
+  type ControlConnector,
+  type ControlMaintenance,
+  type CompanionDeskState,
+  type CrewState,
+  type WrappedChatKey,
+  type SealedChat,
 } from "@arrab/shared";
 import type { Pool } from "pg";
 import {
@@ -687,8 +699,8 @@ class PostgresConnectorRepository implements ConnectorRepository {
   async create(record: ConnectorSecretRecord): Promise<ConnectorSecretRecord> {
     await this.pool.query(
       `insert into connectors
-       (id, workspace_id, provider, status, account_label, scopes, connected_at, last_verified_at, error, secret, family_member_id)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+       (id, workspace_id, provider, status, account_label, scopes, connected_at, last_verified_at, error, secret, family_member_id, owner_employee_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         record.id,
         record.workspaceId,
@@ -701,6 +713,7 @@ class PostgresConnectorRepository implements ConnectorRepository {
         record.error,
         record.secret,
         record.familyMemberId,
+        record.ownerEmployeeId ?? null,
       ],
     );
     return record;
@@ -709,8 +722,8 @@ class PostgresConnectorRepository implements ConnectorRepository {
   async update(record: ConnectorSecretRecord): Promise<ConnectorSecretRecord> {
     await this.pool.query(
       `update connectors set provider = $1, status = $2, account_label = $3, scopes = $4,
-       connected_at = $5, last_verified_at = $6, error = $7, secret = $8, family_member_id = $9
-       where id = $10 and workspace_id = $11`,
+       connected_at = $5, last_verified_at = $6, error = $7, secret = $8, family_member_id = $9, owner_employee_id = $10
+       where id = $11 and workspace_id = $12`,
       [
         record.provider,
         record.status,
@@ -721,6 +734,7 @@ class PostgresConnectorRepository implements ConnectorRepository {
         record.error,
         record.secret,
         record.familyMemberId,
+        record.ownerEmployeeId ?? null,
         record.id,
         record.workspaceId,
       ],
@@ -845,6 +859,7 @@ type ConnectorRow = {
   error: string | null;
   secret: string;
   family_member_id: string | null;
+  owner_employee_id: string | null;
 };
 
 type BindingRow = {
@@ -881,6 +896,7 @@ function mapConnector(row: ConnectorRow): ConnectorSecretRecord {
     error: row.error,
     secret: row.secret,
     familyMemberId: row.family_member_id ?? null,
+    ownerEmployeeId: row.owner_employee_id ?? null,
   };
 }
 
@@ -1137,6 +1153,8 @@ type AccountRow = {
   connected_at: Date;
   created_at: Date;
   updated_at: Date;
+  token_top_ups?: TokenTopUpRecord[] | null;
+  model_credit?: ModelCreditBalance | null;
 };
 
 function mapAccount(row: AccountRow): StudioAccountRecord {
@@ -1154,6 +1172,14 @@ function mapAccount(row: AccountRow): StudioAccountRecord {
     connectedAt: iso(row.connected_at),
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
+    tokenTopUps: Array.isArray(row.token_top_ups) ? row.token_top_ups : [],
+    modelCredit: row.model_credit?.deepseekHalalas != null || row.model_credit?.otherHalalas != null
+      ? {
+          deepseekHalalas: row.model_credit.deepseekHalalas ?? 0,
+          otherHalalas: row.model_credit.otherHalalas ?? 0,
+          appliedInvoiceIds: row.model_credit.appliedInvoiceIds ?? [],
+        }
+      : undefined,
   };
 }
 
@@ -1176,9 +1202,12 @@ class PostgresAccountRepository implements AccountRepository {
     await this.pool.query(
       `insert into studio_accounts (
          workspace_id, id, email, display_name, password_hash, plan_id, subscription_status,
-         period_start, period_end, session_token_hash, connected_at, created_at, updated_at
-       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+         period_start, period_end, session_token_hash, connected_at, created_at, updated_at,
+         token_top_ups, model_credit
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb)
        on conflict (workspace_id) do update set
+         token_top_ups = excluded.token_top_ups,
+         model_credit = excluded.model_credit,
          id = excluded.id,
          email = excluded.email,
          display_name = excluded.display_name,
@@ -1204,6 +1233,8 @@ class PostgresAccountRepository implements AccountRepository {
         account.connectedAt,
         account.createdAt,
         account.updatedAt,
+        JSON.stringify(account.tokenTopUps ?? []),
+        JSON.stringify(account.modelCredit ?? {}),
       ],
     );
     return account;
@@ -1840,6 +1871,11 @@ export async function createPostgresPersistence(pool: Pool): Promise<Persistence
     familyGuidance: new PostgresFamilyGuidanceRepository(pool, context.workspace.id),
     familyHouseholdMeta: new PostgresFamilyHouseholdMetaRepository(pool, context.workspace.id),
     erpCompanions: new PostgresErpCompanionRepository(pool),
+    controlNotifications: new PostgresControlNotificationRepository(pool),
+    controlDesk: new PostgresControlDeskRepository(pool),
+    companionDesk: new PostgresCompanionDeskRepository(pool, context.workspace.id),
+    crew: new PostgresCrewRepository(pool, context.workspace.id),
+    sealedVault: new PostgresSealedVaultRepository(pool, context.workspace.id),
   };
 }
 
@@ -1902,6 +1938,252 @@ class PostgresErpCompanionRepository {
 
   async delete(id: string): Promise<boolean> {
     const result = await this.pool.query(`delete from erp_companions where id = $1`, [id]);
+    return (result.rowCount ?? 0) > 0;
+  }
+}
+
+class PostgresControlNotificationRepository {
+  constructor(private readonly pool: Pool) {}
+
+  async listRecent(limit: number): Promise<ControlNotification[]> {
+    const cap = Math.min(100, Math.max(1, limit));
+    const result = await this.pool.query<{ document: ControlNotification }>(
+      `select document from control_notifications order by created_at desc limit $1`,
+      [cap],
+    );
+    return result.rows.map((row) => row.document);
+  }
+
+  async insert(item: ControlNotification): Promise<ControlNotification> {
+    await this.pool.query(
+      `insert into control_notifications (id, created_at, document) values ($1, $2, $3::jsonb)`,
+      [item.id, item.createdAt, JSON.stringify(item)],
+    );
+    await this.pool.query(
+      `delete from control_notifications
+       where id not in (
+         select id from control_notifications order by created_at desc limit 100
+       )`,
+    );
+    return item;
+  }
+
+  async getById(id: string): Promise<ControlNotification | null> {
+    const result = await this.pool.query<{ document: ControlNotification }>(
+      `select document from control_notifications where id = $1`,
+      [id],
+    );
+    return result.rows[0]?.document ?? null;
+  }
+
+  async replace(item: ControlNotification): Promise<ControlNotification | null> {
+    const result = await this.pool.query(
+      `update control_notifications set document = $2::jsonb where id = $1`,
+      [item.id, JSON.stringify(item)],
+    );
+    return (result.rowCount ?? 0) > 0 ? item : null;
+  }
+}
+
+class PostgresSealedVaultRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async getKey(ownerKey: string): Promise<WrappedChatKey | null> {
+    const result = await this.pool.query<{ wrapped_key: WrappedChatKey }>(
+      `select wrapped_key from sealed_keys where workspace_id = $1 and owner_key = $2`,
+      [this.workspaceId, ownerKey],
+    );
+    return result.rows[0]?.wrapped_key ?? null;
+  }
+
+  async putKey(ownerKey: string, key: WrappedChatKey): Promise<void> {
+    await this.pool.query(
+      `insert into sealed_keys (workspace_id, owner_key, wrapped_key, updated_at)
+       values ($1, $2, $3::jsonb, now())
+       on conflict (workspace_id, owner_key) do update set
+         wrapped_key = excluded.wrapped_key, updated_at = now()`,
+      [this.workspaceId, ownerKey, JSON.stringify(key)],
+    );
+  }
+
+  async listChats(ownerKey: string): Promise<SealedChat[]> {
+    const result = await this.pool.query<{ chat_id: string; sealed: string; updated_at: Date }>(
+      `select chat_id, sealed, updated_at from sealed_chats
+       where workspace_id = $1 and owner_key = $2 order by updated_at desc`,
+      [this.workspaceId, ownerKey],
+    );
+    return result.rows.map((row) => ({
+      id: row.chat_id,
+      sealed: row.sealed,
+      updatedAt: iso(row.updated_at),
+    }));
+  }
+
+  async putChat(ownerKey: string, chat: SealedChat): Promise<void> {
+    await this.pool.query(
+      `insert into sealed_chats (workspace_id, owner_key, chat_id, sealed, updated_at)
+       values ($1, $2, $3, $4, $5)
+       on conflict (workspace_id, owner_key, chat_id) do update set
+         sealed = excluded.sealed, updated_at = excluded.updated_at
+       where sealed_chats.updated_at <= excluded.updated_at`,
+      [this.workspaceId, ownerKey, chat.id, chat.sealed, chat.updatedAt],
+    );
+    await this.pool.query(
+      `delete from sealed_chat_tombstones
+       where workspace_id = $1 and owner_key = $2 and chat_id = $3 and deleted_at <= $4`,
+      [this.workspaceId, ownerKey, chat.id, chat.updatedAt],
+    );
+  }
+
+  async deleteChat(ownerKey: string, id: string, deletedAt: string): Promise<void> {
+    await this.pool.query(
+      `delete from sealed_chats where workspace_id = $1 and owner_key = $2 and chat_id = $3`,
+      [this.workspaceId, ownerKey, id],
+    );
+    await this.pool.query(
+      `insert into sealed_chat_tombstones (workspace_id, owner_key, chat_id, deleted_at)
+       values ($1, $2, $3, $4)
+       on conflict (workspace_id, owner_key, chat_id) do update set deleted_at = excluded.deleted_at`,
+      [this.workspaceId, ownerKey, id, deletedAt],
+    );
+  }
+
+  async listDeleted(ownerKey: string): Promise<Array<{ id: string; deletedAt: string }>> {
+    const result = await this.pool.query<{ chat_id: string; deleted_at: Date }>(
+      `select chat_id, deleted_at from sealed_chat_tombstones
+       where workspace_id = $1 and owner_key = $2`,
+      [this.workspaceId, ownerKey],
+    );
+    return result.rows.map((row) => ({ id: row.chat_id, deletedAt: iso(row.deleted_at) }));
+  }
+
+  async deleteAll(ownerKey: string): Promise<void> {
+    for (const table of ["sealed_keys", "sealed_chats", "sealed_chat_tombstones"]) {
+      await this.pool.query(`delete from ${table} where workspace_id = $1 and owner_key = $2`, [
+        this.workspaceId,
+        ownerKey,
+      ]);
+    }
+  }
+}
+
+class PostgresCrewRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async get(): Promise<CrewState> {
+    const result = await this.pool.query<{ document: CrewState }>(
+      `select document from crew where workspace_id = $1`,
+      [this.workspaceId],
+    );
+    return normalizeCrewState(result.rows[0]?.document);
+  }
+
+  async save(state: CrewState): Promise<CrewState> {
+    const next = normalizeCrewState(state);
+    await this.pool.query(
+      `insert into crew (workspace_id, updated_at, document)
+       values ($1, now(), $2::jsonb)
+       on conflict (workspace_id) do update set
+         updated_at = now(),
+         document = excluded.document`,
+      [this.workspaceId, JSON.stringify(next)],
+    );
+    return next;
+  }
+}
+
+class PostgresCompanionDeskRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async get(): Promise<CompanionDeskState> {
+    const result = await this.pool.query<{ document: CompanionDeskState }>(
+      `select document from companion_desk where workspace_id = $1`,
+      [this.workspaceId],
+    );
+    return normalizeCompanionDesk(result.rows[0]?.document);
+  }
+
+  async save(state: CompanionDeskState): Promise<CompanionDeskState> {
+    await this.pool.query(
+      `insert into companion_desk (workspace_id, updated_at, document)
+       values ($1, now(), $2::jsonb)
+       on conflict (workspace_id) do update set
+         updated_at = now(),
+         document = excluded.document`,
+      [this.workspaceId, JSON.stringify(state)],
+    );
+    return state;
+  }
+}
+
+class PostgresControlDeskRepository {
+  constructor(private readonly pool: Pool) {}
+
+  async getPolicy(): Promise<ControlMaintenance | null> {
+    const result = await this.pool.query<{ document: ControlMaintenance }>(
+      `select document from control_desk where id = 'policy'`,
+    );
+    return result.rows[0]?.document ?? null;
+  }
+
+  async setPolicy(policy: ControlMaintenance): Promise<ControlMaintenance> {
+    await this.pool.query(
+      `insert into control_desk (id, kind, updated_at, document)
+       values ('policy', 'policy', $1, $2::jsonb)
+       on conflict (id) do update set updated_at = $1, document = $2::jsonb`,
+      [policy.updatedAt, JSON.stringify(policy)],
+    );
+    return policy;
+  }
+
+  async upsertClient(client: ControlClient): Promise<ControlClient> {
+    await this.pool.query(
+      `insert into control_desk (id, kind, updated_at, document)
+       values ($1, 'client', $2, $3::jsonb)
+       on conflict (id) do update set updated_at = $2, document = $3::jsonb`,
+      [client.deviceId, client.lastSeenAt, JSON.stringify(client)],
+    );
+    return client;
+  }
+
+  async listClients(): Promise<ControlClient[]> {
+    const result = await this.pool.query<{ document: ControlClient }>(
+      `select document from control_desk where kind = 'client' order by updated_at desc limit 200`,
+    );
+    return result.rows.map((row) => row.document);
+  }
+
+  async listConnectors(): Promise<ControlConnector[]> {
+    const result = await this.pool.query<{ document: ControlConnector }>(
+      `select document from control_desk where kind = 'connector' order by id`,
+    );
+    return result.rows.map((row) => row.document);
+  }
+
+  async upsertConnector(entry: ControlConnector): Promise<ControlConnector> {
+    await this.pool.query(
+      `insert into control_desk (id, kind, updated_at, document)
+       values ($1, 'connector', $2, $3::jsonb)
+       on conflict (id) do update set updated_at = $2, document = $3::jsonb`,
+      [`connector:${entry.provider}`, entry.updatedAt, JSON.stringify(entry)],
+    );
+    return entry;
+  }
+
+  async deleteConnector(provider: string): Promise<boolean> {
+    const result = await this.pool.query(
+      `delete from control_desk where id = $1 and kind = 'connector'`,
+      [`connector:${provider}`],
+    );
     return (result.rowCount ?? 0) > 0;
   }
 }
@@ -2233,8 +2515,8 @@ class PostgresFamilyMemberRepository implements FamilyMemberRepository {
   async create(entity: FamilyMemberRecord): Promise<FamilyMemberRecord> {
     await this.pool.query(
       `insert into family_members
-       (id, workspace_id, display_name, role, age_tier, color, pin_hash, email, password_hash, is_owner, is_paused, token_allowance, tokens_used, last_active_at, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+       (id, workspace_id, display_name, role, age_tier, color, pin_hash, email, password_hash, is_owner, is_paused, token_allowance, tokens_used, last_active_at, created_at, updated_at, guardian)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
       [
         entity.id,
         entity.workspaceId,
@@ -2252,6 +2534,7 @@ class PostgresFamilyMemberRepository implements FamilyMemberRepository {
         entity.lastActiveAt,
         entity.createdAt,
         entity.updatedAt,
+        entity.guardian ? JSON.stringify(entity.guardian) : null,
       ],
     );
     return entity;
@@ -2272,7 +2555,8 @@ class PostgresFamilyMemberRepository implements FamilyMemberRepository {
          token_allowance = $12,
          tokens_used = $13,
          last_active_at = $14,
-         updated_at = $15
+         updated_at = $15,
+         guardian = $16
        where id = $1 and workspace_id = $2`,
       [
         entity.id,
@@ -2290,6 +2574,7 @@ class PostgresFamilyMemberRepository implements FamilyMemberRepository {
         entity.tokensUsed,
         entity.lastActiveAt,
         entity.updatedAt,
+        entity.guardian ? JSON.stringify(entity.guardian) : null,
       ],
     );
     return entity;
@@ -2320,6 +2605,7 @@ function mapFamilyMember(row: {
   last_active_at: Date | null;
   created_at: Date;
   updated_at: Date;
+  guardian?: FamilyMemberRecord["guardian"];
 }): FamilyMemberRecord {
   return {
     id: brandId<FamilyMemberId>(row.id),
@@ -2335,6 +2621,7 @@ function mapFamilyMember(row: {
     isPaused: row.is_paused,
     tokenAllowance: row.token_allowance ?? 0,
     tokensUsed: row.tokens_used ?? 0,
+    guardian: row.guardian ?? null,
     lastActiveAt: row.last_active_at ? iso(row.last_active_at) : null,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),

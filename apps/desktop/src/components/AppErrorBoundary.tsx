@@ -39,6 +39,24 @@ export class AppErrorBoundary extends Component<Props, State> {
           <p style={{ margin: 0, fontSize: 14, lineHeight: 1.5, opacity: 0.7 }}>
             The window stayed blank after a UI error. Reload to get back into your workspace.
           </p>
+          {this.state.error?.message ? (
+            <pre
+              style={{
+                margin: 0,
+                padding: 12,
+                borderRadius: 12,
+                background: "rgba(255,255,255,0.06)",
+                color: "#fca5a5",
+                fontSize: 12,
+                lineHeight: 1.45,
+                textAlign: "left",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {this.state.error.message}
+            </pre>
+          ) : null}
           <button
             type="button"
             onClick={() => window.location.reload()}

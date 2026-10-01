@@ -14,8 +14,10 @@ export function assertCloudAiAllowed(): void {
 
 const CHATGPT_FALLBACK = "openai/gpt-4o-mini";
 const CLAUDE_FALLBACK = "anthropic/claude-3.5-haiku";
+/** Primary Arrab model. Auto always routes here. */
+export const ARRAB_PRIMARY_MODEL = "deepseek/deepseek-v4.1-flash";
 /** Prefer DeepSeek flash when the API lists it — lowest TTFT on Arrab. */
-const FAST_OPENROUTER_FALLBACK = "deepseek/deepseek-v4.1-flash";
+const FAST_OPENROUTER_FALLBACK = ARRAB_PRIMARY_MODEL;
 
 function isChatGptModel(model: string): boolean {
   const value = model.toLowerCase();
@@ -56,7 +58,7 @@ export function resolvePreferredModel(
 ): string | null {
   const models = status?.models?.filter(Boolean) ?? [];
   const preferred = prefs.aiPreferredModel.trim();
-  if (preferred) {
+  if (preferred && preferred !== "auto") {
     if (models.length === 0 || models.includes(preferred)) return preferred;
   }
 
@@ -67,7 +69,8 @@ export function resolvePreferredModel(
     return models.find(isClaudeModel) ?? CLAUDE_FALLBACK;
   }
 
-  // Auto: prefer the API default (OpenRouter flash when configured), else a fast model.
+  // Auto is Arrab — DeepSeek v4.1 Flash — even when the gateway lists another default first.
+  if (models.includes(ARRAB_PRIMARY_MODEL) || models.length === 0) return ARRAB_PRIMARY_MODEL;
   if (status?.defaultModel) return status.defaultModel;
   return models.find(isFastOpenRouterModel) ?? models[0] ?? FAST_OPENROUTER_FALLBACK;
 }
@@ -82,9 +85,10 @@ export function resolveCompanionModel(
 ): string {
   const models = status?.models?.filter(Boolean) ?? [];
   const preferred = prefs.aiPreferredModel.trim();
-  if (preferred && (models.length === 0 || models.includes(preferred))) {
+  if (preferred && preferred !== "auto" && (models.length === 0 || models.includes(preferred))) {
     return preferred;
   }
+  if (models.includes(ARRAB_PRIMARY_MODEL) || models.length === 0) return ARRAB_PRIMARY_MODEL;
   const ranked = [...models].sort((a, b) => companionSpeedScore(b) - companionSpeedScore(a));
   if (ranked[0] && companionSpeedScore(ranked[0]) >= 70) return ranked[0]!;
   if (status?.defaultModel && companionSpeedScore(status.defaultModel) >= 70) {

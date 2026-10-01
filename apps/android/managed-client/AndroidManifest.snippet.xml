@@ -1,0 +1,36 @@
+<!--
+  Merge into src-tauri/gen/android/app/src/main/AndroidManifest.xml after `tauri android init`.
+  No keys live here; provider config comes from google-services.json / agconnect-services.json
+  supplied by CI (the files in this folder are placeholders).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+  <application>
+    <service
+      android:name="com.arrab.studio.managed.ArrabFcmService"
+      android:exported="false">
+      <intent-filter>
+        <action android:name="com.google.firebase.MESSAGING_EVENT" />
+      </intent-filter>
+    </service>
+
+    <service
+      android:name="com.arrab.studio.managed.ArrabHmsService"
+      android:exported="false">
+      <intent-filter>
+        <action android:name="com.huawei.push.action.MESSAGING_EVENT" />
+      </intent-filter>
+    </service>
+
+    <!-- Inside the main <activity>: allowlisted in-app deep links only. -->
+    <!--
+    <intent-filter>
+      <action android:name="android.intent.action.VIEW" />
+      <category android:name="android.intent.category.DEFAULT" />
+      <category android:name="android.intent.category.BROWSABLE" />
+      <data android:scheme="arrab" />
+    </intent-filter>
+    -->
+  </application>
+</manifest>

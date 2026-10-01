@@ -3,10 +3,13 @@ import { Check, Plus } from "lucide-react";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import {
   addCompanion,
+  canAddCompanion,
   type CompanionProfile,
   type CompanionSpace,
   type CompanionToneName,
 } from "@/lib/companions";
+import { GUEST_COMPANION_LIMIT } from "@/lib/guest-mode";
+import { pushToast } from "@/lib/notify";
 import { CompanionModal } from "./CompanionUI";
 
 export function AddCompanionDialog({
@@ -61,16 +64,34 @@ function AddForm({
       onSubmit={(event) => {
         event.preventDefault();
         if (!domain.trim() || !brief.trim()) return;
-        const person = addCompanion({
-          name: name.trim() || domain.trim(),
-          domain: domain.trim(),
-          purposeId: domain.trim().toLowerCase(),
-          brief: brief.trim(),
-          space,
-          toneName: tone,
-        });
-        onCreated(person);
-        onClose();
+        if (!canAddCompanion()) {
+          pushToast({
+            title: t("guestCompanionLimit").replace("{limit}", String(GUEST_COMPANION_LIMIT)),
+            tone: "warn",
+          });
+          return;
+        }
+        try {
+          const person = addCompanion({
+            name: name.trim() || domain.trim(),
+            domain: domain.trim(),
+            purposeId: domain.trim().toLowerCase(),
+            brief: brief.trim(),
+            space,
+            toneName: tone,
+          });
+          onCreated(person);
+          onClose();
+        } catch (err) {
+          if (err instanceof Error && err.message === "guest_companion_limit") {
+            pushToast({
+              title: t("guestCompanionLimit").replace("{limit}", String(GUEST_COMPANION_LIMIT)),
+              tone: "warn",
+            });
+            return;
+          }
+          throw err;
+        }
       }}
     >
       <p className="cp-muted">

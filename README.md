@@ -55,9 +55,8 @@ pnpm lint
 pnpm test
 pnpm build
 
-# Scaffold a new feature slice (page + checklist)
-pnpm new:feature my-thing
-pnpm new:feature my-thing --audience=individual,family --api
+# Scaffold a plug-in feature (route + copy; optional rail / API / flag)
+pnpm new:feature my-thing --audience=individual,family --nav
 
 # Ship installers (Mac .app/.dmg · Windows NSIS/MSI)
 pnpm ship:mac
@@ -70,20 +69,29 @@ See [docs/DESKTOP_RELEASE.md](./docs/DESKTOP_RELEASE.md) for packaging, signing,
 
 ## Monorepo layout
 
+Agents (Cursor / Claude) start at [AGENTS.md](./AGENTS.md).
+
 ```text
+AGENTS.md             # Map for Cursor and Claude
+CLAUDE.md             # Claude Code entry (points at AGENTS.md)
+.cursor/rules/        # Persistent Cursor rules
 apps/
-  desktop/          # Tauri + React — main Studio UI (+ packaging/)
-  api/              # Fastify Arrab API
-  testingworkspace/ # Internal testing workspace
+  desktop/            # Tauri + React — Studio UI
+  api/                # Fastify Arrab API
+  ios/                # Native SwiftUI client
+  android/            # Managed Android client
+  agents-office/      # Internal agents office
+  testingworkspace/   # Internal testing workspace
 packages/
-  shared/           # Domain types + HTTP contract
-  core/             # Errors, ports, helpers
-  ai/               # AI gateway + providers
-  agents/           # Chat runtime
-  database/         # Persistence + migrations
-brand/              # Canonical logo + symbol
-docs/               # Architecture, security, design, release
-scripts/            # Dev + ship scripts (macOS / Windows)
-tests/              # Cross-package / desktop UI tests
-release/artifacts/  # Built installers (local / CI output)
+  shared/             # Domain types + HTTP contract
+  core/               # Errors, ports, helpers
+  ai/                 # AI gateway + providers
+  agents/             # Chat runtime
+  database/           # Persistence + migrations
+brand/                # Canonical logo, symbol, app icon
+docs/                 # Architecture, security, design, release
+skills/               # Project agent skills
+scripts/              # Dev + ship scripts
+tests/                # Cross-package / desktop UI tests
+release/              # Local / CI installers (gitignored output)
 ```

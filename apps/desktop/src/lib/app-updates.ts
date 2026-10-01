@@ -1,6 +1,6 @@
 import pkg from "../../package.json";
 import { openExternalUrl } from "@/lib/desktop";
-import { pushToast } from "@/lib/notify";
+import { postNativeNotification, pushToast } from "@/lib/notify";
 import { readPrefs } from "@/lib/prefs";
 import { isTauriRuntime } from "@/lib/terminal";
 
@@ -8,6 +8,15 @@ import { isTauriRuntime } from "@/lib/terminal";
 const DEFAULT_REPO =
   (import.meta.env.VITE_GITHUB_RELEASES_REPO as string | undefined)?.trim() ||
   "AbdulelahBakhurji/arrabstudiov1";
+
+export function appReleasesPageUrl(): string {
+  return `https://github.com/${DEFAULT_REPO}/releases`;
+}
+
+export function appIssueReportUrl(): string {
+  const body = `\n\n---\nArrab Studio ${pkg.version}\n${navigator.userAgent}`;
+  return `https://github.com/${DEFAULT_REPO}/issues/new?body=${encodeURIComponent(body)}`;
+}
 
 const NOTIFIED_KEY = "arrab.updates.lastNotifiedVersion";
 const CHECKED_KEY = "arrab.updates.lastCheckedAt";
@@ -196,6 +205,42 @@ export async function openAppUpdate(info: AppUpdateInfo): Promise<void> {
   await openExternalUrl(url);
 }
 
+/**
+ * Desktop: hand the update to the native updater window, which hides the app,
+ * shows download progress, installs, and relaunches on the new version.
+ * Returns false when not running in the desktop shell.
+ */
+export async function startDesktopUpdate(info: Pick<AppUpdateInfo, "downloadUrl" | "latestVersion">): Promise<boolean> {
+  if (!isTauriRuntime()) return false;
+  const { invoke } = await import("@tauri-apps/api/core");
+  await invoke("start_app_update", {
+    url: info.downloadUrl ?? null,
+    version: info.latestVersion || null,
+  });
+  return true;
+}
+
+const MANAGED_NOTICE_KEY = "arrab.updates.managedNoticeAt";
+const MANAGED_NOTICE_WINDOW_MS = 24 * 60 * 60_000;
+
+/** Arrab Control already announced an update natively; the local check should not repeat it. */
+export function markManagedUpdateNotice(): void {
+  try {
+    localStorage.setItem(MANAGED_NOTICE_KEY, String(Date.now()));
+  } catch {
+    // ignore
+  }
+}
+
+function recentManagedUpdateNotice(): boolean {
+  try {
+    const at = Number(localStorage.getItem(MANAGED_NOTICE_KEY));
+    return Number.isFinite(at) && Date.now() - at < MANAGED_NOTICE_WINDOW_MS;
+  } catch {
+    return false;
+  }
+}
+
 export function readLastNotifiedUpdateVersion(): string | null {
   try {
     return localStorage.getItem(NOTIFIED_KEY);
@@ -240,16 +285,14 @@ export async function maybeNotifyAppUpdate(options?: {
         href: options?.settingsHref ?? "/settings?tab=about",
       });
 
-      if (prefs.notifyAppUpdates && typeof Notification !== "undefined" && Notification.permission === "granted") {
-        try {
-          new Notification(ar ? "تحديث Arrab Studio" : "Arrab Studio update", {
-            body: ar
-              ? `الإصدار ${info.latestVersion} متاح`
-              : `Version ${info.latestVersion} is available`,
-          });
-        } catch {
-          // ignore
-        }
+      if (prefs.notifyAppUpdates && !recentManagedUpdateNotice()) {
+        await postNativeNotification({
+          title: ar ? "تحديث Arrab Studio متاح" : "Arrab Studio update available",
+          body: ar
+            ? `الإصدار ${info.latestVersion} جاهز للتثبيت. افتح الإعدادات ← حول للتحديث.`
+            : `Version ${info.latestVersion} is ready to install. Open Settings → About to update.`,
+          tag: `arrab-app-update-${info.latestVersion}`,
+        }).catch(() => undefined);
       }
 
       markUpdateNotified(info.latestVersion);

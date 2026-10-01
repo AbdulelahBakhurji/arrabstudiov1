@@ -196,7 +196,15 @@ export class OrgWorkforceService {
     private readonly persistence: Persistence,
     private readonly ids: IdGenerator = randomIdGenerator,
     private readonly clock: Clock = systemClock,
+    /** Seats included in the current subscription; null keeps the office-based default. */
+    private readonly planSeatLimit: () => Promise<number | null> = async () => null,
   ) {}
+
+  private async seatLimit(seatsUsed: number, departmentCount: number): Promise<number> {
+    const plan = await this.planSeatLimit().catch(() => null);
+    if (plan && plan > 0) return plan;
+    return Math.max(8, Math.max(1, departmentCount) * 8, seatsUsed);
+  }
 
   /**
    * Capability map for an org employee seat.
@@ -219,8 +227,9 @@ export class OrgWorkforceService {
       };
     }
     const role = employee?.role ?? "admin";
-    const isAdmin = !employee || role === "admin";
-    const isManager = isAdmin || role === "manager";
+    // Administration belongs to the account owner. Seats never administer, whatever their role.
+    const isAdmin = !employee;
+    const isManager = isAdmin || role === "admin" || role === "manager";
     return {
       canAdminister: isAdmin,
       canAssignWork: isManager,
@@ -298,8 +307,7 @@ export class OrgWorkforceService {
       ? employees
       : await this.persistence.orgEmployees.list();
     const seatsUsed = allEmployees.filter((item) => item.status === "active").length;
-    const officeBudget = Math.max(1, departments.length) * 8;
-    const seatLimit = Math.max(8, officeBudget, seatsUsed);
+    const seatLimit = await this.seatLimit(seatsUsed, departments.length);
     return {
       departments,
       employees: employees.map((item) => toPublic(withSecurityDefaults(item))),
@@ -415,6 +423,12 @@ export class OrgWorkforceService {
     if (!displayName) throw new ValidationError("Display name is required");
     if (await this.persistence.orgEmployees.getByEmail(email)) {
       throw new ValidationError("An employee with this email already exists");
+    }
+    const allEmployees = await this.persistence.orgEmployees.list();
+    const activeSeats = allEmployees.filter((e) => e.status === "active").length;
+    const departments = await this.persistence.orgDepartments.list();
+    if (activeSeats >= (await this.seatLimit(activeSeats, departments.length))) {
+      throw new ValidationError("All seats in your plan are in use. Upgrade the plan to add more seats.");
     }
     if (input.departmentId) {
       const dept = await this.persistence.orgDepartments.getById(input.departmentId);

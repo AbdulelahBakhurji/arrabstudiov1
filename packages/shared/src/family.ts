@@ -1,6 +1,11 @@
 import type { FamilyMemberId, WorkspaceId } from "./ids.js";
 import type { AccountEntitlements, AccountPublic } from "./account.js";
 import type { Timestamps } from "./entities.js";
+import type {
+  FamilyGuardianState,
+  FamilyGuardianStatus,
+  FamilySafetyEvent,
+} from "./family-guardian.js";
 
 export type FamilyMemberRole = "parent" | "partner" | "child";
 export type FamilyAgeTier = "tier_6_9" | "tier_10_13" | "tier_14_17";
@@ -29,6 +34,8 @@ export interface FamilyMemberRecord extends Timestamps {
   /** Tokens consumed by this member in the current billing period. */
   tokensUsed: number;
   lastActiveAt: string | null;
+  /** Child seats only — server-enforced Guardian policy, safety feed, and daily activity. */
+  guardian?: FamilyGuardianState | null;
 }
 
 export interface FamilyMemberPublic {
@@ -51,6 +58,8 @@ export interface FamilyMemberPublic {
   tokensRemaining: number;
   usagePercent: number;
   lastActiveAt: string | null;
+  /** Child seats only. */
+  guardian: FamilyGuardianStatus | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -182,5 +191,7 @@ export interface FamilyHouseholdSnapshot {
   } | null;
   seatPacks: FamilySeatPack[];
   recentGuidance: FamilyGuidancePublic[];
+  /** Guardian safety feed across child seats — managers only. */
+  safety: { unread: number; events: FamilySafetyEvent[] };
   entitlements: AccountEntitlements | null;
 }

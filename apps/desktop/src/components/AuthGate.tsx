@@ -8,6 +8,7 @@ import {
   subscribeFirstLaunchSetup,
 } from "@/lib/first-launch-setup";
 import {
+  clearGuestLocalMode,
   isGuestLocalMode,
   subscribeGuestMode,
 } from "@/lib/guest-mode";
@@ -23,6 +24,13 @@ export function AuthGate() {
   const navigate = useNavigate();
   const [needsStartup, setNeedsStartup] = useState(() => shouldShowFirstLaunchSetup());
   const [guestLocal, setGuestLocal] = useState(() => isGuestLocalMode());
+
+  useEffect(() => {
+    if (!shouldShowFirstLaunchSetup()) return;
+    // Setup must run before guest or studio — drop leftover local-only sessions.
+    clearGuestLocalMode();
+    setGuestLocal(false);
+  }, []);
 
   useEffect(() => {
     setNeedsStartup(shouldShowFirstLaunchSetup());
@@ -41,8 +49,8 @@ export function AuthGate() {
     }
   }, [signedIn, navigate, href]);
 
-  // One-time startup wizard before sign-in (skipped after completed).
-  if (needsStartup && !readFirstLaunchSetup().completed) {
+  // First install only. After setup: sign-in, or studio when already signed in.
+  if (shouldShowFirstLaunchSetup() || (needsStartup && !readFirstLaunchSetup().completed)) {
     return (
       <div
         className="flex h-full w-full flex-col overflow-hidden bg-background text-foreground"

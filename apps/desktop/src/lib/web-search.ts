@@ -1,9 +1,12 @@
 /** Client-side web search so chat can answer even when the API has no web tools. */
 
+import { invoke } from "@tauri-apps/api/core";
+import { isTauriRuntime } from "@/lib/terminal";
+
 export type ClientWebSearchResult = {
   query: string;
   summary: string;
-  sources: Array<{ title: string; url: string }>;
+  sources: Array<{ title: string; url: string; snippet?: string }>;
 };
 
 function looksLikeUrlOrDomain(value: string): string | null {
@@ -20,35 +23,74 @@ function looksLikeUrlOrDomain(value: string): string | null {
   return null;
 }
 
-/** Detect /web, /search, or natural “search …” asks. */
+function cleanQuery(value: string): string | null {
+  const q = value
+    .replace(/^[,:\s]+/, "")
+    .replace(/^(?:for|about|عن)\s+/i, "")
+    .replace(/[?؟]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
+  return q.length >= 2 ? q : null;
+}
+
+/** Detect /web, /search, “search in web”, and natural lookup asks. */
 export function parseWebSearchCommand(content: string): string | null {
   const text = content.trim();
   if (!text) return null;
 
   const slash = text.match(/^\/(?:web|search|find)\s+(.+)$/i);
-  if (slash?.[1]?.trim()) return slash[1].trim();
+  if (slash?.[1]) return cleanQuery(slash[1]);
+
+  const onTheWeb = text.match(
+    /(?:search|google|look\s*up|find(?:\s+out)?|ابحث|بحث)\s+(?:me\s+|us\s+|لي\s+)?(?:in\s+|on\s+)?(?:the\s+)?(?:web|internet|online|الويب|الإنترنت|الانترنت)\s*(?:for|about|عن)?\s*[,:]?\s*(.+)/i,
+  );
+  if (onTheWeb?.[1]) return cleanQuery(onTheWeb[1]);
+
+  const searchAbout = text.match(
+    /(?:search|google|look\s*up|ابحث|بحث)\s+(?:me\s+|us\s+|لي\s+)?(?:for|about|عن)\s+(.+)/i,
+  );
+  if (searchAbout?.[1]) return cleanQuery(searchAbout[1]);
 
   const natural = text.match(
-    /^(?:can you |please |pls )?(?:search(?:\s+(?:the\s+)?web(?:\s+for)?)?|look\s*up|google|find(?:\s+out)?(?:\s+about)?|what(?:'s| is)|who is)\s+(.+)$/i,
+    /^(?:can you |please |pls |هل يمكنك |ممكن )?(?:who is|what(?:'s| is)|ما هو|من هو)\s+(.+)$/i,
   );
-  if (natural?.[1]?.trim()) {
-    const q = natural[1].trim().replace(/\?+$/, "").trim();
-    return q || null;
-  }
+  if (natural?.[1]) return cleanQuery(natural[1]);
 
-  const arabic = text.match(
-    /^(?:هل يمكنك |ممكن )?(?:ابحث(?:\s+في\s+الويب)?(?:\s+عن)?|بحث(?:\s+عن)?|ما(?:\s+هو)?)\s+(.+)$/i,
-  );
-  if (arabic?.[1]?.trim()) {
-    return arabic[1].trim().replace(/[؟?]+$/, "").trim() || null;
-  }
+  const arabic = text.match(/^(?:هل يمكنك |ممكن )?(?:ابحث|بحث)(?:\s+عن)?\s+(.+)$/i);
+  if (arabic?.[1]) return cleanQuery(arabic[1]);
 
-  // Bare domain / URL as the whole message → treat as lookup.
-  if (looksLikeUrlOrDomain(text)) {
-    return text.trim();
-  }
-
+  if (looksLikeUrlOrDomain(text)) return text.trim();
   return null;
+}
+
+async function fetchLookup(url: string): Promise<string> {
+  if (isTauriRuntime()) {
+    return invoke<string>("desktop_web_fetch", { url });
+  }
+  const response = await fetch(url, {
+    headers: { Accept: "text/html,application/json" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.text();
+}
+
+function decodeEntities(value: string): string {
+  return value
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;|&#x27;/gi, "'")
+    .replace(/&#(\d+);/g, (_, n) => {
+      const code = Number(n);
+      return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+    })
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function duckDuckGoInstant(query: string): Promise<ClientWebSearchResult> {
@@ -58,14 +100,8 @@ async function duckDuckGoInstant(query: string): Promise<ClientWebSearchResult> 
   url.searchParams.set("no_html", "1");
   url.searchParams.set("skip_disambig", "1");
 
-  const response = await fetch(url.toString(), {
-    headers: { Accept: "application/json" },
-    signal: AbortSignal.timeout(12_000),
-  });
-  if (!response.ok) {
-    throw new Error(`DuckDuckGo HTTP ${response.status}`);
-  }
-  const data = (await response.json()) as {
+  const raw = await fetchLookup(url.toString());
+  const data = JSON.parse(raw) as {
     AbstractText?: string;
     AbstractURL?: string;
     AbstractSource?: string;
@@ -140,28 +176,14 @@ async function fetchPageSnippet(target: string): Promise<ClientWebSearchResult> 
   };
 }
 
-async function duckDuckGoHtml(query: string): Promise<ClientWebSearchResult> {
-  const url = new URL("https://html.duckduckgo.com/html/");
-  url.searchParams.set("q", query);
-  const response = await fetch(url.toString(), {
-    headers: {
-      Accept: "text/html",
-      "User-Agent": "ArrabStudio/0.12 (+desktop web search)",
-    },
-    signal: AbortSignal.timeout(15_000),
-  });
-  if (!response.ok) {
-    throw new Error(`DuckDuckGo HTML HTTP ${response.status}`);
-  }
-  const html = await response.text();
-  const sources: Array<{ title: string; url: string }> = [];
-  const re =
-    /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/(?:a|td|div)/gi;
+function parseDuckDuckGoHtml(html: string, query: string): ClientWebSearchResult {
+  const sources: Array<{ title: string; url: string; snippet?: string }> = [];
+  const anchorRe = /<a\b([^>]*\bclass="result__a"[^>]*)>([\s\S]*?)<\/a>/gi;
   let match: RegExpExecArray | null;
-  while ((match = re.exec(html)) && sources.length < 6) {
-    const href = match[1] ?? "";
-    const title = (match[2] ?? "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
-    const snippet = (match[3] ?? "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+  while ((match = anchorRe.exec(html)) && sources.length < 8) {
+    const attrs = match[1] ?? "";
+    const href = attrs.match(/\bhref="([^"]+)"/i)?.[1] ?? "";
+    const title = decodeEntities(match[2] ?? "");
     let finalUrl = href;
     try {
       const parsed = new URL(href, "https://duckduckgo.com");
@@ -171,24 +193,24 @@ async function duckDuckGoHtml(query: string): Promise<ClientWebSearchResult> {
       // keep href
     }
     if (!title || !finalUrl.startsWith("http")) continue;
-    sources.push({ title, url: finalUrl });
-    if (snippet) {
-      // attach snippet into title temporarily via separate list below
-      (sources[sources.length - 1] as { title: string; url: string; snippet?: string }).snippet =
-        snippet;
-    }
+    const after = html.slice(match.index, match.index + 1200);
+    const snippet = decodeEntities(after.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i)?.[1] ?? "");
+    sources.push({ title, url: finalUrl, snippet: snippet || undefined });
   }
 
-  const lines = sources.map((item) => {
-    const extra = (item as { snippet?: string }).snippet;
-    return `• ${item.title}${extra ? ` — ${extra}` : ""}\n  ${item.url}`;
-  });
-
+  const lines = sources.map((item) => `• ${item.title}${item.snippet ? ` — ${item.snippet}` : ""}\n  ${item.url}`);
   return {
     query,
-    summary: lines.join("\n") || "No HTML results.",
-    sources: sources.map(({ title, url }) => ({ title, url })),
+    summary: lines.join("\n"),
+    sources,
   };
+}
+
+async function duckDuckGoHtml(query: string): Promise<ClientWebSearchResult> {
+  const url = new URL("https://html.duckduckgo.com/html/");
+  url.searchParams.set("q", query);
+  const html = await fetchLookup(url.toString());
+  return parseDuckDuckGoHtml(html, query);
 }
 
 export function formatWebSearchForModel(result: ClientWebSearchResult): string {
@@ -196,11 +218,11 @@ export function formatWebSearchForModel(result: ClientWebSearchResult): string {
     .slice(0, 8)
     .map((item, index) => `${index + 1}. ${item.title} — ${item.url}`);
   return [
-    "LIVE WEB SEARCH (already fetched for you — answer from this, do not claim you cannot search):",
+    "LIVE WEB SEARCH (already fetched from the public web — this is the search result):",
     `Query: ${result.query}`,
     result.summary ? `Findings:\n${result.summary}` : "Findings: (none)",
     sourceLines.length ? `Sources:\n${sourceLines.join("\n")}` : null,
-    "Write a clear helpful reply now using these findings. Mention key URLs.",
+    "Answer now from these findings. Name the pages and include the URLs. Do not call web_search again. Do not say the search returned nothing when findings are listed above.",
   ]
     .filter(Boolean)
     .join("\n\n");
@@ -254,13 +276,12 @@ export async function clientSearchWeb(query: string): Promise<ClientWebSearchRes
     }
   }
 
-  const hasMeat = parts.some((part) => part.summary.trim().length > 40 || part.sources.length > 0);
-  if (!hasMeat) {
-    try {
-      parts.push(await duckDuckGoHtml(q));
-    } catch {
-      // continue
-    }
+  try {
+    const html = await duckDuckGoHtml(q);
+    if (html.sources.length > 0) parts.unshift(html);
+    else parts.push(html);
+  } catch {
+    // instant answer may still be enough
   }
 
   if (parts.length === 0) {

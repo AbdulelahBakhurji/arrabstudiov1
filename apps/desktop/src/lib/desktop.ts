@@ -36,6 +36,21 @@ export async function setAlwaysOnTop(enabled: boolean): Promise<void> {
   await invoke("set_always_on_top", { enabled });
 }
 
+export type NativeMenuState = {
+  locale: string;
+  organization: boolean;
+  signedIn: boolean;
+  alwaysOnTop: boolean;
+  extendedThinking: boolean;
+  /** Translated sidebar destinations, in ⌘1…⌘9 order. */
+  nav: string[];
+};
+
+export async function syncNativeMenu(state: NativeMenuState): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invoke("native_menu_sync", { state });
+}
+
 export async function openExternalUrl(url: string): Promise<void> {
   const resolved = resolvePublicApiUrl(url);
   if (isTauriRuntime()) {

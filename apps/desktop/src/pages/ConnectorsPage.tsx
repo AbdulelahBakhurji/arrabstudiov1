@@ -1,18 +1,27 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, LoaderCircle, LogIn, Plus, RefreshCw, X } from "lucide-react";
+import { Cable, Check, LoaderCircle, LogIn, Search, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import type { ConnectorProvider, ConnectorPublic } from "@arrab/shared";
-import { ConnectorBrandIcon } from "@/components/ConnectorBrandIcon";
+import { ConnectorMark } from "@/components/ConnectorMark";
 import { Surface } from "@/components/StudioFrame";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError } from "@/lib/api";
 import { openExternalUrl } from "@/lib/desktop";
 import { notifyStudio } from "@/lib/notify";
 import { isTauriRuntime } from "@/lib/terminal";
+import {
+  execSshConfig,
+  listSshConfigHosts,
+  readSshIdentity,
+  rememberLocalSsh,
+  type SshConfigHost,
+} from "@/lib/ssh-config";
 import { useFamilyProfile } from "@/lib/use-family-profile";
 import { useSignedInAccount } from "@/lib/use-signed-in-account";
 import { clearGuestLocalMode } from "@/lib/guest-mode";
+import { applyControlCatalog, useControlConnectors } from "@/lib/control-connectors";
 import { cn } from "@/lib/utils";
+import { WhatsAppConnectSheet } from "@/components/companions/WhatsAppConnectSheet";
 
 function isOAuthBrowserProvider(provider: ConnectorProvider | null | undefined): boolean {
   return (
@@ -73,8 +82,14 @@ const CATALOG: Array<{
   },
   {
     provider: "whatsapp",
-    name: "WhatsApp Business",
-    blurb: "Official Cloud API — receive customer messages and reply from agents",
+    name: "WhatsApp Business (Cloud API)",
+    blurb: "Official Meta Cloud API — for a verified Business number",
+    available: true,
+  },
+  {
+    provider: "openwa",
+    name: "WhatsApp",
+    blurb: "Link your own WhatsApp with a QR code — your companions read and reply for you",
     available: true,
   },
   {
@@ -169,6 +184,8 @@ const TOKEN_HINTS: Record<ConnectorProvider, string> = {
   email: "Use an app password (not your normal login).",
   whatsapp:
     "Permanent Cloud API token from Meta. Also need Phone number ID and WhatsApp Business Account ID.",
+  openwa:
+    "WhatsApp runs on the Arrab API server. Use Connect WhatsApp (QR) — no API keys on this device.",
   github: "Sign in with GitHub in your browser. Arrab never sees your GitHub password.",
   gitlab: "Sign in with GitLab in your browser. Arrab never sees your GitLab password.",
   bitbucket: "Sign in with Bitbucket in your browser. Arrab never sees your Bitbucket password.",
@@ -185,7 +202,8 @@ const TOKEN_HINTS: Record<ConnectorProvider, string> = {
 };
 
 export function ConnectorsPage() {
-  const { t } = useLanguage();
+  const { t, locale } = useLanguage();
+  const controlCatalog = useControlConnectors();
   const { signedIn } = useSignedInAccount();
   const { active: familyActive, isChild } = useFamilyProfile();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -210,8 +228,16 @@ export function ConnectorsPage() {
   const [sshAuthMode, setSshAuthMode] = useState<"password" | "key">("password");
   const [sshPrivateKey, setSshPrivateKey] = useState("");
   const [sshPassphrase, setSshPassphrase] = useState("");
+  const [sshHosts, setSshHosts] = useState<SshConfigHost[]>([]);
+  const [sshAlias, setSshAlias] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState<"all" | "comms" | "dev" | "workspace" | "health" | "markets">("all");
   const [whatsappPhoneNumberId, setWhatsappPhoneNumberId] = useState("");
   const [whatsappWabaId, setWhatsappWabaId] = useState("");
+  const [openwaBaseUrl, setOpenwaBaseUrl] = useState("http://127.0.0.1:2785");
+  const [openwaSessionId, setOpenwaSessionId] = useState("arrab");
+  const [openWaQuickOpen, setOpenWaQuickOpen] = useState(false);
+  const [openWaServerManaged, setOpenWaServerManaged] = useState(false);
   const oauthPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const panelRef = useRef<HTMLElement | null>(null);
 
@@ -239,13 +265,21 @@ export function ConnectorsPage() {
 
   useEffect(() => {
     load();
+    if (!signedIn) {
+      setOpenWaServerManaged(false);
+      return;
+    }
+    void arrabApi
+      .meta()
+      .then((meta) => setOpenWaServerManaged(meta.connectors?.openWaServerManaged === true))
+      .catch(() => setOpenWaServerManaged(false));
     return () => {
       if (oauthPollRef.current) {
         clearInterval(oauthPollRef.current);
         oauthPollRef.current = null;
       }
     };
-  }, [load, familyActive?.id]);
+  }, [load, familyActive?.id, signedIn]);
 
   // When browser OAuth finishes, deep link focuses the app — refresh connectors.
   useEffect(() => {
@@ -302,6 +336,35 @@ export function ConnectorsPage() {
     }
   }, [emailPreset]);
 
+  useEffect(() => {
+    if (selected !== "ssh" || !panelOpen) return;
+    let cancelled = false;
+    void listSshConfigHosts().then((hosts) => {
+      if (!cancelled) setSshHosts(hosts);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected, panelOpen]);
+
+  async function chooseSshHost(host: SshConfigHost) {
+    setSshAlias(host.alias);
+    setSshHost(host.hostName || host.alias);
+    setSshPort(host.port || "22");
+    setSshUsername(host.user);
+    setLabel(host.alias);
+    setError(null);
+    if (host.identityFile) {
+      const key = await readSshIdentity(host.identityFile);
+      if (key) {
+        setSshAuthMode("key");
+        setSshPrivateKey(key);
+        return;
+      }
+    }
+    setSshAuthMode("key");
+  }
+
   const canSubmit = useMemo(() => {
     if (busy || !selected || isOAuthBrowserProvider(selected)) return false;
     if (selected === "email") {
@@ -311,6 +374,7 @@ export function ConnectorsPage() {
       return bitbucketUser.trim().length > 0 && token.trim().length >= 8;
     }
     if (selected === "ssh") {
+      if (sshAlias) return true;
       if (!sshHost.trim() || !sshUsername.trim()) return false;
       if (sshAuthMode === "password") return token.trim().length >= 1;
       return sshPrivateKey.trim().length >= 32 || token.trim().length >= 32;
@@ -322,12 +386,17 @@ export function ConnectorsPage() {
         whatsappWabaId.trim().length > 0
       );
     }
+    if (selected === "openwa") {
+      if (openWaServerManaged) return false;
+      return token.trim().length >= 8 && openwaBaseUrl.trim().length > 8 && openwaSessionId.trim().length >= 3;
+    }
     return token.trim().length >= 8;
   }, [
     bitbucketUser,
     busy,
     emailAddress,
     selected,
+    sshAlias,
     sshAuthMode,
     sshHost,
     sshPrivateKey,
@@ -335,11 +404,19 @@ export function ConnectorsPage() {
     token,
     whatsappPhoneNumberId,
     whatsappWabaId,
+    openwaBaseUrl,
+    openwaSessionId,
+    openWaServerManaged,
   ]);
 
   function openProvider(provider: ConnectorProvider) {
     setSelected(provider);
     setError(null);
+    if (provider === "openwa" && openWaServerManaged && signedIn && !isChild) {
+      setPanelOpen(false);
+      setOpenWaQuickOpen(true);
+      return;
+    }
     if (isOAuthBrowserProvider(provider)) {
       setPanelOpen(false);
       void onConnectBrowserOAuth(provider as BrowserOAuthProvider);
@@ -469,6 +546,47 @@ export function ConnectorsPage() {
         config.username = bitbucketUser.trim();
       } else if (selected === "gitlab" && gitlabBase.trim()) {
         config.baseUrl = gitlabBase.trim();
+      } else if (selected === "ssh" && sshAlias) {
+        const host = sshHosts.find((item) => item.alias === sshAlias);
+        if (!host) throw new Error(t("sshConfigFailed"));
+        const probe = await execSshConfig(sshAlias, "echo arrab-ok");
+        if (probe.code !== 0 || !probe.stdout.includes("arrab-ok")) {
+          throw new Error(probe.stderr.trim() || t("sshConfigFailed"));
+        }
+        rememberLocalSsh(host);
+        if (sshPrivateKey.trim().length >= 32 && sshUsername.trim() && sshHost.trim()) {
+          try {
+            await arrabApi.connectConnector({
+              provider: "ssh",
+              token: sshPrivateKey.trim(),
+              label: label.trim() || host.alias,
+              config: {
+                host: sshHost.trim(),
+                port: sshPort.trim() || "22",
+                username: sshUsername.trim(),
+                authMode: "key",
+                privateKey: sshPrivateKey.trim(),
+                ...(sshPassphrase.trim() ? { passphrase: sshPassphrase.trim() } : {}),
+              },
+            });
+          } catch {
+            // The Mac already connected with ~/.ssh/config. Cloud copy is optional.
+          }
+        }
+        setToken("");
+        setLabel("");
+        setSshAlias(null);
+        setSshPrivateKey("");
+        setSshPassphrase("");
+        setPanelOpen(false);
+        load();
+        void notifyStudio({
+          kind: "connector",
+          title: t("connectorConnectedNotify"),
+          body: host.alias,
+          href: "/connectors",
+        });
+        return;
       } else if (selected === "ssh") {
         config.host = sshHost.trim();
         config.port = sshPort.trim() || "22";
@@ -481,6 +599,9 @@ export function ConnectorsPage() {
       } else if (selected === "whatsapp") {
         config.phone_number_id = whatsappPhoneNumberId.trim();
         config.waba_id = whatsappWabaId.trim();
+      } else if (selected === "openwa") {
+        config.base_url = openwaBaseUrl.trim();
+        config.session_id = openwaSessionId.trim();
       }
       const connectToken =
         selected === "ssh" && sshAuthMode === "key" ? sshPrivateKey.trim() || token : token;
@@ -493,6 +614,8 @@ export function ConnectorsPage() {
             ? emailAddress.trim()
             : selected === "ssh"
               ? `${sshUsername.trim()}@${sshHost.trim()}`
+              : selected === "openwa"
+                ? `WhatsApp ${openwaSessionId.trim()}`
               : selected === "whatsapp"
                 ? `WhatsApp ${whatsappPhoneNumberId.trim()}`
                 : null),
@@ -513,11 +636,17 @@ export function ConnectorsPage() {
         href: "/connectors",
       });
     } catch (err: unknown) {
-      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+      const message =
+        err instanceof ApiRequestError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : t("apiUnavailable");
+      setError(message);
       void notifyStudio({
         kind: "connector",
         title: t("connectorFailedNotify"),
-        body: err instanceof ApiRequestError ? err.message : t("apiUnavailable"),
+        body: message,
         href: "/connectors",
       });
     } finally {
@@ -525,7 +654,52 @@ export function ConnectorsPage() {
     }
   }
 
-  const selectedMeta = CATALOG.find((item) => item.provider === selected);
+  const catalog = useMemo(
+    () =>
+      applyControlCatalog(CATALOG, controlCatalog, {
+        arabic: locale === "ar",
+        keep: new Set(
+          items.filter((entry) => entry.status === "connected").map((entry) => entry.provider),
+        ),
+      }),
+    [controlCatalog, items, locale],
+  );
+  const selectedMeta = catalog.find((item) => item.provider === selected);
+  const categoryOf: Partial<Record<ConnectorProvider, "comms" | "dev" | "workspace" | "health" | "markets">> = {
+    gmail: "comms",
+    outlook: "comms",
+    email: "comms",
+    slack: "comms",
+    whatsapp: "comms",
+    openwa: "comms",
+    github: "dev",
+    gitlab: "dev",
+    bitbucket: "dev",
+    ssh: "dev",
+    linear: "workspace",
+    notion: "workspace",
+    google_drive: "workspace",
+    google_calendar: "workspace",
+    figma: "workspace",
+    whoop: "health",
+    fitbit: "health",
+    finnhub: "markets",
+  };
+  const visibleCatalog = catalog.filter((item) => {
+    if (category !== "all" && categoryOf[item.provider] !== category) return false;
+    const needle = query.trim().toLowerCase();
+    if (!needle) return true;
+    return `${item.name} ${item.blurb} ${item.provider}`.toLowerCase().includes(needle);
+  });
+  const linkedCount = items.filter((entry) => entry.status === "connected").length;
+  const filters = [
+    ["all", "flsFilterAll"],
+    ["comms", "flsFilterComms"],
+    ["dev", "flsFilterDev"],
+    ["workspace", "flsFilterWorkspace"],
+    ["health", "flsFilterHealth"],
+    ["markets", "flsFilterMarkets"],
+  ] as const;
 
   if (!signedIn) {
     return (
@@ -551,109 +725,75 @@ export function ConnectorsPage() {
     <Surface className="connector-shell">
       <div className="connector-atmosphere pointer-events-none absolute inset-0" />
       <div className="relative mx-auto max-w-[1100px] px-6 py-8 lg:px-10">
-        <header className="connector-header mb-8">
-          <div className="min-w-0">
-            <p className="text-[10px] uppercase tracking-[0.2em] text-neutral-500">{t("connectors")}</p>
-            <h1 className="mt-1 text-[clamp(1.85rem,3vw,2.35rem)] font-medium tracking-[-0.035em] text-[var(--color-foreground)]">
-              {t("connectorsTitle")}
-            </h1>
-            <p className="mt-2 max-w-2xl text-[14px] leading-relaxed text-[var(--color-muted)]">
+        <div className="fls-stage-head">
+          <div>
+            <p className="fls-eyebrow">
+              <Cable size={12} strokeWidth={1.9} />
+              {t("flsConnectorKicker")}
+            </p>
+            <h1 className="fls-title is-compact">{t("connectorsTitle")}</h1>
+            <p className="fls-lead">
               {familyActive
                 ? t("connectorsBodySeat").replace("{name}", familyActive.displayName)
                 : t("connectorsBody")}
             </p>
-            {isChild ? (
-              <p className="mt-2 max-w-2xl text-[13px] leading-relaxed text-[var(--color-warn)]">
-                {t("connectorsBodyKidHint")}
-              </p>
-            ) : null}
+            {isChild ? <p className="fls-lead">{t("connectorsBodyKidHint")}</p> : null}
           </div>
-        </header>
-
-        {error ? <p className="mb-4 text-sm text-red-300/90">{error}</p> : null}
-
-        <div className="connector-grid">
-          {CATALOG.map((item) => {
-            const linked = items.find(
-              (entry) => entry.provider === item.provider && entry.status === "connected",
-            );
-            const busyThis = busy && selected === item.provider;
-            return (
-              <article
-                key={item.provider}
-                className={cn(
-                  "connector-row",
-                  selected === item.provider && panelOpen && "is-active",
-                  linked && "is-connected",
-                )}
-              >
-                <button
-                  type="button"
-                  className="connector-row-main"
-                  onClick={() => openProvider(item.provider)}
-                >
-                  <span className={cn("connector-brand", `brand-${item.provider}`)}>
-                    <ConnectorBrandIcon provider={item.provider} size={20} />
-                  </span>
-                  <span className="connector-copy min-w-0">
-                    <span className="connector-title">
-                      <span>{item.name}</span>
-                      {linked ? (
-                        <span className="connector-verified" title={t("verifiedConnector")}>
-                          <Check className="size-2.5" strokeWidth={3} />
-                        </span>
-                      ) : null}
-                    </span>
-                    <span className="connector-blurb">
-                      {linked
-                        ? t("connectorConnectedAs").replace(
-                            "{account}",
-                            linked.accountLabel || linked.provider,
-                          )
-                        : item.blurb}
-                    </span>
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="connector-add"
-                  disabled={busyThis}
-                  aria-label={
-                    linked
-                      ? `${t("reconnect")} ${item.name}`
-                      : `${t("connect")} ${item.name}`
-                  }
-                  onClick={() => openProvider(item.provider)}
-                >
-                  {busyThis ? (
-                    <LoaderCircle className="size-4 animate-spin" />
-                  ) : linked ? (
-                    <RefreshCw className="size-4" strokeWidth={2.2} />
-                  ) : (
-                    <Plus className="size-4" strokeWidth={2.2} />
-                  )}
-                </button>
-              </article>
-            );
-          })}
+          {linkedCount > 0 ? (
+            <span className="fls-count-pill">
+              <Check size={13} strokeWidth={2.4} />
+              {t("flsLinkedCount").replace("{count}", String(linkedCount))}
+            </span>
+          ) : null}
         </div>
 
+        <div className="fls-toolbar">
+          <label className="fls-search">
+            <Search size={15} strokeWidth={1.8} />
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder={t("flsSearchConnectors")}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          <div className="fls-filters" role="tablist">
+            {filters.map(([key, labelKey]) => (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={category === key}
+                className={cn("fls-filter", category === key && "is-on")}
+                onClick={() => setCategory(key)}
+              >
+                {t(labelKey)}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {error ? <p className="fls-error">{error}</p> : null}
+
         {panelOpen && selected && !isOAuthBrowserProvider(selected) ? (
-          <section ref={panelRef} className="connector-panel mt-6">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h2 className="text-sm font-medium text-[var(--color-foreground)]">
-                  {t("connect")} {selectedMeta?.name ?? selected}
-                </h2>
-                <p className="mt-1 text-xs text-[var(--color-muted)]">{TOKEN_HINTS[selected]}</p>
+          <section ref={panelRef} className="fls-connect-panel">
+            <div className="fls-connect-panel-head">
+              <span className="fls-card-mark is-small">
+                <ConnectorMark provider={selected} logoUrl={selectedMeta?.logoUrl} size={18} />
+              </span>
+              <div className="fls-connect-panel-title">
+                <strong>{selectedMeta?.name ?? selected}</strong>
+                <span>{TOKEN_HINTS[selected]}</span>
               </div>
               <button
                 type="button"
-                className="connector-add"
+                className="fls-icon-btn"
                 aria-label={t("cancel")}
                 onClick={() => setPanelOpen(false)}
               >
-                <X className="size-4" />
+                <X size={15} strokeWidth={1.8} />
               </button>
             </div>
 
@@ -764,13 +904,50 @@ export function ConnectorsPage() {
                 </>
               ) : selected === "ssh" ? (
                 <>
+                  <div className="grid gap-2">
+                    <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                      {t("sshConfigTitle")}
+                    </span>
+                    <p className="text-xs text-neutral-500">{t("sshConfigHint")}</p>
+                    {sshHosts.length === 0 ? (
+                      <p className="text-xs text-neutral-500">{t("sshConfigEmpty")}</p>
+                    ) : (
+                      <div className="grid max-h-48 gap-1.5 overflow-y-auto">
+                        {sshHosts.map((host) => {
+                          const active = sshAlias === host.alias;
+                          const detail = [host.user, host.hostName].filter(Boolean).join("@");
+                          return (
+                            <button
+                              key={host.alias}
+                              type="button"
+                              onClick={() => void chooseSshHost(host)}
+                              className={cn(
+                                "flex items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left",
+                                active
+                                  ? "border-white/30 bg-white/[0.06] text-white"
+                                  : "border-white/10 text-neutral-300 hover:bg-white/[0.04]",
+                              )}
+                            >
+                              <span className="min-w-0">
+                                <span className="block truncate text-sm">{host.alias}</span>
+                                <span className="block truncate text-[11px] text-neutral-500">
+                                  {detail}
+                                  {host.port && host.port !== "22" ? `:${host.port}` : ""}
+                                </span>
+                              </span>
+                              {active ? <Check className="size-3.5 shrink-0" /> : null}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
                   <div className="grid gap-3 sm:grid-cols-[1fr_7rem]">
                     <label className="grid gap-1.5">
                       <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
                         Host
                       </span>
                       <input
-                        required
                         value={sshHost}
                         onChange={(event) => setSshHost(event.target.value)}
                         className="field"
@@ -795,8 +972,7 @@ export function ConnectorsPage() {
                     <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
                       Username
                     </span>
-                    <input
-                      required
+                      <input
                       value={sshUsername}
                       onChange={(event) => setSshUsername(event.target.value)}
                       className="field"
@@ -841,7 +1017,6 @@ export function ConnectorsPage() {
                           Private key
                         </span>
                         <textarea
-                          required
                           value={sshPrivateKey}
                           onChange={(event) => setSshPrivateKey(event.target.value)}
                           className="field min-h-[120px] font-mono text-[12px]"
@@ -862,6 +1037,66 @@ export function ConnectorsPage() {
                           placeholder="Key passphrase"
                         />
                       </label>
+                    </>
+                  )}
+                </>
+              ) : selected === "openwa" ? (
+                <>
+                  {signedIn && !isChild ? (
+                    <button
+                      type="button"
+                      className="btn-primary w-full justify-center"
+                      onClick={() => setOpenWaQuickOpen(true)}
+                    >
+                      {t("whatsappConnectQuick")}
+                    </button>
+                  ) : null}
+                  <p className="text-[11px] text-neutral-500">
+                    {openWaServerManaged ? t("whatsappConnectServerManaged") : t("whatsappConnectBody")}
+                  </p>
+                  {openWaServerManaged ? null : (
+                    <>
+                      <label className="grid gap-1.5">
+                        <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                          Gateway URL
+                        </span>
+                        <input
+                          required
+                          value={openwaBaseUrl}
+                          onChange={(event) => setOpenwaBaseUrl(event.target.value)}
+                          className="field font-mono text-[12px]"
+                          placeholder="http://127.0.0.1:2785"
+                        />
+                      </label>
+                      <label className="grid gap-1.5">
+                        <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                          Session name
+                        </span>
+                        <input
+                          required
+                          value={openwaSessionId}
+                          onChange={(event) => setOpenwaSessionId(event.target.value)}
+                          className="field font-mono text-[12px]"
+                          placeholder="arrab"
+                        />
+                      </label>
+                      <label className="grid gap-1.5">
+                        <span className="text-[11px] uppercase tracking-[0.14em] text-neutral-500">
+                          API key
+                        </span>
+                        <input
+                          required
+                          type="password"
+                          autoComplete="off"
+                          value={token}
+                          onChange={(event) => setToken(event.target.value)}
+                          className="field font-mono text-[12px]"
+                          placeholder="Gateway API key"
+                        />
+                      </label>
+                      <p className="text-[11px] text-neutral-500">
+                        Local dev only — production uses the Arrab API server gateway.
+                      </p>
                     </>
                   )}
                 </>
@@ -967,16 +1202,86 @@ export function ConnectorsPage() {
               <button
                 type="submit"
                 disabled={!canSubmit}
-                className="home-btn-primary mt-2 inline-flex h-10 items-center gap-2 px-5 text-sm font-medium disabled:opacity-40"
+                className="fls-cta is-compact"
               >
-                {busy ? <LoaderCircle className="size-4 animate-spin" /> : <Plus className="size-4" />}
-                {t("connect")}
+                {busy ? <LoaderCircle className="fls-spin" size={14} /> : t("flsConnect")}
               </button>
             </form>
           </section>
         ) : null}
 
+        {visibleCatalog.length > 0 ? (
+          <div className="fls-connect-grid">
+            {visibleCatalog.map((item, index) => {
+              const linked = items.find(
+                (entry) => entry.provider === item.provider && entry.status === "connected",
+              );
+              const busyThis = busy && selected === item.provider;
+              const active = selected === item.provider && panelOpen;
+              const oauth = isOAuthBrowserProvider(item.provider);
+              return (
+                <button
+                  key={item.provider}
+                  type="button"
+                  className={cn(
+                    "fls-card",
+                    linked && "is-done",
+                    active && "is-active",
+                    item.featured && "is-featured",
+                  )}
+                  style={{ animationDelay: `${Math.min(index, 12) * 28}ms` }}
+                  disabled={busyThis}
+                  onClick={() => openProvider(item.provider)}
+                >
+                  <span className="fls-card-mark">
+                    <ConnectorMark provider={item.provider} logoUrl={item.logoUrl} size={20} />
+                  </span>
+                  <span className="fls-card-copy">
+                    <strong>
+                      {item.name}
+                      {item.featured ? (
+                        <em className="fls-featured">{t("flsFeatured")}</em>
+                      ) : null}
+                    </strong>
+                    <span>
+                      {linked
+                        ? t("connectorConnectedAs").replace(
+                            "{account}",
+                            linked.accountLabel || linked.provider,
+                          )
+                        : item.blurb}
+                    </span>
+                  </span>
+                  <span className="fls-card-side">
+                    {busyThis ? (
+                      <LoaderCircle className="fls-spin" size={15} />
+                    ) : linked ? (
+                      <span className="fls-tag is-success">
+                        <Check size={11} strokeWidth={2.6} />
+                        {t("flsConnected")}
+                      </span>
+                    ) : (
+                      <span className="fls-tag">{oauth ? t("flsOAuthBadge") : t("flsTokenBadge")}</span>
+                    )}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <p className="fls-empty">{t("flsNoMatches")}</p>
+        )}
+
       </div>
+      {openWaQuickOpen ? (
+        <WhatsAppConnectSheet
+          onClose={() => setOpenWaQuickOpen(false)}
+          onConnected={() => {
+            setOpenWaQuickOpen(false);
+            load();
+          }}
+        />
+      ) : null}
     </Surface>
   );
 }

@@ -20,6 +20,7 @@ export default defineConfig({
         main: path.resolve(import.meta.dirname, "index.html"),
         "agent-presence": path.resolve(import.meta.dirname, "agent-presence.html"),
         "companion-panel": path.resolve(import.meta.dirname, "companion-panel.html"),
+        updater: path.resolve(import.meta.dirname, "updater.html"),
       },
     },
   },

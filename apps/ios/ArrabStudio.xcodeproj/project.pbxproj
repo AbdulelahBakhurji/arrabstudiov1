@@ -7,52 +7,132 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		FBE26106751C5AC8A88987BD /* ArrabStudioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A3A8CF00E202494814F84D3 /* ArrabStudioApp.swift */; };
-		BDBF625EE8F3981C004F15AD /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C21F2D20CB8734DF78FCB47 /* RootView.swift */; };
-		284ADDA5E3FE5EBDD00D9913 /* AdaptiveLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = F941CC01F2E3E3F0EEC5C667 /* AdaptiveLayout.swift */; };
-		5480CBE13C42BAC2A1EAA088 /* AppSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50E3F90755A9E968A185BE7E /* AppSession.swift */; };
-		5F46066043954E9D9FC3B12D /* KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8B1A4901135F0499268C265 /* KeychainStore.swift */; };
-		6F08C95776A017195704CA52 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 258EE20C0E4132A464168C1B /* Theme.swift */; };
-		91F815B82B8A50EF20729F2C /* AuthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3F20B2E59DBF5A676B544EF8 /* AuthView.swift */; };
-		2DA253828302BDBBF143FB40 /* BrainHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6B64472B391D2FA1B8B7E29 /* BrainHomeView.swift */; };
-		71091A571982D74BDC04911D /* ChatHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B46C898097853CDC409AF931 /* ChatHomeView.swift */; };
-		16C86A1B59F7ADF49CD118A3 /* LinkPCView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D51EE61E6441C6E4CC7F2D12 /* LinkPCView.swift */; };
-		B4306C57305B93F14113FB69 /* PCLinkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AFDE8C41E2E25B6F66735C03 /* PCLinkStore.swift */; };
-		1B8EDBEDDFB196A60EF6A1A9 /* MeHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 56E7E3BEB638BFB3880D8A47 /* MeHomeView.swift */; };
-		CF7A7298FBBEE0FA249A8554 /* StudioHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A738B363B9504312D0A51F1F /* StudioHomeView.swift */; };
-		100CD197F2D2D2C366928A0F /* TasksHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DB57C095CC3E24EE8CD9920 /* TasksHomeView.swift */; };
-		715FA08B4AE0DD1153456199 /* ArrabAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = C989444CF2DAC132864B0393 /* ArrabAPIClient.swift */; };
-		FBC3A7F34F67D88C040CE7E1 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE6437D04076B515D167CF51 /* Models.swift */; };
-		A088F412D12B43C7C57575EA /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = F482F04DAFA798B58B78759D /* Assets.xcassets */; };
-		9C45C3BA153FF0CE0DFC6E52 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 9B6D06C53012AEFF5B93EAF5 /* PrivacyInfo.xcprivacy */; };
+		00C77DD3BB2990F08E290D1C /* ArrabStudio/Core/NotificationPrefsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5C16FA69DD9BF31EB9C53B2 /* ArrabStudio/Core/NotificationPrefsStore.swift */; };
+		041EC224E794029FF9D31260 /* ArrabStudio/Features/LinkPC/LinkPCView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50F39688A26EE83A5F6914D7 /* ArrabStudio/Features/LinkPC/LinkPCView.swift */; };
+		08BB845D9E015ABCC8FC12FC /* ArrabStudio/Core/ManagedClient/ManagedStrings.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6AA7BDC6CD2FDE5424F44A88 /* ArrabStudio/Core/ManagedClient/ManagedStrings.swift */; };
+		094749CAB8FEFA4C6BFF31F8 /* ArrabStudio/Core/ManagedClient/CommandRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D6D4814D7F24BDFF1A11889 /* ArrabStudio/Core/ManagedClient/CommandRouter.swift */; };
+		10A4F56B7D0ABC106B978AEC /* ArrabStudio/Features/Updates/ManagedViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD6474FE3F6F866E9738A150 /* ArrabStudio/Features/Updates/ManagedViews.swift */; };
+		1518F73619A544768F7D0E67 /* ArrabStudio/App/RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF539E72AF7911F7581E0918 /* ArrabStudio/App/RootView.swift */; };
+		15C75C4AFB25640914024324 /* ArrabStudio/Features/Chat/ChatHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1B589E63E3413688139B6BA /* ArrabStudio/Features/Chat/ChatHomeView.swift */; };
+		C4D5E6F708192A3B4C5D6E80 /* ArrabStudio/Features/Chat/PhoneCompanionTools.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4D5E6F708192A3B4C5D6E7F /* ArrabStudio/Features/Chat/PhoneCompanionTools.swift */; };
+		D5E6F708192A3B4C5D6E7F81 /* ArrabStudio/Features/Shell/DeskPages.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5E6F708192A3B4C5D6E7F80 /* ArrabStudio/Features/Shell/DeskPages.swift */; };
+		B7C8D9E0F1A243B4C5D6E702 /* ArrabStudio/Features/Shell/TripSafe.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7C8D9E0F1A243B4C5D6E701 /* ArrabStudio/Features/Shell/TripSafe.swift */; };
+		183F0017EE4D9136E286E027 /* ArrabStudio/Networking/Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB648B456C4F6A1F9604B5DC /* ArrabStudio/Networking/Models.swift */; };
+		3B7F2F4D39D21B7ABC239AAB /* ArrabStudio/Features/Studio/StudioHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AF61F6537181AF675FC8F303 /* ArrabStudio/Features/Studio/StudioHomeView.swift */; };
+		A1D5E6F708192A3B4C5D6E91 /* ArrabStudio/Features/Studio/DesignStudio.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1D5E6F708192A3B4C5D6E90 /* ArrabStudio/Features/Studio/DesignStudio.swift */; };
+		A1F0E1C2D3B4A59687786902 /* ArrabStudio/Core/SpeechDictation.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1F0E1C2D3B4A59687786901 /* ArrabStudio/Core/SpeechDictation.swift */; };
+		B8C9D0E1F2A3948576A5B6C8 /* ArrabStudio/Features/Me/FamilyHouseholdView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8C9D0E1F2A3948576A5B6C7 /* ArrabStudio/Features/Me/FamilyHouseholdView.swift */; };
+		C9D0E1F2A3948576A5B6C8D0 /* ArrabStudio/Features/Me/FamilyNotices.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9D0E1F2A3948576A5B6C7CF /* ArrabStudio/Features/Me/FamilyNotices.swift */; };
+		3D653B0A34535F121480559C /* ArrabStudio/Features/Shell/IndividualsShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02C3DC4D463245B1E3A02558 /* ArrabStudio/Features/Shell/IndividualsShellView.swift */; };
+		485CE41E2B64E3ABD78888C4 /* ArrabStudio/Features/LinkPC/PCLinkStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36A481357ABB712119E0EBE1 /* ArrabStudio/Features/LinkPC/PCLinkStore.swift */; };
+		495C059FA974829FA770E4DA /* ArrabStudio/Core/AppSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC1DB194E78DBCAF2B3F20CC /* ArrabStudio/Core/AppSession.swift */; };
+		5722C0B81C3F80F04A611A18 /* ArrabStudio/Features/Sessions/SessionsHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A6E2015AB40E7CB16A0D4D9 /* ArrabStudio/Features/Sessions/SessionsHomeView.swift */; };
+		574C1E507D69BFA12855CEFB /* ArrabStudio/Features/Shell/ShellRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36B2AF076CB0339768D892BB /* ArrabStudio/Features/Shell/ShellRouter.swift */; };
+		670B2A71F76038369519A3CC /* ArrabStudio/Core/ManagedClient/ManagedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = C4219C364F20B0073C2087A8 /* ArrabStudio/Core/ManagedClient/ManagedModels.swift */; };
+		6B823772BCA4A40A55024091 /* ArrabStudio/Core/L10n.swift in Sources */ = {isa = PBXBuildFile; fileRef = 77954B0870C11FB510C1594A /* ArrabStudio/Core/L10n.swift */; };
+		741F55E0D4197591F2B27CB9 /* ArrabStudio/Core/AdaptiveLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DB805FE0E9390349826DF0D /* ArrabStudio/Core/AdaptiveLayout.swift */; };
+		83B0D42BCB371F2183304B05 /* ArrabStudio/Core/ManagedClient/SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA38D8A476ABFEF3E188D42B /* ArrabStudio/Core/ManagedClient/SyncService.swift */; };
+		840518AC760C95931584C482 /* ArrabStudio/Features/Shell/CompanionModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 35D1FE40E1390AF27CACF895 /* ArrabStudio/Features/Shell/CompanionModels.swift */; };
+		88802F707A24090A131C8ECC /* ArrabStudio/Features/Me/MeHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B908F7D60D1EF513E7A5B5D /* ArrabStudio/Features/Me/MeHomeView.swift */; };
+		8CBFA27B29AE5C60A9FE10A7 /* ArrabStudio/Features/Companions/CompanionsManageView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E94D2813F6AA1387BED821CA /* ArrabStudio/Features/Companions/CompanionsManageView.swift */; };
+		8DC0E75CD2B91B66552302F7 /* ArrabStudio/Features/Settings/SettingsHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 852F4A0226FCDDC592F9FE85 /* ArrabStudio/Features/Settings/SettingsHomeView.swift */; };
+		8E0F8CED417B03CE7EEC1D8E /* Config/PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 3177456217D3DE5559B531F2 /* Config/PrivacyInfo.xcprivacy */; };
+		8E94C8E837485E3DF6C26520 /* ArrabStudio/Features/Board/BoardHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A966EDA2744F4B97ABD87B92 /* ArrabStudio/Features/Board/BoardHomeView.swift */; };
+		9484BBF7A9540D1046E08C8F /* ArrabStudio/Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 73A857FE3DD6FA00755B82A9 /* ArrabStudio/Resources/Assets.xcassets */; };
+		993BDDCFF0334DD304B117FB /* ArrabStudio/Features/Shell/CompanionStripView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DBF565989BE4157324346471 /* ArrabStudio/Features/Shell/CompanionStripView.swift */; };
+		9CE91C5F4450C69D87DE18AC /* ArrabStudio/Features/Brain/BrainHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B251DE65CF69A57F011E597 /* ArrabStudio/Features/Brain/BrainHomeView.swift */; };
+		A11B22C33D44E55F6677889A /* ArrabStudio/Features/Roles/RolesHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A11B22C33D44E55F66778899 /* ArrabStudio/Features/Roles/RolesHomeView.swift */; };
+		A1970A27F08FB760CFF29978 /* ArrabStudio/Features/Settings/AppleComplianceViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 860A3A9A206923513E221E6F /* ArrabStudio/Features/Settings/AppleComplianceViews.swift */; };
+		B1FB3EF7146AF8CE1CBEB949 /* ArrabStudio/Core/AppPolish.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E9A76F5DC31F3A9524D52C /* ArrabStudio/Core/AppPolish.swift */; };
+		B22C33D44E55F66778899A02 /* ArrabStudio/Features/Models/ModelsHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B22C33D44E55F66778899A01 /* ArrabStudio/Features/Models/ModelsHomeView.swift */; };
+		B51854E3E8DCEA55F34560BB /* ArrabStudio/Core/NetworkMonitor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7898AF95F0D0B37AA29E9031 /* ArrabStudio/Core/NetworkMonitor.swift */; };
+		B5B01857E83E4A56DF9C3C27 /* ArrabStudio/Core/ManagedClient/PushRegistration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6875EE17BB9FD7B924EA4F6C /* ArrabStudio/Core/ManagedClient/PushRegistration.swift */; };
+		BAAA31AA0CDC2A57C4C718A8 /* ArrabStudio/App/ArrabStudioApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71C5551CC96C13261E3272C2 /* ArrabStudio/App/ArrabStudioApp.swift */; };
+		C562011F6072FA2D7F1185FD /* ArrabStudio/Networking/ArrabAPIClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = BA0A73534BD4BAE62D70A022 /* ArrabStudio/Networking/ArrabAPIClient.swift */; };
+		CC0C00C535368CC6CE1C03DF /* ArrabStudio/Features/Auth/AuthView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 641A87589FE05549C764209C /* ArrabStudio/Features/Auth/AuthView.swift */; };
+		D6670FEACA5572ADBB179946 /* ArrabStudio/Core/KeychainStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C458D80D05D6726DB65EF9B /* ArrabStudio/Core/KeychainStore.swift */; };
+		D7910C5E6FF0421B31CDFEDC /* ArrabStudio/Features/Shell/StudioDrawer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 607AB5A84C4EC6DD10838D05 /* ArrabStudio/Features/Shell/StudioDrawer.swift */; };
+		E56B39D461287E0AD59B6FB4 /* ArrabStudio/Features/Tasks/TasksHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FAA254C69EBEFEC0600A74BA /* ArrabStudio/Features/Tasks/TasksHomeView.swift */; };
+		ED5E916C9D7BEF0031BE8F92 /* ArrabStudio/Core/ManagedClient/DeviceIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58149C7BC0850D0445BB48E0 /* ArrabStudio/Core/ManagedClient/DeviceIdentity.swift */; };
+		F79AB522D3F30BAD3BC04801 /* ArrabStudio/Features/Connectors/ConnectorsHomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 99FB952C101D1C251BF3408B /* ArrabStudio/Features/Connectors/ConnectorsHomeView.swift */; };
+		F7C0141043653910295A9DA4 /* ArrabStudio/Core/Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 617AC5236BB9248F3FBB6D8A /* ArrabStudio/Core/Theme.swift */; };
+		A1B2C3D4E5F60718293A4B02 /* ArrabStudio/Core/AgentAlerts.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B01 /* ArrabStudio/Core/AgentAlerts.swift */; };
+		A1B2C3D4E5F60718293A4B04 /* ArrabStudio/Core/AgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B03 /* ArrabStudio/Core/AgentActivityAttributes.swift */; };
+		A1B2C3D4E5F60718293A4B06 /* ArrabStudio/Core/AgentLive.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B05 /* ArrabStudio/Core/AgentLive.swift */; };
+		A1B2C3D4E5F60718293A4B08 /* AgentWidget/AgentWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B07 /* AgentWidget/AgentWidget.swift */; };
+		A1B2C3D4E5F60718293A4B09 /* ArrabStudio/Core/AgentActivityAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B03 /* ArrabStudio/Core/AgentActivityAttributes.swift */; };
+		C41A0F017F0A7C0010000A02 /* ArrabStudio/Core/ArrabFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = C41A0F017F0A7C0010000A01 /* ArrabStudio/Core/ArrabFont.swift */; };
+		C41A0F017F0A7C0010000A03 /* ArrabStudio/Core/ArrabFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = C41A0F017F0A7C0010000A01 /* ArrabStudio/Core/ArrabFont.swift */; };
+		C41A0F017F0A7C0010000A05 /* ArrabStudio/Resources/Fonts/Cairo.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C41A0F017F0A7C0010000A04 /* ArrabStudio/Resources/Fonts/Cairo.ttf */; };
+		C41A0F017F0A7C0010000A06 /* ArrabStudio/Resources/Fonts/Cairo.ttf in Resources */ = {isa = PBXBuildFile; fileRef = C41A0F017F0A7C0010000A04 /* ArrabStudio/Resources/Fonts/Cairo.ttf */; };
+		A1B2C3D4E5F60718293A4B10 /* AgentWidget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B0B /* AgentWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		4A3A8CF00E202494814F84D3 /* ArrabStudioApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/App/ArrabStudioApp.swift"; sourceTree = SOURCE_ROOT; };
-		0C21F2D20CB8734DF78FCB47 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/App/RootView.swift"; sourceTree = SOURCE_ROOT; };
-		F941CC01F2E3E3F0EEC5C667 /* AdaptiveLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Core/AdaptiveLayout.swift"; sourceTree = SOURCE_ROOT; };
-		50E3F90755A9E968A185BE7E /* AppSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Core/AppSession.swift"; sourceTree = SOURCE_ROOT; };
-		B8B1A4901135F0499268C265 /* KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Core/KeychainStore.swift"; sourceTree = SOURCE_ROOT; };
-		258EE20C0E4132A464168C1B /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Core/Theme.swift"; sourceTree = SOURCE_ROOT; };
-		3F20B2E59DBF5A676B544EF8 /* AuthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/Auth/AuthView.swift"; sourceTree = SOURCE_ROOT; };
-		C6B64472B391D2FA1B8B7E29 /* BrainHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/Brain/BrainHomeView.swift"; sourceTree = SOURCE_ROOT; };
-		B46C898097853CDC409AF931 /* ChatHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/Chat/ChatHomeView.swift"; sourceTree = SOURCE_ROOT; };
-		D51EE61E6441C6E4CC7F2D12 /* LinkPCView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/LinkPC/LinkPCView.swift"; sourceTree = SOURCE_ROOT; };
-		AFDE8C41E2E25B6F66735C03 /* PCLinkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/LinkPC/PCLinkStore.swift"; sourceTree = SOURCE_ROOT; };
-		56E7E3BEB638BFB3880D8A47 /* MeHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/Me/MeHomeView.swift"; sourceTree = SOURCE_ROOT; };
-		A738B363B9504312D0A51F1F /* StudioHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/Studio/StudioHomeView.swift"; sourceTree = SOURCE_ROOT; };
-		7DB57C095CC3E24EE8CD9920 /* TasksHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Features/Tasks/TasksHomeView.swift"; sourceTree = SOURCE_ROOT; };
-		C989444CF2DAC132864B0393 /* ArrabAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Networking/ArrabAPIClient.swift"; sourceTree = SOURCE_ROOT; };
-		AE6437D04076B515D167CF51 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "ArrabStudio/Networking/Models.swift"; sourceTree = SOURCE_ROOT; };
-		F482F04DAFA798B58B78759D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "ArrabStudio/Resources/Assets.xcassets"; sourceTree = SOURCE_ROOT; };
-		E3591370414ECFC5903F2A2F /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config/Info.plist; sourceTree = SOURCE_ROOT; };
-		9B6D06C53012AEFF5B93EAF5 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
-		A14184912903BA75642EFD96 /* ArrabStudio.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Config/ArrabStudio.entitlements; sourceTree = SOURCE_ROOT; };
-		6551A2D26B8CAC0FB451BA33 /* ArrabStudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ArrabStudio.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		02C3DC4D463245B1E3A02558 /* ArrabStudio/Features/Shell/IndividualsShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Shell/IndividualsShellView.swift; sourceTree = SOURCE_ROOT; };
+		2B908F7D60D1EF513E7A5B5D /* ArrabStudio/Features/Me/MeHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Me/MeHomeView.swift; sourceTree = SOURCE_ROOT; };
+		2C458D80D05D6726DB65EF9B /* ArrabStudio/Core/KeychainStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/KeychainStore.swift; sourceTree = SOURCE_ROOT; };
+		2D6D4814D7F24BDFF1A11889 /* ArrabStudio/Core/ManagedClient/CommandRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/ManagedClient/CommandRouter.swift; sourceTree = SOURCE_ROOT; };
+		3177456217D3DE5559B531F2 /* Config/PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config/PrivacyInfo.xcprivacy; sourceTree = SOURCE_ROOT; };
+		35D1FE40E1390AF27CACF895 /* ArrabStudio/Features/Shell/CompanionModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Shell/CompanionModels.swift; sourceTree = SOURCE_ROOT; };
+		36A481357ABB712119E0EBE1 /* ArrabStudio/Features/LinkPC/PCLinkStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/LinkPC/PCLinkStore.swift; sourceTree = SOURCE_ROOT; };
+		36B2AF076CB0339768D892BB /* ArrabStudio/Features/Shell/ShellRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Shell/ShellRouter.swift; sourceTree = SOURCE_ROOT; };
+		4A6E2015AB40E7CB16A0D4D9 /* ArrabStudio/Features/Sessions/SessionsHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Sessions/SessionsHomeView.swift; sourceTree = SOURCE_ROOT; };
+		50F39688A26EE83A5F6914D7 /* ArrabStudio/Features/LinkPC/LinkPCView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/LinkPC/LinkPCView.swift; sourceTree = SOURCE_ROOT; };
+		58149C7BC0850D0445BB48E0 /* ArrabStudio/Core/ManagedClient/DeviceIdentity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/ManagedClient/DeviceIdentity.swift; sourceTree = SOURCE_ROOT; };
+		5B251DE65CF69A57F011E597 /* ArrabStudio/Features/Brain/BrainHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Brain/BrainHomeView.swift; sourceTree = SOURCE_ROOT; };
+		607AB5A84C4EC6DD10838D05 /* ArrabStudio/Features/Shell/StudioDrawer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Shell/StudioDrawer.swift; sourceTree = SOURCE_ROOT; };
+		617AC5236BB9248F3FBB6D8A /* ArrabStudio/Core/Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/Theme.swift; sourceTree = SOURCE_ROOT; };
+		641A87589FE05549C764209C /* ArrabStudio/Features/Auth/AuthView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Auth/AuthView.swift; sourceTree = SOURCE_ROOT; };
+		6875EE17BB9FD7B924EA4F6C /* ArrabStudio/Core/ManagedClient/PushRegistration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/ManagedClient/PushRegistration.swift; sourceTree = SOURCE_ROOT; };
+		6AA7BDC6CD2FDE5424F44A88 /* ArrabStudio/Core/ManagedClient/ManagedStrings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/ManagedClient/ManagedStrings.swift; sourceTree = SOURCE_ROOT; };
+		71C5551CC96C13261E3272C2 /* ArrabStudio/App/ArrabStudioApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/App/ArrabStudioApp.swift; sourceTree = SOURCE_ROOT; };
+		73A857FE3DD6FA00755B82A9 /* ArrabStudio/Resources/Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = ArrabStudio/Resources/Assets.xcassets; sourceTree = SOURCE_ROOT; };
+		77954B0870C11FB510C1594A /* ArrabStudio/Core/L10n.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/L10n.swift; sourceTree = SOURCE_ROOT; };
+		7898AF95F0D0B37AA29E9031 /* ArrabStudio/Core/NetworkMonitor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/NetworkMonitor.swift; sourceTree = SOURCE_ROOT; };
+		852F4A0226FCDDC592F9FE85 /* ArrabStudio/Features/Settings/SettingsHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Settings/SettingsHomeView.swift; sourceTree = SOURCE_ROOT; };
+		860A3A9A206923513E221E6F /* ArrabStudio/Features/Settings/AppleComplianceViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Settings/AppleComplianceViews.swift; sourceTree = SOURCE_ROOT; };
+		99FB952C101D1C251BF3408B /* ArrabStudio/Features/Connectors/ConnectorsHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Connectors/ConnectorsHomeView.swift; sourceTree = SOURCE_ROOT; };
+		9DB805FE0E9390349826DF0D /* ArrabStudio/Core/AdaptiveLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/AdaptiveLayout.swift; sourceTree = SOURCE_ROOT; };
+		A11B22C33D44E55F66778899 /* ArrabStudio/Features/Roles/RolesHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Roles/RolesHomeView.swift; sourceTree = SOURCE_ROOT; };
+		A5C16FA69DD9BF31EB9C53B2 /* ArrabStudio/Core/NotificationPrefsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/NotificationPrefsStore.swift; sourceTree = SOURCE_ROOT; };
+		A966EDA2744F4B97ABD87B92 /* ArrabStudio/Features/Board/BoardHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Board/BoardHomeView.swift; sourceTree = SOURCE_ROOT; };
+		AF61F6537181AF675FC8F303 /* ArrabStudio/Features/Studio/StudioHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Studio/StudioHomeView.swift; sourceTree = SOURCE_ROOT; };
+		A1D5E6F708192A3B4C5D6E90 /* ArrabStudio/Features/Studio/DesignStudio.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Studio/DesignStudio.swift; sourceTree = SOURCE_ROOT; };
+		A1F0E1C2D3B4A59687786901 /* ArrabStudio/Core/SpeechDictation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/SpeechDictation.swift; sourceTree = SOURCE_ROOT; };
+		B8C9D0E1F2A3948576A5B6C7 /* ArrabStudio/Features/Me/FamilyHouseholdView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Me/FamilyHouseholdView.swift; sourceTree = SOURCE_ROOT; };
+		C9D0E1F2A3948576A5B6C7CF /* ArrabStudio/Features/Me/FamilyNotices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Me/FamilyNotices.swift; sourceTree = SOURCE_ROOT; };
+		B22C33D44E55F66778899A01 /* ArrabStudio/Features/Models/ModelsHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Models/ModelsHomeView.swift; sourceTree = SOURCE_ROOT; };
+		BA0A73534BD4BAE62D70A022 /* ArrabStudio/Networking/ArrabAPIClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Networking/ArrabAPIClient.swift; sourceTree = SOURCE_ROOT; };
+		BD6474FE3F6F866E9738A150 /* ArrabStudio/Features/Updates/ManagedViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Updates/ManagedViews.swift; sourceTree = SOURCE_ROOT; };
+		C4219C364F20B0073C2087A8 /* ArrabStudio/Core/ManagedClient/ManagedModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/ManagedClient/ManagedModels.swift; sourceTree = SOURCE_ROOT; };
+		CA38D8A476ABFEF3E188D42B /* ArrabStudio/Core/ManagedClient/SyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/ManagedClient/SyncService.swift; sourceTree = SOURCE_ROOT; };
+		CB648B456C4F6A1F9604B5DC /* ArrabStudio/Networking/Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Networking/Models.swift; sourceTree = SOURCE_ROOT; };
+		CC1DB194E78DBCAF2B3F20CC /* ArrabStudio/Core/AppSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/AppSession.swift; sourceTree = SOURCE_ROOT; };
+		D1B589E63E3413688139B6BA /* ArrabStudio/Features/Chat/ChatHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Chat/ChatHomeView.swift; sourceTree = SOURCE_ROOT; };
+		C4D5E6F708192A3B4C5D6E7F /* ArrabStudio/Features/Chat/PhoneCompanionTools.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Chat/PhoneCompanionTools.swift; sourceTree = SOURCE_ROOT; };
+		D5E6F708192A3B4C5D6E7F80 /* ArrabStudio/Features/Shell/DeskPages.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Shell/DeskPages.swift; sourceTree = SOURCE_ROOT; };
+		B7C8D9E0F1A243B4C5D6E701 /* ArrabStudio/Features/Shell/TripSafe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Shell/TripSafe.swift; sourceTree = SOURCE_ROOT; };
+		D1E9A76F5DC31F3A9524D52C /* ArrabStudio/Core/AppPolish.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/AppPolish.swift; sourceTree = SOURCE_ROOT; };
+		D442574FCE285D0EC26EA535 /* Config/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config/Info.plist; sourceTree = SOURCE_ROOT; };
+		D7E36DA6A83A1403FDF7E1D7 /* ArrabStudio.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ArrabStudio.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		DBF565989BE4157324346471 /* ArrabStudio/Features/Shell/CompanionStripView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Shell/CompanionStripView.swift; sourceTree = SOURCE_ROOT; };
+		DF539E72AF7911F7581E0918 /* ArrabStudio/App/RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/App/RootView.swift; sourceTree = SOURCE_ROOT; };
+		E94D2813F6AA1387BED821CA /* ArrabStudio/Features/Companions/CompanionsManageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Companions/CompanionsManageView.swift; sourceTree = SOURCE_ROOT; };
+		FAA254C69EBEFEC0600A74BA /* ArrabStudio/Features/Tasks/TasksHomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Features/Tasks/TasksHomeView.swift; sourceTree = SOURCE_ROOT; };
+		FD972243E0CA50A3DDD81432 /* Config/ArrabStudio.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Config/ArrabStudio.entitlements; sourceTree = SOURCE_ROOT; };
+		A1B2C3D4E5F60718293A4B01 /* ArrabStudio/Core/AgentAlerts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/AgentAlerts.swift; sourceTree = SOURCE_ROOT; };
+		A1B2C3D4E5F60718293A4B03 /* ArrabStudio/Core/AgentActivityAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/AgentActivityAttributes.swift; sourceTree = SOURCE_ROOT; };
+		A1B2C3D4E5F60718293A4B05 /* ArrabStudio/Core/AgentLive.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/AgentLive.swift; sourceTree = SOURCE_ROOT; };
+		C41A0F017F0A7C0010000A01 /* ArrabStudio/Core/ArrabFont.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ArrabStudio/Core/ArrabFont.swift; sourceTree = SOURCE_ROOT; };
+		C41A0F017F0A7C0010000A04 /* ArrabStudio/Resources/Fonts/Cairo.ttf */ = {isa = PBXFileReference; lastKnownFileType = file; path = ArrabStudio/Resources/Fonts/Cairo.ttf; sourceTree = SOURCE_ROOT; };
+		A1B2C3D4E5F60718293A4B07 /* AgentWidget/AgentWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentWidget/AgentWidget.swift; sourceTree = SOURCE_ROOT; };
+		A1B2C3D4E5F60718293A4B0A /* AgentWidget/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = AgentWidget/Info.plist; sourceTree = SOURCE_ROOT; };
+		A1B2C3D4E5F60718293A4B0B /* AgentWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = AgentWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
-		4FC2EDC708CEFC25F2978550 /* Frameworks */ = {
+		6076C4A95637559853E24634 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -62,88 +142,154 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
-		E515BC4DACBC04ABB469D715 = {
+		B69C2EC5E5D840F74967F693 = {
 			isa = PBXGroup;
 			children = (
-				3475C1D47D541CFD47389D4D /* ArrabStudio */,
-				7BA47944EBEE654DFAFDACD1 /* Config */,
-				B9314E478DDA8C690D8F7A40 /* Products */,
+				F23A61434F04231988DAA5AA /* ArrabStudio */,
+				A1B2C3D4E5F60718293A4B17 /* AgentWidget */,
+				CC6929FF0842D843FB5F3A09 /* Config */,
+				C8DB2510732E8DF532C60742 /* Products */,
 			);
 			sourceTree = "<group>";
 		};
-		3475C1D47D541CFD47389D4D /* ArrabStudio */ = {
+		C8DB2510732E8DF532C60742 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				4A3A8CF00E202494814F84D3 /* ArrabStudioApp.swift */,
-				0C21F2D20CB8734DF78FCB47 /* RootView.swift */,
-				F941CC01F2E3E3F0EEC5C667 /* AdaptiveLayout.swift */,
-				50E3F90755A9E968A185BE7E /* AppSession.swift */,
-				B8B1A4901135F0499268C265 /* KeychainStore.swift */,
-				258EE20C0E4132A464168C1B /* Theme.swift */,
-				3F20B2E59DBF5A676B544EF8 /* AuthView.swift */,
-				C6B64472B391D2FA1B8B7E29 /* BrainHomeView.swift */,
-				B46C898097853CDC409AF931 /* ChatHomeView.swift */,
-				D51EE61E6441C6E4CC7F2D12 /* LinkPCView.swift */,
-				AFDE8C41E2E25B6F66735C03 /* PCLinkStore.swift */,
-				56E7E3BEB638BFB3880D8A47 /* MeHomeView.swift */,
-				A738B363B9504312D0A51F1F /* StudioHomeView.swift */,
-				7DB57C095CC3E24EE8CD9920 /* TasksHomeView.swift */,
-				C989444CF2DAC132864B0393 /* ArrabAPIClient.swift */,
-				AE6437D04076B515D167CF51 /* Models.swift */,
-				F482F04DAFA798B58B78759D /* Assets.xcassets */,
+				D7E36DA6A83A1403FDF7E1D7 /* ArrabStudio.app */,
+				A1B2C3D4E5F60718293A4B0B /* AgentWidget.appex */,
 			);
-			name = ArrabStudio;
+			name = Products;
 			sourceTree = "<group>";
 		};
-		7BA47944EBEE654DFAFDACD1 /* Config */ = {
+		CC6929FF0842D843FB5F3A09 /* Config */ = {
 			isa = PBXGroup;
 			children = (
-				E3591370414ECFC5903F2A2F /* Info.plist */,
-				9B6D06C53012AEFF5B93EAF5 /* PrivacyInfo.xcprivacy */,
-				A14184912903BA75642EFD96 /* ArrabStudio.entitlements */,
+				D442574FCE285D0EC26EA535 /* Config/Info.plist */,
+				3177456217D3DE5559B531F2 /* Config/PrivacyInfo.xcprivacy */,
+				FD972243E0CA50A3DDD81432 /* Config/ArrabStudio.entitlements */,
 			);
 			name = Config;
 			sourceTree = "<group>";
 		};
-		B9314E478DDA8C690D8F7A40 /* Products */ = {
+		F23A61434F04231988DAA5AA /* ArrabStudio */ = {
 			isa = PBXGroup;
 			children = (
-				6551A2D26B8CAC0FB451BA33 /* ArrabStudio.app */,
+				71C5551CC96C13261E3272C2 /* ArrabStudio/App/ArrabStudioApp.swift */,
+				DF539E72AF7911F7581E0918 /* ArrabStudio/App/RootView.swift */,
+				9DB805FE0E9390349826DF0D /* ArrabStudio/Core/AdaptiveLayout.swift */,
+				D1E9A76F5DC31F3A9524D52C /* ArrabStudio/Core/AppPolish.swift */,
+				CC1DB194E78DBCAF2B3F20CC /* ArrabStudio/Core/AppSession.swift */,
+				2C458D80D05D6726DB65EF9B /* ArrabStudio/Core/KeychainStore.swift */,
+				77954B0870C11FB510C1594A /* ArrabStudio/Core/L10n.swift */,
+				2D6D4814D7F24BDFF1A11889 /* ArrabStudio/Core/ManagedClient/CommandRouter.swift */,
+				58149C7BC0850D0445BB48E0 /* ArrabStudio/Core/ManagedClient/DeviceIdentity.swift */,
+				C4219C364F20B0073C2087A8 /* ArrabStudio/Core/ManagedClient/ManagedModels.swift */,
+				6AA7BDC6CD2FDE5424F44A88 /* ArrabStudio/Core/ManagedClient/ManagedStrings.swift */,
+				6875EE17BB9FD7B924EA4F6C /* ArrabStudio/Core/ManagedClient/PushRegistration.swift */,
+				CA38D8A476ABFEF3E188D42B /* ArrabStudio/Core/ManagedClient/SyncService.swift */,
+				7898AF95F0D0B37AA29E9031 /* ArrabStudio/Core/NetworkMonitor.swift */,
+				A5C16FA69DD9BF31EB9C53B2 /* ArrabStudio/Core/NotificationPrefsStore.swift */,
+				617AC5236BB9248F3FBB6D8A /* ArrabStudio/Core/Theme.swift */,
+				C41A0F017F0A7C0010000A01 /* ArrabStudio/Core/ArrabFont.swift */,
+				A1F0E1C2D3B4A59687786901 /* ArrabStudio/Core/SpeechDictation.swift */,
+				A1B2C3D4E5F60718293A4B01 /* ArrabStudio/Core/AgentAlerts.swift */,
+				A1B2C3D4E5F60718293A4B03 /* ArrabStudio/Core/AgentActivityAttributes.swift */,
+				A1B2C3D4E5F60718293A4B05 /* ArrabStudio/Core/AgentLive.swift */,
+				641A87589FE05549C764209C /* ArrabStudio/Features/Auth/AuthView.swift */,
+				A966EDA2744F4B97ABD87B92 /* ArrabStudio/Features/Board/BoardHomeView.swift */,
+				5B251DE65CF69A57F011E597 /* ArrabStudio/Features/Brain/BrainHomeView.swift */,
+				D1B589E63E3413688139B6BA /* ArrabStudio/Features/Chat/ChatHomeView.swift */,
+				C4D5E6F708192A3B4C5D6E7F /* ArrabStudio/Features/Chat/PhoneCompanionTools.swift */,
+				E94D2813F6AA1387BED821CA /* ArrabStudio/Features/Companions/CompanionsManageView.swift */,
+				A11B22C33D44E55F66778899 /* ArrabStudio/Features/Roles/RolesHomeView.swift */,
+				B22C33D44E55F66778899A01 /* ArrabStudio/Features/Models/ModelsHomeView.swift */,
+				99FB952C101D1C251BF3408B /* ArrabStudio/Features/Connectors/ConnectorsHomeView.swift */,
+				50F39688A26EE83A5F6914D7 /* ArrabStudio/Features/LinkPC/LinkPCView.swift */,
+				36A481357ABB712119E0EBE1 /* ArrabStudio/Features/LinkPC/PCLinkStore.swift */,
+				2B908F7D60D1EF513E7A5B5D /* ArrabStudio/Features/Me/MeHomeView.swift */,
+				B8C9D0E1F2A3948576A5B6C7 /* ArrabStudio/Features/Me/FamilyHouseholdView.swift */,
+				C9D0E1F2A3948576A5B6C7CF /* ArrabStudio/Features/Me/FamilyNotices.swift */,
+				4A6E2015AB40E7CB16A0D4D9 /* ArrabStudio/Features/Sessions/SessionsHomeView.swift */,
+				860A3A9A206923513E221E6F /* ArrabStudio/Features/Settings/AppleComplianceViews.swift */,
+				852F4A0226FCDDC592F9FE85 /* ArrabStudio/Features/Settings/SettingsHomeView.swift */,
+				35D1FE40E1390AF27CACF895 /* ArrabStudio/Features/Shell/CompanionModels.swift */,
+				DBF565989BE4157324346471 /* ArrabStudio/Features/Shell/CompanionStripView.swift */,
+				02C3DC4D463245B1E3A02558 /* ArrabStudio/Features/Shell/IndividualsShellView.swift */,
+				D5E6F708192A3B4C5D6E7F80 /* ArrabStudio/Features/Shell/DeskPages.swift */,
+				B7C8D9E0F1A243B4C5D6E701 /* ArrabStudio/Features/Shell/TripSafe.swift */,
+				36B2AF076CB0339768D892BB /* ArrabStudio/Features/Shell/ShellRouter.swift */,
+				607AB5A84C4EC6DD10838D05 /* ArrabStudio/Features/Shell/StudioDrawer.swift */,
+				AF61F6537181AF675FC8F303 /* ArrabStudio/Features/Studio/StudioHomeView.swift */,
+				A1D5E6F708192A3B4C5D6E90 /* ArrabStudio/Features/Studio/DesignStudio.swift */,
+				FAA254C69EBEFEC0600A74BA /* ArrabStudio/Features/Tasks/TasksHomeView.swift */,
+				BD6474FE3F6F866E9738A150 /* ArrabStudio/Features/Updates/ManagedViews.swift */,
+				BA0A73534BD4BAE62D70A022 /* ArrabStudio/Networking/ArrabAPIClient.swift */,
+				CB648B456C4F6A1F9604B5DC /* ArrabStudio/Networking/Models.swift */,
+				73A857FE3DD6FA00755B82A9 /* ArrabStudio/Resources/Assets.xcassets */,
+				C41A0F017F0A7C0010000A04 /* ArrabStudio/Resources/Fonts/Cairo.ttf */,
 			);
-			name = Products;
+			name = ArrabStudio;
+			sourceTree = "<group>";
+		};
+		A1B2C3D4E5F60718293A4B17 /* AgentWidget */ = {
+			isa = PBXGroup;
+			children = (
+				A1B2C3D4E5F60718293A4B07 /* AgentWidget/AgentWidget.swift */,
+				A1B2C3D4E5F60718293A4B0A /* AgentWidget/Info.plist */,
+			);
+			name = AgentWidget;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		DFA617094D27FE6CAB45D05D /* ArrabStudio */ = {
+		1C493F0C622EB723A0B1C331 /* ArrabStudio */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 889878D8E8B7CA6B75187E49 /* Build configuration list for PBXNativeTarget "ArrabStudio" */;
+			buildConfigurationList = F3F11919D8E1235DF3B41E53 /* Build configuration list for PBXNativeTarget "ArrabStudio" */;
 			buildPhases = (
-				BE0DDBC61468F2A026002A42 /* Sources */,
-				4FC2EDC708CEFC25F2978550 /* Frameworks */,
-				BD0744CC5802D229BF0DFD4D /* Resources */,
+				BB2F0EE01F798AC8BF604DD2 /* Sources */,
+				6076C4A95637559853E24634 /* Frameworks */,
+				95BE280D54436801A67EA06D /* Resources */,
+				A1B2C3D4E5F60718293A4B11 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A1B2C3D4E5F60718293A4B13 /* PBXTargetDependency */,
+			);
+			name = ArrabStudio;
+			productName = ArrabStudio;
+			productReference = D7E36DA6A83A1403FDF7E1D7 /* ArrabStudio.app */;
+			productType = "com.apple.product-type.application";
+		};
+		A1B2C3D4E5F60718293A4B0C /* AgentWidget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1B2C3D4E5F60718293A4B16 /* Build configuration list for PBXNativeTarget "AgentWidget" */;
+			buildPhases = (
+				A1B2C3D4E5F60718293A4B0D /* Sources */,
+				A1B2C3D4E5F60718293A4B0E /* Frameworks */,
+				A1B2C3D4E5F60718293A4B0F /* Resources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 			);
-			name = ArrabStudio;
-			productName = ArrabStudio;
-			productReference = 6551A2D26B8CAC0FB451BA33 /* ArrabStudio.app */;
-			productType = "com.apple.product-type.application";
+			name = AgentWidget;
+			productName = AgentWidget;
+			productReference = A1B2C3D4E5F60718293A4B0B /* AgentWidget.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		25B391F852FD68CB79FA9908 /* Project object */ = {
+		081264E875046133EA09C0D5 /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 1600;
 				LastUpgradeCheck = 1600;
 			};
-			buildConfigurationList = 0CD3268D6EA59F0F319AB9B3 /* Build configuration list for PBXProject "ArrabStudio" */;
+			buildConfigurationList = 534B3D93E4808DFF27FC0B0D /* Build configuration list for PBXProject "ArrabStudio" */;
 			compatibilityVersion = "Xcode 14.0";
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
@@ -152,56 +298,215 @@
 				Base,
 				ar,
 			);
-			mainGroup = E515BC4DACBC04ABB469D715;
-			productRefGroup = B9314E478DDA8C690D8F7A40 /* Products */;
+			mainGroup = B69C2EC5E5D840F74967F693;
+			productRefGroup = C8DB2510732E8DF532C60742 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				DFA617094D27FE6CAB45D05D /* ArrabStudio */,
+				1C493F0C622EB723A0B1C331 /* ArrabStudio */,
+				A1B2C3D4E5F60718293A4B0C /* AgentWidget */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		BD0744CC5802D229BF0DFD4D /* Resources */ = {
+		95BE280D54436801A67EA06D /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				A088F412D12B43C7C57575EA /* Assets.xcassets in Resources */,
-				9C45C3BA153FF0CE0DFC6E52 /* PrivacyInfo.xcprivacy in Resources */,
+				9484BBF7A9540D1046E08C8F /* ArrabStudio/Resources/Assets.xcassets in Resources */,
+				8E0F8CED417B03CE7EEC1D8E /* Config/PrivacyInfo.xcprivacy in Resources */,
+				C41A0F017F0A7C0010000A05 /* ArrabStudio/Resources/Fonts/Cairo.ttf in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		BE0DDBC61468F2A026002A42 /* Sources */ = {
+		BB2F0EE01F798AC8BF604DD2 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				FBE26106751C5AC8A88987BD /* ArrabStudioApp.swift in Sources */,
-				BDBF625EE8F3981C004F15AD /* RootView.swift in Sources */,
-				284ADDA5E3FE5EBDD00D9913 /* AdaptiveLayout.swift in Sources */,
-				5480CBE13C42BAC2A1EAA088 /* AppSession.swift in Sources */,
-				5F46066043954E9D9FC3B12D /* KeychainStore.swift in Sources */,
-				6F08C95776A017195704CA52 /* Theme.swift in Sources */,
-				91F815B82B8A50EF20729F2C /* AuthView.swift in Sources */,
-				2DA253828302BDBBF143FB40 /* BrainHomeView.swift in Sources */,
-				71091A571982D74BDC04911D /* ChatHomeView.swift in Sources */,
-				16C86A1B59F7ADF49CD118A3 /* LinkPCView.swift in Sources */,
-				B4306C57305B93F14113FB69 /* PCLinkStore.swift in Sources */,
-				1B8EDBEDDFB196A60EF6A1A9 /* MeHomeView.swift in Sources */,
-				CF7A7298FBBEE0FA249A8554 /* StudioHomeView.swift in Sources */,
-				100CD197F2D2D2C366928A0F /* TasksHomeView.swift in Sources */,
-				715FA08B4AE0DD1153456199 /* ArrabAPIClient.swift in Sources */,
-				FBC3A7F34F67D88C040CE7E1 /* Models.swift in Sources */,
+				BAAA31AA0CDC2A57C4C718A8 /* ArrabStudio/App/ArrabStudioApp.swift in Sources */,
+				1518F73619A544768F7D0E67 /* ArrabStudio/App/RootView.swift in Sources */,
+				741F55E0D4197591F2B27CB9 /* ArrabStudio/Core/AdaptiveLayout.swift in Sources */,
+				B1FB3EF7146AF8CE1CBEB949 /* ArrabStudio/Core/AppPolish.swift in Sources */,
+				495C059FA974829FA770E4DA /* ArrabStudio/Core/AppSession.swift in Sources */,
+				D6670FEACA5572ADBB179946 /* ArrabStudio/Core/KeychainStore.swift in Sources */,
+				6B823772BCA4A40A55024091 /* ArrabStudio/Core/L10n.swift in Sources */,
+				094749CAB8FEFA4C6BFF31F8 /* ArrabStudio/Core/ManagedClient/CommandRouter.swift in Sources */,
+				ED5E916C9D7BEF0031BE8F92 /* ArrabStudio/Core/ManagedClient/DeviceIdentity.swift in Sources */,
+				670B2A71F76038369519A3CC /* ArrabStudio/Core/ManagedClient/ManagedModels.swift in Sources */,
+				08BB845D9E015ABCC8FC12FC /* ArrabStudio/Core/ManagedClient/ManagedStrings.swift in Sources */,
+				B5B01857E83E4A56DF9C3C27 /* ArrabStudio/Core/ManagedClient/PushRegistration.swift in Sources */,
+				83B0D42BCB371F2183304B05 /* ArrabStudio/Core/ManagedClient/SyncService.swift in Sources */,
+				B51854E3E8DCEA55F34560BB /* ArrabStudio/Core/NetworkMonitor.swift in Sources */,
+				00C77DD3BB2990F08E290D1C /* ArrabStudio/Core/NotificationPrefsStore.swift in Sources */,
+				F7C0141043653910295A9DA4 /* ArrabStudio/Core/Theme.swift in Sources */,
+				CC0C00C535368CC6CE1C03DF /* ArrabStudio/Features/Auth/AuthView.swift in Sources */,
+				8E94C8E837485E3DF6C26520 /* ArrabStudio/Features/Board/BoardHomeView.swift in Sources */,
+				9CE91C5F4450C69D87DE18AC /* ArrabStudio/Features/Brain/BrainHomeView.swift in Sources */,
+				15C75C4AFB25640914024324 /* ArrabStudio/Features/Chat/ChatHomeView.swift in Sources */,
+				C4D5E6F708192A3B4C5D6E80 /* ArrabStudio/Features/Chat/PhoneCompanionTools.swift in Sources */,
+				D5E6F708192A3B4C5D6E7F81 /* ArrabStudio/Features/Shell/DeskPages.swift in Sources */,
+				B7C8D9E0F1A243B4C5D6E702 /* ArrabStudio/Features/Shell/TripSafe.swift in Sources */,
+				8CBFA27B29AE5C60A9FE10A7 /* ArrabStudio/Features/Companions/CompanionsManageView.swift in Sources */,
+				F79AB522D3F30BAD3BC04801 /* ArrabStudio/Features/Connectors/ConnectorsHomeView.swift in Sources */,
+				041EC224E794029FF9D31260 /* ArrabStudio/Features/LinkPC/LinkPCView.swift in Sources */,
+				485CE41E2B64E3ABD78888C4 /* ArrabStudio/Features/LinkPC/PCLinkStore.swift in Sources */,
+				88802F707A24090A131C8ECC /* ArrabStudio/Features/Me/MeHomeView.swift in Sources */,
+				B8C9D0E1F2A3948576A5B6C8 /* ArrabStudio/Features/Me/FamilyHouseholdView.swift in Sources */,
+				C9D0E1F2A3948576A5B6C8D0 /* ArrabStudio/Features/Me/FamilyNotices.swift in Sources */,
+				5722C0B81C3F80F04A611A18 /* ArrabStudio/Features/Sessions/SessionsHomeView.swift in Sources */,
+				A1970A27F08FB760CFF29978 /* ArrabStudio/Features/Settings/AppleComplianceViews.swift in Sources */,
+				8DC0E75CD2B91B66552302F7 /* ArrabStudio/Features/Settings/SettingsHomeView.swift in Sources */,
+				840518AC760C95931584C482 /* ArrabStudio/Features/Shell/CompanionModels.swift in Sources */,
+				993BDDCFF0334DD304B117FB /* ArrabStudio/Features/Shell/CompanionStripView.swift in Sources */,
+				3D653B0A34535F121480559C /* ArrabStudio/Features/Shell/IndividualsShellView.swift in Sources */,
+				574C1E507D69BFA12855CEFB /* ArrabStudio/Features/Shell/ShellRouter.swift in Sources */,
+				D7910C5E6FF0421B31CDFEDC /* ArrabStudio/Features/Shell/StudioDrawer.swift in Sources */,
+				3B7F2F4D39D21B7ABC239AAB /* ArrabStudio/Features/Studio/StudioHomeView.swift in Sources */,
+				A1D5E6F708192A3B4C5D6E91 /* ArrabStudio/Features/Studio/DesignStudio.swift in Sources */,
+				E56B39D461287E0AD59B6FB4 /* ArrabStudio/Features/Tasks/TasksHomeView.swift in Sources */,
+				10A4F56B7D0ABC106B978AEC /* ArrabStudio/Features/Updates/ManagedViews.swift in Sources */,
+				C562011F6072FA2D7F1185FD /* ArrabStudio/Networking/ArrabAPIClient.swift in Sources */,
+				183F0017EE4D9136E286E027 /* ArrabStudio/Networking/Models.swift in Sources */,
+				A11B22C33D44E55F6677889A /* ArrabStudio/Features/Roles/RolesHomeView.swift in Sources */,
+				B22C33D44E55F66778899A02 /* ArrabStudio/Features/Models/ModelsHomeView.swift in Sources */,
+				A1B2C3D4E5F60718293A4B02 /* ArrabStudio/Core/AgentAlerts.swift in Sources */,
+				A1B2C3D4E5F60718293A4B04 /* ArrabStudio/Core/AgentActivityAttributes.swift in Sources */,
+				C41A0F017F0A7C0010000A02 /* ArrabStudio/Core/ArrabFont.swift in Sources */,
+				A1F0E1C2D3B4A59687786902 /* ArrabStudio/Core/SpeechDictation.swift in Sources */,
+				A1B2C3D4E5F60718293A4B06 /* ArrabStudio/Core/AgentLive.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXContainerItemProxy section */
+		A1B2C3D4E5F60718293A4B12 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 081264E875046133EA09C0D5 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1B2C3D4E5F60718293A4B0C;
+			remoteInfo = AgentWidget;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A1B2C3D4E5F60718293A4B11 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A1B2C3D4E5F60718293A4B10 /* AgentWidget.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A1B2C3D4E5F60718293A4B0E /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A1B2C3D4E5F60718293A4B0F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C41A0F017F0A7C0010000A06 /* ArrabStudio/Resources/Fonts/Cairo.ttf in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A1B2C3D4E5F60718293A4B0D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1B2C3D4E5F60718293A4B08 /* AgentWidget/AgentWidget.swift in Sources */,
+				A1B2C3D4E5F60718293A4B09 /* ArrabStudio/Core/AgentActivityAttributes.swift in Sources */,
+				C41A0F017F0A7C0010000A03 /* ArrabStudio/Core/ArrabFont.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A1B2C3D4E5F60718293A4B13 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1B2C3D4E5F60718293A4B0C /* AgentWidget */;
+			targetProxy = A1B2C3D4E5F60718293A4B12 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
-		6188BE9AEBD206E205B523E0 /* Debug */ = {
+		6C298994DCBFFEBF9E542EB8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Config/ArrabStudio.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 6D4TT9W663;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = studio.arrab.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		9EBBD34E7915402E69B8C765 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = Config/ArrabStudio.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 6D4TT9W663;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = studio.arrab.ios;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		B835DCF431AB1618A0D3DBD1 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -216,7 +521,7 @@
 			};
 			name = Debug;
 		};
-		968C79A3EA5060ACBA8F8341 /* Release */ = {
+		FC47D2CABAF8453D417DCB4A /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -230,54 +535,52 @@
 			};
 			name = Release;
 		};
-
-		03E7B0CD093E30442548CB91 /* Debug */ = {
+		A1B2C3D4E5F60718293A4B14 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Config/ArrabStudio.entitlements;
+				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
-				ENABLE_PREVIEWS = YES;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 6D4TT9W663;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Config/Info.plist;
+				INFOPLIST_FILE = AgentWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
-				PRODUCT_BUNDLE_IDENTIFIER = studio.arrab.ios;
+				MARKETING_VERSION = 1.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = studio.arrab.ios.agentwidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
-
-		A99D11BA4C2E9175AD77EDBC /* Release */ = {
+		A1B2C3D4E5F60718293A4B15 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				CODE_SIGN_ENTITLEMENTS = Config/ArrabStudio.entitlements;
+				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = "";
-				ENABLE_PREVIEWS = YES;
+				CURRENT_PROJECT_VERSION = 2;
+				DEVELOPMENT_TEAM = 6D4TT9W663;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = Config/Info.plist;
+				INFOPLIST_FILE = AgentWidget/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
-				PRODUCT_BUNDLE_IDENTIFIER = studio.arrab.ios;
+				MARKETING_VERSION = 1.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = studio.arrab.ios.agentwidget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -287,25 +590,34 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		0CD3268D6EA59F0F319AB9B3 /* Build configuration list for PBXProject "ArrabStudio" */ = {
+		534B3D93E4808DFF27FC0B0D /* Build configuration list for PBXProject "ArrabStudio" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				6188BE9AEBD206E205B523E0 /* Debug */,
-				968C79A3EA5060ACBA8F8341 /* Release */,
+				B835DCF431AB1618A0D3DBD1 /* Debug */,
+				FC47D2CABAF8453D417DCB4A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
-		889878D8E8B7CA6B75187E49 /* Build configuration list for PBXNativeTarget "ArrabStudio" */ = {
+		F3F11919D8E1235DF3B41E53 /* Build configuration list for PBXNativeTarget "ArrabStudio" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				03E7B0CD093E30442548CB91 /* Debug */,
-				A99D11BA4C2E9175AD77EDBC /* Release */,
+				6C298994DCBFFEBF9E542EB8 /* Debug */,
+				9EBBD34E7915402E69B8C765 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1B2C3D4E5F60718293A4B16 /* Build configuration list for PBXNativeTarget "AgentWidget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1B2C3D4E5F60718293A4B14 /* Debug */,
+				A1B2C3D4E5F60718293A4B15 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};
-	rootObject = 25B391F852FD68CB79FA9908 /* Project object */;
+	rootObject = 081264E875046133EA09C0D5 /* Project object */;
 }

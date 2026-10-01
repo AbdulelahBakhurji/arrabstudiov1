@@ -75,14 +75,16 @@ class FakeMoyasar implements MoyasarClient {
   };
 
   async createInvoice(input: {
+    amount?: number;
+    currency?: "SAR";
     metadata?: Record<string, string>;
   }): Promise<MoyasarInvoice> {
-    if (input.metadata) {
-      this.invoice = {
-        ...this.invoice,
-        metadata: { ...this.invoice.metadata, ...input.metadata },
-      };
-    }
+    this.invoice = {
+      ...this.invoice,
+      amount: input.amount ?? this.invoice.amount,
+      currency: input.currency ?? this.invoice.currency,
+      metadata: input.metadata ? { ...this.invoice.metadata, ...input.metadata } : this.invoice.metadata,
+    };
     return this.invoice;
   }
 
@@ -206,6 +208,105 @@ describe("billing + releases", () => {
     const confirmed = await billing.confirmInvoice("inv_test");
     expect(confirmed.account?.planId).toBe("pro");
     expect(confirmed.entitlements.pauseMode).toBeNull();
+  });
+
+  it("pauses any plan when tokens run out and unpauses after a paid usage pack", async () => {
+    const context = await createApiContext(testEnv);
+    await context.accounts.connect({
+      email: "boost@arrab.studio",
+      password: "securepass",
+      displayName: "Booster",
+    });
+    const account = (await context.persistence.accounts.get())!;
+    const workspace = await context.persistence.getWorkspace();
+    const spend = (id: string, tokens: number) =>
+      context.persistence.usage.append({
+        id,
+        workspaceId: workspace.workspace.id,
+        conversationId: null,
+        agentId: null,
+        providerId: "bedrock",
+        model: "nova",
+        inputTokens: tokens,
+        outputTokens: 0,
+        createdAt: new Date(new Date(account.periodStart).getTime() + 60_000).toISOString(),
+      });
+
+    await spend("u1", 85_000);
+    let entitlements = await context.accounts.buildEntitlements(account);
+    expect(entitlements.usageLevel).toBe("low");
+    expect(entitlements.overLimit).toBe(false);
+
+    await spend("u2", 15_000);
+    entitlements = await context.accounts.buildEntitlements(account);
+    expect(entitlements).toMatchObject({ overLimit: true, pauseMode: "upgrade_required", usageLevel: "exhausted", canTopUp: true });
+    await expect(context.accounts.assertWithinQuota()).rejects.toThrow(/token limit reached.*Add usage/);
+
+    const moyasar = new FakeMoyasar();
+    moyasar.invoice = { ...moyasar.invoice, id: "inv_boost", amount: 4_500, description: "pack", metadata: {} };
+    const billing = new BillingService(context.accounts, moyasar, testEnv.siteUrl);
+    await expect(billing.checkoutTopUp("boost_999")).rejects.toThrow(/Unknown usage pack/);
+    const checkout = await billing.checkoutTopUp("boost_2m");
+    expect(checkout).toMatchObject({ packId: "boost_2m", tokens: 2_000_000, amountHalalas: 4_500 });
+
+    const paid = await billing.confirmInvoice("inv_boost");
+    expect(paid.entitlements).toMatchObject({
+      overLimit: false,
+      pauseMode: null,
+      planTokenLimit: 100_000,
+      topUpTokens: 2_000_000,
+      tokenLimit: 2_100_000,
+    });
+    await expect(context.accounts.assertWithinQuota()).resolves.toBeTruthy();
+
+    const again = await billing.confirmInvoice("inv_boost");
+    expect(again.entitlements.topUpTokens).toBe(2_000_000);
+
+    moyasar.invoice = { ...moyasar.invoice, amount: 100 };
+    moyasar.invoice.id = "inv_cheap";
+    await expect(billing.confirmInvoice("inv_cheap")).rejects.toThrow(/does not match the usage pack/);
+  });
+
+  it("refuses usage packs while a renewal payment is due", async () => {
+    const context = await createApiContext(testEnv);
+    await context.accounts.connect({ email: "due@arrab.studio", password: "securepass", displayName: "Due" });
+    await context.accounts.applyPlan("pro");
+    const account = (await context.persistence.accounts.get())!;
+    await context.persistence.accounts.upsert({ ...account, subscriptionStatus: "past_due" });
+    const billing = new BillingService(context.accounts, new FakeMoyasar(), testEnv.siteUrl);
+    await expect(billing.checkoutTopUp("boost_500k")).rejects.toThrow(/Renew first/);
+    const entitlements = await context.accounts.buildEntitlements(await context.persistence.accounts.get());
+    expect(entitlements).toMatchObject({ pauseMode: "payment_required", canTopUp: false });
+  });
+
+  it("splits a custom credit amount into 10% DeepSeek, 60% other models, and 30% profit", async () => {
+    const context = await createApiContext(testEnv);
+    await context.accounts.connect({
+      email: "credit@arrab.studio",
+      password: "securepass",
+      displayName: "Credit",
+    });
+    const billing = new BillingService(context.accounts, new FakeMoyasar(), testEnv.siteUrl);
+    const checkout = await billing.checkoutCustomCredit(100);
+    expect(checkout).toMatchObject({
+      amountHalalas: 10_000,
+      deepseekHalalas: 1_000,
+      otherHalalas: 6_000,
+      profitHalalas: 3_000,
+      vatIncluded: false,
+    });
+    expect(checkout.amountHalalas).toBe(
+      checkout.deepseekHalalas + checkout.otherHalalas + checkout.profitHalalas,
+    );
+
+    const paid = await billing.confirmInvoice(checkout.invoiceId);
+    expect(paid.entitlements).toMatchObject({
+      deepseekCreditHalalas: 1_000,
+      otherCreditHalalas: 6_000,
+    });
+    const again = await billing.confirmInvoice(checkout.invoiceId);
+    expect(again.entitlements.deepseekCreditHalalas).toBe(1_000);
+    expect(again.entitlements.otherCreditHalalas).toBe(6_000);
   });
 
   it("lists a published dmg from the releases directory", async () => {

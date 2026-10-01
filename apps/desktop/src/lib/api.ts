@@ -1,3 +1,5 @@
+import { loadChatHistory } from "./chat-history";
+import { bindE2eeApi, isE2eeUnlocked, toPriorMessages } from "./e2ee";
 import type {
   Activity,
   AddTeamMemberRequest,
@@ -24,8 +26,16 @@ import type {
   CreateKnowledgeRequest,
   CreateMemoryRequest,
   DashboardResponse,
+  CompanionDeskView,
+  CrewAction,
+  CrewRuleLevel,
+  CrewView,
+  DeskJob,
+  DeskPace,
+  UpdateDeskPaceRequest,
   EmailMessageDetail,
   ErpCompanion,
+  ControlConnector,
   Goal,
   GithubCommitRequest,
   GithubCommitResponse,
@@ -42,6 +52,8 @@ import type {
   ActivateSubscriptionRequest,
   BillingCheckoutRequest,
   BillingCheckoutResponse,
+  BillingTopUpRequest,
+  BillingTopUpResponse,
   SignInAccountRequest,
   StartWebAuthRequest,
   StartWebAuthResponse,
@@ -55,6 +67,9 @@ import type {
   RunTaskResponse,
   SendEmailRequest,
   SendEmailResponse,
+  OpenWaLinkStartRequest,
+  OpenWaLinkStartResponse,
+  OpenWaLinkStatusResponse,
   SendWhatsAppRequest,
   SendWhatsAppResponse,
   ListWhatsAppMessagesResponse,
@@ -90,18 +105,23 @@ import type {
   GrantFamilyTokensRequest,
   PurchaseFamilySeatsRequest,
   CreateFamilyGuidanceRequest,
+  WorkforceBlueprint,
+  WorkforceBlueprintRequest,
 } from "@arrab/shared";
+import { hydrateWorkforceBlueprint, templateWorkforceBlueprint } from "@arrab/shared";
 
 import { readAccountSessionToken } from "./account-session";
 import {
   normalizeApiRoutePrefix,
   readApiBaseOverride,
   readApiRoutePrefixOverride,
+  readPrefs,
   splitApiBaseAndPrefix,
   writeApiBaseOverride,
   writeApiRoutePrefixOverride,
 } from "./prefs";
 import { isTauriRuntime } from "./terminal";
+import { localCrew, crewRemoteMissing, markCrewRemoteMissing } from "./crew-local";
 import { applySkillsToSendBody, ensureSkillCatalogWarm } from "./user-skills";
 import { invoke } from "@tauri-apps/api/core";
 
@@ -273,6 +293,130 @@ async function nativeRequest(
   });
 }
 
+type NativeStreamEvent = { kind: "open" | "chunk" | "end" | "error"; text?: string | null; status?: number | null };
+
+let nativeStreamSeq = 0;
+
+/**
+ * POST a streaming request (SSE) and yield decoded text as it arrives. Desktop
+ * goes through native HTTP (WebView fetch is blocked by CORP:same-site).
+ */
+async function* openTextStream(
+  url: string,
+  body: unknown,
+  signal: AbortSignal,
+  timeoutMs: number,
+): AsyncGenerator<string> {
+  const headers = {
+    "Content-Type": "application/json",
+    Accept: "text/event-stream",
+    ...buildAuthHeaders(),
+  };
+  if (!isTauriRuntime()) {
+    const response = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => "");
+      throw new ApiRequestError(text || `Stream failed (${response.status})`, response.status);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      yield decoder.decode(value, { stream: true });
+    }
+  }
+
+  const { Channel } = await import("@tauri-apps/api/core");
+  const id = ++nativeStreamSeq;
+  const queue: NativeStreamEvent[] = [];
+  let wake: (() => void) | null = null;
+  const push = (event: NativeStreamEvent) => {
+    queue.push(event);
+    wake?.();
+    wake = null;
+  };
+  const channel = new Channel<NativeStreamEvent>();
+  channel.onmessage = push;
+  const onAbort = () => push({ kind: "error", text: "aborted", status: 0 });
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    await invoke("native_http_stream", {
+      id,
+      args: { method: "POST", url, headers, body: JSON.stringify(body), timeoutMs },
+      onEvent: channel,
+    });
+    while (true) {
+      if (queue.length === 0) await new Promise<void>((resolve) => (wake = resolve));
+      const event = queue.shift()!;
+      signal.throwIfAborted();
+      if (event.kind === "chunk" && event.text) yield event.text;
+      else if (event.kind === "end") return;
+      else if (event.kind === "error") {
+        // HTTP errors are final; transport errors stay plain so callers can retry.
+        throw event.status
+          ? parseErrorPayload(event.text ?? "", event.status)
+          : new Error(event.text || unreachableMessage("network"));
+      }
+    }
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+    void invoke("native_http_stream_cancel", { id }).catch(() => undefined);
+  }
+}
+
+/** Session headers for streams the managed client opens itself (never ERP or provider keys). */
+export function sessionHeaders(): Record<string, string> {
+  return buildAuthHeaders();
+}
+
+/** Plain HTTP is only allowed against a local dev API. */
+export function isSecureApiRoot(root: string = getApiRoot()): boolean {
+  return root.startsWith("https://") || isLocalApiBase(root);
+}
+
+/**
+ * Managed-client background calls: one attempt, raw status + body, no retries
+ * and no error for non-2xx. Only network failures reject; callers stay silent.
+ */
+export async function clientRequest(
+  path: string,
+  init?: { method?: string; body?: unknown; timeoutMs?: number },
+): Promise<{ status: number; body: string }> {
+  const root = getApiRoot();
+  if (!isSecureApiRoot(root)) {
+    throw new ApiRequestError("Managed client requires HTTPS", 0);
+  }
+  const url = `${root}${path}`;
+  const timeoutMs = init?.timeoutMs ?? 15_000;
+  if (isTauriRuntime()) {
+    return nativeRequest(url, { method: init?.method, body: init?.body, timeoutMs });
+  }
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: init?.method ?? "GET",
+      signal: controller.signal,
+      redirect: "error",
+      headers: {
+        Accept: "application/json",
+        ...(init?.body !== undefined ? { "Content-Type": "application/json" } : {}),
+        ...buildAuthHeaders(),
+      },
+      body: init?.body !== undefined ? JSON.stringify(init.body) : undefined,
+    });
+    return { status: response.status, body: await response.text() };
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
 async function request<T>(
   path: string,
   init?: { method?: string; body?: unknown; timeoutMs?: number; signal?: AbortSignal },
@@ -348,6 +492,21 @@ async function request<T>(
   );
 }
 
+/**
+ * With encryption unlocked, replies run `ephemeral`: the server uses the plaintext only in
+ * memory for this turn and stores no message rows. History comes from the local decrypted
+ * transcript; the sealed copy syncs through the vault (see saveChatHistory).
+ */
+async function withE2ee(id: string, body: SendMessageRequest): Promise<SendMessageRequest> {
+  if (body.ephemeral || !isE2eeUnlocked()) return body;
+  let prior = (await loadChatHistory(id))?.messages ?? [];
+  if (prior.length === 0) {
+    // Chat started before encryption was on — seed history from the server once.
+    prior = (await arrabApi.conversation(id).catch(() => null))?.messages ?? [];
+  }
+  return { ...body, ephemeral: true, priorMessages: toPriorMessages(prior) };
+}
+
 export const arrabApi = {
   health: async () => {
     try {
@@ -365,23 +524,7 @@ export const arrabApi = {
       throw err;
     }
   },
-  meta: () =>
-    request<{
-      name: "arrab-api";
-      version: string;
-      persistence: string;
-      workspaceId: string;
-      aiProviders: string[];
-      account?: {
-        connected: boolean;
-        planId: string | null;
-        tokenLimit: number | null;
-        tokensUsed: number;
-        tokensRemaining: number | null;
-        overLimit: boolean;
-        pauseMode: "upgrade_required" | "upgrade_or_wait" | null;
-      };
-    }>("/v1/meta"),
+  meta: () => request<import("@arrab/shared").ApiMetaResponse>("/v1/meta"),
   account: () => request<AccountStatusResponse>("/v1/account", { timeoutMs: 15_000 }),
   connectAccount: (body: ConnectAccountRequest) =>
     request<ConnectAccountResponse>("/v1/account/connect", { method: "POST", body }),
@@ -390,6 +533,24 @@ export const arrabApi = {
   disconnectAccount: () =>
     request<AccountStatusResponse>("/v1/account/disconnect", { method: "POST" }),
   logoutAccount: () => request<AccountStatusResponse>("/v1/account/logout", { method: "POST" }),
+  // Zero-knowledge chat vault (ciphertext only — see lib/e2ee.ts).
+  e2eeKey: () => request<import("@arrab/shared").E2eeKeyResponse>("/v1/e2ee/key"),
+  e2eePutKey: (body: import("@arrab/shared").E2eePutKeyRequest) =>
+    request<import("@arrab/shared").E2eeKeyResponse>("/v1/e2ee/key", { method: "PUT", body }),
+  e2eeChats: (since?: string) =>
+    request<import("@arrab/shared").E2eeChatsResponse>(
+      since ? `/v1/e2ee/chats?since=${encodeURIComponent(since)}` : "/v1/e2ee/chats",
+      { timeoutMs: 30_000 },
+    ),
+  e2eePutChat: (id: string, body: import("@arrab/shared").E2eePutChatRequest) =>
+    request<unknown>(`/v1/e2ee/chats/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body,
+      timeoutMs: 30_000,
+    }),
+  e2eeDeleteChat: (id: string) =>
+    request<{ ok: true }>(`/v1/e2ee/chats/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  e2eeReset: () => request<{ ok: true }>("/v1/e2ee", { method: "DELETE" }),
   startWebAuth: (body: StartWebAuthRequest = {}) =>
     request<StartWebAuthResponse>("/v1/account/auth/web/start", { method: "POST", body, timeoutMs: 20_000 }),
   pollWebAuth: (state: string, pollSecret: string) =>
@@ -409,6 +570,8 @@ export const arrabApi = {
     }),
   billingCheckout: (body: BillingCheckoutRequest) =>
     request<BillingCheckoutResponse>("/v1/billing/checkout", { method: "POST", body }),
+  billingTopUp: (body: BillingTopUpRequest) =>
+    request<BillingTopUpResponse>("/v1/billing/top-up", { method: "POST", body }),
   billingConfirm: (invoiceId: string) =>
     request<AccountStatusResponse>(`/v1/billing/confirm?invoice=${encodeURIComponent(invoiceId)}`),
   dashboard: () => request<DashboardResponse>("/v1/dashboard"),
@@ -443,10 +606,10 @@ export const arrabApi = {
   deleteConversation: (id: string) =>
     request<{ ok: true }>(`/v1/conversations/${id}`, { method: "DELETE" }),
   conversation: (id: string) => request<ConversationDetailResponse>(`/v1/conversations/${id}`),
-  sendMessage: (id: string, body: SendMessageRequest, signal?: AbortSignal) =>
+  sendMessage: async (id: string, body: SendMessageRequest, signal?: AbortSignal) =>
     request<SendMessageResponse>(`/v1/conversations/${id}/messages`, {
       method: "POST",
-      body,
+      body: await withE2ee(id, body),
       timeoutMs: 90_000,
       signal,
     }),
@@ -466,6 +629,8 @@ export const arrabApi = {
     body: SendMessageRequest,
     handlers: {
       onToken?: (text: string) => void;
+      /** Model reasoning, streamed before/alongside the answer. */
+      onThinking?: (text: string) => void;
       onToolStart?: (name: string, detail?: string) => void;
       onTool?: (name: string, result: string) => void;
       onApproval?: (approval: Approval) => void;
@@ -474,34 +639,16 @@ export const arrabApi = {
     } = {},
     signal?: AbortSignal,
   ) => {
-    await ensureSkillCatalogWarm().catch(() => []);
+    signal?.throwIfAborted();
+    // A cold skill catalog must not hold the first reply hostage.
+    await Promise.race([
+      ensureSkillCatalogWarm().catch(() => []),
+      new Promise((resolve) => window.setTimeout(resolve, 800)),
+    ]);
     body = applySkillsToSendBody(body);
-    // WebView fetch is blocked by CORP:same-site — use non-stream native request.
-    if (isTauriRuntime()) {
-      try {
-        const result = await request<SendMessageResponse>(`/v1/conversations/${id}/messages`, {
-          method: "POST",
-          body,
-          timeoutMs: 180_000,
-          signal,
-        });
-        const text = result.assistantMessage?.content ?? "";
-        if (text) handlers.onToken?.(text);
-        if (result.approval) handlers.onApproval?.(result.approval);
-        handlers.onDone?.(result);
-        return result;
-      } catch (err: unknown) {
-        const message =
-          err instanceof ApiRequestError
-            ? err.message
-            : err instanceof Error
-              ? err.message
-              : unreachableMessage("network");
-        handlers.onError?.(message);
-        throw err instanceof ApiRequestError
-          ? err
-          : new ApiRequestError(message, 0);
-      }
+    body = await withE2ee(id, body);
+    if (body.thinking === undefined && readPrefs().aiExtendedThinking) {
+      body = { ...body, thinking: "medium" };
     }
 
     signal?.throwIfAborted();
@@ -521,30 +668,18 @@ export const arrabApi = {
       "run_terminal",
     ]);
     try {
-      const response = await fetch(`${getApiRoot()}/v1/conversations/${id}/messages/stream`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "text/event-stream",
-          ...buildAuthHeaders(),
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-      if (!response.ok || !response.body) {
-        const text = await response.text().catch(() => "");
-        throw new ApiRequestError(text || `Stream failed (${response.status})`, response.status);
-      }
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
+      const stream = openTextStream(
+        `${getApiRoot()}/v1/conversations/${id}/messages/stream`,
+        body,
+        controller.signal,
+        180_000,
+      );
       let buffer = "";
       let eventName = "message";
       let sawDone = false;
-      while (true) {
-        const { done, value } = await reader.read();
+      for await (const text of stream) {
         signal?.throwIfAborted();
-        if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        buffer += text;
         const chunks = buffer.split("\n\n");
         buffer = chunks.pop() ?? "";
         for (const chunk of chunks) {
@@ -572,6 +707,8 @@ export const arrabApi = {
               // keepalive / proxy flush
             } else if (eventName === "token" && parsed.text) {
               handlers.onToken?.(parsed.text);
+            } else if (eventName === "thinking" && parsed.text) {
+              handlers.onThinking?.(parsed.text);
             } else if (eventName === "tool_start" && parsed.name) {
               if (MUTATING_STREAM_TOOLS.has(parsed.name)) sawMutatingTool = true;
               handlers.onToolStart?.(parsed.name, parsed.detail);
@@ -657,29 +794,96 @@ export const arrabApi = {
   createGoal: (body: CreateGoalRequest) => request<Goal>("/v1/goals", { method: "POST", body }),
   updateGoal: (id: string, body: UpdateGoalRequest) =>
     request<Goal>(`/v1/goals/${id}`, { method: "PATCH", body }),
-  connectors: () => request<CollectionResponse<ConnectorPublic>>("/v1/connectors"),
+  marketsQuotes: (symbols: string[]) => {
+    const list = [...new Set(symbols.map((s) => s.trim()).filter(Boolean))].slice(0, 50);
+    if (!list.length) return Promise.resolve({ items: [], source: "tradingview" as const, fetchedAt: Date.now() });
+    return request<{
+      items: Array<{
+        symbol: string;
+        yahooSymbol: string;
+        last: number;
+        open: number | null;
+        high: number | null;
+        low: number | null;
+        prevClose: number | null;
+        volume: number | null;
+        marketCap: number | null;
+        currency: string | null;
+        exchange: string | null;
+        asOf: number | null;
+      }>;
+      source: "yahoo" | "tradingview" | "merged";
+      fetchedAt: number;
+    }>(`/v1/markets/quotes?symbols=${encodeURIComponent(list.join(","))}`, { timeoutMs: 20_000 });
+  },
+  marketsCandles: (symbol: string, opts?: { range?: string; interval?: string }) => {
+    const params = new URLSearchParams({ symbol: symbol.trim() });
+    if (opts?.range) params.set("range", opts.range);
+    if (opts?.interval) params.set("interval", opts.interval);
+    return request<{
+      symbol: string;
+      yahooSymbol: string;
+      candles: Array<{ t: number; o: number; h: number; l: number; c: number; v: number }>;
+      quote: {
+        symbol: string;
+        last: number;
+        open: number | null;
+        high: number | null;
+        low: number | null;
+        prevClose: number | null;
+        volume: number | null;
+        asOf: number | null;
+      } | null;
+      source: "yahoo" | "tradingview" | "merged";
+      fetchedAt: number;
+    }>(`/v1/markets/candles?${params.toString()}`, { timeoutMs: 20_000 });
+  },
+  connectors: async () => {
+    const { localSshConnectors } = await import("@/lib/ssh-config");
+    const local = localSshConnectors();
+    if (!readAccountSessionToken()) return { items: local };
+    const remote = await request<CollectionResponse<ConnectorPublic>>("/v1/connectors");
+    const remoteIds = new Set(remote.items.map((item) => item.id));
+    return { items: [...local.filter((item) => !remoteIds.has(item.id)), ...remote.items] };
+  },
   connectorCatalog: () =>
     request<CollectionResponse<{ provider: string; available: boolean }>>("/v1/connectors/catalog"),
-  connectConnector: (body: ConnectConnectorRequest) =>
-    request<ConnectorPublic>("/v1/connectors", { method: "POST", body, timeoutMs: 45_000 }),
-  startGmailOAuth: () =>
-    request<StartGmailOAuthResponse>("/v1/connectors/gmail/oauth/start", {
+  connectConnector: (body: ConnectConnectorRequest) => {
+    if (!readAccountSessionToken()) {
+      throw new ApiRequestError("Sign in to connect a tool", 401, "UNAUTHORIZED");
+    }
+    return request<ConnectorPublic>("/v1/connectors", { method: "POST", body, timeoutMs: 45_000 });
+  },
+  startGmailOAuth: () => {
+    if (!readAccountSessionToken()) {
+      throw new ApiRequestError("Sign in to connect a tool", 401, "UNAUTHORIZED");
+    }
+    return request<StartGmailOAuthResponse>("/v1/connectors/gmail/oauth/start", {
       method: "POST",
       body: {},
       timeoutMs: 20_000,
-    }),
-  startGithubOAuth: () =>
-    request<StartGmailOAuthResponse>("/v1/connectors/github/oauth/start", {
+    });
+  },
+  startGithubOAuth: () => {
+    if (!readAccountSessionToken()) {
+      throw new ApiRequestError("Sign in to connect a tool", 401, "UNAUTHORIZED");
+    }
+    return request<StartGmailOAuthResponse>("/v1/connectors/github/oauth/start", {
       method: "POST",
       body: {},
       timeoutMs: 20_000,
-    }),
-  startOutlookOAuth: () =>
-    request<StartGmailOAuthResponse>("/v1/connectors/outlook/oauth/start", {
+    });
+  },
+  startOutlookOAuth: () => {
+    if (!readAccountSessionToken()) {
+      throw new ApiRequestError("Sign in to connect a tool", 401, "UNAUTHORIZED");
+    }
+    return request<StartGmailOAuthResponse>("/v1/connectors/outlook/oauth/start", {
       method: "POST",
       body: {},
       timeoutMs: 20_000,
-    }),
+    });
+  },
   startGenericOAuth: (
     provider:
       | "gitlab"
@@ -692,12 +896,16 @@ export const arrabApi = {
       | "google_drive"
       | "google_calendar"
       | "figma",
-  ) =>
-    request<StartGmailOAuthResponse>(`/v1/connectors/${provider}/oauth/start`, {
+  ) => {
+    if (!readAccountSessionToken()) {
+      throw new ApiRequestError("Sign in to connect a tool", 401, "UNAUTHORIZED");
+    }
+    return request<StartGmailOAuthResponse>(`/v1/connectors/${provider}/oauth/start`, {
       method: "POST",
       body: {},
       timeoutMs: 20_000,
-    }),
+    });
+  },
   verifyConnector: (id: string) =>
     request<ConnectorPublic>(`/v1/connectors/${id}/verify`, { method: "POST", timeoutMs: 45_000 }),
   connectorResources: (id: string, q?: string) =>
@@ -709,8 +917,14 @@ export const arrabApi = {
         timeoutMs: 20_000,
       },
     ),
-  disconnectConnector: (id: string) =>
-    request<{ ok: true }>(`/v1/connectors/${id}`, { method: "DELETE" }),
+  disconnectConnector: async (id: string) => {
+    if (id.startsWith("sshcfg:")) {
+      const { forgetLocalSsh } = await import("@/lib/ssh-config");
+      forgetLocalSsh(id);
+      return { ok: true as const };
+    }
+    return request<{ ok: true }>(`/v1/connectors/${id}`, { method: "DELETE" });
+  },
   emailMessages: (id: string, mailbox = "INBOX", limit = 30) =>
     request<ListEmailMessagesResponse>(
       `/v1/connectors/${id}/email/messages?mailbox=${encodeURIComponent(mailbox)}&limit=${limit}`,
@@ -744,15 +958,32 @@ export const arrabApi = {
       body,
       timeoutMs: 45_000,
     }),
-  sshExec: (id: string, body: { command: string }) =>
-    request<{ code: number | null; stdout: string; stderr: string }>(
+  openWaLinkStart: (body: OpenWaLinkStartRequest = {}) =>
+    request<OpenWaLinkStartResponse>("/v1/connectors/openwa/link/start", {
+      method: "POST",
+      body,
+      timeoutMs: 60_000,
+    }),
+  openWaLinkStatus: () =>
+    request<OpenWaLinkStatusResponse>("/v1/connectors/openwa/link/status", {
+      timeoutMs: 30_000,
+    }),
+  sshExec: async (id: string, body: { command: string }) => {
+    if (id.startsWith("sshcfg:")) {
+      const { execSshConfig, localSshAlias } = await import("@/lib/ssh-config");
+      const alias = localSshAlias(id);
+      if (!alias) throw new ApiRequestError("SSH host is no longer on this Mac", 404, "NOT_FOUND");
+      return execSshConfig(alias, body.command);
+    }
+    return request<{ code: number | null; stdout: string; stderr: string }>(
       `/v1/connectors/${id}/ssh/exec`,
       {
         method: "POST",
         body,
         timeoutMs: 45_000,
       },
-    ),
+    );
+  },
   githubRepoMeta: (owner: string, repo: string, connectorId: string) =>
     request<GithubRepoMetaResponse>(
       `/v1/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}?connectorId=${encodeURIComponent(connectorId)}`,
@@ -774,6 +1005,83 @@ export const arrabApi = {
       { method: "POST", body, timeoutMs: 30_000 },
     ),
   usage: () => request<UsageSummaryResponse>("/v1/usage"),
+  crew: () => crewRequest("/v1/crew"),
+  setCrewRule: (action: CrewAction, level: CrewRuleLevel) =>
+    crewAct("/v1/crew/rules", { method: "POST", body: { action, level } }, () => localCrew.setRule(action, level)),
+  updateCrewMember: (id: string, body: { paused?: boolean; customDuty?: string }) =>
+    crewAct(`/v1/crew/members/${encodeURIComponent(id)}`, { method: "POST", body }, () => localCrew.updateMember(id, body)),
+  addCrewWatch: (body: {
+    memberId: string;
+    title: string;
+    steps?: string;
+    hour: number;
+    repeat?: "daily" | "weekdays" | "friday" | "once";
+  }) => crewAct("/v1/crew/watches", { method: "POST", body }, () => localCrew.addWatch(body)),
+  pauseCrewWatch: (id: string, paused = true) =>
+    crewAct(
+      `/v1/crew/watches/${encodeURIComponent(id)}/pause`,
+      { method: "POST", body: { paused } },
+      () => localCrew.pauseWatch(id, paused),
+    ),
+  removeCrewWatch: (id: string) =>
+    crewAct(`/v1/crew/watches/${encodeURIComponent(id)}/remove`, { method: "POST" }, () => localCrew.removeWatch(id)),
+  writeCrewWatch: (id: string) =>
+    crewAct(
+      `/v1/crew/watches/${encodeURIComponent(id)}/write`,
+      { method: "POST", timeoutMs: 90_000 },
+      () => localCrew.writeWatch(id),
+    ),
+  passCrewWork: (body: { fromId: string; toId: string; title: string; note?: string }) =>
+    crewAct("/v1/crew/passes", { method: "POST", body }, () => localCrew.pass(body)),
+  closeCrewPass: (id: string) =>
+    crewAct(`/v1/crew/passes/${encodeURIComponent(id)}/close`, { method: "POST" }, () => localCrew.closePass(id)),
+  crewBriefing: () => crewAct("/v1/crew/briefing", { method: "POST", timeoutMs: 90_000 }, () => localCrew.briefing()),
+  setCrewFocus: (body: { title: string; note?: string }) =>
+    crewAct("/v1/crew/focus", { method: "POST", body }, () => localCrew.setFocus(body)),
+  installCrewPack: (id: string) =>
+    crewAct(`/v1/crew/packs/${encodeURIComponent(id)}`, { method: "POST" }, () => localCrew.installPack(id)),
+  refitCrew: () => crewAct("/v1/crew/refit", { method: "POST" }, () => localCrew.refit()),
+  companionDesk: () => request<CompanionDeskView>("/v1/desk"),
+  setDeskPace: (pace: DeskPace) =>
+    request<CompanionDeskView>("/v1/desk", { method: "PATCH", body: { pace } }),
+  updateDesk: (body: UpdateDeskPaceRequest) =>
+    request<CompanionDeskView>("/v1/desk", { method: "PATCH", body }),
+  killDesk: () => request<CompanionDeskView>("/v1/desk/kill", { method: "POST" }),
+  addDeskSchedule: (body: {
+    title: string;
+    brief?: string;
+    hour: number;
+    repeat?: "daily" | "weekdays" | "friday" | "once";
+    companionId?: string;
+    companionName?: string;
+    tomorrow?: boolean;
+  }) => request<CompanionDeskView>("/v1/desk/schedules", { method: "POST", body }),
+  followUpDeskJob: (id: string) =>
+    request<CompanionDeskView>(`/v1/desk/jobs/${encodeURIComponent(id)}/follow-up`, { method: "POST" }),
+  pauseDeskSchedule: (id: string, paused = true) =>
+    request<CompanionDeskView>(`/v1/desk/schedules/${encodeURIComponent(id)}/pause`, { method: "POST", body: { paused } }),
+  removeDeskSchedule: (id: string) =>
+    request<CompanionDeskView>(`/v1/desk/schedules/${encodeURIComponent(id)}/remove`, { method: "POST" }),
+  startDeskJob: (body: {
+    title: string;
+    brief?: string;
+    companionId?: string;
+    companionName?: string;
+    channel?: "whatsapp" | "computer" | "sandbox" | "bill" | null;
+    recipient?: string;
+    amountSar?: number;
+  }) =>
+    request<DeskJob>("/v1/desk/jobs", { method: "POST", body, timeoutMs: 90_000 }),
+  approveDeskJob: (id: string, body?: { draftHash?: string; amountSar?: number }) =>
+    request<DeskJob>(`/v1/desk/jobs/${encodeURIComponent(id)}/approve`, {
+      method: "POST",
+      body: body ?? {},
+      timeoutMs: 90_000,
+    }),
+  stopDeskJob: (id: string) =>
+    request<DeskJob>(`/v1/desk/jobs/${encodeURIComponent(id)}/stop`, { method: "POST" }),
+  reviseDeskJob: (id: string, note: string) =>
+    request<DeskJob>(`/v1/desk/jobs/${encodeURIComponent(id)}/revise`, { method: "POST", body: { note } }),
   familyHousehold: () => request<FamilyHouseholdSnapshot>("/v1/family"),
   createFamilyMember: (body: CreateFamilyMemberRequest) =>
     request<FamilyMemberPublic>("/v1/family/members", { method: "POST", body }),
@@ -805,6 +1113,20 @@ export const arrabApi = {
     request<TeamMembership>(`/v1/teams/${teamId}/members`, { method: "POST", body }),
   removeTeamMember: (teamId: string, agentId: string) =>
     request<{ ok: true }>(`/v1/teams/${teamId}/members/${agentId}`, { method: "DELETE" }),
+  /** AI-drafted departments + companions. Falls back to the industry library when the API lacks the route. */
+  workforceBlueprint: (body: WorkforceBlueprintRequest) =>
+    request<WorkforceBlueprint>("/v1/workforce/blueprint", {
+      method: "POST",
+      body,
+      timeoutMs: 90_000,
+    })
+      .then((blueprint) => hydrateWorkforceBlueprint(blueprint, body))
+      .catch((err: unknown) => {
+        if (err instanceof ApiRequestError && [404, 501, 503].includes(err.status)) {
+          return templateWorkforceBlueprint(body);
+        }
+        throw err;
+      }),
   bindings: () => request<CollectionResponse<ProjectRepoBinding>>("/v1/bindings"),
   projectRepo: (projectId: string) =>
     request<{ item: ProjectRepoBinding | null }>(`/v1/projects/${projectId}/repo`),
@@ -815,6 +1137,7 @@ export const arrabApi = {
   operator: () => request<OperatorProfile>("/v1/operator"),
   erpCompanions: () =>
     request<{ items: ErpCompanion[] }>("/erp/companions?limit=500"),
+  controlConnectors: () => request<{ items: ControlConnector[] }>("/erp/connectors"),
   companionState: () =>
     request<{ updatedAt: string | null; state: unknown | null }>("/v1/companions/state"),
   putCompanionState: (body: { updatedAt: string; state: unknown }) =>
@@ -1057,6 +1380,28 @@ export const arrabApi = {
   },
 };
 
+function crewRequest(path: string, init?: { method?: string; body?: unknown; timeoutMs?: number }): Promise<CrewView> {
+  if (crewRemoteMissing()) return Promise.resolve(localCrew.get());
+  return request<CrewView>(path, init).catch((err: unknown) => {
+    if (err instanceof ApiRequestError && err.status === 404) {
+      markCrewRemoteMissing();
+      return localCrew.get();
+    }
+    throw err;
+  });
+}
+
+function crewAct(path: string, init: { method?: string; body?: unknown; timeoutMs?: number } | undefined, local: () => CrewView): Promise<CrewView> {
+  if (crewRemoteMissing()) return Promise.resolve(local());
+  return request<CrewView>(path, init).catch((err: unknown) => {
+    if (err instanceof ApiRequestError && err.status === 404) {
+      markCrewRemoteMissing();
+      return local();
+    }
+    throw err;
+  });
+}
+
 function readOrgEmployeeSessionToken(): string | null {
   try {
     const raw = localStorage.getItem("arrab.org.employee.session");
@@ -1078,3 +1423,6 @@ function readOrgEmployeePublic(): import("@arrab/shared").OrgEmployeePublic | nu
     return null;
   }
 }
+
+// Late-bound so lib/e2ee.ts never imports the request layer.
+bindE2eeApi(arrabApi);

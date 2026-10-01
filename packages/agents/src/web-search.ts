@@ -3,7 +3,8 @@
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 
-const UA = "ArrabStudio/0.14 (+agent web)";
+const UA =
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
 const MAX_REDIRECTS = 5;
 
 function stripTags(html: string): string {
@@ -184,13 +185,16 @@ async function duckDuckGoHtml(query: string): Promise<string | null> {
   if (!response.ok) return null;
   const html = await response.text();
   const rows: string[] = [];
-  const re =
-    /class="result__a"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>[\s\S]*?class="result__snippet"[^>]*>([\s\S]*?)<\/(?:a|td|div)/gi;
+  const re = /<a\b([^>]*\bclass="result__a"[^>]*)>([\s\S]*?)<\/a>/gi;
   let match: RegExpExecArray | null;
   while ((match = re.exec(html)) && rows.length < 8) {
-    const href = match[1] ?? "";
+    const attrs = match[1] ?? "";
+    const href = attrs.match(/\bhref="([^"]+)"/i)?.[1] ?? "";
     const title = stripTags(match[2] ?? "");
-    const snippet = stripTags(match[3] ?? "");
+    const snippet = stripTags(
+      html.slice(match.index, match.index + 1200).match(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>/i)?.[1] ??
+        "",
+    );
     let finalUrl = href;
     try {
       const parsed = new URL(href, "https://duckduckgo.com");

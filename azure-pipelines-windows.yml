@@ -1,0 +1,33 @@
+# Free Windows build without GitHub Actions.
+# Use Azure DevOps (free Microsoft account) → New pipeline → Existing YAML → this file.
+# Public projects get free Microsoft-hosted Windows agents.
+#
+# Or: install Azure CLI and run:
+#   az pipelines run --name "Arrab Studio Windows"
+
+trigger: none
+pr: none
+
+pool:
+  vmImage: windows-latest
+
+variables:
+  VITE_ARRAB_API_URL: https://api.arrabai.com
+  VITE_ARRAB_API_ROUTE_PREFIX: /r/nmpi6uidtpkh1bdf
+
+steps:
+  - task: NodeTool@0
+    inputs:
+      versionSpec: "22.x"
+
+  - powershell: |
+      npm install -g pnpm@10.15.1
+      pnpm install
+      pnpm ship:windows
+    displayName: Build Windows installers
+
+  - task: PublishBuildArtifacts@1
+    inputs:
+      PathtoPublish: "release/artifacts"
+      ArtifactName: "arrab-studio-windows"
+      publishLocation: "Container"

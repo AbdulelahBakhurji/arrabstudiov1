@@ -104,7 +104,7 @@ export function ActivityPage() {
   }, [sessionTick]);
 
   /** Studio owner (no employee seat) or org admin → full audit. */
-  const isOrgAdmin = orgEmployee == null || orgEmployee.role === "admin";
+  const isOrgAdmin = orgEmployee == null;
 
   const departmentAgentIds = useMemo(() => {
     if (!orgEmployee?.departmentId) return new Set<string>();

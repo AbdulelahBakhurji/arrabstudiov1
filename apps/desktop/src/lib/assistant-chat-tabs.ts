@@ -7,7 +7,7 @@ export type AssistantChatTab = {
   createdAt: string;
 };
 
-type AssistantChatTabsState = {
+export type AssistantChatTabsState = {
   tabs: AssistantChatTab[];
   activeId: string;
   railCollapsed: boolean;
@@ -96,6 +96,21 @@ export function readAssistantChatTabs(
   lane: AssistantChatTabLane = "chat",
 ): AssistantChatTabsState {
   return readRaw(companionId, lane) ?? defaultState(seedConversationId, defaultTitle);
+}
+
+/** Prefer the signed-in account copy when it already has conversation pointers. */
+export function resolveAssistantChatTabs(
+  companionId: string,
+  seedConversationId: string | null,
+  defaultTitle: string,
+  lane: AssistantChatTabLane = "chat",
+  accountTabs?: AssistantChatTabsState | null,
+): AssistantChatTabsState {
+  if (accountTabs?.tabs.some((tab) => tab.conversationId)) return accountTabs;
+  const local = readRaw(companionId, lane);
+  if (local) return local;
+  if (accountTabs) return accountTabs;
+  return defaultState(seedConversationId, defaultTitle);
 }
 
 export function writeAssistantChatTabs(

@@ -1,3 +1,4 @@
+import { currentRequestActor } from "../lib/request-actor.js";
 import { ForbiddenError, NotFoundError, ValidationError } from "@arrab/core";
 import type { Persistence } from "@arrab/database";
 import type {
@@ -18,6 +19,8 @@ import type {
   GithubTreeResponse,
   ListEmailMessagesResponse,
   ListWhatsAppMessagesResponse,
+  OpenWaLinkStartResponse,
+  OpenWaLinkStatusResponse,
   SendEmailRequest,
   SendEmailResponse,
   SendWhatsAppRequest,
@@ -117,6 +120,19 @@ import {
   type WhatsAppInboundMessage as WhatsAppInboundStored,
 } from "./whatsapp-connector.js";
 import {
+  buildOpenWaSecret,
+  ensureOpenWaWebhook,
+  extractOpenWaInbound,
+  fetchOpenWaSessionView,
+  logoutOpenWaSession,
+  openWaSessionName,
+  parseOpenWaSecret,
+  sendOpenWaText,
+  verifyOpenWaSecret,
+  verifyOpenWaWebhookSignature,
+  type OpenWaSecret,
+} from "./openwa-connector.js";
+import {
   fetchFinnhubNews,
   fetchFinnhubQuote,
   verifyFinnhubApiKey,
@@ -145,6 +161,7 @@ const AVAILABLE = new Set<ConnectorProvider>([
   "email",
   "ssh",
   "whatsapp",
+  "openwa",
   "finnhub",
   "whoop",
   "fitbit",
@@ -192,7 +209,18 @@ export class ConnectorService {
     private readonly finnhubApiKey?: string | null,
     private readonly finnhubWebhookSecret?: string | null,
     private readonly genericOAuth: Partial<Record<GenericOAuthProvider, GenericOAuthConfig>> = {},
+    private readonly openwaWebhookSecret?: string | null,
+    private readonly publicApiBaseUrl?: string | null,
+    private readonly apiRoutePrefix?: string | null,
+    private readonly openwaBaseUrl = "http://127.0.0.1:2785",
+    private readonly openwaPlatformApiKey?: string | null,
   ) {}
+
+  private openWaWebhookUrl(): string {
+    const base = (this.publicApiBaseUrl || this.siteUrl).replace(/\/+$/, "");
+    const prefix = (this.apiRoutePrefix || "").replace(/\/+$/, "");
+    return `${base}${prefix}/v1/connectors/openwa/webhook`;
+  }
 
   /** Wire after construction (FamilyHousehold is created later in app bootstrap). */
   setFamilyHousehold(service: FamilyHouseholdService): void {
@@ -238,8 +266,37 @@ export class ConnectorService {
     return seatId;
   }
 
+  /** Org employee making this request; null for the account owner and non-org callers. */
+  private activeEmployeeId(): string | null {
+    return currentRequestActor().employeeId;
+  }
+
+  /**
+   * Connector ownership: family seat, else org employee, else the account owner.
+   * Employees never see the owner's connectors or each other's.
+   */
+  private ownedBy(
+    item: { familyMemberId: string | null; ownerEmployeeId?: string | null },
+    seatId: string | null,
+  ): boolean {
+    if (seatId) return item.familyMemberId === seatId;
+    const employeeId = this.activeEmployeeId();
+    if (employeeId) return item.ownerEmployeeId === employeeId;
+    return !item.ownerEmployeeId;
+  }
+
+  /** Owner stamp for new connector rows (family seat wins; otherwise the signed-in employee). */
+  private ownerEmployeeFor(seatId: string | null): string | null {
+    return seatId ? null : this.activeEmployeeId();
+  }
+
   private async assertSeatCanAccess(record: ConnectorSecretRecord): Promise<void> {
-    if (!this.familyHousehold || !(await this.familyHousehold.isFamilyPlanActive())) return;
+    if (!this.familyHousehold || !(await this.familyHousehold.isFamilyPlanActive())) {
+      if (!this.ownedBy(record, null)) {
+        throw new ForbiddenError("This connector belongs to another user");
+      }
+      return;
+    }
     const seatId = await this.familyHousehold.getActiveMemberId();
     if (!seatId) {
       throw new ForbiddenError("Switch to a family profile before using connectors");
@@ -292,8 +349,7 @@ export class ConnectorService {
     );
     const existing = (await this.persistence.connectors.list()).find((item) => {
       if (item.provider !== record.provider) return false;
-      if (seatId) return item.familyMemberId === seatId;
-      return !item.familyMemberId;
+      return this.ownedBy(item, seatId);
     });
     if (existing) {
       await this.saveConnector(
@@ -302,6 +358,7 @@ export class ConnectorService {
           ...record,
           id: existing.id,
           familyMemberId: seatId ?? existing.familyMemberId ?? null,
+          ownerEmployeeId: this.ownerEmployeeFor(seatId),
           connectedAt: existing.connectedAt || record.connectedAt,
         },
         "update",
@@ -313,6 +370,7 @@ export class ConnectorService {
         ...record,
         id: record.id ?? randomUUID(),
         familyMemberId: seatId,
+        ownerEmployeeId: this.ownerEmployeeFor(seatId),
       } as ConnectorSecretRecord,
       "create",
     );
@@ -321,7 +379,7 @@ export class ConnectorService {
   async list(): Promise<ConnectorPublic[]> {
     const items = await this.persistence.connectors.list();
     if (!this.familyHousehold || !(await this.familyHousehold.isFamilyPlanActive())) {
-      return items.map(toPublic);
+      return items.filter((item) => this.ownedBy(item, null)).map(toPublic);
     }
     const seatId = await this.familyHousehold.getActiveMemberId();
     // No active seat → never leak workspace-wide / other-seat connectors.
@@ -434,7 +492,12 @@ export class ConnectorService {
       {
         provider: "whatsapp",
         description:
-          "WhatsApp Business Cloud API — connect a Business number; agents can receive webhooks and send replies.",
+          "WhatsApp Business (Cloud API) — connect a verified Business number; agents receive webhooks and send replies.",
+      },
+      {
+        provider: "openwa",
+        description:
+          "WhatsApp — link your own phone with a QR code; your companions read and reply on your behalf.",
       },
       {
         provider: "finnhub",
@@ -470,7 +533,7 @@ export class ConnectorService {
     return providers.map((item) => ({
       ...item,
       available: AVAILABLE.has(item.provider),
-      webhook: item.provider === "whatsapp" || item.provider === "finnhub",
+      webhook: item.provider === "whatsapp" || item.provider === "openwa" || item.provider === "finnhub",
     }));
   }
 
@@ -763,6 +826,11 @@ export class ConnectorService {
     if (!AVAILABLE.has(provider)) {
       throw new ValidationError(`Connector ${provider} is not available yet`);
     }
+    if (provider === "openwa" && this.openwaPlatformApiKey?.trim()) {
+      throw new ValidationError(
+        "WhatsApp is linked on the Arrab server. In Studio, use Connect WhatsApp (QR).",
+      );
+    }
 
     const verified = await this.verifyProvider(provider, input);
     const now = new Date().toISOString();
@@ -772,8 +840,7 @@ export class ConnectorService {
     );
     const existing = (await this.persistence.connectors.list()).find((item) => {
       if (item.provider !== provider) return false;
-      if (seatId) return item.familyMemberId === seatId;
-      return !item.familyMemberId;
+      return this.ownedBy(item, seatId);
     });
     const record: ConnectorSecretRecord = {
       id: existing?.id ?? randomUUID(),
@@ -787,6 +854,7 @@ export class ConnectorService {
       error: null,
       secret: verified.secret,
       familyMemberId: seatId,
+      ownerEmployeeId: this.ownerEmployeeFor(seatId),
     };
     await this.saveConnector(record, existing ? "update" : "create");
     return toPublic(record);
@@ -1004,8 +1072,7 @@ export class ConnectorService {
     const items = await this.persistence.connectors.list();
     const match = items.find((item) => {
       if (item.provider !== "finnhub" || item.status !== "connected") return false;
-      if (seatId) return item.familyMemberId === seatId;
-      return true;
+      return this.ownedBy(item, seatId);
     });
     const opened = match ? this.openConnector(match) : null;
     const workspaceKey = opened?.secret?.trim();
@@ -1158,9 +1225,23 @@ export class ConnectorService {
     );
   }
 
+  async findConnectedWhatsApp(): Promise<ConnectorPublic | null> {
+    const items = await this.list();
+    return (
+      items.find((item) => item.provider === "whatsapp" && item.status === "connected") ??
+      items.find((item) => item.provider === "openwa" && item.status === "connected") ??
+      null
+    );
+  }
+
   async sendWhatsApp(id: string, body: SendWhatsAppRequest): Promise<SendWhatsAppResponse> {
     const connector = await this.loadConnector(id);
     if (!connector) throw new NotFoundError("Connector", id);
+    if (connector.provider === "openwa") {
+      const secret = parseOpenWaSecret(connector.secret);
+      if (!secret) throw new ValidationError("Invalid OpenWA connector secret");
+      return sendOpenWaText(secret, body);
+    }
     if (connector.provider !== "whatsapp") {
       throw new ValidationError("Connector is not WhatsApp");
     }
@@ -1175,6 +1256,14 @@ export class ConnectorService {
   ): Promise<ListWhatsAppMessagesResponse> {
     const connector = await this.loadConnector(id);
     if (!connector) throw new NotFoundError("Connector", id);
+    if (connector.provider === "openwa") {
+      const secret = parseOpenWaSecret(connector.secret);
+      if (!secret) throw new ValidationError("Invalid OpenWA connector secret");
+      const key = `openwa:${secret.sessionId}`;
+      const items = this.whatsappInbound.get(key) ?? [];
+      const capped = Math.max(1, Math.min(100, limit));
+      return { items: items.slice(0, capped) };
+    }
     if (connector.provider !== "whatsapp") {
       throw new ValidationError("Connector is not WhatsApp");
     }
@@ -1183,6 +1272,206 @@ export class ConnectorService {
     const items = this.whatsappInbound.get(secret.phoneNumberId) ?? [];
     const capped = Math.max(1, Math.min(100, limit));
     return { items: items.slice(0, capped) };
+  }
+
+  async handleOpenWaWebhook(input: {
+    rawBody: string;
+    signatureHeader: string | undefined;
+    payload: unknown;
+  }): Promise<{
+    ok: true;
+    accepted: number;
+    deliveries: Array<{
+      from: string;
+      text: string;
+      messageId: string;
+      companionId: string;
+      companionName: string;
+      ownerEmployeeId: string | null;
+    }>;
+  }> {
+    const connectors = await this.persistence.connectors.list();
+    const bySession = new Map<
+      string,
+      { id: string; secret: OpenWaSecret; ownerEmployeeId: string | null }
+    >();
+    for (const record of connectors) {
+      if (record.provider !== "openwa") continue;
+      const opened = this.openConnector(record);
+      const secret = parseOpenWaSecret(opened.secret);
+      if (!secret) continue;
+      const route = { id: record.id, secret, ownerEmployeeId: record.ownerEmployeeId ?? null };
+      bySession.set(secret.sessionId, route);
+      if (secret.gatewayId) bySession.set(secret.gatewayId, route);
+    }
+
+    const envelope = input.payload as { sessionId?: string };
+    const sessionId = envelope.sessionId?.trim() || "";
+    const route = sessionId ? (bySession.get(sessionId) ?? null) : null;
+    const connectorId = route?.id ?? null;
+
+    // Always authenticate: the matched session's own secret, else the platform secret.
+    const webhookSecret =
+      route?.secret.webhookSecret?.trim() || this.openwaWebhookSecret?.trim() || "";
+    if (!webhookSecret) throw new ValidationError("OpenWA webhook secret is not configured");
+    if (!verifyOpenWaWebhookSignature(input.rawBody, input.signatureHeader, webhookSecret)) {
+      throw new ValidationError("Invalid OpenWA webhook signature");
+    }
+    const ownerEmployeeId = route?.ownerEmployeeId ?? null;
+    const companionId = route?.secret.replyCompanionId?.trim() || "general";
+    const companionName = route?.secret.replyCompanionName?.trim() || "Arrab";
+    const inbound = extractOpenWaInbound(input.payload, connectorId);
+    const key = sessionId ? `openwa:${sessionId}` : "openwa:unknown";
+    let accepted = 0;
+    const deliveries: Array<{
+      from: string;
+      text: string;
+      messageId: string;
+      companionId: string;
+      companionName: string;
+      ownerEmployeeId: string | null;
+    }> = [];
+    for (const message of inbound) {
+      const list = this.whatsappInbound.get(key) ?? [];
+      if (list.some((item) => item.id === message.id)) continue;
+      list.unshift({ ...message, phoneNumberId: key });
+      this.whatsappInbound.set(key, list.slice(0, WHATSAPP_INBOUND_MAX));
+      accepted += 1;
+      deliveries.push({
+        from: message.from,
+        text: message.text,
+        messageId: message.id,
+        companionId,
+        companionName,
+        ownerEmployeeId,
+      });
+    }
+    return { ok: true, accepted, deliveries };
+  }
+
+  async startOpenWaLink(input: {
+    companionId?: string;
+    companionName?: string;
+  }): Promise<OpenWaLinkStartResponse> {
+    const apiKey = this.openwaPlatformApiKey?.trim();
+    if (!apiKey) {
+      throw new ValidationError(
+        "WhatsApp linking is not configured on this server (OPENWA_API_KEY)",
+      );
+    }
+    if (this.familyHousehold && (await this.familyHousehold.isActiveChildSeat())) {
+      throw new ForbiddenError("A child profile cannot link WhatsApp");
+    }
+    const seatId = await this.activeSeatId();
+    const ownerKey = seatId ?? (this.activeEmployeeId() ? `emp:${this.activeEmployeeId()}` : null);
+    const sessionId = openWaSessionName(this.persistence.workspaceId, ownerKey);
+    const webhookSecret =
+      this.openwaWebhookSecret?.trim() ||
+      createHash("sha256")
+        .update(`${this.persistence.workspaceId}:${ownerKey ?? "owner"}:openwa-webhook`)
+        .digest("hex")
+        .slice(0, 32);
+    const existing = (await this.persistence.connectors.list()).find((item) => {
+      if (item.provider !== "openwa") return false;
+      return this.ownedBy(item, seatId);
+    });
+    const prior = existing ? parseOpenWaSecret(this.openConnector(existing).secret) : null;
+    const secret = buildOpenWaSecret({
+      baseUrl: this.openwaBaseUrl,
+      apiKey,
+      sessionId,
+      webhookSecret,
+      replyCompanionId: input.companionId?.trim() || prior?.replyCompanionId,
+      replyCompanionName: input.companionName?.trim() || prior?.replyCompanionName,
+    });
+    await verifyOpenWaSecret(secret);
+    await ensureOpenWaWebhook(secret, this.openWaWebhookUrl()).catch(() => undefined);
+    const view = await fetchOpenWaSessionView(secret);
+    const verified = await verifyOpenWaSecret(secret);
+    const now = new Date().toISOString();
+    const record: ConnectorSecretRecord = {
+      id: existing?.id ?? randomUUID(),
+      workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
+      provider: "openwa",
+      status: "connected",
+      accountLabel: verified.label,
+      scopes: verified.scopes,
+      connectedAt: existing?.connectedAt ?? now,
+      lastVerifiedAt: now,
+      error: null,
+      secret: JSON.stringify(verified.secret),
+      familyMemberId: seatId,
+      ownerEmployeeId: this.ownerEmployeeFor(seatId),
+    };
+    await this.saveConnector(record, existing ? "update" : "create");
+    return {
+      sessionId,
+      status: view.status,
+      qrCode: view.qrCode,
+      connectorId: record.id,
+      phone: view.phone,
+    };
+  }
+
+  async getOpenWaLinkStatus(): Promise<OpenWaLinkStatusResponse> {
+    if (this.familyHousehold && (await this.familyHousehold.isActiveChildSeat())) {
+      throw new ForbiddenError("A child profile cannot link WhatsApp");
+    }
+    const seatId = await this.activeSeatId();
+    const existing = (await this.persistence.connectors.list()).find((item) => {
+      if (item.provider !== "openwa") return false;
+      return this.ownedBy(item, seatId);
+    });
+    if (!existing) {
+      return {
+        status: "none",
+        qrCode: null,
+        phone: null,
+        connectorId: null,
+        connected: false,
+      };
+    }
+    const secret = parseOpenWaSecret(this.openConnector(existing).secret);
+    if (!secret) {
+      return {
+        status: "error",
+        qrCode: null,
+        phone: null,
+        connectorId: existing.id,
+        connected: false,
+      };
+    }
+    const view = await fetchOpenWaSessionView(secret);
+    const linked =
+      Boolean(view.phone) ||
+      view.status === "connected" ||
+      view.status === "authenticated";
+    if (linked) {
+      try {
+        const verified = await verifyOpenWaSecret(secret);
+        const opened = this.openConnector(existing);
+        await this.saveConnector(
+          {
+            ...opened,
+            status: "connected",
+            accountLabel: verified.label,
+            lastVerifiedAt: new Date().toISOString(),
+            error: null,
+            secret: JSON.stringify(verified.secret),
+          },
+          "update",
+        );
+      } catch {
+        /* keep last label */
+      }
+    }
+    return {
+      status: view.status,
+      qrCode: view.qrCode,
+      phone: view.phone,
+      connectorId: existing.id,
+      connected: linked,
+    };
   }
 
   verifyWhatsAppWebhookChallenge(query: {
@@ -1271,6 +1560,32 @@ export class ConnectorService {
     }
     await this.persistence.connectors.delete(id);
     return { ok: true };
+  }
+
+  /**
+   * Sign-out: the signed-out user's connectors are signed out with them — WhatsApp is
+   * unlinked on the gateway, then every credential that user owns is deleted.
+   * Other users' connectors are untouched.
+   */
+  async signOutCurrentUser(): Promise<{ removed: number }> {
+    const seatId = await this.activeSeatId();
+    const owned = (await this.persistence.connectors.list()).filter((item) =>
+      this.ownedBy(item, seatId),
+    );
+    const bindings = await this.persistence.bindings.list();
+    for (const record of owned) {
+      if (record.provider === "openwa") {
+        const secret = parseOpenWaSecret(this.openConnector(record).secret);
+        if (secret) await logoutOpenWaSession(secret);
+      }
+      for (const binding of bindings) {
+        if (binding.connectorId === record.id) {
+          await this.persistence.bindings.deleteByProject(binding.projectId);
+        }
+      }
+      await this.persistence.connectors.delete(record.id);
+    }
+    return { removed: owned.length };
   }
 
   private async requireMailConnector(id: string): Promise<ConnectorSecretRecord> {
@@ -1469,6 +1784,27 @@ export class ConnectorService {
       };
     }
 
+    if (provider === "openwa") {
+      const webhookSecret =
+        (config.webhook_secret || config.webhookSecret || this.openwaWebhookSecret || "").trim() ||
+        null;
+      const secret = buildOpenWaSecret({
+        baseUrl: config.base_url || config.baseUrl || "http://127.0.0.1:2785",
+        apiKey: token,
+        sessionId: config.session_id || config.sessionId || "arrab",
+        webhookSecret,
+      });
+      const verified = await verifyOpenWaSecret(secret);
+      if (verified.secret.webhookSecret) {
+        await ensureOpenWaWebhook(verified.secret, this.openWaWebhookUrl()).catch(() => undefined);
+      }
+      return {
+        login: input.label?.trim() || verified.label,
+        scopes: verified.scopes,
+        secret: JSON.stringify(verified.secret),
+      };
+    }
+
     if (token.length < 8) {
       throw new ValidationError("A valid access token is required");
     }
@@ -1538,6 +1874,16 @@ export class ConnectorService {
       const secret = parseWhatsAppSecret(existing.secret);
       if (!secret) throw new ValidationError("Invalid WhatsApp connector secret");
       const verified = await verifyWhatsAppSecret(secret);
+      return {
+        login: verified.label,
+        scopes: verified.scopes,
+        secret: JSON.stringify(verified.secret),
+      };
+    }
+    if (provider === "openwa") {
+      const secret = parseOpenWaSecret(existing.secret);
+      if (!secret) throw new ValidationError("Invalid OpenWA connector secret");
+      const verified = await verifyOpenWaSecret(secret);
       return {
         login: verified.label,
         scopes: verified.scopes,

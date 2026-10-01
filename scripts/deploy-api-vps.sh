@@ -39,6 +39,11 @@ if ! grep -q '^ARRAB_PUBLIC_BASE_URL=' "$ENV_FILE"; then
   printf 'ARRAB_PUBLIC_BASE_URL=https://api.arrabai.com%s\n' "$ROUTE_PREFIX" >> "$ENV_FILE"
 fi
 
+if command -v docker >/dev/null 2>&1; then
+  echo "Ensuring OpenWA gateway on this host…"
+  APP_DIR="$APP_DIR" bash "$APP_DIR/scripts/setup-openwa-api-server.sh" || echo "OpenWA setup skipped (see log above)."
+fi
+
 if systemctl list-unit-files | grep -q "^${SERVICE}.service"; then
   systemctl restart "$SERVICE"
   systemctl --no-pager --full status "$SERVICE" | head -20

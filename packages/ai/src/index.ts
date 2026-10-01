@@ -12,6 +12,7 @@ export {
   type ModelProviderAdapter,
 } from "./types.js";
 export { RegistryAiGateway } from "./gateway.js";
+export { ThinkTagSplitter, stripThinkBlock } from "./think-tags.js";
 export { OpenAiCompatibleAdapter, type OpenAiCompatibleConfig } from "./openai-compatible.js";
 export { AnthropicMessagesAdapter, type AnthropicMessagesConfig } from "./anthropic.js";
 export {

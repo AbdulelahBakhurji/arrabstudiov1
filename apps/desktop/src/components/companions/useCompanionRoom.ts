@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { serverLimitMessage } from "@/lib/managed-client/limits";
+import { setServerLimitMessage } from "@/lib/managed-client/store";
 import type { Approval, AiGatewayStatusResponse, WorkspaceHint } from "@arrab/shared";
 import { arrabApi, ApiRequestError } from "@/lib/api";
 import { assertCloudAiAllowed, resolveCompanionModel, hasLocalModelSelected } from "@/lib/ai-prefs";
@@ -15,6 +17,7 @@ import {
   type LocalToolArtifact,
 } from "@/lib/agent-local-tools";
 import { companionRoomKey, createCompanionDraftStore } from "@/lib/companion-drafts";
+import { loadBestMessages, saveChatHistory } from "@/lib/chat-history";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { ensureAssistantDesk } from "@/lib/fs";
 import { streamOllamaChat } from "@/lib/local-models";
@@ -63,6 +66,12 @@ import {
   type SessionMode,
 } from "@/lib/session-mode";
 import { friendlyToolTitle, type AgentStep } from "@/components/AgentSteps";
+import {
+  clientSearchWeb,
+  formatWebSearchForModel,
+  parseWebSearchCommand,
+} from "@/lib/web-search";
+import { useThoughtTraces } from "@/components/ThinkingBlock";
 
 
 export type ChatLine = {
@@ -80,6 +89,8 @@ export type CompanionSendExtras = {
   /** Clear a streamed “awaiting tool” placeholder before the real reply lands. */
   onReplyReset?: () => void;
   onAgentSteps?: (updater: (current: AgentStep[]) => AgentStep[]) => void;
+  /** Live model reasoning for this turn. */
+  onThinking?: (text: string) => void;
 };
 const TASK_HINTS = ["remind me", "i need to", "i have to", "don't forget", "لازم", "ذكرني"];
 
@@ -332,6 +343,49 @@ async function ask(
   extras?: CompanionSendExtras,
 ) {
   const reportSteps = extras?.onAgentSteps;
+  const searchQuery = parseWebSearchCommand(content);
+  let webNotes = "";
+  let webDirective = "";
+  if (searchQuery) {
+    reportSteps?.((steps) => [
+      ...steps.filter((step) => step.id !== "web-search"),
+      {
+        id: "web-search",
+        title: friendlyToolTitle("web_search", searchQuery),
+        detail: searchQuery,
+        status: "running",
+      },
+    ]);
+    try {
+      const found = await clientSearchWeb(searchQuery);
+      signal.throwIfAborted();
+      if (found.sources.length > 0) {
+        webNotes = formatWebSearchForModel(found);
+        webDirective =
+          "LIVE WEB RESULTS are already in the notes. Answer from those pages and URLs. Do not say the web search failed or that nothing was found when findings are listed.";
+      }
+      reportSteps?.((steps) =>
+        steps.map((step) =>
+          step.id === "web-search"
+            ? { ...step, status: found.sources.length ? "done" : "failed", detail: found.summary.slice(0, 500) }
+            : step,
+        ),
+      );
+    } catch (err: unknown) {
+      if (signal.aborted) throw err;
+      reportSteps?.((steps) =>
+        steps.map((step) =>
+          step.id === "web-search"
+            ? {
+                ...step,
+                status: "failed",
+                detail: err instanceof Error ? err.message : "Search failed",
+              }
+            : step,
+        ),
+      );
+    }
+  }
   const prefs = readPrefs();
   if (hasLocalModelSelected(prefs)) {
     let ready = person;
@@ -347,7 +401,9 @@ async function ask(
       companionInstructions(ready, facts, uiLocale),
       notes,
       extras?.workspaceHint?.sessionNotes,
+      webNotes,
       extras?.workspaceHint?.operatorDirectives,
+      webDirective,
       extras?.workspaceHint?.treeSummary
         ? `Workspace files:\n${extras.workspaceHint.treeSummary}`
         : null,
@@ -389,10 +445,13 @@ async function ask(
   const uiLocale = localStorage.getItem("arrab.locale") === "ar" ? "ar" : "en";
   const hint = extras?.workspaceHint ?? {};
   const isAssistant = person.domain === "arrab-assistant";
-  const deskFolder = isAssistant
-    ? await resolveDeskFolder(hint.folderPath ?? null)
-    : hint.folderPath?.trim() || null;
+  const deskFolder = hint.folderPath?.trim()
+    ? hint.folderPath.trim()
+    : isAssistant
+      ? await resolveDeskFolder(null)
+      : null;
   const hasDesk = Boolean(deskFolder);
+  const isGameStudio = person.purposeId === "game-design" || person.domain === "game-designer";
   const body = {
     content,
     model: person.chatModel?.trim() || model,
@@ -407,7 +466,7 @@ async function ask(
       branch: hint.branch ?? null,
       gitStatus: hint.gitStatus ?? null,
       treeSummary: hint.treeSummary ?? null,
-      sessionNotes: [notes, hint.sessionNotes].filter(Boolean).join("\n\n") || notes,
+      sessionNotes: [notes, webNotes, hint.sessionNotes].filter(Boolean).join("\n\n") || notes,
       activeGoal: hint.activeGoal ?? null,
       openFilePath: hint.openFilePath ?? null,
       openFileContent: hint.openFileContent ?? null,
@@ -417,10 +476,13 @@ async function ask(
       operatorDirectives: [
         isAssistant
           ? "You are Arrab Assistant. Do the work with tools when a folder or connector is available."
-          : "Stay in character. Prefer a short, direct reply.",
+          : isGameStudio
+            ? "You are the Game Design companion. Create any game (WebGL, Roblox/Luau, 2D, systems). Emit real project files. Use desk tools when a folder is attached."
+            : "Stay in character. Prefer a short, direct reply.",
         "Match the language of the latest message.",
         uiLocale === "ar" ? "UI locale is Arabic." : "UI locale is English.",
-        hasDesk ? "Local desk tools are enabled for the attached folder." : null,
+        hasDesk ? "Local desk tools are enabled for the attached folder — create and edit files freely." : null,
+        webDirective,
         hint.operatorDirectives,
       ]
         .filter(Boolean)
@@ -437,6 +499,10 @@ async function ask(
       conversationId,
       body,
       {
+        onThinking: (text) => {
+          if (signal.aborted) return;
+          extras?.onThinking?.(text);
+        },
         onToken: (token) => {
           if (signal.aborted) return;
           if (!sawToken) {
@@ -652,6 +718,28 @@ async function ask(
   }
 }
 
+/** Hidden [[desktop: ...]] lines drive the companion's sealed computer, then leave the chat. */
+function pullDesktopCommands(
+  reply: string,
+  ids: { id: string; domain: string },
+): string {
+  const commands: string[] = [];
+  const next = reply.replace(/\[\[desktop:\s*([^\]]{1,400})\]\]/gi, (_match, command: string) => {
+    const trimmed = command.trim();
+    if (trimmed) commands.push(trimmed);
+    return "";
+  });
+  for (const command of commands) {
+    // Prefer domain (computer listen id); include profile id for parent wake listeners.
+    window.dispatchEvent(
+      new CustomEvent("arrab:companion-computer", {
+        detail: { companionId: ids.domain, command, profileId: ids.id },
+      }),
+    );
+  }
+  return next.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: string) {
   const { t, locale } = useLanguage();
   const [lines, setLines] = useState<ChatLine[]>([]);
@@ -662,6 +750,8 @@ export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: stri
   const [loading, setLoading] = useState(false);
   const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
   const [thinkingLabel, setThinkingLabel] = useState("");
+  const thoughts = useThoughtTraces();
+  const [liveReplyId, setLiveReplyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [failedDraft, setFailedDraft] = useState("");
   const [notice, setNotice] = useState("");
@@ -803,12 +893,18 @@ export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: stri
       return cleanup;
     }
     setLoading(true);
-    void arrabApi
-      .conversation(active.conversationId)
-      .then((detail) => {
+    const conversationId = active.conversationId;
+    void (async () => {
+      try {
+        const detail = await arrabApi.conversation(conversationId).catch(() => null);
         if (cancelled) return;
+        const messages = await loadBestMessages(conversationId, detail?.messages);
+        if (cancelled) return;
+        if (detail) {
+          void saveChatHistory(detail.conversation, messages);
+        }
         setLines(
-          detail.messages
+          messages
             .filter((message) => message.role === "user" || message.role === "assistant")
             .map((message) => ({
               id: message.id,
@@ -821,14 +917,16 @@ export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: stri
               at: message.createdAt,
             })),
         );
-      })
-      .catch((err: unknown) => {
+        if (!detail && !messages.length) {
+          setError("Could not load conversation");
+        }
+      } catch (err: unknown) {
         if (!cancelled)
           setError(err instanceof Error ? err.message : "Could not load conversation");
-      })
-      .finally(() => {
+      } finally {
         if (!cancelled) setLoading(false);
-      });
+      }
+    })();
     return cleanup;
     // General gains a backing conversation during send; only a room switch reloads history.
   }, [roomKey]);
@@ -851,9 +949,7 @@ export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: stri
     setThinkingLabel(
       localeKey === "ar" ? `يفكر في ${topic}…` : `Thinking about ${topic}…`,
     );
-    setAgentSteps([
-      { id: "reading", title: localeKey === "ar" ? "يقرأ رسالتك" : "Reading your message", status: "running" },
-    ]);
+    setAgentSteps([{ id: "thinking", title: "thinking", status: "running" }]);
     let person = active.domain === "general" ? ensureGeneralCompanion(active.space) : active;
     if (applySpokenToneAdjustments(person.id, text)) {
       person = findCompanion(getCompanionState(), person.id) ?? person;
@@ -882,48 +978,7 @@ export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: stri
     const guardianFraming = guardianFramingForSend(person, localeKey);
     const turnNotes = [guardianFraming, sessionFraming, framing, sensitive].filter(Boolean).join("\n");
     const replyId = crypto.randomUUID();
-    const progressTimers: number[] = [];
-    progressTimers.push(
-      window.setTimeout(() => {
-        if (!isCurrent()) return;
-        setAgentSteps((current) => {
-          if (current.some((step) => step.id !== "reading" && step.status === "running")) {
-            return current;
-          }
-          if (current.some((step) => step.id === "thinking")) return current;
-          return [
-            ...current.map((step) =>
-              step.id === "reading" ? { ...step, status: "done" as const } : step,
-            ),
-            { id: "thinking", title: "thinking", status: "running" },
-          ];
-        });
-      }, 450),
-    );
-    progressTimers.push(
-      window.setTimeout(() => {
-        if (!isCurrent()) return;
-        setAgentSteps((current) => {
-          const onlyThinking =
-            current.some((step) => step.id === "thinking" && step.status === "running") &&
-            !current.some((step) => step.status === "running" && step.id !== "thinking");
-          if (!onlyThinking) return current;
-          return [
-            ...current.map((step) =>
-              step.id === "thinking" && step.status === "running"
-                ? { ...step, status: "done" as const }
-                : step,
-            ),
-            {
-              id: "considering",
-              title:
-                localeKey === "ar" ? "يراجع التفاصيل" : "Considering the details",
-              status: "running",
-            },
-          ];
-        });
-      }, 2200),
-    );
+    setLiveReplyId(replyId);
     try {
       // Phase 3: hard safety + quiet hours cut before any LLM tokens.
       let preflight: GuardianDecision | null = null;
@@ -982,6 +1037,7 @@ export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: stri
         text,
         (token) => {
           if (!isCurrent()) return;
+          thoughts.finish(replyId);
           setLines((current) =>
             current.some((line) => line.id === replyId)
               ? current.map((line) =>
@@ -1014,6 +1070,11 @@ export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: stri
             setAgentSteps(updater);
             extras?.onAgentSteps?.(updater);
           },
+          onThinking: (chunk) => {
+            if (!isCurrent()) return;
+            thoughts.append(replyId, chunk);
+            extras?.onThinking?.(chunk);
+          },
           onReplyReset: () => {
             if (!isCurrent()) return;
             setLines((current) =>
@@ -1037,7 +1098,8 @@ export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: stri
           ? "ما وصلت إجابة مفيدة. أعد الطلب بجملة عادية وسأساعدك."
           : "I didn't get a usable answer. Say it again in a normal sentence and I'll help."
         : rawReply;
-      const { text: stripped, suggested } = stripSuggestModeMarker(cleanedReply);
+      const { text: marked, suggested } = stripSuggestModeMarker(cleanedReply);
+      const stripped = pullDesktopCommands(marked, { id: person.id, domain: person.domain });
       if (suggested && suggested !== readSessionMode()) {
         setSuggestedSessionMode(suggested);
       }
@@ -1140,6 +1202,7 @@ export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: stri
         }
       }
       setFailedDraft("");
+      setServerLimitMessage(null);
       return reply || null;
     } catch (err: unknown) {
       if (!isCurrent()) return null;
@@ -1158,11 +1221,13 @@ export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: stri
         );
         return null;
       }
+      setServerLimitMessage(serverLimitMessage(err));
       setError(err instanceof Error ? err.message : t("apiUnavailable"));
       setFailedDraft(text);
       return null;
     } finally {
-      for (const timer of progressTimers) window.clearTimeout(timer);
+      thoughts.finish(replyId);
+      setLiveReplyId((current) => (current === replyId ? null : current));
       // A stopped/old request must not clear the busy state of a later send.
       if (isCurrent()) {
         requestRef.current = null;
@@ -1187,6 +1252,13 @@ export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: stri
     );
     setNotice(locale === "ar" ? "توقف استقبال الرد." : "Stopped receiving the reply.");
   }
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
+  useEffect(() => {
+    const onStopReply = () => stopRef.current();
+    window.addEventListener("arrab:stop-reply", onStopReply);
+    return () => window.removeEventListener("arrab:stop-reply", onStopReply);
+  }, []);
   return {
     lines,
     draft,
@@ -1197,6 +1269,13 @@ export function useCompanionRoom(active: CompanionRoomProfile, sessionKey?: stri
     loading,
     agentSteps,
     thinkingLabel,
+    /** Reasoning traces keyed by reply line id. */
+    thoughts: thoughts.traces,
+    /** Reasoning still streaming before the reply line exists. */
+    liveThought:
+      liveReplyId && !lines.some((line) => line.id === liveReplyId)
+        ? (thoughts.traces[liveReplyId] ?? null)
+        : null,
     error,
     setError,
     failedDraft,

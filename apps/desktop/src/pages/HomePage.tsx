@@ -1,22 +1,58 @@
-import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { type FormEvent, type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, Plus, Send } from "lucide-react";
-import type { Agent, DashboardResponse, TeamMembership } from "@arrab/shared";
-import { WorkforceList, type WorkforceListGroup } from "@/components/WorkforceList";
+import {
+  ArrowRight,
+  Check,
+  CheckCircle2,
+  Command,
+  Inbox,
+  Loader2,
+  MessageSquare,
+  Play,
+  Search,
+  Send,
+  Sparkles,
+  Target,
+  UserPlus,
+  X,
+  Zap,
+} from "lucide-react";
+import type { Agent, Task, TaskPriority, TaskStatus } from "@arrab/shared";
 import { Surface } from "@/components/StudioFrame";
+import {
+  Avatar,
+  Card,
+  Empty,
+  PriorityChip,
+  Segmented,
+  Stat,
+  StatusDot,
+} from "@/components/organization/workforce/primitives";
+import {
+  OPEN_HIRE_FLAG,
+  OPEN_SETUP_FLAG,
+  PRIORITIES,
+  openAgentChat,
+  priorityLabel,
+  relativeAge,
+  statusLabel,
+  useWorkforceData,
+} from "@/components/organization/workforce/use-workforce-data";
 import { useLanguage } from "@/i18n/LanguageProvider";
-import { arrabApi, ApiRequestError, isTransientApiError } from "@/lib/api";
-import { filterLiveWorkforceAgents } from "@/lib/agent-session-policy";
 import { notifyStudio, pushToast } from "@/lib/notify";
-import { useRole } from "@/roles/RoleProvider";
 import { useOrgSeatCapabilities } from "@/lib/org-seat";
+import { parseStudioAssign } from "@/lib/studio-assign";
 import { cn } from "@/lib/utils";
+import { useRole } from "@/roles/RoleProvider";
 
-type ComposeMode = "team" | "employee" | "project";
+export { parseStudioAssign } from "@/lib/studio-assign";
 
 const STUDIO_GOAL_KEY = "arrab.studioGoal";
+const RUN_NOW_KEY = "arrab.ops.runNow";
+const TEMPLATES = ["opsTplReview", "opsTplResearch", "opsTplDraft", "opsTplFollowUp", "opsTplStatus"] as const;
+type QueueFilter = "open" | "in_progress" | "blocked" | "done";
 
-function readStudioGoal(): string {
+function readGoal(): string {
   try {
     return localStorage.getItem(STUDIO_GOAL_KEY) ?? "";
   } catch {
@@ -24,632 +60,647 @@ function readStudioGoal(): string {
   }
 }
 
-function initials(name: string): string {
-  const parts = name.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return "?";
-  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
-  return `${parts[0]![0] ?? ""}${parts[1]![0] ?? ""}`.toUpperCase();
-}
-
-function normalizeName(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-function findAgentByName(agents: Agent[], rawName: string): Agent | null {
-  const needle = normalizeName(rawName);
-  if (!needle) return null;
-  const exact = agents.find((agent) => normalizeName(agent.name) === needle);
-  if (exact) return exact;
-  const starts = agents.find((agent) => normalizeName(agent.name).startsWith(needle));
-  if (starts) return starts;
-  return agents.find((agent) => normalizeName(agent.name).includes(needle)) ?? null;
-}
-
-/** Parse "assign X to Mohammed", "@sam do Y", or free text + selected assignee. */
-export function parseStudioAssign(
-  input: string,
-  agents: Agent[],
-): { title: string; agent: Agent | null; nameHint: string | null } {
-  const text = input.trim();
-  if (!text) return { title: "", agent: null, nameHint: null };
-
-  const atMatch = text.match(/^@([^\s]+)\s+(.+)$/s);
-  if (atMatch) {
-    const nameHint = atMatch[1]!.trim();
-    return {
-      title: atMatch[2]!.trim(),
-      agent: findAgentByName(agents, nameHint),
-      nameHint,
-    };
-  }
-
-  const assignToColon = text.match(/^assign\s+to\s+([^:]+):\s*(.+)$/is);
-  if (assignToColon) {
-    const nameHint = assignToColon[1]!.trim();
-    return {
-      title: assignToColon[2]!.trim(),
-      agent: findAgentByName(agents, nameHint),
-      nameHint,
-    };
-  }
-
-  const forColon = text.match(/^(?:for|to)\s+([^:]+):\s*(.+)$/is);
-  if (forColon) {
-    const nameHint = forColon[1]!.trim();
-    return {
-      title: forColon[2]!.trim(),
-      agent: findAgentByName(agents, nameHint),
-      nameHint,
-    };
-  }
-
-  const assignTo = text.match(/^(?:assign|give|send)\s+(.+?)\s+to\s+(.+)$/is);
-  if (assignTo) {
-    let title = assignTo[1]!.trim();
-    const nameHint = assignTo[2]!.trim();
-    title = title.replace(/^(?:this\s+)?(?:task|one)$/i, "Task").trim() || "Task";
-    return {
-      title,
-      agent: findAgentByName(agents, nameHint),
-      nameHint,
-    };
-  }
-
-  return { title: text, agent: null, nameHint: null };
-}
-
 export function HomePage() {
   const { t, locale } = useLanguage();
   const { href } = useRole();
-  const { canAssignWork, canHireAgents } = useOrgSeatCapabilities();
   const navigate = useNavigate();
-  const [data, setData] = useState<DashboardResponse | null>(null);
-  const [memberships, setMemberships] = useState<TeamMembership[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [mode, setMode] = useState<ComposeMode>("employee");
-  const [name, setName] = useState("");
-  const [secondary, setSecondary] = useState("");
-  const [projectId, setProjectId] = useState("");
-  const [saving, setSaving] = useState(false);
+  const caps = useOrgSeatCapabilities();
+  const data = useWorkforceData();
+  const commandRef = useRef<HTMLTextAreaElement | null>(null);
+
+  const [text, setText] = useState("");
+  const [ownerId, setOwnerId] = useState<string | null>(null);
+  const [teamId, setTeamId] = useState("");
+  const [priority, setPriority] = useState<TaskPriority>("high");
+  const [runNow, setRunNow] = useState(() => localStorage.getItem(RUN_NOW_KEY) === "1");
+  const [busy, setBusy] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
-  const [studioGoal, setStudioGoal] = useState(readStudioGoal);
-  const [goalDraft, setGoalDraft] = useState(readStudioGoal);
+  const [lastId, setLastId] = useState<string | null>(null);
+  const [mention, setMention] = useState<{ query: string; index: number } | null>(null);
+  const [queueFilter, setQueueFilter] = useState<QueueFilter>("open");
+  const [runningId, setRunningId] = useState<string | null>(null);
+  const [peopleQuery, setPeopleQuery] = useState("");
+  const [goal, setGoal] = useState(readGoal);
+  const [goalDraft, setGoalDraft] = useState(readGoal);
   const [goalEditing, setGoalEditing] = useState(false);
-  const [showMore, setShowMore] = useState(false);
-  const [assignText, setAssignText] = useState("");
-  const [assignAgentId, setAssignAgentId] = useState<string | null>(null);
-  const [assignBusy, setAssignBusy] = useState(false);
-  const [assignError, setAssignError] = useState<string | null>(null);
 
-  const load = useCallback(() => {
-    setError(null);
-    void Promise.all([
-      arrabApi.dashboard(),
-      arrabApi.memberships().catch(() => ({ items: [] as TeamMembership[] })),
-    ])
-      .then(([dashboard, membershipList]) => {
-        setData(dashboard);
-        setMemberships(membershipList.items);
-      })
-      .catch((err: unknown) => {
-        setData(null);
-        setMemberships([]);
-        const message = err instanceof ApiRequestError ? err.message : t("apiUnavailable");
-        if (!isTransientApiError(message)) {
-          setError(message);
-        }
-      });
-  }, [t]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
-
-  useEffect(() => {
-    const onRoster = () => load();
-    window.addEventListener("arrab-workforce-roster", onRoster);
-    window.addEventListener("storage", onRoster);
-    return () => {
-      window.removeEventListener("arrab-workforce-roster", onRoster);
-      window.removeEventListener("storage", onRoster);
-    };
-  }, [load]);
-
-  useEffect(() => {
-    if (!studioGoal.trim()) {
-      localStorage.removeItem(STUDIO_GOAL_KEY);
-      return;
-    }
-    localStorage.setItem(STUDIO_GOAL_KEY, studioGoal.trim());
-  }, [studioGoal]);
-
-  const activeProjects = data?.projects.filter((p) => p.status === "active") ?? [];
-  const employees = useMemo(
-    () => filterLiveWorkforceAgents(data?.agents ?? []),
-    [data?.agents],
-  );
-  const workforceGroups = useMemo((): WorkforceListGroup[] => {
-    const byTeam = new Map<string, Agent[]>();
-    for (const membership of memberships) {
-      const agent = employees.find((item) => item.id === membership.agentId);
-      if (!agent) continue;
-      const list = byTeam.get(membership.teamId) ?? [];
-      list.push(agent);
-      byTeam.set(membership.teamId, list);
-    }
-    const assigned = new Set(
-      memberships.map((membership) => membership.agentId).filter(Boolean),
-    );
-    const sortedTeams = [...(data?.teams ?? [])].sort((a, b) => {
-      const score = (name: string) => {
-        const lower = name.toLowerCase();
-        if (lower.includes("studio")) return 0;
-        if (lower.includes("all-hands") || lower.includes("all hands")) return 1;
-        return 2;
-      };
-      return score(a.name) - score(b.name);
-    });
-    const groups: WorkforceListGroup[] = sortedTeams.slice(0, 8).map((team) => ({
-      id: team.id,
-      name: team.name,
-      agents: (byTeam.get(team.id) ?? []).map((agent) => ({
-        id: agent.id,
-        name: agent.name,
-        role: agent.role,
-      })),
-    }));
-    const unassigned = employees.filter((agent) => !assigned.has(agent.id));
-    if (groups.length === 0 && employees.length > 0) {
-      groups.push({
-        id: "workforce",
-        name: t("workforceTitle"),
-        agents: employees.map((agent) => ({
-          id: agent.id,
-          name: agent.name,
-          role: agent.role,
-        })),
-      });
-    } else if (unassigned.length > 0) {
-      groups.push({
-        id: "unassigned",
-        name: t("mapUnassigned"),
-        agents: unassigned.map((agent) => ({
-          id: agent.id,
-          name: agent.name,
-          role: agent.role,
-        })),
-      });
-    }
-    return groups;
-  }, [data?.teams, employees, memberships, t]);
   const isAr = locale === "ar";
-  const hasPeople = employees.length > 0;
+  const people = useMemo(() => data.agents.filter((agent) => agent.status !== "archived"), [data.agents]);
+  const parsed = useMemo(() => parseStudioAssign(text, people), [people, text]);
+  const owner: Agent | null = parsed.agent ?? people.find((agent) => agent.id === ownerId) ?? null;
 
-  const parsedAssign = useMemo(
-    () => parseStudioAssign(assignText, employees),
-    [assignText, employees],
-  );
-  const resolvedAssignee =
-    parsedAssign.agent ?? employees.find((agent) => agent.id === assignAgentId) ?? null;
+  useEffect(() => {
+    commandRef.current?.focus();
+  }, []);
 
-  async function onCompose(event: FormEvent) {
-    event.preventDefault();
+  useEffect(() => {
+    localStorage.setItem(RUN_NOW_KEY, runNow ? "1" : "0");
+  }, [runNow]);
+
+  useEffect(() => {
+    if (goal.trim()) localStorage.setItem(STUDIO_GOAL_KEY, goal.trim());
+    else localStorage.removeItem(STUDIO_GOAL_KEY);
+  }, [goal]);
+
+  // Owner follows department routing when the picked owner is outside it.
+  useEffect(() => {
+    if (!teamId || !ownerId) return;
+    const members = data.membersByTeam.get(teamId) ?? [];
+    if (!members.some((agent) => agent.id === ownerId)) setOwnerId(null);
+  }, [data.membersByTeam, ownerId, teamId]);
+
+  const mentionMatches = useMemo(() => {
+    if (!mention) return [];
+    const q = mention.query.toLowerCase();
+    return people
+      .filter((agent) => `${agent.name} ${agent.role} ${agent.specialty ?? ""}`.toLowerCase().includes(q))
+      .slice(0, 6);
+  }, [mention, people]);
+
+  const ownerPool = useMemo(() => {
+    const pool = teamId ? data.membersByTeam.get(teamId) ?? [] : people;
+    const q = peopleQuery.trim().toLowerCase();
+    if (!q) return pool;
+    return pool.filter((agent) =>
+      `${agent.name} ${agent.role} ${agent.specialty ?? ""} ${data.departmentOf.get(agent.id)?.name ?? ""}`
+        .toLowerCase()
+        .includes(q),
+    );
+  }, [data.departmentOf, data.membersByTeam, people, peopleQuery, teamId]);
+
+  const queue = useMemo(() => {
+    const list =
+      queueFilter === "open"
+        ? data.openTasks.filter((task) => task.status !== "blocked" && task.status !== "in_progress")
+        : data.tasks.filter((task) => task.status === queueFilter);
+    return [...list]
+      .sort((a, b) => (queueFilter === "open" ? 0 : b.updatedAt.localeCompare(a.updatedAt)))
+      .slice(0, 14);
+  }, [data.openTasks, data.tasks, queueFilter]);
+
+  const count = (status: TaskStatus) => data.tasks.filter((task) => task.status === status).length;
+  const urgent = data.openTasks.filter((task) => task.priority === "urgent" || task.priority === "high").length;
+  const needsYou = data.approvals.length + data.draftsAwaitingRequest.length;
+  const arrow = cn("size-3.5", isAr && "rotate-180");
+
+  function updateText(value: string, caret: number) {
+    setText(value);
     setFormError(null);
-    setSaving(true);
-    try {
-      if (mode === "team") {
-        await arrabApi.createTeam({
-          name,
-          purpose: secondary.trim() || null,
-          projectId: projectId || null,
-        });
-      } else if (mode === "employee") {
-        await arrabApi.createAgent({
-          name,
-          role: secondary.trim() || "generalist",
-          projectId: projectId || null,
-          status: "active",
-        });
-      } else {
-        await arrabApi.createProject({
-          name,
-          description: secondary.trim() || null,
-        });
+    const before = value.slice(0, caret);
+    const match = before.match(/(^|\s)@([^\s@]*)$/);
+    setMention(match ? { query: match[2] ?? "", index: 0 } : null);
+  }
+
+  function pickMention(agent: Agent) {
+    const el = commandRef.current;
+    const caret = el?.selectionStart ?? text.length;
+    const before = text.slice(0, caret).replace(/(^|\s)@[^\s@]*$/, "$1");
+    const after = text.slice(caret);
+    setText(`${before}${after}`.replace(/\s{2,}/g, " ").trimStart());
+    setOwnerId(agent.id);
+    setMention(null);
+    requestAnimationFrame(() => el?.focus());
+  }
+
+  function onKey(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (mention && mentionMatches.length > 0) {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        setMention({ ...mention, index: (mention.index + step + mentionMatches.length) % mentionMatches.length });
+        return;
       }
-      setName("");
-      setSecondary("");
-      setProjectId("");
-      setShowMore(false);
-      load();
-    } catch (err: unknown) {
-      setFormError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
-    } finally {
-      setSaving(false);
+      if (event.key === "Enter" || event.key === "Tab") {
+        event.preventDefault();
+        const pick = mentionMatches[mention.index];
+        if (pick) pickMention(pick);
+        return;
+      }
+      if (event.key === "Escape") {
+        setMention(null);
+        return;
+      }
+    }
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      void dispatch();
     }
   }
 
-  async function onAssign(event: FormEvent) {
-    event.preventDefault();
-    if (!canAssignWork) {
-      setAssignError(t("studioAssignManagersOnly"));
+  async function dispatch(event?: FormEvent) {
+    event?.preventDefault();
+    if (busy) return;
+    if (!caps.canAssignWork) {
+      setFormError(t("studioAssignManagersOnly"));
       return;
     }
-    setAssignError(null);
-    const title = parsedAssign.title.trim();
+    const title = (parsed.title || text).trim();
     if (!title) {
-      setAssignError(t("studioAssignEmpty"));
+      setFormError(t("studioAssignEmpty"));
       return;
     }
-    if (!resolvedAssignee) {
-      setAssignError(
-        parsedAssign.nameHint
-          ? t("studioAssignUnknown").replace("{name}", parsedAssign.nameHint)
-          : t("studioAssignPick"),
+    if (!owner) {
+      setFormError(
+        parsed.nameHint ? t("studioAssignUnknown").replace("{name}", parsed.nameHint) : t("studioAssignPick"),
       );
       return;
     }
-    setAssignBusy(true);
-    try {
-      const task = await arrabApi.createTask({
-        title,
-        brief: assignText.trim() || null,
-        assigneeAgentId: resolvedAssignee.id,
-        status: "assigned",
-        priority: "medium",
-      });
-      setAssignText("");
-      setAssignAgentId(null);
-      pushToast({
-        title: t("studioAssignDone"),
-        body: t("studioAssignDoneBody")
-          .replace("{task}", task.title)
-          .replace("{name}", resolvedAssignee.name),
-        tone: "success",
-        href: href("/workplace"),
-      });
-      void notifyStudio({
-        kind: "cowork",
-        title: t("studioAssignDone"),
-        body: t("studioAssignDoneBody")
-          .replace("{task}", task.title)
-          .replace("{name}", resolvedAssignee.name),
-        href: href("/workplace"),
-      });
-      load();
-    } catch (err: unknown) {
-      setAssignError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
-    } finally {
-      setAssignBusy(false);
+    setBusy(true);
+    const task = await data.createTask({
+      title: title.split("\n")[0]!.slice(0, 120),
+      brief: text.trim() || null,
+      assigneeAgentId: owner.id,
+      teamId: teamId || data.departmentOf.get(owner.id)?.id || null,
+      status: "assigned",
+      priority,
+    });
+    if (!task) {
+      setBusy(false);
+      return;
     }
+    const body = t("studioAssignDoneBody").replace("{task}", task.title).replace("{name}", owner.name);
+    setText("");
+    setOwnerId(null);
+    setLastId(task.id);
+    setQueueFilter("open");
+    pushToast({ title: t("studioAssignDone"), body, tone: "success", href: href("/workforce") });
+    void notifyStudio({ kind: "cowork", title: t("studioAssignDone"), body, href: href("/workforce") });
+    if (runNow) {
+      setRunningId(task.id);
+      const result = await data.runTask(task, priority === "urgent" || priority === "high");
+      setRunningId(null);
+      if (result) pushToast({ title: t("oxRunReport").replace("{name}", owner.name), body: result.slice(0, 220), tone: "info" });
+    }
+    setBusy(false);
+    commandRef.current?.focus();
   }
 
-  function openChatWith(agentId: string) {
-    sessionStorage.setItem("arrab.chatAgent", agentId);
+  async function runTask(task: Task) {
+    setRunningId(task.id);
+    const result = await data.runTask(task, task.priority === "urgent" || task.priority === "high");
+    setRunningId(null);
+    if (result) pushToast({ title: t("oxRunReport").replace("{name}", data.agentName(task.assigneeAgentId)), body: result.slice(0, 220), tone: "info" });
+  }
+
+  function chatWith(agentId: string, task?: Task) {
+    openAgentChat(agentId, task);
     navigate(href("/chat"));
   }
 
-  function applyStudioGoal(next: string) {
-    const trimmed = next.trim();
-    setStudioGoal(trimmed);
-    setGoalDraft(trimmed);
-    setGoalEditing(false);
+  function openHire() {
+    sessionStorage.setItem(OPEN_HIRE_FLAG, "1");
+    navigate(href("/workforce"));
+  }
+
+  function openSetup() {
+    sessionStorage.setItem(OPEN_SETUP_FLAG, "1");
+    navigate(href("/workforce"));
+  }
+
+  function applyTemplate(key: (typeof TEMPLATES)[number]) {
+    const line = t(key);
+    setText((current) => (current.trim() ? `${current.trim()}\n${line}` : line));
+    commandRef.current?.focus();
   }
 
   return (
-    <Surface className="cp-ui studio-org !overflow-hidden">
-      <div className="studio-org-page studio-claude flex h-full min-h-0 w-full flex-col overflow-hidden">
-        <div className="studio-claude-glow pointer-events-none absolute inset-0" aria-hidden />
-
-        <header className="studio-claude-head relative shrink-0 px-5 pt-7 sm:px-8 sm:pt-9">
-          <div className="mx-auto flex w-full max-w-[1080px] flex-wrap items-end justify-between gap-4">
-            <div className="min-w-0 max-w-xl">
-              <h1>{t("hq")}</h1>
-              <p className="studio-claude-lead">{t("studioOrgLead")}</p>
-              {studioGoal && !goalEditing ? (
-                <p className="studio-claude-goal">
-                  <span>{t("dashStudioGoal")}</span>
-                  {studioGoal}
-                  <button type="button" onClick={() => { setGoalDraft(studioGoal); setGoalEditing(true); }}>
-                    {t("edit")}
-                  </button>
-                </p>
-              ) : null}
+    <Surface className="cc-page !overflow-hidden">
+      <header className="cc-head">
+        <div className="cc-head-title">
+          <span className="cc-mark">
+            <Command className="size-[18px]" strokeWidth={1.7} />
+          </span>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2.5">
+              <h1>{t("opsCommandTitle")}</h1>
+              <span className="cc-live">
+                <i aria-hidden />
+                {t("commandStatusOnline")}
+              </span>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Link
-                to={hasPeople ? href("/chat") : href("/workforce")}
-                onClick={(event) => {
-                  if (!hasPeople) {
-                    event.preventDefault();
-                    if (canHireAgents) setShowMore(true);
-                  }
-                }}
-                className="studio-claude-primary"
-              >
-                {hasPeople ? t("homePrimaryCta") : canHireAgents ? t("homeHireFirstCta") : t("homePrimaryCta")}
-                <ArrowRight className={cn("size-3.5", isAr && "rotate-180")} strokeWidth={1.8} />
-              </Link>
-              {!studioGoal && !goalEditing ? (
-                <button
-                  type="button"
-                  className="studio-claude-quiet"
-                  onClick={() => {
-                    setGoalDraft("");
-                    setGoalEditing(true);
-                  }}
-                >
-                  {t("setGoal")}
-                </button>
-              ) : null}
-            </div>
-          </div>
-        </header>
-
-        {goalEditing ? (
-          <div className="relative mx-auto w-full max-w-[1080px] shrink-0 px-5 pt-4 sm:px-8">
-            <div className="studio-claude-goal-edit">
-              <textarea
-                value={goalDraft}
-                onChange={(event) => setGoalDraft(event.target.value)}
-                rows={2}
-                placeholder={t("dashStudioGoalPlaceholder")}
-                className="studio-assign-input"
-              />
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={!goalDraft.trim()}
-                  onClick={() => applyStudioGoal(goalDraft)}
-                  className="studio-claude-primary disabled:opacity-40"
-                >
-                  {t("setGoal")}
-                </button>
-                {studioGoal ? (
-                  <button type="button" onClick={() => applyStudioGoal("")} className="studio-claude-quiet">
-                    {t("markGoalDone")}
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setGoalDraft(studioGoal);
-                    setGoalEditing(false);
-                  }}
-                  className="studio-claude-quiet"
-                >
-                  {t("cancel")}
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
-        {error ? (
-          <section className="relative mx-auto mt-4 w-full max-w-[1080px] shrink-0 px-5 sm:px-8">
-            <div className="studio-org-card">
-              <p className="text-sm text-[var(--cp-text)]">{t("apiUnavailable")}</p>
-              <p className="mt-1 text-sm text-[var(--cp-muted)]">{error}</p>
-              <button type="button" onClick={load} className="studio-claude-quiet mt-3">
-                {t("retry")}
-              </button>
-            </div>
-          </section>
-        ) : null}
-
-        <div className="relative mx-auto flex min-h-0 w-full max-w-[1080px] flex-1 flex-col gap-4 px-5 py-5 sm:px-8 sm:py-6">
-          <div className="studio-org-stage min-h-0 flex-1">
-            <WorkforceList
-              className="studio-workforce-list"
-              groups={workforceGroups}
-              onAgentClick={openChatWith}
-            />
-
-            {canAssignWork ? (
-              <section className="studio-claude-compose" aria-label={t("studioAssignTitle")}>
-                <h2>{t("studioAssignTitle")}</h2>
-                <p className="studio-org-hint">{t("studioAssignHint")}</p>
-                <form onSubmit={(event) => void onAssign(event)} className="studio-assign-form mt-4">
-                  <textarea
-                    value={assignText}
-                    onChange={(event) => setAssignText(event.target.value)}
-                    rows={4}
-                    className="studio-assign-input"
-                    placeholder={t("studioAssignPlaceholder")}
-                    disabled={!hasPeople || assignBusy}
-                  />
-
-                  {hasPeople ? (
-                    <div className="studio-assign-people" role="list">
-                      {employees.slice(0, 10).map((agent) => {
-                        const active =
-                          resolvedAssignee?.id === agent.id ||
-                          (!parsedAssign.agent && assignAgentId === agent.id);
-                        return (
-                          <button
-                            key={agent.id}
-                            type="button"
-                            role="listitem"
-                            className={cn("studio-assign-chip", active && "is-on")}
-                            onClick={() =>
-                              setAssignAgentId((current) => (current === agent.id ? null : agent.id))
-                            }
-                          >
-                            <span className="studio-assign-avatar">{initials(agent.name)}</span>
-                            {agent.name}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className="studio-org-hint">{t("studioAssignNeedPeople")}</p>
-                  )}
-
-                  {resolvedAssignee ? (
-                    <p className="text-[12px] text-[var(--cp-muted)]">
-                      {t("studioAssignWillGo")
-                        .replace("{name}", resolvedAssignee.name)
-                        .replace("{task}", parsedAssign.title.trim() || "…")}
-                    </p>
-                  ) : null}
-
-                  {assignError ? <p className="text-xs text-red-300/90">{assignError}</p> : null}
-
-                  <button
-                    type="submit"
-                    disabled={assignBusy || !hasPeople || !assignText.trim()}
-                    className="studio-claude-primary self-start disabled:opacity-40"
-                  >
-                    {assignBusy ? (
-                      t("saving")
-                    ) : (
-                      <>
-                        <Send size={15} strokeWidth={1.8} />
-                        {t("studioAssignCta")}
-                      </>
-                    )}
-                  </button>
-                </form>
-              </section>
-            ) : (
-              <section className="studio-claude-compose" aria-label={t("studioAssignTitle")}>
-                <h2>{t("studioAssignTitle")}</h2>
-                <p className="studio-org-hint">{t("studioAssignManagersOnly")}</p>
-              </section>
-            )}
+            <p>{t("opsCommandLead")}</p>
           </div>
         </div>
+        <div className="cc-head-actions">
+          <Link to={href("/workforce")} className="cc-btn is-ghost">
+            {t("workforceTitle")}
+            <ArrowRight className={arrow} strokeWidth={1.8} />
+          </Link>
+          {caps.canAdminister && data.departments.length === 0 ? (
+            <button type="button" className="cc-btn is-primary" onClick={openSetup}>
+              <Sparkles className="size-3.5" strokeWidth={1.8} />
+              {t("wfSetupReopen")}
+            </button>
+          ) : caps.canHireAgents ? (
+            <button type="button" className="cc-btn is-primary" onClick={openHire}>
+              <UserPlus className="size-3.5" strokeWidth={1.8} />
+              {t("wxHireCompanion")}
+            </button>
+          ) : null}
+        </div>
+      </header>
 
-        {showMore && canHireAgents ? (
-          <div
-            className="studio-org-sheet"
-            id="hire"
-            onClick={() => setShowMore(false)}
-            role="presentation"
-          >
-            <div
-              className="studio-org-sheet-panel"
-              onClick={(event) => event.stopPropagation()}
-              role="dialog"
-              aria-modal="true"
-              aria-label={t("homeComposeTitle")}
-            >
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div>
-                  <h2>{t("homeComposeTitle")}</h2>
-                  <p className="studio-org-hint">{t("homeComposeBody")}</p>
-                </div>
-                <button type="button" onClick={() => setShowMore(false)} className="studio-claude-quiet">
-                  {t("close")}
-                </button>
-              </div>
+      <div className="cc-body">
+        <div className="cc-wrap">
+          <div className="cc-stats cc-rise">
+            <Stat label={t("oxStatOpen")} value={data.openTasks.length} foot={t("wxStatUrgent").replace("{n}", String(urgent))} onClick={() => setQueueFilter("open")} />
+            <Stat label={t("taskColInProgress")} value={count("in_progress")} foot={t("oxStatRunningFoot")} onClick={() => setQueueFilter("in_progress")} />
+            <Stat label={t("taskColBlocked")} value={count("blocked")} foot={t("oxStatBlockedFoot")} alert={count("blocked") > 0} onClick={() => setQueueFilter("blocked")} />
+            <Stat label={t("wxStatNeedsYou")} value={needsYou} foot={t("wxStatNeedsYouFoot")} alert={needsYou > 0} />
+            <Stat
+              label={t("wxStatCompanions")}
+              value={people.length}
+              foot={t("wxStatLive").replace("{n}", String(people.filter((agent) => agent.status === "active").length))}
+            />
+          </div>
 
-              <div className="studio-org-tabs">
-                {(
-                  [
-                    ["employee", t("createEmployee")],
-                    ["team", t("createTeam")],
-                    ["project", t("createProject")],
-                  ] as const
-                ).map(([id, label]) => (
-                  <button
-                    key={id}
-                    type="button"
-                    onClick={() => {
-                      setMode(id);
-                      setShowMore(true);
-                    }}
-                    className={cn(mode === id && "is-on")}
-                  >
-                    {label}
+          <div className="grid gap-[18px] xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="grid min-w-0 content-start gap-[18px]">
+              {caps.canAdminister && data.departments.length === 0 && !data.loading ? (
+                <div className="cc-banner cc-rise">
+                  <div className="flex min-w-0 items-center gap-3">
+                    <span className="cc-mark !size-9">
+                      <Sparkles className="size-4" strokeWidth={1.8} />
+                    </span>
+                    <div className="min-w-0">
+                      <p className="text-[13.5px] font-semibold">{t("opsSetupNeededTitle")}</p>
+                      <p className="text-[12px] text-[var(--color-muted)]">{t("opsSetupNeededBody")}</p>
+                    </div>
+                  </div>
+                  <button type="button" className="cc-btn is-primary" onClick={openSetup}>
+                    {t("wfSetupReopen")}
+                    <ArrowRight className={arrow} strokeWidth={1.8} />
                   </button>
-                ))}
-              </div>
+                </div>
+              ) : null}
 
-              <form onSubmit={(event) => void onCompose(event)} className="mt-5 space-y-3.5">
-                <Field
-                  label={
-                    mode === "team"
-                      ? t("teamName")
-                      : mode === "employee"
-                        ? t("employeeName")
-                        : t("projectName")
-                  }
-                >
-                  <input
-                    required
-                    value={name}
-                    onChange={(e) => setName(e.target.value)}
-                    className="field !h-11 !rounded-2xl"
-                    placeholder={
-                      mode === "team"
-                        ? t("homePlaceholderTeam")
-                        : mode === "employee"
-                          ? t("homePlaceholderEmployee")
-                          : t("homePlaceholderProject")
-                    }
-                  />
-                </Field>
-                <Field
-                  label={
-                    mode === "team"
-                      ? t("teamPurpose")
-                      : mode === "employee"
-                        ? t("employeeRole")
-                        : t("homeProjectAbout")
-                  }
-                >
-                  <input
-                    value={secondary}
-                    onChange={(e) => setSecondary(e.target.value)}
-                    className="field !h-11 !rounded-2xl"
-                    placeholder={
-                      mode === "employee" ? t("homePlaceholderRole") : t("homePlaceholderOptional")
-                    }
-                    required={mode === "employee"}
-                  />
-                </Field>
-
-                {mode !== "project" ? (
-                  <Field label={t("linkedProject")}>
-                    <select
-                      value={projectId}
-                      onChange={(e) => setProjectId(e.target.value)}
-                      className="field !h-11 !rounded-2xl"
-                    >
-                      <option value="">{t("unassigned")}</option>
-                      {activeProjects.map((project) => (
-                        <option key={project.id} value={project.id}>
-                          {project.name}
-                        </option>
-                      ))}
-                    </select>
-                  </Field>
+              <form onSubmit={(e) => void dispatch(e)} className="cc-composer cc-rise relative">
+                <div className="flex items-center justify-between gap-3 px-[18px] pt-4">
+                  <p className="cc-kicker">{t("oxDispatchKicker")}</p>
+                  {owner ? (
+                    <span className="cc-chip is-accent !h-6 !ps-1">
+                      <Avatar name={owner.name} size="sm" className="!size-[18px] !rounded-full !text-[8px]" />
+                      {owner.name}
+                      {!parsed.agent ? (
+                        <button type="button" onClick={() => setOwnerId(null)} aria-label={t("close")} className="opacity-70 hover:opacity-100">
+                          <X className="size-3" />
+                        </button>
+                      ) : null}
+                    </span>
+                  ) : (
+                    <span className="text-[11.5px] text-[var(--color-muted)]">{t("oxNoOwner")}</span>
+                  )}
+                </div>
+                <textarea
+                  ref={commandRef}
+                  value={text}
+                  onChange={(e) => updateText(e.target.value, e.target.selectionStart ?? e.target.value.length)}
+                  onKeyDown={onKey}
+                  onBlur={() => window.setTimeout(() => setMention(null), 120)}
+                  placeholder={t("oxComposerPh")}
+                  disabled={!caps.canAssignWork}
+                  aria-label={t("oxDispatchKicker")}
+                />
+                {mention && mentionMatches.length > 0 ? (
+                  <div className="cc-mention" role="listbox">
+                    {mentionMatches.map((agent, index) => (
+                      <button
+                        key={agent.id}
+                        type="button"
+                        role="option"
+                        aria-selected={index === mention.index}
+                        onMouseDown={(e) => {
+                          e.preventDefault();
+                          pickMention(agent);
+                        }}
+                        className={cn("cc-row w-full !py-2", index === mention.index && "is-active")}
+                      >
+                        <Avatar name={agent.name} size="sm" />
+                        <div className="cc-row-main">
+                          <p className="cc-row-title">{agent.name}</p>
+                          <p className="cc-row-sub">
+                            {agent.specialty || agent.role} · {data.departmentOf.get(agent.id)?.name ?? t("mapUnassigned")}
+                          </p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
                 ) : null}
 
-                {formError ? <p className="text-xs text-red-300/90">{formError}</p> : null}
+                <div className="flex flex-wrap gap-1.5 px-[18px] pb-1">
+                  {TEMPLATES.map((key) => (
+                    <button key={key} type="button" className="cc-chip hover:text-[var(--color-foreground)]" onClick={() => applyTemplate(key)}>
+                      <Zap className="size-3" strokeWidth={1.8} />
+                      {t(key)}
+                    </button>
+                  ))}
+                </div>
 
-                <button
-                  type="submit"
-                  disabled={saving}
-                  className="studio-claude-primary mt-1 w-full justify-center disabled:opacity-40"
-                >
-                  <Plus className="size-4" strokeWidth={1.8} />
-                  {saving ? t("saving") : mode === "employee" ? t("homeHireCta") : t("create")}
-                </button>
+                <div className="cc-composer-bar border-t border-[color-mix(in_srgb,var(--color-border)_45%,transparent)]">
+                  <select className="cc-select !h-8 !w-auto !text-[12px]" value={teamId} onChange={(e) => setTeamId(e.target.value)} aria-label={t("wxFieldDepartment")}>
+                    <option value="">{t("wxAnyDepartment")}</option>
+                    {data.departments.map((team) => (
+                      <option key={team.id} value={team.id}>
+                        {team.name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    className="cc-select !h-8 !w-auto !max-w-[180px] !text-[12px]"
+                    value={owner?.id ?? ""}
+                    onChange={(e) => setOwnerId(e.target.value || null)}
+                    disabled={Boolean(parsed.agent)}
+                    aria-label={t("wxFieldOwner")}
+                  >
+                    <option value="">{t("oxPickOwner")}</option>
+                    {(teamId ? data.membersByTeam.get(teamId) ?? [] : people).map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name}
+                      </option>
+                    ))}
+                  </select>
+                  <Segmented
+                    label={t("wxFieldPriority")}
+                    value={priority}
+                    onChange={setPriority}
+                    options={PRIORITIES.map((id) => ({ id, label: priorityLabel(id, t) }))}
+                  />
+                  <label className="inline-flex cursor-pointer select-none items-center gap-2 text-[12px] text-[var(--color-muted)]">
+                    <input type="checkbox" checked={runNow} onChange={(e) => setRunNow(e.target.checked)} className="accent-[var(--color-accent)]" />
+                    {t("oxRunNow")}
+                  </label>
+                  <span className="ms-auto hidden items-center gap-1 sm:inline-flex">
+                    <span className="cc-kbd">⌘</span>
+                    <span className="cc-kbd">↵</span>
+                  </span>
+                  <button type="submit" className="cc-btn is-primary" disabled={busy || !caps.canAssignWork || !text.trim()}>
+                    {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Send className={cn("size-3.5", isAr && "-scale-x-100")} strokeWidth={1.8} />}
+                    {t("oxDispatch")}
+                  </button>
+                </div>
+                {formError ? <p className="px-[18px] pb-3 text-[12px] text-[var(--color-danger)]">{formError}</p> : null}
+                {!caps.canAssignWork ? (
+                  <p className="px-[18px] pb-3 text-[12px] text-[var(--color-muted)]">{t("studioAssignManagersOnly")}</p>
+                ) : null}
               </form>
+
+              <Card
+                title={t("oxQueueTitle")}
+                sub={t("oxQueueSub")}
+                action={
+                  <Segmented
+                    label={t("oxQueueTitle")}
+                    value={queueFilter}
+                    onChange={setQueueFilter}
+                    options={[
+                      { id: "open", label: t("oxQueueOpen") },
+                      { id: "in_progress", label: t("taskColInProgress") },
+                      { id: "blocked", label: t("taskColBlocked") },
+                      { id: "done", label: t("taskColDone") },
+                    ]}
+                  />
+                }
+              >
+                {data.loading ? (
+                  <div className="flex h-24 items-center justify-center text-[var(--color-muted)]">
+                    <Loader2 className="size-5 animate-spin" />
+                  </div>
+                ) : queue.length === 0 ? (
+                  <Empty icon={CheckCircle2} title={t("oxQueueEmpty")} body={t("oxQueueEmptyBody")} />
+                ) : (
+                  <div className="cc-list">
+                    {queue.map((task) => {
+                      const assignee = task.assigneeAgentId ? data.agentById.get(task.assigneeAgentId) ?? null : null;
+                      const dept = assignee ? data.departmentOf.get(assignee.id)?.name : null;
+                      return (
+                        <div key={task.id} className={cn("cc-row", lastId === task.id && "is-active")}>
+                          <PriorityChip priority={task.priority} />
+                          <div className="cc-row-main">
+                            <p className="cc-row-title">{task.title}</p>
+                            <p className="cc-row-sub">
+                              {[assignee?.name ?? t("unassigned"), dept, statusLabel(task.status, t), relativeAge(task.updatedAt, t)]
+                                .filter(Boolean)
+                                .join(" · ")}
+                            </p>
+                          </div>
+                          <div className="cc-row-actions">
+                            {assignee && caps.canAssignWork && task.status !== "done" ? (
+                              <button
+                                type="button"
+                                className="cc-icon-btn"
+                                disabled={runningId === task.id}
+                                onClick={() => void runTask(task)}
+                                aria-label={t("wxRun")}
+                                title={t("wxRun")}
+                              >
+                                {runningId === task.id ? <Loader2 className="size-3.5 animate-spin" /> : <Play className="size-3.5" strokeWidth={1.8} />}
+                              </button>
+                            ) : null}
+                            {caps.canAssignWork && task.status !== "done" ? (
+                              <button
+                                type="button"
+                                className="cc-icon-btn"
+                                onClick={() => void data.setTaskStatus(task, "done")}
+                                aria-label={t("oxMarkDone")}
+                                title={t("oxMarkDone")}
+                              >
+                                <Check className="size-3.5" strokeWidth={2} />
+                              </button>
+                            ) : null}
+                            {assignee ? (
+                              <button
+                                type="button"
+                                className="cc-icon-btn"
+                                onClick={() => chatWith(assignee.id, task)}
+                                aria-label={t("deskSoloChat")}
+                                title={t("deskSoloChat")}
+                              >
+                                <MessageSquare className="size-3.5" strokeWidth={1.8} />
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </Card>
+            </div>
+
+            <div className="grid min-w-0 content-start gap-[18px]">
+              {needsYou > 0 ? (
+                <Card title={t("wxNeedsYouTitle")} sub={t("wxNeedsYouSub")}>
+                  <div className="cc-list">
+                    {data.approvals.slice(0, 5).map((approval) => (
+                      <div key={approval.id} className="cc-row !items-start">
+                        <span className="cc-empty-icon !size-8 !rounded-[10px]">
+                          <Inbox className="size-3.5" strokeWidth={1.7} />
+                        </span>
+                        <div className="cc-row-main">
+                          <p className="cc-row-title !whitespace-normal">{approval.title}</p>
+                          {caps.canAssignWork ? (
+                            <div className="mt-2 flex gap-1.5">
+                              <button type="button" className="cc-btn is-sm is-primary" onClick={() => void data.resolveApproval(approval.id, "approved")}>
+                                {t("wxApprove")}
+                              </button>
+                              <button type="button" className="cc-btn is-sm" onClick={() => void data.resolveApproval(approval.id, "rejected")}>
+                                {t("wxReject")}
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    ))}
+                    {data.draftsAwaitingRequest.slice(0, 4).map((agent) => (
+                      <div key={agent.id} className="cc-row">
+                        <Avatar name={agent.name} size="sm" />
+                        <div className="cc-row-main">
+                          <p className="cc-row-title">{agent.name}</p>
+                          <p className="cc-row-sub">{t("wxDraftWaiting")}</p>
+                        </div>
+                        {caps.canHireAgents ? (
+                          <button type="button" className="cc-btn is-sm is-primary" onClick={() => void data.activateAgent(agent, false)}>
+                            {t("wxActivate")}
+                          </button>
+                        ) : null}
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              ) : null}
+
+              <Card title={t("oxOwnersTitle")} sub={t("oxOwnersSub")}>
+                <div className="cc-search mb-2">
+                  <Search />
+                  <input className="cc-input !h-8" value={peopleQuery} onChange={(e) => setPeopleQuery(e.target.value)} placeholder={t("wxSearchCompanions")} />
+                </div>
+                {people.length === 0 ? (
+                  <Empty
+                    icon={UserPlus}
+                    title={t("oxNoOwners")}
+                    body={t("oxNoOwnersBody")}
+                    action={
+                      caps.canHireAgents ? (
+                        <button type="button" className="cc-btn is-primary" onClick={openHire}>
+                          {t("wxHireCompanion")}
+                        </button>
+                      ) : null
+                    }
+                  />
+                ) : (
+                  <div className="cc-list max-h-[360px] overflow-y-auto">
+                    {ownerPool.map((agent) => {
+                      const open = data.openTasks.filter((task) => task.assigneeAgentId === agent.id).length;
+                      return (
+                        <button
+                          key={agent.id}
+                          type="button"
+                          className={cn("cc-row w-full !py-2", owner?.id === agent.id && "is-active")}
+                          onClick={() => {
+                            setOwnerId(agent.id);
+                            commandRef.current?.focus();
+                          }}
+                          onDoubleClick={() => chatWith(agent.id)}
+                          title={t("oxOwnerHint")}
+                        >
+                          <Avatar name={agent.name} size="sm" />
+                          <div className="cc-row-main">
+                            <p className="cc-row-title flex items-center gap-2">
+                              <span className="truncate">{agent.name}</span>
+                              <StatusDot status={agent.status} />
+                            </p>
+                            <p className="cc-row-sub">
+                              {agent.specialty || agent.role} · {data.departmentOf.get(agent.id)?.name ?? t("mapUnassigned")}
+                            </p>
+                          </div>
+                          {open > 0 ? <span className="cc-chip">{open}</span> : null}
+                        </button>
+                      );
+                    })}
+                    {ownerPool.length === 0 ? (
+                      <p className="px-2 py-3 text-[12px] text-[var(--color-muted)]">{t("wxNoMatches")}</p>
+                    ) : null}
+                  </div>
+                )}
+              </Card>
+
+              <Card
+                title={t("oxNorthStar")}
+                sub={t("oxNorthStarSub")}
+                action={
+                  !goalEditing ? (
+                    <button
+                      type="button"
+                      className="cc-btn is-sm is-ghost"
+                      onClick={() => {
+                        setGoalDraft(goal);
+                        setGoalEditing(true);
+                      }}
+                    >
+                      {goal ? t("oxEdit") : t("oxSetGoal")}
+                    </button>
+                  ) : null
+                }
+              >
+                {goalEditing ? (
+                  <form
+                    className="grid gap-2"
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      setGoal(goalDraft.trim());
+                      setGoalEditing(false);
+                    }}
+                  >
+                    <textarea className="cc-textarea" rows={3} value={goalDraft} onChange={(e) => setGoalDraft(e.target.value)} placeholder={t("oxGoalPh")} autoFocus />
+                    <div className="flex justify-end gap-2">
+                      <button type="button" className="cc-btn is-sm is-ghost" onClick={() => setGoalEditing(false)}>
+                        {t("cancel")}
+                      </button>
+                      <button type="submit" className="cc-btn is-sm is-primary">
+                        {t("wxSave")}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <div className="flex items-start gap-3">
+                    <span className="cc-empty-icon !size-8 !rounded-[10px]">
+                      <Target className="size-3.5" strokeWidth={1.7} />
+                    </span>
+                    <p className={cn("text-[13px] leading-relaxed", !goal && "text-[var(--color-muted)]")}>
+                      {goal || t("oxGoalEmpty")}
+                    </p>
+                  </div>
+                )}
+              </Card>
+
+              <Card
+                title={t("wxActivityTitle")}
+                action={
+                  <Link to={href("/activity")} className="cc-btn is-sm is-ghost">
+                    {t("homeViewAll")}
+                  </Link>
+                }
+              >
+                {data.activity.length === 0 ? (
+                  <p className="py-2 text-[12.5px] text-[var(--color-muted)]">{t("wxNoActivity")}</p>
+                ) : (
+                  <ol className="grid gap-3">
+                    {data.activity.slice(0, 6).map((item) => (
+                      <li key={item.id} className="flex gap-3">
+                        <span className="mt-[7px] size-1.5 shrink-0 rounded-full bg-[var(--color-accent)]" />
+                        <div className="min-w-0">
+                          <p className="text-[12.5px] leading-snug">{item.summary}</p>
+                          <p className="mt-0.5 text-[11px] text-[var(--color-muted)]">{relativeAge(item.createdAt, t)}</p>
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+              </Card>
             </div>
           </div>
-        ) : null}
+        </div>
       </div>
     </Surface>
-  );
-}
-
-function Field({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <label className="grid gap-1.5">
-      <span className="text-[12px] text-[var(--cp-muted)]">{label}</span>
-      {children}
-    </label>
   );
 }

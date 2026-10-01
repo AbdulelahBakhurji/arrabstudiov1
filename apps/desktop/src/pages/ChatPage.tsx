@@ -66,7 +66,7 @@ import {
   OrgChatTopBar,
   type OrgChatLane,
   type OrgChatPrivacy,
-} from "@/components/OrgChatTopBar";
+} from "@/components/organization/OrgChatTopBar";
 import {
   attachEmployeesToCompanion,
   ensureOrgCompanionAgent,
@@ -100,6 +100,7 @@ import { resolveAiRuntime, resolvePreferredModel } from "@/lib/ai-prefs";
 import { streamOllamaChat } from "@/lib/local-models";
 
 import { AgentSteps, friendlyToolTitle, type AgentStep } from "@/components/AgentSteps";
+import { ThinkingBlock, useThoughtTraces, type ThoughtTrace } from "@/components/ThinkingBlock";
 import { humanizeApprovalCopy } from "@/lib/approval-copy";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useStudioPrefs } from "@/hooks/useStudioPrefs";
@@ -119,7 +120,7 @@ import {
   defaultSoloAgentBody,
   ensureDefaultSoloAgent,
 } from "@/lib/agents-bootstrap";
-import { LAST_CHAT_AGENT_KEY, readPrefs } from "@/lib/prefs";
+import { LAST_CHAT_AGENT_KEY, readPrefs, updatePrefs } from "@/lib/prefs";
 import {
   executeLocalAgentTool,
   isAutoClientTool,
@@ -341,6 +342,8 @@ export function ChatPage() {
   const [agentBusy, setAgentBusy] = useState(false);
   const [teamId, setTeamId] = useState("");
   const [agentSteps, setAgentSteps] = useState<AgentStep[]>([]);
+  const thoughts = useThoughtTraces();
+  const [liveThoughtKey, setLiveThoughtKey] = useState<string | null>(null);
   const [pendingApproval, setPendingApproval] = useState<Approval | null>(null);
   const [approvalBusy, setApprovalBusy] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -2321,6 +2324,7 @@ export function ChatPage() {
     ]);
     let streamed = "";
     const assistantLocalId = `local-asst-${crypto.randomUUID()}`;
+    setLiveThoughtKey(assistantLocalId);
     setAgentSteps([{ id: "thinking", title: "thinking", status: "running" }]);
     setPendingApproval(null);
     let completedOk = false;
@@ -2510,8 +2514,13 @@ export function ChatPage() {
           model: resolvePreferredModel(aiStatus, prefs),
         },
         {
+          onThinking: (text) => {
+            if (controller.signal.aborted) return;
+            thoughts.append(assistantLocalId, text);
+          },
           onToken: (text) => {
             if (controller.signal.aborted) return;
+            thoughts.finish(assistantLocalId);
             streamed += text;
             if (streamed.length < 40 || streamed.length % 120 < text.length) {
               void updateAgentPresence({
@@ -2627,6 +2636,9 @@ export function ChatPage() {
               return;
             }
             completedOk = true;
+            if (result.assistantMessage?.content?.trim()) {
+              thoughts.rekey(assistantLocalId, result.assistantMessage.id);
+            }
             void updateAgentPresence({
               title: locale === "ar" ? "جاهز" : "Ready",
               body: reply.slice(0, 72),
@@ -2740,6 +2752,8 @@ export function ChatPage() {
       if (streamAbortRef.current === controller) {
         streamAbortRef.current = null;
       }
+      thoughts.finish(assistantLocalId);
+      setLiveThoughtKey((current) => (current === assistantLocalId ? null : current));
       setSending(false);
       const shouldFlushQueue = Boolean(queuedQueryRef.current?.trim());
       pauseRequestedRef.current = false;
@@ -3403,8 +3417,10 @@ export function ChatPage() {
                         {(selectedAgent?.name ?? "?").slice(0, 2).toUpperCase()}
                       </span>
                     )}
-                    <strong>{activeCompanionLabel}</strong>
-                    <span className="cp-muted">{activeCompanionSub}</span>
+                    <div className="cp-room-person-copy">
+                      <strong>{activeCompanionLabel}</strong>
+                      <span className="cp-muted">{activeCompanionSub}</span>
+                    </div>
                   </div>
                   <div className="flex items-center gap-2">
                     {selectedAgent && isCompanionAgent(selectedAgent) ? (
@@ -3426,8 +3442,18 @@ export function ChatPage() {
                 <div className="cp-messages min-h-0 flex-1 overflow-y-auto" role="log">
                   {(!conversation && !sessionBusy) || (conversation && messages.length === 0 && !sending) ? (
                     <div className="cp-chat-welcome">
-                      <span className="cp-welcome-icon">
-                        <Sparkles size={30} strokeWidth={1.25} />
+                      <span
+                        className={cn(
+                          "cp-welcome-icon",
+                          orgLane === "companions" && activePerson && "is-face",
+                        )}
+                        aria-hidden
+                      >
+                        {orgLane === "companions" && activePerson ? (
+                          <PersonAvatar person={activePerson} size="lg" />
+                        ) : (
+                          <Sparkles size={30} strokeWidth={1.25} />
+                        )}
                       </span>
                       <p className="cp-eyebrow">{t("chatOrgEmptyTitle")}</p>
                       <h2>
@@ -3477,6 +3503,7 @@ export function ChatPage() {
                       <MessageBubble
                         key={message.id}
                         message={message}
+                        thought={thoughts.traces[message.id]}
                         youLabel={t("you")}
                         coworkerLabel={activeCompanionLabel}
                         copyLabel={t("copy")}
@@ -3533,7 +3560,11 @@ export function ChatPage() {
                     {sending || agentSteps.some((step) => step.status === "running") ? (
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
-                          {agentSteps.length > 0 ? (
+                          {liveThoughtKey &&
+                          thoughts.traces[liveThoughtKey] &&
+                          !messages.some((message) => message.id === liveThoughtKey) ? (
+                            <ThinkingBlock trace={thoughts.traces[liveThoughtKey]!} />
+                          ) : agentSteps.length > 0 ? (
                             <AgentSteps steps={agentSteps} thinkingLabel={`${t("thinking")}…`} />
                           ) : (
                             <AgentSteps
@@ -3745,6 +3776,16 @@ export function ChatPage() {
                             aria-label={t("chatWebSearch")}
                           >
                             <Globe className="size-4" strokeWidth={1.6} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => updatePrefs({ aiExtendedThinking: !prefs.aiExtendedThinking })}
+                            className={cn("chat-pro-icon-btn", prefs.aiExtendedThinking && "is-on")}
+                            title={`${t("extendedThinking")} — ${t("extendedThinkingHint")}`}
+                            aria-label={t("extendedThinking")}
+                            aria-pressed={prefs.aiExtendedThinking}
+                          >
+                            <Brain className="size-4" strokeWidth={1.6} />
                           </button>
                           <button
                             type="button"
@@ -4229,12 +4270,14 @@ export function ChatPage() {
 
 function MessageBubble({
   message,
+  thought,
   youLabel,
   coworkerLabel,
   copyLabel,
   copiedLabel,
 }: {
   message: Message;
+  thought?: ThoughtTrace;
   youLabel: string;
   coworkerLabel: string;
   copyLabel: string;
@@ -4255,6 +4298,7 @@ function MessageBubble({
       <p className="text-[10px] tracking-[0.1em] text-neutral-600">
         {isUser ? youLabel : coworkerLabel}
       </p>
+      {!isUser && thought ? <ThinkingBlock trace={thought} /> : null}
       <div
         className={cn(
           "relative max-w-[min(88%,42rem)] px-4 py-3 text-[14px] leading-[1.55]",

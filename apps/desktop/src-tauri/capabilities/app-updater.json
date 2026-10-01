@@ -1,0 +1,11 @@
+{
+  "identifier": "app-updater",
+  "description": "Standalone update progress window. Cannot open links, create windows, or use the tray.",
+  "windows": ["app-updater"],
+  "permissions": [
+    "core:event:default",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:webview:deny-internal-toggle-devtools"
+  ]
+}

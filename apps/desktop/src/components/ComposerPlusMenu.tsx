@@ -32,6 +32,7 @@ import {
 } from "@/lib/local-models";
 import { markGettingStartedStep } from "@/lib/getting-started";
 import { pushToast } from "@/lib/notify";
+import { ARRAB_PRIMARY_MODEL } from "@/lib/ai-prefs";
 import { readPrefs, subscribePrefs, updatePrefs, type StudioPrefs } from "@/lib/prefs";
 import { cn } from "@/lib/utils";
 import { ACCOUNT_EVENT } from "@/lib/account-session";
@@ -112,10 +113,11 @@ export function composerCreatePrompt(kind: ComposerCreateKind, locale: "en" | "a
 
 type PlusPanel = "main" | "local" | "cloud" | "skills";
 
-/** Display label: "deepseek/deepseek-v4.1-flash" → "Deepseek 4.1 Flash" */
+/** Display label: the primary DeepSeek flash model is Arrab. */
 function shortModelLabel(model: string): string {
   const raw = model.trim();
   if (!raw) return raw;
+  if (raw === ARRAB_PRIMARY_MODEL || raw.endsWith("deepseek-v4.1-flash")) return "Arrab";
   const slug = (raw.split("/").pop() || raw).replace(/_/g, "-");
   const parts = slug
     .split("-")
@@ -343,19 +345,39 @@ export function ComposerPlusMenu({
     onOpenChange(false);
   };
 
+  const useArrabModel = () => {
+    if (!canUseCloudAi()) {
+      requireCloudSignIn();
+      return;
+    }
+    const next = updatePrefs({
+      aiPreferredModel: ARRAB_PRIMARY_MODEL,
+      aiPreferredFamily: "auto",
+      aiLocalEnabled: false,
+    });
+    setPrefs(next);
+    pushToast({
+      title: "Arrab",
+      body: ar ? "النموذج الأساسي" : "Primary model",
+      tone: "success",
+    });
+    onOpenChange(false);
+  };
+
   const useAutoModel = () => {
     if (!canUseCloudAi()) {
       requireCloudSignIn();
       return;
     }
     const next = updatePrefs({
-      aiPreferredModel: "",
+      aiPreferredModel: "auto",
       aiPreferredFamily: "auto",
       aiLocalEnabled: false,
     });
     setPrefs(next);
     pushToast({
       title: ar ? "تلقائي" : "Auto",
+      body: ar ? "يختار Arrab النموذج" : "Arrab picks the model",
       tone: "success",
     });
     onOpenChange(false);
@@ -363,22 +385,30 @@ export function ComposerPlusMenu({
 
   const localActive = Boolean(prefs.aiLocalEnabled && prefs.aiLocalModel.trim());
   const preferredCloud = prefs.aiPreferredModel.trim();
+  const isArrabModel = (model: string) =>
+    model === ARRAB_PRIMARY_MODEL || model.endsWith("deepseek-v4.1-flash");
   const cloudModels = (() => {
     const fromApi = aiStatus?.models?.filter(Boolean) ?? [];
     const extras = [aiStatus?.defaultModel, preferredCloud || null]
       .map((item) => item?.trim())
       .filter((item): item is string => Boolean(item));
-    return [...new Set([...fromApi, ...extras])];
+    return [...new Set([...fromApi, ...extras])].filter(
+      (model) => model !== "auto" && !isArrabModel(model),
+    );
   })();
   const installed = ollama?.models ?? [];
-  const autoActive = !localActive && !preferredCloud;
+  const explicitAuto = preferredCloud === "auto";
+  const arrabActive = !localActive && !explicitAuto && (preferredCloud === "" || isArrabModel(preferredCloud));
+  const autoActive = !localActive && explicitAuto;
   const cloudBadge = localActive
     ? null
-    : preferredCloud
-      ? shortModelLabel(preferredCloud)
-      : ar
+    : explicitAuto
+      ? ar
         ? "تلقائي"
-        : "Auto";
+        : "Auto"
+      : arrabActive
+        ? "Arrab"
+        : shortModelLabel(preferredCloud);
 
   return (
     <div
@@ -776,6 +806,17 @@ export function ComposerPlusMenu({
                       : `${cloudModels.length} models · scroll for more`}
                   </p>
                 ) : null}
+                <button
+                  type="button"
+                  role="menuitem"
+                  className={cn(arrabActive && "is-active")}
+                  onClick={useArrabModel}
+                  title="Arrab"
+                >
+                  <Sparkles size={15} strokeWidth={1.7} />
+                  <span>Arrab</span>
+                  {arrabActive ? <Check size={13} /> : null}
+                </button>
                 <button
                   type="button"
                   role="menuitem"

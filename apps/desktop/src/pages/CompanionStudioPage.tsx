@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   ArrowLeft,
   ArrowUp,
+  Box,
   ChevronDown,
   ChevronRight,
   Code2,
@@ -13,9 +14,9 @@ import {
   FolderOpen,
   Github,
   ImageUp,
+  LineChart,
   Maximize2,
   Minimize2,
-  Pencil,
   Plus,
   Server,
   Smartphone,
@@ -34,7 +35,6 @@ import { arrabApi } from "@/lib/api";
 import { useRole } from "@/roles/RoleProvider";
 import {
   addCompanion,
-  archiveStudioCatalogEntry,
   getCompanionState,
   liveCompanions,
   saveStudioCatalog,
@@ -84,10 +84,28 @@ import {
 import { startPhonePreview, type PhonePreviewSession } from "@/lib/desktop";
 import { ARRAB_ASSISTANT_CONNECTORS } from "@/lib/connector-catalog";
 import { ArrabAssistantWorkspace } from "@/components/studio/ArrabAssistantWorkspace";
+import { Game3DStage } from "@/components/studio/Game3DStage";
+import { Model3DStage } from "@/components/studio/Model3DStage";
+import { MarketsTerminalWorkspace } from "@/components/studio/MarketsTerminalWorkspace";
 import { ComposerPlusMenu } from "@/components/ComposerPlusMenu";
+import { ThinkingBlock } from "@/components/ThinkingBlock";
 import { cn } from "@/lib/utils";
 import { pushToast } from "@/lib/notify";
 import { copyChatText } from "@/components/ChatMarkdown";
+import {
+  buildGamePreviewHtml,
+  isBrowserGameProject,
+  isRobloxProject,
+  isRobloxPrompt,
+  localGameFromPrompt,
+  localRobloxFromPrompt,
+} from "@/lib/studio-game-preview";
+import {
+  buildModelPreviewHtml,
+  localModelFromPrompt,
+} from "@/lib/studio-model-preview";
+import { listDir } from "@/lib/fs";
+import { isTauriRuntime, pickFolder } from "@/lib/terminal";
 import {
   WORKPLACE_DEFAULT_KIND,
   WORKPLACE_OPEN_KIND_KEY,
@@ -100,9 +118,30 @@ function mergeFiles(base: StudioFile[], next: StudioFile[]): StudioFile[] {
 }
 
 function isDesignAsk(text: string) {
-  return /design|website|web|site|page|ui|layout|landing|screen|mobile|phone|app|صم[مّ]|موقع|واجهة|شاشة|جوال/i.test(
+  return /design|website|web|site|page|ui|layout|landing|screen|mobile|phone|app|game|roblox|luau|model|mesh|3d|sculpt|صم[مّ]|موقع|واجهة|شاشة|جوال|لعبة|روبلوكس|نمذج|نحت/i.test(
     text,
   );
+}
+
+function studioFolderKey(companionId: string): string {
+  return `arrab.studio.workspaceFolder.${companionId}`;
+}
+
+function readStudioFolder(companionId: string): string | null {
+  try {
+    return localStorage.getItem(studioFolderKey(companionId))?.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStudioFolder(companionId: string, path: string | null): void {
+  try {
+    if (path) localStorage.setItem(studioFolderKey(companionId), path);
+    else localStorage.removeItem(studioFolderKey(companionId));
+  } catch {
+    /* ignore */
+  }
 }
 
 function StudioPortrait({
@@ -221,13 +260,6 @@ function StudioPhotoPicker({
       </div>
     </div>
   );
-}
-
-function updateCatalogPhoto(id: string, avatarPhoto: string | null): void {
-  const existing = resolveStudioCatalog();
-  const merged = existing.map((item) => (item.id === id ? { ...item, avatarPhoto } : item));
-  // If still on defaults (unpublished), publish the updated list so the photo syncs.
-  saveStudioCatalog(merged);
 }
 
 function TreeRows({
@@ -609,138 +641,6 @@ function AddCompanionPanel({
   );
 }
 
-function AdminEditPanel({
-  initial,
-  accountId,
-  onClose,
-}: {
-  initial: StudioCatalogEntry;
-  accountId: string | null;
-  onClose: () => void;
-}) {
-  const { t, locale } = useLanguage();
-  const ar = locale === "ar";
-  const purposes = resolveStudioPurposes();
-  const [draft, setDraft] = useState<StudioCatalogEntry>(initial);
-
-  const save = () => {
-    if (!draft.name.trim() || !accountId) return;
-    claimStudioAdmin(accountId);
-    const entry: StudioCatalogEntry = {
-      ...draft,
-      name: draft.name.trim(),
-      nameAr: draft.nameAr.trim() || draft.name.trim(),
-      blurb: draft.blurb.trim(),
-      blurbAr: draft.blurbAr.trim() || draft.blurb.trim(),
-      brief: draft.brief.trim(),
-      briefAr: draft.briefAr.trim() || draft.brief.trim(),
-      purposeId: draft.purposeId || "web-design",
-      archivedAt: null,
-    };
-    const existing = resolveStudioCatalog();
-    const merged = existing.some((item) => item.id === entry.id)
-      ? existing.map((item) => (item.id === entry.id ? entry : item))
-      : [...existing, entry];
-    saveStudioCatalog(merged);
-    onClose();
-  };
-
-  return (
-    <div className="st-picker-backdrop" onClick={onClose}>
-      <div className="st-picker st-admin-dialog" onClick={(event) => event.stopPropagation()}>
-        <header>
-          <h2>{t("studioEditCompanion")}</h2>
-          <button type="button" className="cp-icon" onClick={onClose} aria-label={t("close")}>
-            <X size={16} />
-          </button>
-        </header>
-        <StudioPhotoPicker
-          entry={draft}
-          onChange={(photo) => setDraft((current) => ({ ...current, avatarPhoto: photo }))}
-        />
-        <div className="st-form">
-          <label>
-            <span>{t("studioFieldPurpose")}</span>
-            <select
-              value={draft.purposeId}
-              onChange={(event) => {
-                const purpose = purposes.find((item) => item.id === event.target.value);
-                setDraft((c) => ({
-                  ...c,
-                  purposeId: event.target.value,
-                  workspace: purpose?.workspace ?? c.workspace,
-                  brief: purpose?.brief ?? c.brief,
-                  briefAr: purpose?.briefAr ?? c.briefAr,
-                  hue: purpose?.hue ?? c.hue,
-                }));
-              }}
-            >
-              {purposes.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {ar ? item.nameAr : item.name}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            <span>{t("studioFieldName")}</span>
-            <input
-              value={draft.name}
-              onChange={(event) => setDraft((c) => ({ ...c, name: event.target.value }))}
-            />
-          </label>
-          <label>
-            <span>{t("studioFieldNameAr")}</span>
-            <input
-              value={draft.nameAr}
-              onChange={(event) => setDraft((c) => ({ ...c, nameAr: event.target.value }))}
-            />
-          </label>
-          <label>
-            <span>{t("studioFieldBlurb")}</span>
-            <input
-              value={draft.blurb}
-              onChange={(event) => setDraft((c) => ({ ...c, blurb: event.target.value }))}
-            />
-          </label>
-          <label>
-            <span>{t("studioFieldBrief")}</span>
-            <textarea
-              rows={3}
-              value={draft.brief}
-              onChange={(event) => setDraft((c) => ({ ...c, brief: event.target.value }))}
-            />
-          </label>
-          <div className="st-form-actions">
-            <button type="button" className="cp-button" onClick={save}>
-              {t("studioSaveCompanion")}
-            </button>
-            <button
-              type="button"
-              className="cp-button st-ghost"
-              onClick={() => {
-                if (accountId) claimStudioAdmin(accountId);
-                const next = resolveStudioCatalog()
-                  .filter((item) => item.id !== initial.id)
-                  .map((item) => ({ ...item }));
-                if (next.length === 0) {
-                  archiveStudioCatalogEntry(initial.id);
-                  saveStudioCatalog([{ ...initial, archivedAt: new Date().toISOString() }]);
-                } else {
-                  saveStudioCatalog(next);
-                }
-                onClose();
-              }}
-            >
-              {t("studioArchiveCompanion")}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function PhoneStage({
   preset,
   html,
@@ -832,7 +732,11 @@ function UiDesignerWorkspace({
   const { t, locale } = useLanguage();
   const ar = locale === "ar";
   const isPhone = kind.purposeId === "phone-design";
-  const isWeb = kind.purposeId === "web-design" || (!isPhone && kind.workspace === "ui-designer");
+  const isGame = kind.purposeId === "game-design";
+  const isModel = kind.purposeId === "3d-modeling";
+  const isWeb =
+    kind.purposeId === "web-design" ||
+    (!isPhone && !isGame && !isModel && kind.workspace === "ui-designer");
   const room = useCompanionRoom(companion);
   const [files, setFiles] = useState<StudioFile[]>(() => readStudioProject(companion.id));
   const [openTabs, setOpenTabs] = useState<string[]>([]);
@@ -846,6 +750,10 @@ function UiDesignerWorkspace({
   const [phoneSizeId, setPhoneSizeId] = useState(readPhoneSizeId);
   const [phoneConnect, setPhoneConnect] = useState<PhonePreviewSession | null>(null);
   const [phoneConnectBusy, setPhoneConnectBusy] = useState(false);
+  const [workspaceFolder, setWorkspaceFolder] = useState<string | null>(() =>
+    readStudioFolder(companion.id),
+  );
+  const [folderTreeSummary, setFolderTreeSummary] = useState<string | null>(null);
   const chatEnd = useRef<HTMLDivElement>(null);
   const lastApplied = useRef<string>("");
   const pendingPrompt = useRef<string | null>(null);
@@ -855,15 +763,62 @@ function UiDesignerWorkspace({
   const codeUploadRef = useRef<HTMLInputElement>(null);
 
   const tree = useMemo(() => buildFileTree(files), [files]);
-  const previewHtml = useMemo(() => buildPreviewHtml(files), [files]);
+  const previewHtml = useMemo(() => {
+    if (isGame) return buildGamePreviewHtml(files, { quality: "high", showGrid: true });
+    if (isModel) return buildModelPreviewHtml(files, { quality: "high", showGrid: true, showAxes: true });
+    return buildPreviewHtml(files);
+  }, [files, isGame, isModel]);
   const activeFile = files.find((file) => file.path === activePath) ?? null;
   const phoneSize = phonePresetById(phoneSizeId);
   const phoneGroups = useMemo(() => phoneSizeGroups(ar), [ar]);
   const hasFiles = files.length > 0;
+  const gameProjectKind = !hasFiles
+    ? "blank"
+    : isBrowserGameProject(files)
+      ? "webgl"
+      : isRobloxProject(files)
+        ? "roblox"
+        : "blank";
 
   useEffect(() => {
     writeStudioProject(companion.id, files);
   }, [companion.id, files]);
+
+  useEffect(() => {
+    setWorkspaceFolder(readStudioFolder(companion.id));
+  }, [companion.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      if (!workspaceFolder || !isTauriRuntime()) {
+        setFolderTreeSummary(null);
+        return;
+      }
+      try {
+        const listed = await listDir(workspaceFolder, "");
+        if (cancelled) return;
+        const lines = listed.entries
+          .slice(0, 60)
+          .map((entry) => `${entry.kind === "dir" ? "dir" : "file"} ${entry.path}`);
+        setFolderTreeSummary(
+          [
+            `PC folder: ${workspaceFolder}`,
+            ...lines,
+            listed.entries.length > 60 ? `… +${listed.entries.length - 60} more` : null,
+          ]
+            .filter(Boolean)
+            .join("\n"),
+        );
+      } catch {
+        if (!cancelled) setFolderTreeSummary(`PC folder: ${workspaceFolder}`);
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+    };
+  }, [workspaceFolder]);
 
   useEffect(() => {
     chatEnd.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -908,9 +863,17 @@ function UiDesignerWorkspace({
     if (prompt) {
       pendingPrompt.current = null;
       lastApplied.current = last?.text ?? prompt;
-      applyFiles(localDesignFromPrompt(prompt));
+      applyFiles(
+        isGame
+          ? isRobloxPrompt(prompt)
+            ? localRobloxFromPrompt(prompt)
+            : localGameFromPrompt(prompt)
+          : isModel
+            ? localModelFromPrompt(prompt)
+            : localDesignFromPrompt(prompt),
+      );
     }
-  }, [room.busy, room.lines]);
+  }, [room.busy, room.lines, isGame, isModel]);
 
   const openFile = (path: string) => {
     setOpenTabs((tabs) => (tabs.includes(path) ? tabs : [...tabs, path]));
@@ -959,13 +922,53 @@ function UiDesignerWorkspace({
     setSurface("code");
   };
 
+  const connectWorkspaceFolder = async () => {
+    if (!isTauriRuntime()) {
+      pushToast({ title: t("studioAssistantNeedsDesktop"), tone: "warn" });
+      return;
+    }
+    const selected = await pickFolder();
+    if (!selected) return;
+    setWorkspaceFolder(selected);
+    writeStudioFolder(companion.id, selected);
+    pushToast({
+      title: t("studioFolderConnected"),
+      body: selected,
+      tone: "success",
+    });
+  };
+
   const send = async (event?: FormEvent, override?: string) => {
     event?.preventDefault();
     const text = (override ?? room.draft).trim();
     if (!text || room.busy) return;
     if (isDesignAsk(text)) pendingPrompt.current = text;
-    await room.send(text);
-    setSurface("preview");
+    const studioTree =
+      files.length > 0
+        ? files
+            .slice(0, 80)
+            .map((file) => `file ${file.path} (${file.content.length} chars)`)
+            .join("\n")
+        : null;
+    await room.send(text, {
+      workspaceHint: {
+        kind: workspaceFolder ? "folder" : "none",
+        folderPath: workspaceFolder,
+        treeSummary: [folderTreeSummary, studioTree ? `Studio project files:\n${studioTree}` : null]
+          .filter(Boolean)
+          .join("\n\n"),
+        openFilePath: activePath,
+        openFileContent: activeFile
+          ? activeFile.content.startsWith("data:")
+            ? "[binary]"
+            : activeFile.content.slice(0, 12_000)
+          : null,
+        operatorDirectives: isGame
+          ? "Create any game requested. Emit complete files into the Studio project (and workspace folder tools when connected). For Roblox use Luau/Rojo files; for browser use Three.js game.js."
+          : undefined,
+      },
+    });
+    setSurface(isGame && isRobloxPrompt(text) ? "code" : "preview");
   };
 
   const downloadZip = () => {
@@ -1007,7 +1010,45 @@ function UiDesignerWorkspace({
     }
   };
 
-  const suggestions = isPhone
+  const suggestions = isGame
+    ? ar
+      ? [
+          "لعبة روبلوكس بمهام وجمع عملات",
+          "ساحة بلورية WebGL مع Bloom",
+          "منصات قفز ثلاثية الأبعاد",
+          "متاهة ليلية بكاميرا متابعة",
+          "مسار سباق نيون",
+          "لعبة ألغاز ثنائية الأبعاد",
+        ]
+      : [
+          "Roblox game with quests and coins",
+          "WebGL crystal arena with bloom",
+          "3D jump platforms",
+          "Night maze with follow cam",
+          "Neon race track",
+          "2D puzzle canvas game",
+        ]
+    : isModel
+      ? ar
+        ? [
+            "منتج فاخر بإضاءة استوديو ومعدن وزجاج",
+            "شخصية كتلية بنسب نظيفة",
+            "جناح معماري حديث",
+            "دعامة جهاز بسطح صلب",
+            "نحت عضوي ناعم",
+            "مركبة مستقبلية كتلية",
+            "طقم بيئة بتضاريس وصخور",
+          ]
+        : [
+            "Premium product with studio metal & glass",
+            "Stylized character blockout",
+            "Modern pavilion interior",
+            "Hard-surface gadget prop",
+            "Organic abstract sculpt",
+            "Futuristic vehicle blockout",
+            "Environment kit with rocks",
+          ]
+    : isPhone
     ? ar
       ? ["صمّم شاشة تسجيل دخول", "بطاقة منتج للجوال", "قائمة تنقل سفلية"]
       : ["Design a mobile login", "Product card for phone", "Bottom tab bar"]
@@ -1039,7 +1080,15 @@ function UiDesignerWorkspace({
               </div>
               <h3>{t("studioAssistantWelcome")}</h3>
               <p>
-                {isPhone
+                {isGame
+                  ? ar
+                    ? "صف أي لعبة — WebGL أو روبلوكس أو غيرها. المعاينة فارغة حتى ننشئ الملفات."
+                    : "Describe any game — WebGL, Roblox, or more. Preview stays blank until we create files."
+                  : isModel
+                    ? ar
+                      ? "صف النموذج — منفذ نمذجة متقدم مع مواد وإضاءة يظهر هنا."
+                      : "Describe the model — an advanced viewport with materials and lights appears here."
+                  : isPhone
                   ? ar
                     ? "صف الشاشة — تظهر في إطار الجوال فوراً."
                     : "Describe the screen — it appears in the phone frame."
@@ -1083,7 +1132,11 @@ function UiDesignerWorkspace({
             })
           )}
           {room.error ? <p className="st-chat-error">{room.error}</p> : null}
-          {room.busy ? <div className="st-bubble is-them is-busy">…</div> : null}
+          {room.liveThought ? (
+            <ThinkingBlock trace={room.liveThought} />
+          ) : room.busy ? (
+            <div className="st-bubble is-them is-busy">…</div>
+          ) : null}
           <div ref={chatEnd} />
         </div>
         <form className="st-composer is-advanced" onSubmit={(event) => void send(event)}>
@@ -1093,6 +1146,7 @@ function UiDesignerWorkspace({
               onOpenChange={setAttachOpen}
               onUploadImages={() => imageUploadRef.current?.click()}
               onUploadFiles={() => fileUploadRef.current?.click()}
+              onConnectFolder={isGame || isModel ? () => void connectWorkspaceFolder() : undefined}
               onWebSearch={() =>
                 room.setDraft((current) =>
                   current.trim().startsWith("/web")
@@ -1100,7 +1154,7 @@ function UiDesignerWorkspace({
                     : `/web ${current.trim()}`.trim() + " ",
                 )
               }
-              features={{ folder: false }}
+              features={{ folder: isGame || isModel }}
             >
               <button
                 type="button"
@@ -1113,6 +1167,46 @@ function UiDesignerWorkspace({
                 <FilePlus2 size={15} />
                 {t("studioNewHtml")}
               </button>
+              {isGame ? (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      createBlankFile("game.js", "// Three.js game loop\n");
+                      setAttachOpen(false);
+                    }}
+                  >
+                    <FilePlus2 size={15} />
+                    {t("studioNewGameJs")}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      applyFiles(localRobloxFromPrompt(ar ? "تجربة روبلوكس" : "Roblox experience"));
+                      setAttachOpen(false);
+                      setSurface("code");
+                    }}
+                  >
+                    <FilePlus2 size={15} />
+                    {t("studioNewRoblox")}
+                  </button>
+                </>
+              ) : null}
+              {isModel ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    createBlankFile("model.js", "// Three.js modeling viewport\n");
+                    setAttachOpen(false);
+                  }}
+                >
+                  <FilePlus2 size={15} />
+                  {t("studioNewModelJs")}
+                </button>
+              ) : null}
               <button
                 type="button"
                 role="menuitem"
@@ -1174,7 +1268,13 @@ function UiDesignerWorkspace({
             value={room.draft}
             onChange={(event) => room.setDraft(event.target.value)}
             placeholder={
-              isPhone ? t("studioPhonePlaceholder") : t("studioDesignerPlaceholder")
+              isGame
+                ? t("studioGamePlaceholder")
+                : isModel
+                  ? t("studioModelPlaceholder")
+                : isPhone
+                  ? t("studioPhonePlaceholder")
+                  : t("studioDesignerPlaceholder")
             }
             rows={2}
             onKeyDown={(event) => {
@@ -1312,7 +1412,18 @@ function UiDesignerWorkspace({
         </div>
 
         {surface === "preview" ? (
-          !hasFiles ? (
+          isGame ? (
+            <Game3DStage
+              html={hasFiles && gameProjectKind === "webgl" ? previewHtml : ""}
+              empty={!hasFiles}
+              projectKind={gameProjectKind === "blank" ? "blank" : gameProjectKind}
+            />
+          ) : isModel ? (
+            <Model3DStage
+              html={hasFiles ? previewHtml : ""}
+              empty={!hasFiles}
+            />
+          ) : !hasFiles ? (
             isPhone ? (
               <PhoneStage
                 preset={phoneSize}
@@ -1381,7 +1492,25 @@ function UiDesignerWorkspace({
             <div className="st-editor-body">
               <div className="st-tree">
                 <div className="st-tree-head">
-                  <p className="st-tree-label">{t("studioFiles")}</p>
+                  <p className="st-tree-label">
+                    {t("studioFiles")}
+                    {workspaceFolder ? (
+                      <small className="st-tree-folder" title={workspaceFolder}>
+                        {workspaceFolder.split(/[/\\]/).pop()}
+                      </small>
+                    ) : null}
+                  </p>
+                  {(isGame || isModel) && (
+                    <button
+                      type="button"
+                      className="st-icon-btn"
+                      onClick={() => void connectWorkspaceFolder()}
+                      aria-label={t("composerPlusFolder")}
+                      title={workspaceFolder || t("composerPlusFolder")}
+                    >
+                      <FolderOpen size={13} />
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="st-icon-btn"
@@ -1524,7 +1653,16 @@ function UiDesignerWorkspace({
   );
 }
 
-function studioModeLabel(kind: StudioCatalogEntry, ar: boolean): { text: string; mode: "web" | "phone" | "desk" | "work" } {
+function studioModeLabel(kind: StudioCatalogEntry, ar: boolean): { text: string; mode: "web" | "phone" | "desk" | "work" | "game" | "markets" | "model" } {
+  if (kind.purposeId === "markets-terminal" || kind.workspace === "markets-terminal") {
+    return { text: ar ? "طرفية الأسواق" : "Markets terminal", mode: "markets" };
+  }
+  if (kind.purposeId === "game-design") {
+    return { text: ar ? "استوديو الألعاب" : "Game studio", mode: "game" };
+  }
+  if (kind.purposeId === "3d-modeling") {
+    return { text: ar ? "نمذجة ثلاثية متقدمة" : "Advanced 3D modeling", mode: "model" };
+  }
   if (kind.purposeId === "phone-design") {
     return { text: ar ? "معاينة جوال" : "Phone preview", mode: "phone" };
   }
@@ -1646,7 +1784,11 @@ function DefaultStudioChat({
             ))
           )}
           {room.error ? <p className="st-chat-error">{room.error}</p> : null}
-          {room.busy ? <div className="st-bubble is-them is-busy">…</div> : null}
+          {room.liveThought ? (
+            <ThinkingBlock trace={room.liveThought} />
+          ) : room.busy ? (
+            <div className="st-bubble is-them is-busy">…</div>
+          ) : null}
           <div ref={chatEnd} />
         </div>
         <form className="st-composer is-advanced" onSubmit={(event) => void send(event)}>
@@ -1737,7 +1879,6 @@ export function CompanionStudioPage({
     variant === "studios" ? null : readStudioActive(),
   );
   const [adding, setAdding] = useState(false);
-  const [editing, setEditing] = useState<StudioCatalogEntry | null>(null);
   const [sessionCompanion, setSessionCompanion] = useState<CompanionProfile | null>(null);
   const [switcher, setSwitcher] = useState(false);
 
@@ -1746,8 +1887,7 @@ export function CompanionStudioPage({
     if (!signedIn || !accountId) return;
     ensureStudioAdminClaim(accountId);
   }, [signedIn, accountId]);
-  const canEdit = signedIn && isStudioAdmin(accountId);
-  const canAdd = canEdit;
+  const canAdd = signedIn && isStudioAdmin(accountId);
 
   const activeKind = activeId ? studioKindById(activeId, state) : null;
 
@@ -1781,6 +1921,9 @@ export function CompanionStudioPage({
         patch.connectors = [...ARRAB_ASSISTANT_CONNECTORS];
         patch.brief = ar ? kind.briefAr : kind.brief;
       }
+      if (kind.workspace === "markets-terminal") {
+        patch.brief = ar ? kind.briefAr : kind.brief;
+      }
       if (Object.keys(patch).length) {
         updateCompanion(existing.id, patch);
         if (patch.purposeId) syncCompanionPurpose(existing.id, kind.purposeId);
@@ -1804,7 +1947,9 @@ export function CompanionStudioPage({
       space: "work",
       familyMemberId: seatId,
       connectors:
-        kind.workspace === "arrab-assistant" ? [...ARRAB_ASSISTANT_CONNECTORS] : undefined,
+        kind.workspace === "arrab-assistant"
+          ? [...ARRAB_ASSISTANT_CONNECTORS]
+          : undefined,
     });
     if (lockedPhoto) setCompanionAvatar(created.id, lockedPhoto);
     return { ...created, avatarPhoto: lockedPhoto ?? created.avatarPhoto };
@@ -1895,6 +2040,8 @@ export function CompanionStudioPage({
           <ArrabAssistantWorkspace companion={companion} kind={activeKind} />
         ) : activeKind.workspace === "ui-designer" ? (
           <UiDesignerWorkspace companion={companion} kind={activeKind} />
+        ) : activeKind.workspace === "markets-terminal" ? (
+          <MarketsTerminalWorkspace companion={companion} kind={activeKind} />
         ) : (
           <DefaultStudioChat companion={companion} kind={activeKind} />
         )}
@@ -1989,22 +2136,7 @@ export function CompanionStudioPage({
               >
                 {isMain ? <span className="st-kind-main-badge">{t("studioAssistantMain")}</span> : null}
                 <div className="st-kind-card-top">
-                  {canEdit ? (
-                    <StudioPhotoPicker
-                      entry={kind}
-                      size={isMain ? 72 : 64}
-                      compact
-                      onChange={(photo) => {
-                        updateCatalogPhoto(kind.id, photo);
-                        const person = liveCompanions(state).find(
-                          (item) => item.domain === kind.domain,
-                        );
-                        if (person) setCompanionAvatar(person.id, photo);
-                      }}
-                    />
-                  ) : (
-                    <StudioPortrait entry={kind} size={isMain ? 72 : 64} />
-                  )}
+                  <StudioPortrait entry={kind} size={isMain ? 72 : 64} />
                   <div className="st-kind-copy">
                     {purpose ? (
                       <span className="st-purpose-tag">{ar ? purpose.nameAr : purpose.name}</span>
@@ -2016,6 +2148,12 @@ export function CompanionStudioPage({
                         <Smartphone size={11} />
                       ) : mode.mode === "web" ? (
                         <Eye size={11} />
+                      ) : mode.mode === "game" ? (
+                        <Box size={11} />
+                      ) : mode.mode === "model" ? (
+                        <Box size={11} />
+                      ) : mode.mode === "markets" ? (
+                        <LineChart size={11} />
                       ) : mode.mode === "desk" ? (
                         <FolderOpen size={11} />
                       ) : (
@@ -2029,16 +2167,6 @@ export function CompanionStudioPage({
                   <button type="button" className="cp-button" onClick={() => openKind(kind)}>
                     {t("studioOpen")}
                   </button>
-                  {canEdit ? (
-                    <button
-                      type="button"
-                      className="cp-icon"
-                      aria-label={t("studioEditCompanion")}
-                      onClick={() => setEditing(kind)}
-                    >
-                      <Pencil size={15} />
-                    </button>
-                  ) : null}
                 </div>
               </article>
             );
@@ -2051,13 +2179,6 @@ export function CompanionStudioPage({
           accountId={accountId}
           onClose={() => setAdding(false)}
           onSaved={(entry) => openKind(entry)}
-        />
-      ) : null}
-      {editing && canEdit ? (
-        <AdminEditPanel
-          initial={editing}
-          accountId={accountId}
-          onClose={() => setEditing(null)}
         />
       ) : null}
     </div>

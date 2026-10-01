@@ -14,11 +14,12 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import {
-  SUBSCRIPTION_PLANS,
+  resolvePlanAudience,
   type PlanAudience,
   type SubscriptionPlanId,
 } from "@arrab/shared";
 import type { MessageKey } from "@/i18n/messages";
+import { navFeaturesFor } from "@/features/registry";
 
 export const ROLE_PATH = {
   individual: "/individuals",
@@ -28,10 +29,21 @@ export const ROLE_PATH = {
 
 /** Audience locked by the account plan (Individuals / Family / Org). */
 export function audienceFromPlanId(
-  planId: SubscriptionPlanId | null | undefined,
+  planId: SubscriptionPlanId | string | null | undefined,
 ): PlanAudience {
-  if (!planId) return "individual";
-  return SUBSCRIPTION_PLANS[planId]?.audience ?? "individual";
+  return resolvePlanAudience({ planId });
+}
+
+/**
+ * Prefer control-plane planCategory (teams → organization), then plan id / name.
+ * Business / Enterprise / Team / Platform Admin all resolve to organization.
+ */
+export function audienceFromAccountSignals(input: {
+  planId?: string | null;
+  planCategory?: string | null;
+  planName?: string | null;
+}): PlanAudience {
+  return resolvePlanAudience(input);
 }
 
 /**
@@ -40,15 +52,27 @@ export function audienceFromPlanId(
  * Free trial uses the same mapping via planId.
  */
 export function studioModeFromPlanId(
-  planId: SubscriptionPlanId | null | undefined,
+  planId: SubscriptionPlanId | string | null | undefined,
 ): "individual" | "organization" {
   return audienceFromPlanId(planId) === "organization" ? "organization" : "individual";
 }
 
+export function studioModeFromAudience(
+  audience: PlanAudience,
+): "individual" | "organization" {
+  return audience === "organization" ? "organization" : "individual";
+}
+
 export function homePathForPlanId(
-  planId: SubscriptionPlanId | null | undefined,
+  planId: SubscriptionPlanId | string | null | undefined,
 ): string {
   return studioModeFromPlanId(planId) === "organization"
+    ? ROLE_PATH.organization
+    : ROLE_PATH.individual;
+}
+
+export function homePathForAudience(audience: PlanAudience): string {
+  return studioModeFromAudience(audience) === "organization"
     ? ROLE_PATH.organization
     : ROLE_PATH.individual;
 }
@@ -102,10 +126,42 @@ export const ORGANIZATION_NAV: RoleNavItem[] = [
   { key: "settings", path: "/settings", icon: Settings2 },
 ];
 
-export function navForRole(role: PlanAudience): RoleNavItem[] {
-  if (role === "organization") return ORGANIZATION_NAV;
-  if (role === "family") return FAMILY_NAV;
-  return INDIVIDUAL_NAV;
+/** Organization destinations a seat role may open (the billing owner sees all). */
+const ORG_NAV_BY_SEAT_ROLE: Record<"admin" | "manager" | "member", ReadonlySet<string> | null> = {
+  admin: null,
+  manager: new Set(["hq", "workplace", "chat", "brainNav", "connectors", "activity", "settings"]),
+  member: new Set(["hq", "workplace", "chat", "brainNav", "connectors", "settings"]),
+};
+
+/** True when a seat of this role may open the organization page behind `key`. */
+export function orgSeatCanOpen(
+  seatRole: "admin" | "manager" | "member" | null | undefined,
+  key: string,
+): boolean {
+  if (!seatRole) return true;
+  const allowed = ORG_NAV_BY_SEAT_ROLE[seatRole];
+  return allowed === null || allowed.has(key);
+}
+
+export function navForRole(
+  role: PlanAudience,
+  opts?: { isFamilyChild?: boolean; orgSeatRole?: "admin" | "manager" | "member" | null },
+): RoleNavItem[] {
+  const base =
+    role === "organization"
+      ? ORGANIZATION_NAV.filter((item) => orgSeatCanOpen(opts?.orgSeatRole, item.key))
+      : role === "family"
+        ? FAMILY_NAV
+        : INDIVIDUAL_NAV;
+  const extras = navFeaturesFor(role, opts).map((feature) => ({
+    key: feature.titleKey,
+    path: `/${feature.path}`,
+    icon: feature.icon,
+  }));
+  if (extras.length === 0) return base;
+  const settingsAt = base.findIndex((item) => item.key === "settings");
+  if (settingsAt < 0) return [...base, ...extras];
+  return [...base.slice(0, settingsAt), ...extras, ...base.slice(settingsAt)];
 }
 
 export function rolePath(audience: PlanAudience): string {
@@ -113,6 +169,15 @@ export function rolePath(audience: PlanAudience): string {
 }
 
 /** True when the plan may use Workforce (org only). */
-export function canUseWorkforce(planId: SubscriptionPlanId | null | undefined): boolean {
-  return audienceFromPlanId(planId) === "organization";
+export function canUseWorkforce(
+  planId: SubscriptionPlanId | string | null | undefined,
+  extras?: { planCategory?: string | null; planName?: string | null },
+): boolean {
+  return (
+    audienceFromAccountSignals({
+      planId,
+      planCategory: extras?.planCategory,
+      planName: extras?.planName,
+    }) === "organization"
+  );
 }

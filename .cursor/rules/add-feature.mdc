@@ -1,0 +1,15 @@
+---
+description: How to add a new Studio feature module
+globs: apps/desktop/src/features/**/*.{ts,tsx,md} docs/FEATURE.md scripts/new-feature.mjs
+alwaysApply: false
+---
+
+# Add a feature
+
+Use the plug-in registry. Do not add routes by editing `App.tsx` or `roles/catalog.ts`.
+
+```bash
+pnpm new:feature my-thing --audience=individual,family --nav
+```
+
+A module is `apps/desktop/src/features/modules/<id>/index.ts` exporting `feature: StudioFeature`. Settings tabs still go through `settings-tabs.ts`. API types stay in `packages/shared`.

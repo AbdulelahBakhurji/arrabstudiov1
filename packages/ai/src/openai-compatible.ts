@@ -8,6 +8,7 @@ import {
   type AiToolCall,
   type ModelProviderAdapter,
 } from "./types.js";
+import { stripThinkBlock, ThinkTagSplitter } from "./think-tags.js";
 
 export interface OpenAiCompatibleConfig {
   id?: string;
@@ -35,6 +36,10 @@ type OpenAiChatResponse = {
 
 type OpenAiStreamDelta = {
   content?: unknown;
+  /** OpenRouter's unified reasoning channel. */
+  reasoning?: unknown;
+  /** DeepSeek / xAI / vLLM reasoning channel. */
+  reasoning_content?: unknown;
   tool_calls?: Array<{
     index?: number;
     id?: string;
@@ -152,6 +157,7 @@ function toProviderMessages(messages: readonly AiMessage[]) {
 function buildChatBody(
   request: AiCompletionRequest,
   stream: boolean,
+  unifiedReasoning = false,
 ): Record<string, unknown> {
   const model = request.model.model;
   const gpt5 = isGpt5ChatModel(model);
@@ -172,11 +178,22 @@ function buildChatBody(
     }
   }
   if (gpt5) {
-    body.reasoning_effort = "none";
-    body.reasoning = { effort: "none" };
-    if (body.temperature === undefined) {
+    const effort = request.reasoning ?? "none";
+    body.reasoning_effort = effort;
+    body.reasoning = { effort };
+    if (request.reasoning) {
+      // Reasoning runs reject custom temperature.
+      delete body.temperature;
+    } else if (body.temperature === undefined) {
       body.temperature = 0.2;
     }
+  } else if (/deepseek/i.test(model)) {
+    // DeepSeek streams hidden reasoning before any answer. Leaving it on
+    // burns the token budget and the chat looks stuck with an empty reply.
+    const effort = request.reasoning ?? "none";
+    body.reasoning = { effort, exclude: effort === "none" };
+  } else if (request.reasoning && unifiedReasoning) {
+    body.reasoning = { effort: request.reasoning };
   }
   if (request.tools && request.tools.length > 0) {
     body.tools = request.tools.map((tool) => ({
@@ -236,14 +253,16 @@ function buildResponsesBody(
   const body: Record<string, unknown> = {
     model: request.model.model,
     input,
-    reasoning: { effort: "none" },
+    reasoning: request.reasoning
+      ? { effort: request.reasoning, summary: "auto" }
+      : { effort: "none" },
     store: false,
   };
   if (instructions) body.instructions = instructions;
   if (request.maxOutputTokens !== undefined) {
     body.max_output_tokens = request.maxOutputTokens;
   }
-  if (request.temperature !== undefined) {
+  if (request.temperature !== undefined && !request.reasoning) {
     body.temperature = request.temperature;
   }
   if (request.tools && request.tools.length > 0) {
@@ -319,7 +338,7 @@ function completionFromChat(
 ): AiCompletion {
   const choice = payload.choices?.[0];
   const toolCalls = mapToolCalls(choice?.message?.tool_calls);
-  const content = extractTextContent(choice?.message?.content).trim();
+  const content = stripThinkBlock(extractTextContent(choice?.message?.content)).answer.trim();
   if (!content && !toolCalls?.length) {
     throw new AiGatewayError("PROVIDER_ERROR", "Provider returned an empty completion", 502);
   }
@@ -347,6 +366,11 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
   readonly supportsTools = true;
   private readonly apiKey: string;
   private readonly baseUrl: string;
+
+  /** OpenRouter accepts `reasoning: { effort }` for any reasoning model. */
+  private get unifiedReasoning(): boolean {
+    return this.id === "openrouter";
+  }
 
   constructor(config: OpenAiCompatibleConfig) {
     this.id = config.id ?? "openai";
@@ -392,7 +416,7 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
     const response = await fetch(`${this.baseUrl}/chat/completions`, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify(buildChatBody(request, false)),
+      body: JSON.stringify(buildChatBody(request, false, this.unifiedReasoning)),
     });
     const payload = (await response.json()) as OpenAiChatResponse;
     if (!response.ok) {
@@ -404,7 +428,9 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
   async *streamComplete(request: AiCompletionRequest): AsyncIterable<AiStreamChunk> {
     const gpt5 = isGpt5ChatModel(request.model.model);
     const url = gpt5 ? `${this.baseUrl}/responses` : `${this.baseUrl}/chat/completions`;
-    const body = gpt5 ? buildResponsesBody(request, true) : buildChatBody(request, true);
+    const body = gpt5
+      ? buildResponsesBody(request, true)
+      : buildChatBody(request, true, this.unifiedReasoning);
     let response = await fetch(url, {
       method: "POST",
       headers: this.headers(),
@@ -415,7 +441,7 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
       response = await fetch(`${this.baseUrl}/chat/completions`, {
         method: "POST",
         headers: this.headers(),
-        body: JSON.stringify(buildChatBody(request, true)),
+        body: JSON.stringify(buildChatBody(request, true, this.unifiedReasoning)),
       });
     }
 
@@ -432,6 +458,7 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
     let finishReason: AiCompletion["finishReason"] = "stop";
     let completionId = `cmpl_${Date.now()}`;
     const toolAcc: Array<{ id: string; name: string; arguments: string }> = [];
+    const splitter = new ThinkTagSplitter();
 
     const applyChatTools = (delta: OpenAiStreamDelta["tool_calls"]) => {
       if (!delta) return;
@@ -483,6 +510,14 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
             yield { type: "token", text: json.delta };
             continue;
           }
+          if (
+            (json.type === "response.reasoning_summary_text.delta" ||
+              json.type === "response.reasoning_text.delta") &&
+            typeof json.delta === "string"
+          ) {
+            yield { type: "thinking", text: json.delta };
+            continue;
+          }
           if (json.type === "response.output_item.added" && json.item?.type === "function_call") {
             toolAcc.push({
               id: json.item.call_id ?? json.item.id ?? `call_${toolAcc.length}`,
@@ -513,10 +548,19 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
           if (json.id) completionId = json.id;
           const choice = json.choices?.[0];
           const delta = choice?.delta;
+          const reasoning =
+            typeof delta?.reasoning === "string"
+              ? delta.reasoning
+              : typeof delta?.reasoning_content === "string"
+                ? delta.reasoning_content
+                : "";
+          if (reasoning) yield { type: "thinking", text: reasoning };
           const text = extractTextContent(delta?.content);
           if (text) {
-            full += text;
-            yield { type: "token", text };
+            for (const part of splitter.push(text)) {
+              if (part.type === "token") full += part.text;
+              yield part;
+            }
           }
           applyChatTools(delta?.tool_calls);
           if (choice?.finish_reason) {
@@ -528,6 +572,11 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
           // ignore malformed chunks
         }
       }
+    }
+
+    for (const part of splitter.flush()) {
+      if (part.type === "token") full += part.text;
+      yield part;
     }
 
     const toolCalls = mapToolCalls(

@@ -62,9 +62,50 @@ if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   echo "Signing with: $APPLE_SIGNING_IDENTITY"
 fi
 
+# Signed in-app updates: only when the minisign private key is provided by CI / the shell.
+# The key never lives in the repo (see docs/MANAGED_CLIENT.md → Updater keys).
+if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  export TAURI_SIGNING_PRIVATE_KEY
+  export TAURI_SIGNING_PRIVATE_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+  TAURI_ARGS+=(--config '{"bundle":{"createUpdaterArtifacts":true}}')
+  echo "Creating signed updater artifacts."
+fi
+
 pnpm --filter @arrab/desktop exec tauri "${TAURI_ARGS[@]}"
 
 collect_artifacts
+
+if [[ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  VERSION="$(read_version)"
+  OUT="$ROOT/release/artifacts/v$VERSION"
+  REPO_URL="${ARRAB_RELEASE_BASE_URL:-https://github.com/AbdulelahBakhurji/arrabstudiov1/releases/download/v$VERSION}"
+  if [[ "${ARRAB_UNIVERSAL:-0}" == "1" ]]; then
+    BUNDLE_DIR="$ROOT/apps/desktop/src-tauri/target/universal-apple-darwin/release/bundle/macos"
+    ARCHES=(aarch64 x86_64)
+  else
+    BUNDLE_DIR="$ROOT/apps/desktop/src-tauri/target/release/bundle/macos"
+    [[ "$(uname -m)" == "arm64" ]] && ARCHES=(aarch64) || ARCHES=(x86_64)
+  fi
+  TARBALL="$(find "$BUNDLE_DIR" -maxdepth 1 -name '*.app.tar.gz' -print -quit 2>/dev/null || true)"
+  if [[ -n "$TARBALL" && -f "$TARBALL.sig" ]]; then
+    mkdir -p "$OUT"
+    ASSET="Arrab-Studio_${VERSION}_macos.app.tar.gz"
+    cp "$TARBALL" "$OUT/$ASSET"
+    cp "$TARBALL.sig" "$OUT/$ASSET.sig"
+    node -e '
+      const [out, version, url, sigPath, ...arches] = process.argv.slice(1);
+      const fs = require("fs");
+      const signature = fs.readFileSync(sigPath, "utf8").trim();
+      const platforms = Object.fromEntries(arches.map((a) => [`darwin-${a}`, { signature, url }]));
+      fs.writeFileSync(`${out}/latest.json`, JSON.stringify({
+        version, notes: `Arrab Studio ${version}`, pub_date: new Date().toISOString(), platforms,
+      }, null, 2) + "\n");
+    ' "$OUT" "$VERSION" "$REPO_URL/$ASSET" "$OUT/$ASSET.sig" "${ARCHES[@]}"
+    echo "  Updater: $OUT/latest.json"
+  else
+    echo "  Updater artifacts not found — skipped latest.json."
+  fi
+fi
 
 APP_PATH="$(find "$ROOT/apps/desktop/src-tauri/target/release/bundle/macos" -maxdepth 1 -name '*.app' -print -quit 2>/dev/null || true)"
 DMG_PATH="$(find "$ROOT/apps/desktop/src-tauri/target/release/bundle/dmg" -name '*.dmg' -print -quit 2>/dev/null || true)"

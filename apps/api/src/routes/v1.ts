@@ -1,5 +1,12 @@
+import { withRequestActor } from "../lib/request-actor.js";
+import type { SealedVaultService } from "../services/sealed-vault-service.js";
 import type { AiGateway } from "@arrab/ai";
-import { ForbiddenError, UnauthorizedError, ValidationError } from "@arrab/core";
+import { ForbiddenError, ServiceUnavailableError, UnauthorizedError, ValidationError } from "@arrab/core";
+import { fetchLiveCandles, fetchLiveQuotes } from "../services/market-data-service.js";
+import type { DeskService } from "../services/desk-service.js";
+import type { CrewService } from "../services/crew-service.js";
+import type { WorkforceBlueprintService } from "../services/workforce-blueprint-service.js";
+import { extractWhatsAppInbound } from "../services/whatsapp-connector.js";
 import type {
   ActivateSubscriptionRequest,
   AddTeamMemberRequest,
@@ -29,8 +36,22 @@ import type {
   CompleteWebAuthRequest,
   VerifyAccountSessionRequest,
   BillingCheckoutRequest,
+  BillingTopUpRequest,
   ArrangeEmailRequest,
   UpdateAccountProfileRequest,
+  AddDeskScheduleRequest,
+  AddCrewPassRequest,
+  OpenWaLinkStartRequest,
+  E2eePutKeyRequest,
+  E2eePutChatRequest,
+  AddCrewWatchRequest,
+  ApproveDeskJobRequest,
+  SetCrewFocusRequest,
+  SetCrewRuleRequest,
+  UpdateCrewMemberRequest,
+  UpdateDeskPaceRequest,
+  StartDeskJobRequest,
+  ReviseDeskJobRequest,
   UpdateAgentRequest,
   UpdateGoalRequest,
   UpdateKnowledgeRequest,
@@ -53,6 +74,7 @@ import type {
   GrantFamilyTokensRequest,
   PurchaseFamilySeatsRequest,
   CreateFamilyGuidanceRequest,
+  WorkforceBlueprintRequest,
 } from "@arrab/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ConnectorService } from "../services/connector-service.js";
@@ -60,6 +82,7 @@ import type { FamilyHouseholdService } from "../services/family-household-servic
 import type { ConversationService } from "../services/conversation-service.js";
 import type { AccountService } from "../services/account-service.js";
 import type { BillingService } from "../services/billing-service.js";
+import { generateGeminiFlashPhoto } from "../services/image-service.js";
 import { listStudioReleases } from "../services/releases.js";
 import type { GoalService } from "../services/goal-service.js";
 import type { TaskExecutionService } from "../services/task-execution-service.js";
@@ -142,16 +165,22 @@ export function registerV1Routes(
     taskExecution: TaskExecutionService;
     orgWorkforce: OrgWorkforceService;
     familyHousehold: FamilyHouseholdService;
+    sealedVault: SealedVaultService;
+    desk: DeskService;
+    crew: CrewService;
+    workforceBlueprint: WorkforceBlueprintService;
     gateway: AiGateway;
     persistence: PersistenceMode;
     workspaceId: string;
     defaultModel: string | null;
     bedrockModels?: string[];
     openRouterModels?: string[];
+    openRouterApiKey?: string;
     primaryProviderId?: string;
     bedrockRegion?: string;
     releasesDir: string;
     publicBaseUrl: string;
+    openWaServerManaged?: boolean;
   },
 ): void {
   app.addHook("onRequest", async (request) => {
@@ -164,6 +193,23 @@ export function registerV1Routes(
     // Only authenticated studio sessions may select a seat via header (blocks anonymous spoof).
     if (request.account && familyMemberId?.trim()) {
       await deps.familyHousehold.setActiveMember(familyMemberId.trim());
+    }
+
+    // Connectors live on the signed-in account. Catalog / OAuth callbacks stay public.
+    const path = request.url.split("?")[0] ?? "";
+    const connectorRoute = path === "/v1/connectors" || path.startsWith("/v1/connectors/");
+    const publicConnector =
+      path === "/v1/connectors/catalog" ||
+      path.includes("/oauth/callback") ||
+      path.includes("/webhook");
+    if (
+      connectorRoute &&
+      !publicConnector &&
+      !request.account &&
+      !request.orgEmployee &&
+      !(request.method === "GET" && path === "/v1/connectors")
+    ) {
+      throw new UnauthorizedError("Sign in to connect a tool");
     }
   });
 
@@ -200,6 +246,9 @@ export function registerV1Routes(
         overLimit: status.entitlements.overLimit,
         pauseMode: status.entitlements.pauseMode,
       },
+      connectors: {
+        openWaServerManaged: deps.openWaServerManaged === true,
+      },
     };
   });
 
@@ -231,7 +280,9 @@ export function registerV1Routes(
         includeEntitlements: false,
       });
     }
-    return deps.queries.usageSummary(deps.accounts);
+    return deps.queries.usageSummary(deps.accounts, {
+      account: request.account ?? null,
+    });
   });
   app.get("/v1/reports/summary", async (request) => {
     if (await deps.familyHousehold.isActiveChildSeat()) {
@@ -242,7 +293,9 @@ export function registerV1Routes(
   });
 
   app.get("/v1/account", async (request) => {
-    const status = await deps.accounts.status();
+    const status = request.account
+      ? await deps.accounts.statusFor(request.account)
+      : await deps.accounts.status();
     const employee = request.orgEmployee ?? null;
     if (employee && !deps.orgWorkforce.permissionsFor(employee).canAdminister) {
       return {
@@ -280,6 +333,8 @@ export function registerV1Routes(
     return deps.accounts.disconnect();
   });
   app.post("/v1/account/logout", async () => {
+    // Connectors belong to the signed-in user — they sign out with them.
+    await deps.connectors.signOutCurrentUser();
     await deps.familyHousehold.clearSeatLock();
     return deps.accounts.logout();
   });
@@ -312,6 +367,13 @@ export function registerV1Routes(
     await assertCap(request, "canAdminister", "Only admins can change organization plans");
     return deps.billing.checkout(request.body?.planId ?? "");
   });
+  app.post<{ Body: BillingTopUpRequest }>("/v1/billing/top-up", async (request) => {
+    await assertCap(request, "canAdminister", "Only admins can add usage for the organization");
+    if (typeof request.body?.amountSar === "number") {
+      return deps.billing.checkoutCustomCredit(request.body.amountSar);
+    }
+    return deps.billing.checkoutTopUp(request.body?.packId ?? "");
+  });
   app.get<{ Querystring: { id?: string; invoice?: string } }>(
     "/v1/billing/confirm",
     async (request) =>
@@ -320,6 +382,73 @@ export function registerV1Routes(
   app.post("/v1/billing/moyasar/callback", async (request) =>
     deps.billing.handleCallback(request.body),
   );
+
+  app.get("/v1/desk", async () => deps.desk.get());
+  app.patch<{ Body: UpdateDeskPaceRequest }>("/v1/desk", async (request) =>
+    deps.desk.update(request.body ?? {}),
+  );
+  app.post<{ Body: AddDeskScheduleRequest }>("/v1/desk/schedules", async (request) =>
+    deps.desk.addSchedule(request.body ?? { title: "", hour: -1 }),
+  );
+  app.post<{ Params: { id: string }; Body: { paused?: boolean } }>("/v1/desk/schedules/:id/pause", async (request) =>
+    deps.desk.pauseSchedule(request.params.id, request.body?.paused !== false),
+  );
+  app.post<{ Params: { id: string } }>("/v1/desk/schedules/:id/remove", async (request) =>
+    deps.desk.removeSchedule(request.params.id),
+  );
+  app.post("/v1/desk/kill", async () => deps.desk.kill());
+  app.get("/v1/crew", async () => deps.crew.get());
+  app.post<{ Body: SetCrewRuleRequest }>("/v1/crew/rules", async (request) =>
+    deps.crew.setRule(request.body ?? { action: "research", level: "allow" }),
+  );
+  app.post<{ Params: { id: string }; Body: UpdateCrewMemberRequest }>(
+    "/v1/crew/members/:id",
+    async (request) => deps.crew.updateMember(request.params.id, request.body ?? {}),
+  );
+  app.post<{ Body: AddCrewWatchRequest }>("/v1/crew/watches", async (request) =>
+    deps.crew.addWatch(request.body ?? { memberId: "", title: "", hour: -1 }),
+  );
+  app.post<{ Params: { id: string }; Body: { paused?: boolean } }>(
+    "/v1/crew/watches/:id/pause",
+    async (request) => deps.crew.pauseWatch(request.params.id, request.body?.paused !== false),
+  );
+  app.post<{ Params: { id: string } }>("/v1/crew/watches/:id/remove", async (request) =>
+    deps.crew.removeWatch(request.params.id),
+  );
+  app.post<{ Params: { id: string } }>("/v1/crew/watches/:id/write", async (request) =>
+    deps.crew.writeWatch(request.params.id),
+  );
+  app.post<{ Body: AddCrewPassRequest }>("/v1/crew/passes", async (request) =>
+    deps.crew.pass(request.body ?? { fromId: "", toId: "", title: "" }),
+  );
+  app.post<{ Params: { id: string } }>("/v1/crew/passes/:id/close", async (request) =>
+    deps.crew.closePass(request.params.id),
+  );
+  app.post("/v1/crew/briefing", async () => deps.crew.briefing());
+  app.post<{ Body: SetCrewFocusRequest }>("/v1/crew/focus", async (request) =>
+    deps.crew.setFocus(request.body ?? { title: "" }),
+  );
+  app.post<{ Params: { id: string } }>("/v1/crew/packs/:id", async (request) =>
+    deps.crew.installPack(request.params.id),
+  );
+  app.post("/v1/crew/refit", async () => deps.crew.refit());
+  app.post<{ Body: StartDeskJobRequest }>("/v1/desk/jobs", async (request) =>
+    deps.desk.start(request.body ?? { title: "" }),
+  );
+  app.post<{ Params: { id: string }; Body: ApproveDeskJobRequest }>("/v1/desk/jobs/:id/approve", async (request) =>
+    deps.desk.approve(request.params.id, request.body ?? {}),
+  );
+  app.post<{ Params: { id: string } }>("/v1/desk/jobs/:id/follow-up", async (request) =>
+    deps.desk.followUp(request.params.id),
+  );
+  app.post<{ Params: { id: string } }>("/v1/desk/jobs/:id/stop", async (request) =>
+    deps.desk.stop(request.params.id),
+  );
+  app.post<{ Params: { id: string }; Body: ReviseDeskJobRequest }>(
+    "/v1/desk/jobs/:id/revise",
+    async (request) => deps.desk.revise(request.params.id, request.body?.note ?? ""),
+  );
+
   app.get("/v1/releases", async () =>
     listStudioReleases(deps.releasesDir, deps.publicBaseUrl.replace(/\/v1\/?$/, "")),
   );
@@ -482,6 +611,7 @@ export function registerV1Routes(
   );
   app.post("/v1/org/employees/sign-out", async (request) => {
     if (!request.orgEmployee) return { ok: true as const };
+    await deps.connectors.signOutCurrentUser();
     return deps.orgWorkforce.signOut(request.orgEmployee);
   });
   app.post<{ Body: OrgEmployeeChangePasswordRequest }>(
@@ -760,6 +890,10 @@ export function registerV1Routes(
   );
 
   app.get("/v1/teams", async () => ({ items: await deps.queries.listTeams() }));
+  app.post<{ Body: WorkforceBlueprintRequest }>("/v1/workforce/blueprint", async (request) => {
+    await assertCap(request, "canManageTeams", "Only admins can set up the organization");
+    return deps.workforceBlueprint.draft(request.body ?? { industry: "" });
+  });
   app.post<{ Body: CreateTeamRequest }>("/v1/teams", async (request) => {
     await assertCap(request, "canManageTeams", "Only admins can create teams");
     deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
@@ -899,6 +1033,7 @@ export function registerV1Routes(
           request.body ?? { content: "" },
           {
             onToken: (text) => write("token", { text }),
+            onThinking: (text) => write("thinking", { text }),
             onToolStart: (name, detail) => write("tool_start", { name, detail }),
             onTool: (name, result) => write("tool", { name, result }),
             onApproval: (approval) => write("approval", { approval }),
@@ -945,6 +1080,16 @@ export function registerV1Routes(
     return { items: await deps.queries.listActivity() };
   });
 
+  app.post<{ Body: { prompt?: string } }>("/v1/images", async (request) => {
+    await deps.accounts.assertWithinQuota();
+    const apiKey = deps.openRouterApiKey?.trim();
+    if (!apiKey) throw new ServiceUnavailableError("Photo generation is not configured");
+    return generateGeminiFlashPhoto({
+      apiKey,
+      prompt: request.body?.prompt ?? "",
+    });
+  });
+
   app.get("/v1/ai/status", async () => {
     const primary = deps.primaryProviderId ?? "bedrock";
     const catalog =
@@ -986,7 +1131,10 @@ export function registerV1Routes(
   });
 
   app.get("/v1/connectors/catalog", async () => ({ items: deps.connectors.catalog() }));
-  app.get("/v1/connectors", async () => ({ items: await deps.connectors.list() }));
+  app.get("/v1/connectors", async (request) => {
+    if (!request.account && !request.orgEmployee) return { items: [] };
+    return { items: await deps.connectors.list() };
+  });
   app.post<{ Body: ConnectConnectorRequest }>("/v1/connectors", async (request) =>
     deps.connectors.connect(request.body ?? { provider: "github", token: "" }),
   );
@@ -1140,6 +1288,55 @@ export function registerV1Routes(
     return reply.type("text/plain").send(challenge);
   });
 
+  app.post("/v1/connectors/openwa/webhook", async (request) => {
+    const rawBody =
+      typeof (request as unknown as { rawBody?: string }).rawBody === "string"
+        ? (request as unknown as { rawBody: string }).rawBody
+        : JSON.stringify(request.body ?? {});
+    const signature =
+      typeof request.headers["x-openwa-signature"] === "string"
+        ? request.headers["x-openwa-signature"]
+        : undefined;
+    const result = await deps.connectors.handleOpenWaWebhook({
+      rawBody,
+      signatureHeader: signature,
+      payload: request.body,
+    });
+    for (const delivery of result.deliveries) {
+      // Reply as the linked user so their own connector sends it.
+      await withRequestActor({ employeeId: delivery.ownerEmployeeId }, () =>
+        deps.desk.processInboundWhatsApp(delivery),
+      ).catch(() => undefined);
+    }
+    return { ok: result.ok, accepted: result.accepted };
+  });
+
+  // Zero-knowledge chat vault — ciphertext only; sessions are required (default-deny).
+  app.get("/v1/e2ee/key", async () => deps.sealedVault.getKey());
+  app.put<{ Body: E2eePutKeyRequest }>("/v1/e2ee/key", async (request) =>
+    deps.sealedVault.putKey(request.body ?? ({} as E2eePutKeyRequest)),
+  );
+  app.delete("/v1/e2ee", async () => deps.sealedVault.reset());
+  app.get<{ Querystring: { since?: string } }>("/v1/e2ee/chats", async (request) =>
+    deps.sealedVault.listChats(request.query.since),
+  );
+  app.put<{ Params: { id: string }; Body: E2eePutChatRequest }>(
+    "/v1/e2ee/chats/:id",
+    { bodyLimit: 8 * 1024 * 1024 },
+    async (request) =>
+      deps.sealedVault.putChat(request.params.id, request.body ?? ({} as E2eePutChatRequest)),
+  );
+  app.delete<{ Params: { id: string } }>("/v1/e2ee/chats/:id", async (request) =>
+    deps.sealedVault.deleteChat(request.params.id),
+  );
+
+  app.post<{ Body: OpenWaLinkStartRequest }>(
+    "/v1/connectors/openwa/link/start",
+    async (request) => deps.connectors.startOpenWaLink(request.body ?? {}),
+  );
+
+  app.get("/v1/connectors/openwa/link/status", async () => deps.connectors.getOpenWaLinkStatus());
+
   app.post("/v1/connectors/whatsapp/webhook", async (request) => {
     const rawBody =
       typeof (request as unknown as { rawBody?: string }).rawBody === "string"
@@ -1149,11 +1346,21 @@ export function registerV1Routes(
       typeof request.headers["x-hub-signature-256"] === "string"
         ? request.headers["x-hub-signature-256"]
         : undefined;
-    return deps.connectors.handleWhatsAppWebhook({
+    const result = await deps.connectors.handleWhatsAppWebhook({
       rawBody,
       signatureHeader: signature,
       payload: request.body,
     });
+    for (const message of extractWhatsAppInbound(request.body)) {
+      await deps.desk
+        .processInboundWhatsApp({
+          from: message.from,
+          text: message.text,
+          messageId: message.id,
+        })
+        .catch(() => undefined);
+    }
+    return result;
   });
 
   app.post("/v1/connectors/finnhub/webhook", async (request) => {
@@ -1233,4 +1440,33 @@ export function registerV1Routes(
       request.body ?? { connectorId: "", title: "", head: "" },
     ),
   );
+
+  /** Live market quotes (Yahoo Finance proxy — no key required). */
+  app.get<{ Querystring: { symbols?: string } }>("/v1/markets/quotes", async (request) => {
+    const raw = request.query.symbols?.trim() ?? "";
+    const symbols = raw
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (!symbols.length) {
+      throw new ValidationError("symbols query is required (comma-separated)");
+    }
+    if (symbols.length > 50) {
+      throw new ValidationError("At most 50 symbols per request");
+    }
+    return fetchLiveQuotes(symbols);
+  });
+
+  app.get<{
+    Querystring: { symbol?: string; range?: string; interval?: string };
+  }>("/v1/markets/candles", async (request) => {
+    const symbol = request.query.symbol?.trim();
+    if (!symbol) {
+      throw new ValidationError("symbol query is required");
+    }
+    return fetchLiveCandles(symbol, {
+      range: request.query.range?.trim() || "5d",
+      interval: request.query.interval?.trim() || "15m",
+    });
+  });
 }

@@ -3,35 +3,42 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Languages, Moon, Sun, User } from "lucide-react";
 import { ToastHost } from "@/components/ToastHost";
 import { AppUpdateWatcher } from "@/components/AppUpdateWatcher";
+import { ManagedClientHost } from "@/components/managed/ManagedClientHost";
+import { MaintenanceBanner } from "@/components/managed/MaintenanceBanner";
+import { NotificationCenter } from "@/components/managed/NotificationCenter";
+import { UpdateAvailableBanner } from "@/components/managed/UpdateAvailableBanner";
 import { AgentPresenceHost } from "@/components/AgentPresenceHost";
+import { AccountMenu } from "@/components/AccountMenu";
 import { PresenceApprovalBridge } from "@/components/PresenceApprovalBridge";
 import { GettingStartedRailHelp } from "@/components/GettingStartedDock";
 import { QuotaPauseScreen } from "@/components/QuotaPauseScreen";
+import { UsageGuardWatcher } from "@/components/UsageGuardWatcher";
 import { TOKEN_GUARD_EVENT } from "@/lib/token-guard";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import logoTall from "@/assets/logotall.png";
 import { useLanguage } from "@/i18n/LanguageProvider";
 import { useTheme } from "@/theme/ThemeProvider";
 import { arrabApi } from "@/lib/api";
-import { initialsFromName, subscribeAccountSession } from "@/lib/account-session";
+import { subscribeAccountSession } from "@/lib/account-session";
 import { syncCompanionsFromCloud } from "@/lib/companions";
-import { useProfilePhoto } from "@/lib/profile-photo";
-import { setAlwaysOnTop, openExternalUrl } from "@/lib/desktop";
+import { setAlwaysOnTop, openExternalUrl, syncNativeMenu } from "@/lib/desktop";
+import { appIssueReportUrl, appReleasesPageUrl } from "@/lib/app-updates";
 import { notifyStudio } from "@/lib/notify";
 import { useSignedInAccount } from "@/lib/use-signed-in-account";
-import { audienceFromPlanId, homePathForPlanId, navForRole, studioModeFromPlanId } from "@/roles/catalog";
+import { useOrgSeatCapabilities } from "@/lib/org-seat";
+import { E2eeWatcher } from "@/components/E2eeWatcher";
+import { audienceFromAccountSignals, homePathForAudience, navForRole, ROLE_PATH, studioModeFromAudience } from "@/roles/catalog";
 import { useRole } from "@/roles/RoleProvider";
-import { readPrefs } from "@/lib/prefs";
+import { readPrefs, subscribePrefs, updatePrefs } from "@/lib/prefs";
 import {
   clearGuestLocalMode,
   isGuestLocalMode,
   subscribeGuestMode,
 } from "@/lib/guest-mode";
 import { isTauriRuntime } from "@/lib/terminal";
-import { GuardianCoachingHost } from "@/components/GuardianCoachingHost";
+import { GuardianCoachingHost } from "@/components/family/GuardianCoachingHost";
 import { useFamilyProfile } from "@/lib/use-family-profile";
 import { cn } from "@/lib/utils";
-import type { AccountPublic } from "@arrab/shared";
 
 function isQuotaEscapePath(pathname: string): boolean {
   return /\/(settings|account)(\/|$)/.test(pathname);
@@ -46,43 +53,64 @@ function pathForMenuAction(
 ): string | null {
   const { href, isOrganization } = opts;
   switch (id) {
-    case "nav-hq":
-      return href("/");
-    case "nav-workplace":
-      return isOrganization ? href("/workplace") : href("/studio");
     case "nav-chat":
-      return isOrganization ? href("/chat") : href("/");
-    case "nav-workforce":
-      return isOrganization ? href("/workforce") : href("/work");
-    case "nav-connectors":
-      return href("/connectors");
-    case "nav-activity":
-      return isOrganization ? href("/activity") : href("/board");
-    case "nav-settings":
-      return href("/settings");
     case "file-new-chat":
+    case "ai-new-chat":
       return isOrganization ? href("/chat") : href("/");
+    case "file-new-companion":
+      return isOrganization ? href("/workforce") : href("/studio");
     case "file-connect-folder":
       return isOrganization ? href("/workplace") : href("/studio");
+    case "nav-connectors":
+      return href("/connectors");
+    case "nav-settings":
     case "help-getting-started":
       return href("/settings");
+    case "app-account":
+      return href("/account");
+    case "app-sign-in":
+    case "app-add-usage":
+      return href("/settings?tab=account");
+    case "app-usage":
+      return href("/settings?tab=usage");
+    case "app-check-updates":
+      return href("/settings?tab=about");
+    case "ai-models":
+      return href("/settings?tab=models");
+    case "ai-skills":
+      return href("/settings?tab=skills");
+    case "help-shortcuts":
+      return href("/settings?tab=shortcuts");
+    case "help-privacy":
+      return href("/settings?tab=privacy");
     default:
       return null;
   }
+}
+
+/** Menu accelerators and page keydown can both see one keystroke; act once. */
+const MENU_DEDUPE_MS = 400;
+const recentShortcuts = new Map<string, number>();
+
+function claimShortcut(id: string): boolean {
+  const now = Date.now();
+  const last = recentShortcuts.get(id) ?? 0;
+  recentShortcuts.set(id, now);
+  return now - last > MENU_DEDUPE_MS;
 }
 
 export function StudioFrame() {
   const { t, toggleLocale, locale, dir } = useLanguage();
   const { theme, toggleTheme } = useTheme();
   const { role, href, isOrganization, isFamily, setRole } = useRole();
-  const { isPaused: familyPaused } = useFamilyProfile();
+  const { isPaused: familyPaused, isChild: isFamilyChild } = useFamilyProfile();
+  const seat = useOrgSeatCapabilities();
+  const orgSeatRole = seat.employee ? seat.role : null;
   const navigate = useNavigate();
   const location = useLocation();
   const { account, status, refresh: refreshSignedIn, signedIn } = useSignedInAccount();
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [accountUser, setAccountUser] = useState<AccountPublic | null>(null);
-  const profilePhoto = useProfilePhoto();
   const [pendingCount, setPendingCount] = useState(0);
   const lastPendingRef = useRef<number | null>(null);
   const [guestLocal, setGuestLocal] = useState(() => isGuestLocalMode());
@@ -94,7 +122,7 @@ export function StudioFrame() {
 
   const modes = useMemo(
     () =>
-      navForRole(role)
+      navForRole(role, { isFamilyChild, orgSeatRole })
         // Connectors require a verified cloud account — not a stale device token.
         .filter((item) => (account ? true : item.key !== "connectors"))
         .map((item) => ({
@@ -103,7 +131,7 @@ export function StudioFrame() {
           icon: item.icon,
           end: Boolean(item.end),
         })),
-    [href, role, account],
+    [href, role, account, isFamilyChild, orgSeatRole],
   );
 
   const paletteItems = useMemo(
@@ -112,56 +140,61 @@ export function StudioFrame() {
   );
 
   // Mode follows subscription / free-trial plan — locked to that audience only.
+  // Business pages require a cloud-signed-in org plan. Guests stay on /individuals.
   useEffect(() => {
-    if (!signedIn || !account) {
-      if (role === "family") setRole("individual");
+    const onOrganizations = location.pathname.includes("/organizations");
+    const cloudSignedIn = signedIn && Boolean(account) && !guestLocal;
+    if (!cloudSignedIn || !account) {
+      if (role === "family" || role === "organization") setRole("individual");
+      if (onOrganizations) {
+        navigate(ROLE_PATH.individual, { replace: true });
+      }
       return;
     }
-    const planId = account.planId ?? status?.entitlements?.planId ?? null;
-    if (!planId) return;
-    const expectedAudience = audienceFromPlanId(planId);
+    const signedAccount = account;
+    const entitlements = status?.entitlements;
+    const expectedAudience = audienceFromAccountSignals({
+      planId: entitlements?.planId ?? signedAccount.planId ?? null,
+      planCategory: entitlements?.planCategory ?? signedAccount.planCategory ?? null,
+      planName: entitlements?.planName ?? signedAccount.planName ?? null,
+    });
     if (expectedAudience !== role) {
       setRole(expectedAudience);
     }
-    const expectedShell = studioModeFromPlanId(planId);
-    const expectedHome = homePathForPlanId(planId);
+    const expectedShell = studioModeFromAudience(expectedAudience);
+    const expectedHome = homePathForAudience(expectedAudience);
+    const onIndividuals = location.pathname.includes("/individuals");
     const onWrongShell =
-      (expectedShell === "organization" && location.pathname.includes("/individuals")) ||
-      (expectedShell === "individual" && location.pathname.includes("/organizations"));
-    if (onWrongShell) {
-      navigate(expectedHome, { replace: true });
-    }
+      (expectedShell === "organization" && onIndividuals) ||
+      (expectedShell === "individual" && onOrganizations);
+    if (!onWrongShell) return;
+    const suffix = location.pathname.replace(/^\/(individuals|organizations)/, "");
+    const keepSuffix =
+      expectedShell === "organization" &&
+      /\/(settings|account|connectors|brain)(\/|$)/.test(suffix);
+    navigate(keepSuffix ? `${expectedHome}${suffix}${location.search}` : expectedHome, {
+      replace: true,
+    });
   }, [
     signedIn,
     account,
     account?.planId,
+    account?.planCategory,
+    account?.planName,
+    guestLocal,
     location.pathname,
+    location.search,
     navigate,
     role,
     setRole,
     status?.entitlements?.planId,
+    status?.entitlements?.planCategory,
+    status?.entitlements?.planName,
   ]);
 
-  const refreshAccount = () => {
-    void arrabApi
-      .account()
-      .then((status) => {
-        if (!account || isGuestLocalMode()) {
-          setAccountUser(null);
-          return;
-        }
-        setAccountUser(status.account);
-      })
-      .catch(() => {
-        setAccountUser(null);
-      });
-  };
-
   useEffect(() => {
-    refreshAccount();
     void syncCompanionsFromCloud();
     return subscribeAccountSession(() => {
-      refreshAccount();
       void syncCompanionsFromCloud();
     });
   }, []);
@@ -180,9 +213,9 @@ export function StudioFrame() {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const meta = event.metaKey || event.ctrlKey;
-      if (meta && event.key.toLowerCase() === "k") {
+      if (meta && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "k") {
         event.preventDefault();
-        setPaletteOpen((open) => !open);
+        if (claimShortcut("file-command-palette")) setPaletteOpen((open) => !open);
       }
       if (meta && event.key === ",") {
         event.preventDefault();
@@ -191,18 +224,18 @@ export function StudioFrame() {
       }
       if (meta && event.shiftKey && event.key.toLowerCase() === "t") {
         event.preventDefault();
-        toggleTheme();
+        if (claimShortcut("view-toggle-theme")) toggleTheme();
       }
       if (meta && event.shiftKey && event.key.toLowerCase() === "l") {
         event.preventDefault();
-        toggleLocale();
+        if (claimShortcut("view-toggle-language")) toggleLocale();
       }
       if (meta && !event.shiftKey && event.key.toLowerCase() === "u") {
         event.preventDefault();
         navigate(href("/account"));
         setPaletteOpen(false);
       }
-      if (meta && !event.shiftKey && event.key >= "1" && event.key <= "7") {
+      if (meta && !event.shiftKey && !event.altKey && event.key >= "1" && event.key <= "9") {
         event.preventDefault();
         const target = modes[Number(event.key) - 1];
         if (target) {
@@ -236,18 +269,54 @@ export function StudioFrame() {
       if (cancelled) return;
       return listen<string>("arrab:menu", (event) => {
         const id = event.payload;
-        if (id === "view-reload") {
-          window.location.reload();
-          return;
+        switch (id) {
+          case "view-reload":
+            window.location.reload();
+            return;
+          case "view-toggle-theme":
+            if (claimShortcut(id)) toggleTheme();
+            return;
+          case "view-toggle-language":
+            if (claimShortcut(id)) toggleLocale();
+            return;
+          case "view-always-on-top": {
+            const enabled = !readPrefs().desktopAlwaysOnTop;
+            updatePrefs({ desktopAlwaysOnTop: enabled });
+            void setAlwaysOnTop(enabled).catch(() => undefined);
+            return;
+          }
+          case "ai-toggle-thinking":
+            updatePrefs({ aiExtendedThinking: !readPrefs().aiExtendedThinking });
+            return;
+          case "ai-stop-reply":
+            window.dispatchEvent(new CustomEvent("arrab:stop-reply"));
+            return;
+          case "file-command-palette":
+            if (claimShortcut(id)) setPaletteOpen((open) => !open);
+            return;
+          case "go-back":
+            navigate(-1);
+            return;
+          case "go-forward":
+            navigate(1);
+            return;
+          case "help-website":
+            void openExternalUrl("https://arrabai.com");
+            return;
+          case "help-whats-new":
+            void openExternalUrl(appReleasesPageUrl());
+            return;
+          case "help-report-issue":
+            void openExternalUrl(appIssueReportUrl());
+            return;
+          case "file-connect-folder":
+            window.dispatchEvent(new CustomEvent("arrab:connect-folder"));
+            break;
         }
-        if (id === "help-website") {
-          void openExternalUrl("https://arrabai.com");
-          return;
-        }
-        if (id === "file-connect-folder") {
-          window.dispatchEvent(new CustomEvent("arrab:connect-folder"));
-        }
-        const path = pathForMenuAction(id, { href, isOrganization });
+        const goIndex = /^go-(\d)$/.exec(id);
+        const path = goIndex
+          ? (modes[Number(goIndex[1])]?.to ?? null)
+          : pathForMenuAction(id, { href, isOrganization });
         if (path) {
           navigate(path);
           setPaletteOpen(false);
@@ -262,7 +331,36 @@ export function StudioFrame() {
       cancelled = true;
       unlisten?.();
     };
-  }, [href, isOrganization, navigate]);
+  }, [href, isOrganization, modes, navigate, toggleLocale, toggleTheme]);
+
+  const [menuPrefs, setMenuPrefs] = useState(() => {
+    const prefs = readPrefs();
+    return { alwaysOnTop: prefs.desktopAlwaysOnTop, extendedThinking: prefs.aiExtendedThinking };
+  });
+  useEffect(
+    () =>
+      subscribePrefs((prefs) =>
+        setMenuPrefs((prev) =>
+          prev.alwaysOnTop === prefs.desktopAlwaysOnTop &&
+          prev.extendedThinking === prefs.aiExtendedThinking
+            ? prev
+            : { alwaysOnTop: prefs.desktopAlwaysOnTop, extendedThinking: prefs.aiExtendedThinking },
+        ),
+      ),
+    [],
+  );
+  const navLabels = useMemo(() => modes.map((mode) => t(mode.key)), [modes, t]);
+  useEffect(() => {
+    if (!isTauriRuntime()) return;
+    void syncNativeMenu({
+      locale,
+      organization: isOrganization,
+      signedIn,
+      alwaysOnTop: menuPrefs.alwaysOnTop,
+      extendedThinking: menuPrefs.extendedThinking,
+      nav: navLabels,
+    }).catch(() => undefined);
+  }, [locale, isOrganization, signedIn, menuPrefs, navLabels]);
 
   useEffect(() => {
     let cancelled = false;
@@ -324,6 +422,7 @@ export function StudioFrame() {
           className="brand-mark h-[26px] w-auto max-w-[150px] object-contain object-left"
         />
         <div className="no-drag ml-auto flex items-center gap-2">
+          <NotificationCenter />
           <Tooltip delayDuration={120}>
             <TooltipTrigger asChild>
               <button
@@ -360,35 +459,7 @@ export function StudioFrame() {
             </TooltipContent>
           </Tooltip>
 
-          <Tooltip delayDuration={120}>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={() => {
-                  setPaletteOpen(false);
-                  navigate(href("/account"));
-                }}
-                aria-label={t("amTitle")}
-                className={cn(
-                  "inline-flex size-8 items-center justify-center overflow-hidden rounded-md border border-white/10 text-white hover:bg-white/5",
-                  accountUser && "border-emerald-400/30",
-                )}
-              >
-                {profilePhoto ? (
-                  <img src={profilePhoto} alt="" className="size-full object-cover" />
-                ) : accountUser ? (
-                  <span className="text-[10px] font-semibold tracking-wide">
-                    {initialsFromName(accountUser.displayName, accountUser.email)}
-                  </span>
-                ) : (
-                  <User className="size-4" strokeWidth={1.7} />
-                )}
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" sideOffset={8}>
-              {t("amTitle")}
-            </TooltipContent>
-          </Tooltip>
+          <AccountMenu onOpenPalette={() => setPaletteOpen(true)} />
         </div>
       </header>
 
@@ -441,6 +512,8 @@ export function StudioFrame() {
         </nav>
 
         <main className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden ps-[96px] pe-3 pb-3">
+          <MaintenanceBanner />
+          <UpdateAvailableBanner />
           {guestLocal && !account ? (
             <div className="mb-2 flex shrink-0 items-center justify-between gap-3 rounded-xl border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-50">
               <span>{t("guestLocalBanner")}</span>
@@ -520,7 +593,10 @@ export function StudioFrame() {
       ) : null}
       <ToastHost />
           {signedIn && isFamily ? <GuardianCoachingHost /> : null}
+          <E2eeWatcher signedIn={signedIn && Boolean(account)} />
       <AppUpdateWatcher />
+      <UsageGuardWatcher />
+      <ManagedClientHost />
       <PresenceApprovalBridge />
       <AgentPresenceHost />
     </div>

@@ -58,8 +58,13 @@ const testEnv: ApiEnv = {
   notionOAuthRedirectUri: undefined,
   whatsappWebhookVerifyToken: undefined,
   whatsappAppSecret: undefined,
+  openwaBaseUrl: "http://127.0.0.1:2785",
+  openwaWebhookSecret: undefined,
+  openwaSessionId: "arrab",
+  openwaApiKey: undefined,
   finnhubApiKey: undefined,
   finnhubWebhookSecret: undefined,
+  apiRoutePrefix: "",
 };
 
 describe("arrab api", () => {
@@ -165,6 +170,90 @@ describe("arrab api", () => {
       const detailBody = detail.json() as { messages: Array<{ role: string }> };
       expect(detailBody.messages.length).toBeGreaterThanOrEqual(2);
 
+      await app.close();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("streams thinking and tokens over SSE from Bedrock converse-stream", async () => {
+    const encoder = new TextEncoder();
+    const frame = (eventType: string, payload: unknown) => {
+      const headers: number[] = [];
+      for (const [name, value] of [
+        [":event-type", eventType],
+        [":message-type", "event"],
+      ] as const) {
+        const n = encoder.encode(name);
+        const v = encoder.encode(value);
+        headers.push(n.length, ...n, 7, v.length >> 8, v.length & 0xff, ...v);
+      }
+      const body = encoder.encode(JSON.stringify(payload));
+      const out = new Uint8Array(12 + headers.length + body.length + 4);
+      const view = new DataView(out.buffer);
+      view.setUint32(0, out.length);
+      view.setUint32(4, headers.length);
+      out.set(headers, 12);
+      out.set(body, 12 + headers.length);
+      return out;
+    };
+    const originalFetch = globalThis.fetch;
+    let streamBody: { inferenceConfig?: { maxTokens?: number } } | null = null;
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      if (String(url).endsWith("/converse-stream")) {
+        streamBody = JSON.parse(String(init?.body)) as typeof streamBody;
+        const parts = [
+          frame("contentBlockDelta", { contentBlockIndex: 0, delta: { reasoningContent: { text: "Weighing options" } } }),
+          frame("contentBlockDelta", { contentBlockIndex: 1, delta: { text: "Ship " } }),
+          frame("contentBlockDelta", { contentBlockIndex: 1, delta: { text: "Friday." } }),
+          frame("messageStop", { stopReason: "end_turn" }),
+          frame("metadata", { usage: { inputTokens: 4, outputTokens: 6 } }),
+        ];
+        return new Response(new Blob(parts), { status: 200 });
+      }
+      return new Response("{}", { status: 404 });
+    }) as typeof fetch;
+
+    try {
+      const context = await createApiContext(testEnv);
+      const app = await buildApp(context);
+      const agent = await app.inject({
+        method: "POST",
+        url: "/v1/agents",
+        payload: { name: "Planner", role: "planning", status: "active" },
+      });
+      const conversation = await app.inject({
+        method: "POST",
+        url: "/v1/conversations",
+        payload: { agentId: (agent.json() as { id: string }).id },
+      });
+      const conversationId = (conversation.json() as { id: string }).id;
+
+      const response = await app.inject({
+        method: "POST",
+        url: `/v1/conversations/${conversationId}/messages/stream`,
+        payload: { content: "When do we ship?", thinking: "medium" },
+      });
+      const events = response.body
+        .split("\n\n")
+        .map((block) => ({
+          event: /^event: (.+)$/m.exec(block)?.[1],
+          data: /^data: (.+)$/m.exec(block)?.[1],
+        }))
+        .filter((entry) => entry.event);
+      const names = events.map((entry) => entry.event);
+      expect(names.indexOf("thinking")).toBeGreaterThan(-1);
+      expect(names.indexOf("thinking")).toBeLessThan(names.indexOf("token"));
+      expect(names.at(-1)).toBe("done");
+      const tokens = events
+        .filter((entry) => entry.event === "token")
+        .map((entry) => (JSON.parse(entry.data!) as { text: string }).text)
+        .join("");
+      expect(tokens).toBe("Ship Friday.");
+      const done = JSON.parse(events.at(-1)!.data!) as { assistantMessage: { content: string } };
+      // Reasoning is streamed live but never stored in the transcript.
+      expect(done.assistantMessage.content).toBe("Ship Friday.");
+      expect(streamBody!.inferenceConfig!.maxTokens).toBeGreaterThanOrEqual(4000);
       await app.close();
     } finally {
       globalThis.fetch = originalFetch;
@@ -963,6 +1052,275 @@ describe("arrab api", () => {
     });
     expect(removed.statusCode).toBe(200);
     expect(removed.json()).toEqual({ ok: true });
+
+    const notice = await app.inject({
+      method: "POST",
+      url: "/erp/notifications",
+      headers: erp,
+      payload: { title: "Desk check", body: "Arrab Control says hello" },
+    });
+    expect(notice.statusCode).toBe(200);
+    const posted = notice.json() as { id: string; title: string };
+    expect(posted.title).toBe("Desk check");
+
+    const inbox = await app.inject({ method: "GET", url: "/erp/notifications" });
+    expect(inbox.statusCode).toBe(200);
+    const items = (inbox.json() as { items: Array<{ id: string }> }).items;
+    expect(items.some((item) => item.id === posted.id)).toBe(true);
+
+    const blocked = await app.inject({
+      method: "POST",
+      url: "/erp/notifications",
+      payload: { title: "No token" },
+    });
+    expect(blocked.statusCode).toBe(401);
+
+    const policy = await app.inject({
+      method: "POST",
+      url: "/erp/maintenance",
+      headers: erp,
+      payload: { message: "Maintenance tonight", requireUpdate: true, minVersion: "0.12.1" },
+    });
+    expect(policy.statusCode).toBe(200);
+    expect((policy.json() as { requireUpdate: boolean }).requireUpdate).toBe(true);
+
+    const seen = await app.inject({
+      method: "POST",
+      url: "/erp/maintenance/clients",
+      payload: { deviceId: "dev_desktop01", version: "0.12.0", platform: "mac" },
+    });
+    expect(seen.statusCode).toBe(200);
+
+    const clients = await app.inject({
+      method: "GET",
+      url: "/erp/maintenance/clients",
+      headers: erp,
+    });
+    expect(clients.statusCode).toBe(200);
+    expect((clients.json() as { items: unknown[] }).items.length).toBe(1);
+
+    await app.close();
+  });
+
+  it("delivers Arrab Control notifications to apps and lets AI draft them", async () => {
+    const context = await createApiContext({ ...testEnv, erpToken: "erp-test-token" });
+    const prompts: string[] = [];
+    context.aiGateway.register({
+      id: context.primaryProviderId,
+      kind: "openai-compatible" as never,
+      complete: async (request) => {
+        prompts.push(request.messages.map((message) => message.content).join("\n"));
+        return {
+          id: "cmp_1",
+          model: request.model,
+          finishReason: "stop",
+          usage: null,
+          message: {
+            role: "assistant",
+            content:
+              '<think>short and clear</think>```json\n{"title":"Arrab Studio 0.13 is here","body":"Replies now stream as they are written.","titleAr":"وصل Arrab Studio 0.13","bodyAr":"أصبحت الردود تظهر أثناء كتابتها.","kind":"update","href":"https://evil.example/x","native":true,"rationale":"New version, worth an OS notification."}\n```',
+          },
+        };
+      },
+    });
+    const app = await buildApp(context);
+    const erp = { authorization: "Bearer erp-test-token" };
+    const sync = (payload: Record<string, unknown>) =>
+      app.inject({ method: "POST", url: "/v1/client/sync", payload });
+
+    const drafted = await app.inject({
+      method: "POST",
+      url: "/erp/notifications/compose",
+      headers: erp,
+      payload: { brief: "Tell desktop users 0.13 streams replies live.", version: "0.13.0", platforms: ["macos", "windows"] },
+    });
+    expect(drafted.statusCode).toBe(200);
+    const draftBody = drafted.json() as {
+      draft: { title: string; titleAr: string; kind: string; href: string | null; native: boolean };
+      notification: null;
+    };
+    expect(draftBody.draft).toMatchObject({
+      title: "Arrab Studio 0.13 is here",
+      titleAr: "وصل Arrab Studio 0.13",
+      kind: "update",
+      href: "arrab://update",
+      native: true,
+    });
+    expect(draftBody.notification).toBeNull();
+    expect(prompts[0]).toContain("0.13.0");
+
+    const sent = await app.inject({
+      method: "POST",
+      url: "/erp/notifications/compose",
+      headers: erp,
+      payload: { brief: "Tell desktop users 0.13 streams replies live.", platforms: ["macos", "windows"], send: true },
+    });
+    const notice = (sent.json() as { notification: { id: string; source: string } }).notification;
+    expect(notice.source).toBe("ai");
+
+    const general = await app.inject({
+      method: "POST",
+      url: "/erp/notifications",
+      headers: erp,
+      payload: { title: "Welcome", titleAr: "أهلاً", kind: "info", native: false, minVersion: "0.12.0" },
+    });
+    expect(general.statusCode).toBe(200);
+
+    const mac = await sync({ deviceId: "dev_macbook01", platform: "macos", appVersion: "0.12.4" });
+    expect(mac.statusCode).toBe(200);
+    const macBody = mac.json() as {
+      notifications: Array<{ id: string; title: { en: string; ar: string }; kind: string; native: boolean; deepLink: string | null }>;
+      commands: unknown[];
+    };
+    expect(macBody.commands).toEqual([]);
+    const update = macBody.notifications.find((item) => item.id === notice.id);
+    expect(update).toMatchObject({
+      title: { en: "Arrab Studio 0.13 is here", ar: "وصل Arrab Studio 0.13" },
+      kind: "update",
+      native: true,
+      deepLink: "arrab://update",
+    });
+    expect(macBody.notifications.some((item) => item.title.en === "Welcome")).toBe(true);
+
+    const android = await sync({ deviceId: "dev_android01", platform: "android", appVersion: "0.11.0" });
+    const androidIds = (android.json() as { notifications: Array<{ id: string }> }).notifications;
+    expect(androidIds).toEqual([]);
+
+    await sync({ deviceId: "dev_macbook01", platform: "macos", appVersion: "0.12.4", ackedNotificationIds: [notice.id] });
+    await app.inject({ method: "POST", url: `/v1/client/notifications/${notice.id}/ack`, payload: { action: "opened" } });
+
+    const retracted = await app.inject({ method: "DELETE", url: `/erp/notifications/${notice.id}`, headers: erp });
+    expect(retracted.statusCode).toBe(200);
+    expect((retracted.json() as { retractedAt: string | null }).retractedAt).toBeTruthy();
+
+    const after = await sync({ deviceId: "dev_macbook01", platform: "macos", appVersion: "0.12.4" });
+    expect((after.json() as { notifications: Array<{ id: string }> }).notifications.map((item) => item.id)).not.toContain(
+      notice.id,
+    );
+
+    const desk = await app.inject({ method: "GET", url: "/erp/notifications", headers: erp });
+    const deskBody = desk.json() as { ai: boolean; items: Array<{ id: string; retractedAt: string | null; stats: unknown }> };
+    expect(deskBody.ai).toBe(true);
+    expect(deskBody.items.find((item) => item.id === notice.id)).toMatchObject({
+      stats: { delivered: 1, opened: 1, dismissed: 0 },
+    });
+
+    const badLink = await app.inject({
+      method: "POST",
+      url: "/erp/notifications",
+      headers: erp,
+      payload: { title: "Bad", href: "arrab://settings/../../etc" },
+    });
+    expect(badLink.statusCode).toBe(400);
+
+    await app.close();
+  });
+
+  it("reports a clear error when the AI cannot draft a notification", async () => {
+    const context = await createApiContext({ ...testEnv, erpToken: "erp-test-token" });
+    let calls = 0;
+    context.aiGateway.register({
+      id: context.primaryProviderId,
+      kind: "openai-compatible" as never,
+      complete: async () => {
+        calls += 1;
+        throw new Error("provider offline");
+      },
+    });
+    const app = await buildApp(context);
+    const res = await app.inject({
+      method: "POST",
+      url: "/erp/notifications/compose",
+      headers: { authorization: "Bearer erp-test-token" },
+      payload: { brief: "Hello" },
+    });
+    expect(res.statusCode).toBe(503);
+    expect(String((res.json() as { error?: { message?: string } }).error?.message)).toMatch(/could not draft/);
+    expect(calls).toBe(2);
+    const badTone = await app.inject({
+      method: "POST",
+      url: "/erp/notifications/compose",
+      headers: { authorization: "Bearer erp-test-token" },
+      payload: { brief: "Hello", tone: "angry" },
+    });
+    expect(badTone.statusCode).toBe(400);
+    const noToken = await app.inject({ method: "POST", url: "/erp/notifications/compose", payload: { brief: "x" } });
+    expect(noToken.statusCode).toBe(401);
+    await app.close();
+  });
+
+  it("lets Arrab Control curate the connector catalog", async () => {
+    const context = await createApiContext({ ...testEnv, erpToken: "erp-test-token" });
+    const app = await buildApp(context);
+    const erp = { authorization: "Bearer erp-test-token" };
+
+    const empty = await app.inject({ method: "GET", url: "/erp/connectors" });
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json()).toEqual({ items: [] });
+
+    const denied = await app.inject({
+      method: "PUT",
+      url: "/erp/connectors/slack",
+      payload: { status: "hidden" },
+    });
+    expect(denied.statusCode).toBe(401);
+
+    const featured = await app.inject({
+      method: "PUT",
+      url: "/erp/connectors/linear",
+      headers: erp,
+      payload: {
+        featured: true,
+        order: 1,
+        name: "Linear for teams",
+        logoUrl: "https://cdn.arrabai.com/logos/linear.png",
+      },
+    });
+    expect(featured.statusCode).toBe(200);
+    expect(featured.json()).toMatchObject({
+      provider: "linear",
+      status: "published",
+      featured: true,
+      order: 1,
+      name: "Linear for teams",
+      nameAr: null,
+    });
+
+    const hidden = await app.inject({
+      method: "PUT",
+      url: "/erp/connectors/finnhub",
+      headers: erp,
+      payload: { status: "hidden" },
+    });
+    expect(hidden.statusCode).toBe(200);
+
+    const unknown = await app.inject({
+      method: "PUT",
+      url: "/erp/connectors/myspace",
+      headers: erp,
+      payload: { status: "published" },
+    });
+    expect(unknown.statusCode).toBe(400);
+
+    const foreignLogo = await app.inject({
+      method: "PUT",
+      url: "/erp/connectors/slack",
+      headers: erp,
+      payload: { logoUrl: "https://evil.example/logo.png" },
+    });
+    expect(foreignLogo.statusCode).toBe(400);
+
+    const listed = await app.inject({ method: "GET", url: "/erp/connectors" });
+    const items = (listed.json() as { items: Array<{ provider: string; status: string }> }).items;
+    expect(items.map((item) => [item.provider, item.status]).sort()).toEqual([
+      ["finnhub", "hidden"],
+      ["linear", "published"],
+    ]);
+
+    const reset = await app.inject({ method: "DELETE", url: "/erp/connectors/finnhub", headers: erp });
+    expect(reset.json()).toEqual({ provider: "finnhub", removed: true });
+    const after = await app.inject({ method: "GET", url: "/erp/connectors" });
+    expect((after.json() as { items: unknown[] }).items).toHaveLength(1);
 
     await app.close();
   });

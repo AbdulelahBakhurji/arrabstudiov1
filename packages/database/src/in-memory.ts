@@ -1,5 +1,9 @@
 import {
   brandId,
+  emptyCompanionDesk,
+  emptyCrewState,
+  normalizeCompanionDesk,
+  normalizeCrewState,
   type Activity,
   type Agent,
   type Approval,
@@ -29,6 +33,14 @@ import {
   type FamilyMemberRecord,
   type FamilyGuidanceRecord,
   type ErpCompanion,
+  type ControlNotification,
+  type ControlClient,
+  type ControlConnector,
+  type ControlMaintenance,
+  type CompanionDeskState,
+  type CrewState,
+  type WrappedChatKey,
+  type SealedChat,
 } from "@arrab/shared";
 import {
   LOCAL_ORGANIZATION_ID,
@@ -52,6 +64,9 @@ import {
   type TaskRunRepository,
   type TeamMembershipRepository,
   type UsageRepository,
+  type CompanionDeskRepository,
+  type CrewRepository,
+  type SealedVaultRepository,
   type WorkspaceContext,
 } from "./types.js";
 
@@ -563,6 +578,17 @@ export type MemorySnapshot = {
   familyActiveMemberId: string | null;
   familyLockedMemberId: string | null;
   erpCompanions: ErpCompanion[];
+  controlNotifications: ControlNotification[];
+  controlDesk: {
+    policy: ControlMaintenance | null;
+    clients: ControlClient[];
+    connectors?: ControlConnector[];
+  };
+  companionDesk: CompanionDeskState;
+  crew: CrewState;
+  sealedKeys: Record<string, WrappedChatKey>;
+  sealedChats: Record<string, Record<string, SealedChat>>;
+  sealedDeleted: Record<string, Record<string, string>>;
 };
 
 export type MemoryPersistenceOptions = {
@@ -586,6 +612,7 @@ const READ_METHODS = new Set([
   "listAll",
   "listByWorkspace",
   "listActiveByAgent",
+  "listConnectors",
 ]);
 
 function withChangeNotifications<T extends object>(repo: T, onChange?: () => void): T {
@@ -652,6 +679,13 @@ export function emptyMemorySnapshot(now = new Date().toISOString()): MemorySnaps
     familyActiveMemberId: null,
     familyLockedMemberId: null,
     erpCompanions: [],
+    controlNotifications: [],
+    controlDesk: { policy: null, clients: [] },
+    companionDesk: emptyCompanionDesk(),
+    crew: emptyCrewState(),
+    sealedKeys: {},
+    sealedChats: {},
+    sealedDeleted: {},
   };
 }
 
@@ -701,12 +735,19 @@ export function normalizeMemorySnapshot(
     snapshot.familyLockedMemberId =
       typeof snapshot.familyLockedMemberId === "string" ? snapshot.familyLockedMemberId : null;
     snapshot.erpCompanions = Array.isArray(snapshot.erpCompanions) ? snapshot.erpCompanions : [];
+    snapshot.controlNotifications = Array.isArray(snapshot.controlNotifications)
+      ? snapshot.controlNotifications
+      : [];
+    if (!snapshot.controlDesk || !Array.isArray(snapshot.controlDesk.clients)) {
+      snapshot.controlDesk = { policy: snapshot.controlDesk?.policy ?? null, clients: [] };
+    }
     for (const member of snapshot.familyMembers) {
       member.tokenAllowance = member.tokenAllowance ?? 0;
       member.tokensUsed = member.tokensUsed ?? 0;
     }
     for (const connector of snapshot.connectors) {
       connector.familyMemberId = connector.familyMemberId ?? null;
+      connector.ownerEmployeeId = connector.ownerEmployeeId ?? null;
     }
     for (const conversation of snapshot.conversations) {
       conversation.familyMemberId = conversation.familyMemberId ?? null;
@@ -760,7 +801,87 @@ export function normalizeMemorySnapshot(
     familyLockedMemberId:
       typeof raw.familyLockedMemberId === "string" ? raw.familyLockedMemberId : null,
     erpCompanions: Array.isArray(raw.erpCompanions) ? raw.erpCompanions : [],
+    controlNotifications: Array.isArray(raw.controlNotifications) ? raw.controlNotifications : [],
+    controlDesk:
+      raw.controlDesk && Array.isArray(raw.controlDesk.clients)
+        ? raw.controlDesk
+        : { policy: null, clients: [] },
+    companionDesk: normalizeCompanionDesk(raw.companionDesk),
+    crew: normalizeCrewState(raw.crew),
+    sealedKeys: raw.sealedKeys && typeof raw.sealedKeys === "object" ? raw.sealedKeys : {},
+    sealedChats: raw.sealedChats && typeof raw.sealedChats === "object" ? raw.sealedChats : {},
+    sealedDeleted: raw.sealedDeleted && typeof raw.sealedDeleted === "object" ? raw.sealedDeleted : {},
   };
+}
+
+class MemorySealedVaultRepository implements SealedVaultRepository {
+  constructor(private readonly snapshot: MemorySnapshot) {}
+
+  async getKey(ownerKey: string): Promise<WrappedChatKey | null> {
+    return this.snapshot.sealedKeys[ownerKey] ?? null;
+  }
+
+  async putKey(ownerKey: string, key: WrappedChatKey): Promise<void> {
+    this.snapshot.sealedKeys[ownerKey] = key;
+  }
+
+  async listChats(ownerKey: string): Promise<SealedChat[]> {
+    return Object.values(this.snapshot.sealedChats[ownerKey] ?? {});
+  }
+
+  async putChat(ownerKey: string, chat: SealedChat): Promise<void> {
+    const chats = (this.snapshot.sealedChats[ownerKey] ??= {});
+    const current = chats[chat.id];
+    if (current && current.updatedAt > chat.updatedAt) return;
+    chats[chat.id] = chat;
+    const tombs = this.snapshot.sealedDeleted[ownerKey];
+    if (tombs && tombs[chat.id] && tombs[chat.id]! <= chat.updatedAt) delete tombs[chat.id];
+  }
+
+  async deleteChat(ownerKey: string, id: string, deletedAt: string): Promise<void> {
+    delete this.snapshot.sealedChats[ownerKey]?.[id];
+    (this.snapshot.sealedDeleted[ownerKey] ??= {})[id] = deletedAt;
+  }
+
+  async listDeleted(ownerKey: string): Promise<Array<{ id: string; deletedAt: string }>> {
+    return Object.entries(this.snapshot.sealedDeleted[ownerKey] ?? {}).map(([id, deletedAt]) => ({
+      id,
+      deletedAt,
+    }));
+  }
+
+  async deleteAll(ownerKey: string): Promise<void> {
+    delete this.snapshot.sealedKeys[ownerKey];
+    delete this.snapshot.sealedChats[ownerKey];
+    delete this.snapshot.sealedDeleted[ownerKey];
+  }
+}
+
+class MemoryCrewRepository implements CrewRepository {
+  constructor(private readonly snapshot: MemorySnapshot) {}
+
+  async get(): Promise<CrewState> {
+    return normalizeCrewState(this.snapshot.crew);
+  }
+
+  async save(state: CrewState): Promise<CrewState> {
+    const next = normalizeCrewState(state);
+    this.snapshot.crew = next;
+    return next;
+  }
+}
+
+class MemoryCompanionDeskRepository implements CompanionDeskRepository {
+  constructor(private readonly snapshot: MemorySnapshot) {}
+
+  async get(): Promise<CompanionDeskState> {
+    return normalizeCompanionDesk(this.snapshot.companionDesk);
+  }
+
+  async save(state: CompanionDeskState): Promise<CompanionDeskState> {
+    this.snapshot.companionDesk = state;
+    return state;
+  }
 }
 
 
@@ -954,6 +1075,81 @@ class MemoryErpCompanionRepository {
   }
 }
 
+class MemoryControlNotificationRepository {
+  constructor(private readonly snapshot: MemorySnapshot) {
+    if (!Array.isArray(this.snapshot.controlNotifications)) this.snapshot.controlNotifications = [];
+  }
+
+  async listRecent(limit: number): Promise<ControlNotification[]> {
+    const cap = Math.min(100, Math.max(1, limit));
+    return [...this.snapshot.controlNotifications]
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, cap);
+  }
+
+  async insert(item: ControlNotification): Promise<ControlNotification> {
+    this.snapshot.controlNotifications.unshift(item);
+    this.snapshot.controlNotifications = this.snapshot.controlNotifications.slice(0, 100);
+    return item;
+  }
+
+  async getById(id: string): Promise<ControlNotification | null> {
+    return this.snapshot.controlNotifications.find((item) => item.id === id) ?? null;
+  }
+
+  async replace(item: ControlNotification): Promise<ControlNotification | null> {
+    const index = this.snapshot.controlNotifications.findIndex((entry) => entry.id === item.id);
+    if (index < 0) return null;
+    this.snapshot.controlNotifications[index] = item;
+    return item;
+  }
+}
+
+class MemoryControlDeskRepository {
+  constructor(private readonly snapshot: MemorySnapshot) {
+    if (!this.snapshot.controlDesk) this.snapshot.controlDesk = { policy: null, clients: [] };
+  }
+
+  async getPolicy(): Promise<ControlMaintenance | null> {
+    return this.snapshot.controlDesk.policy;
+  }
+
+  async setPolicy(policy: ControlMaintenance): Promise<ControlMaintenance> {
+    this.snapshot.controlDesk.policy = policy;
+    return policy;
+  }
+
+  async upsertClient(client: ControlClient): Promise<ControlClient> {
+    const clients = this.snapshot.controlDesk.clients.filter((row) => row.deviceId !== client.deviceId);
+    clients.unshift(client);
+    this.snapshot.controlDesk.clients = clients.slice(0, 200);
+    return client;
+  }
+
+  async listClients(): Promise<ControlClient[]> {
+    return [...this.snapshot.controlDesk.clients];
+  }
+
+  async listConnectors(): Promise<ControlConnector[]> {
+    return [...(this.snapshot.controlDesk.connectors ?? [])];
+  }
+
+  async upsertConnector(entry: ControlConnector): Promise<ControlConnector> {
+    const rest = (this.snapshot.controlDesk.connectors ?? []).filter(
+      (row) => row.provider !== entry.provider,
+    );
+    this.snapshot.controlDesk.connectors = [...rest, entry];
+    return entry;
+  }
+
+  async deleteConnector(provider: string): Promise<boolean> {
+    const current = this.snapshot.controlDesk.connectors ?? [];
+    const next = current.filter((row) => row.provider !== provider);
+    this.snapshot.controlDesk.connectors = next;
+    return next.length !== current.length;
+  }
+}
+
 export function createInMemoryPersistence(
   now = new Date().toISOString(),
   options?: MemoryPersistenceOptions,
@@ -1108,5 +1304,10 @@ export function createInMemoryPersistence(
       };
     })(),
     erpCompanions: wrap(new MemoryErpCompanionRepository(snapshot)),
+    controlNotifications: wrap(new MemoryControlNotificationRepository(snapshot)),
+    controlDesk: wrap(new MemoryControlDeskRepository(snapshot)),
+    companionDesk: wrap(new MemoryCompanionDeskRepository(snapshot)),
+    crew: wrap(new MemoryCrewRepository(snapshot)),
+    sealedVault: wrap(new MemorySealedVaultRepository(snapshot)),
   };
 }
