@@ -9,7 +9,7 @@ Read `AGENTS.md` before large edits. Running product UI is `apps/desktop`. API o
 
 - Solo / family / org are plan audiences. Gate with `audienceFromPlanId` and `navForRole`.
 - Contract lives in `packages/shared`. Desktop calls `arrabApi` only.
-- New copy: add `en` and `ar` in `apps/desktop/src/i18n/messages.ts`.
-- Family UI: `apps/desktop/src/components/family/`. Org UI: `components/organization/`.
+- New copy: add `en` and `ar` in `apps/desktop/src/shared/i18n/locales/{en,ar}/<domain>.ts`.
+- Family UI: `apps/desktop/src/domains/family/`. Org UI: `domains/organization/`.
 - New pages: `pnpm new:feature <kebab>` → `apps/desktop/src/features/modules/`. Do not hand-edit App.tsx or catalog for a new route.
 - Thin PRs. No drive-by refactors. Do not commit `.env` or credentials.

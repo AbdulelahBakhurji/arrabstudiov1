@@ -20,7 +20,7 @@ import type {
 } from "@arrab/shared";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import {
   addParentGuidanceFact,
   liveCompanions,
@@ -33,7 +33,7 @@ import {
   refreshFamilyProfile,
   writeActiveFamilyMemberId,
 } from "@/domains/family/family-session";
-import { ACCOUNT_EVENT } from "@/domains/account/account-session";
+import { ACCOUNT_EVENT } from "@/core/session/account-session";
 import { cn } from "@/shared/lib/utils";
 import { GuardianHub } from "@/domains/family/ui/GuardianHub";
 import { AddFamilyMemberWizard } from "@/domains/family/ui/AddFamilyMemberWizard";

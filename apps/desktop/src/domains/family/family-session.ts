@@ -4,7 +4,7 @@
  */
 import type { FamilyMemberPublic, FamilyHouseholdSnapshot } from "@arrab/shared";
 import { arrabApi } from "@/core/api/api";
-import { readAccountSessionToken } from "@/domains/account/account-session";
+import { onAccountSignOut, readAccountSessionToken } from "@/core/session/account-session";
 
 export const FAMILY_ACTIVE_KEY = "arrab.family.activeMemberId";
 export const FAMILY_EVENT = "arrab:family-profile";
@@ -145,3 +145,6 @@ export function useFamilyProfileSubscribe(cb: () => void): () => void {
   ensureFamilyBootstrapped();
   return subscribeFamilyProfile(cb);
 }
+
+// Signing out of the account ends the household profile session too.
+onAccountSignOut(clearFamilySession);

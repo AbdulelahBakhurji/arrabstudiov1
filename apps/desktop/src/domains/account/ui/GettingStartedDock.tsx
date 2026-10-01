@@ -3,7 +3,7 @@ import { CircleHelp } from "lucide-react";
 import { GettingStartedCard } from "@/domains/account/ui/GettingStartedCard";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/primitives/tooltip";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { arrabApi } from "@/core/api/api";
 import { liveCompanions, useCompanionState } from "@/domains/companions/companions";
 import {

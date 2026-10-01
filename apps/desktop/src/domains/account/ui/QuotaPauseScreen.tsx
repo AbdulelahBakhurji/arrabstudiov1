@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { Check, CreditCard, ExternalLink, Gauge, Loader2, Plus, Sparkles, Zap } from "lucide-react";
 import type { AccountEntitlements, TokenTopUpPackId } from "@arrab/shared";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import {
   TOP_UP_PACKS,
   formatPackPrice,
@@ -14,7 +14,7 @@ import {
   watchForPayment,
   type CheckoutOpened,
 } from "@/domains/account/billing-actions";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { cn } from "@/shared/lib/utils";
 
 type Busy = "renew" | "upgrade" | TokenTopUpPackId | null;

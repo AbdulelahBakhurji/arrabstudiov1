@@ -16,7 +16,7 @@ import type {
   OrgEmployeePublic,
   TeamMembership,
 } from "@arrab/shared";
-import { Surface } from "@/app/shell/StudioFrame";
+import { Surface } from "@/shared/ui/Surface";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { isDefaultSoloClone } from "@/domains/companions/agents-bootstrap";
 import { filterLiveWorkforceAgents } from "@/domains/chat/agent-session-policy";

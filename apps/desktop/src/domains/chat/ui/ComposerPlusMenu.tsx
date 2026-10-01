@@ -22,21 +22,21 @@ import {
 } from "lucide-react";
 import type { AiGatewayStatusResponse } from "@arrab/shared";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { arrabApi } from "@/core/api/api";
-import { canUseCloudAi } from "@/domains/account/guest-mode";
+import { canUseCloudAi } from "@/core/session/guest-mode";
 import {
   DEFAULT_OLLAMA_BASE,
   fetchOllamaStatus,
   type OllamaStatus,
 } from "@/domains/chat/local-models";
 import { markGettingStartedStep } from "@/domains/account/getting-started";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { ARRAB_PRIMARY_MODEL } from "@/domains/chat/ai-prefs";
 import { readPrefs, subscribePrefs, updatePrefs, type StudioPrefs } from "@/shared/lib/prefs";
 import { cn } from "@/shared/lib/utils";
-import { ACCOUNT_EVENT } from "@/domains/account/account-session";
-import { GUEST_EVENT } from "@/domains/account/guest-mode";
+import { ACCOUNT_EVENT } from "@/core/session/account-session";
+import { GUEST_EVENT } from "@/core/session/guest-mode";
 import {
   clearArmedSkills,
   disarmSkill,

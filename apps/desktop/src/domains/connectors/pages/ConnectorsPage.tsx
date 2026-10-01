@@ -3,11 +3,11 @@ import { Cable, Check, LoaderCircle, LogIn, Search, X } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import type { ConnectorProvider, ConnectorPublic } from "@arrab/shared";
 import { ConnectorMark } from "@/domains/connectors/ui/ConnectorMark";
-import { Surface } from "@/app/shell/StudioFrame";
+import { Surface } from "@/shared/ui/Surface";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
 import { openExternalUrl } from "@/core/platform/desktop";
-import { notifyStudio } from "@/shared/lib/notify";
+import { notifyStudio } from "@/domains/notifications/notify";
 import { isTauriRuntime } from "@/core/platform/terminal";
 import {
   execSshConfig,
@@ -18,7 +18,7 @@ import {
 } from "@/domains/connectors/ssh-config";
 import { useFamilyProfile } from "@/domains/family/use-family-profile";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
-import { clearGuestLocalMode } from "@/domains/account/guest-mode";
+import { clearGuestLocalMode } from "@/core/session/guest-mode";
 import { applyControlCatalog, useControlConnectors } from "@/domains/connectors/control-connectors";
 import { cn } from "@/shared/lib/utils";
 import { WhatsAppConnectSheet } from "@/domains/connectors/ui/WhatsAppConnectSheet";

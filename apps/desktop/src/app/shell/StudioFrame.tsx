@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { Languages, Moon, Sun, User } from "lucide-react";
-import { ToastHost } from "@/shared/ui/ToastHost";
+import { ToastHost } from "@/domains/notifications/ui/ToastHost";
 import { AppUpdateWatcher } from "@/domains/managed/ui/AppUpdateWatcher";
 import { ManagedClientHost } from "@/domains/managed/ui/ManagedClientHost";
 import { MaintenanceBanner } from "@/domains/managed/ui/MaintenanceBanner";
@@ -17,27 +17,28 @@ import { TOKEN_GUARD_EVENT } from "@/domains/account/token-guard";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/primitives/tooltip";
 import logoTall from "@/shared/assets/logotall.png";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useTheme } from "@/app/theme/ThemeProvider";
+import { useTheme } from "@/shared/theme/ThemeProvider";
 import { arrabApi } from "@/core/api/api";
-import { subscribeAccountSession } from "@/domains/account/account-session";
+import { subscribeAccountSession } from "@/core/session/account-session";
 import { syncCompanionsFromCloud } from "@/domains/companions/companions";
 import { setAlwaysOnTop, openExternalUrl, syncNativeMenu } from "@/core/platform/desktop";
 import { appIssueReportUrl, appReleasesPageUrl } from "@/domains/managed/app-updates";
-import { notifyStudio } from "@/shared/lib/notify";
+import { notifyStudio } from "@/domains/notifications/notify";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
 import { useOrgSeatCapabilities } from "@/domains/organization/org-seat";
 import { E2eeWatcher } from "@/domains/encryption/ui/E2eeWatcher";
-import { audienceFromAccountSignals, homePathForAudience, navForRole, ROLE_PATH, studioModeFromAudience } from "@/app/roles/catalog";
-import { useRole } from "@/app/roles/RoleProvider";
+import { audienceFromAccountSignals, homePathForAudience, navForRole, ROLE_PATH, studioModeFromAudience } from "@/domains/account/roles/catalog";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { readPrefs, subscribePrefs, updatePrefs } from "@/shared/lib/prefs";
 import {
   clearGuestLocalMode,
   isGuestLocalMode,
   subscribeGuestMode,
-} from "@/domains/account/guest-mode";
+} from "@/core/session/guest-mode";
 import { isTauriRuntime } from "@/core/platform/terminal";
 import { GuardianCoachingHost } from "@/domains/family/ui/GuardianCoachingHost";
 import { useFamilyProfile } from "@/domains/family/use-family-profile";
+import { Surface } from "@/shared/ui/Surface";
 import { cn } from "@/shared/lib/utils";
 
 function isQuotaEscapePath(pathname: string): boolean {
@@ -599,21 +600,6 @@ export function StudioFrame() {
       <ManagedClientHost />
       <PresenceApprovalBridge />
       <AgentPresenceHost />
-    </div>
-  );
-}
-
-export function Surface({ children, className }: { children: ReactNode; className?: string }) {
-  const hideYScroll = Boolean(className?.includes("overflow-hidden"));
-  return (
-    <div
-      className={cn(
-        "h-full min-h-0 min-w-0 overflow-x-hidden",
-        hideYScroll ? "overflow-y-hidden" : "overflow-y-auto",
-        className,
-      )}
-    >
-      {children}
     </div>
   );
 }

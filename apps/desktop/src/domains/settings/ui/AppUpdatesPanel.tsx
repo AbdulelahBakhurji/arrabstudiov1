@@ -7,7 +7,7 @@ import {
   type AppUpdateInfo,
 } from "@/domains/managed/app-updates";
 import { requestInAppUpdate } from "@/domains/managed/ui/UpdatePanel";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { cn } from "@/shared/lib/utils";
 
 export function AppUpdatesPanel({ className }: { className?: string }) {

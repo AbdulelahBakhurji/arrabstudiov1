@@ -10,8 +10,8 @@ import {
   readAccountSessionToken,
   subscribeAccountSession,
   writeAccountId,
-} from "@/domains/account/account-session";
-import { isGuestLocalMode, subscribeGuestMode } from "@/domains/account/guest-mode";
+} from "@/core/session/account-session";
+import { isGuestLocalMode, subscribeGuestMode } from "@/core/session/guest-mode";
 import {
   applySessionFromDeepLink,
   resumePendingWebAuth,

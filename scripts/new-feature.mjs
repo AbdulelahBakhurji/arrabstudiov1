@@ -42,7 +42,7 @@ Options:
   --audience=individual,family,organization
   --nav          Show on the side rail (before Settings)
   --flag         Hide until arrab.feature.<id>=1 or VITE_FEATURE_<ID>=1
-  --api          Also stub apps/api/src/services/<name>-service.ts
+  --api          Also stub apps/api/src/modules/<name>/<name>-service.ts
 
 Creates apps/desktop/src/features/modules/<name>/ and wires route + copy.
 `);
@@ -100,7 +100,8 @@ const moduleDir = join(root, "apps/desktop/src/features/modules", name);
 const pagePath = join(moduleDir, `${pascal}Page.tsx`);
 const indexPath = join(moduleDir, "index.ts");
 const notesPath = join(moduleDir, "NOTES.md");
-const servicePath = join(root, "apps/api/src/services", `${name}-service.ts`);
+const apiModuleDir = join(root, "apps/api/src/modules", name);
+const servicePath = join(apiModuleDir, `${name}-service.ts`);
 
 if (existsSync(indexPath)) {
   console.error(`Feature already exists: ${moduleDir}`);
@@ -163,9 +164,9 @@ Flag: ${withFlag ? `\`${name}\` (off until localStorage/env)` : "none — live i
 - [ ] Replace \`${pascal}Page.tsx\`
 - [ ] Keep \`en\` + \`ar\` keys \`${titleKey}\` / \`${bodyKey}\`
 ${withApi ? `- [ ] Shared types in \`packages/shared\`
-- [ ] Finish \`apps/api/src/services/${name}-service.ts\`
-- [ ] Register HTTP in \`apps/api/src/routes/v1.ts\`
-- [ ] Add \`arrabApi.${camel}\` in \`apps/desktop/src/lib/api.ts\`
+- [ ] Finish \`apps/api/src/modules/${name}/${name}-service.ts\`
+- [ ] Add \`apps/api/src/modules/${name}/${name}.routes.ts\` and register it in \`apps/api/src/http/v1.ts\`
+- [ ] Add \`${camel}\` endpoints in a domain \`api.ts\` (\`apps/desktop/src/domains/<domain>/api.ts\`)
 ` : ""}${withFlag ? `- [ ] Enable locally: localStorage \`arrab.feature.${name}=1\`
 ` : ""}- [ ] Focused test if behavior is non-trivial
 - [ ] Delete this NOTES.md when the feature ships
@@ -179,22 +180,19 @@ writeFileSync(pagePath, pageStub);
 writeFileSync(indexPath, indexStub);
 writeFileSync(notesPath, notes);
 
+function appendLocale(locale, title, body) {
+  const file = join(root, `apps/desktop/src/shared/i18n/locales/${locale}/common.ts`);
+  const text = readFileSync(file, "utf8");
+  if (text.includes(`${titleKey}:`)) return false;
+  const end = text.lastIndexOf("} as const;");
+  const block = `  ${titleKey}: ${JSON.stringify(title)},\n  ${bodyKey}: ${JSON.stringify(body)},\n`;
+  writeFileSync(file, text.slice(0, end) + block + text.slice(end));
+  return true;
+}
+
 function insertMessages(enTitle, enBody, arTitle, arBody) {
-  const file = join(root, "apps/desktop/src/i18n/messages.ts");
-  let text = readFileSync(file, "utf8");
-  if (text.includes(`${titleKey}:`)) {
-    console.warn("i18n keys already present, skipping messages.ts");
-    return;
-  }
-  const blockEn = `    ${titleKey}: ${JSON.stringify(enTitle)},\n    ${bodyKey}: ${JSON.stringify(enBody)},\n`;
-  const blockAr = `    ${titleKey}: ${JSON.stringify(arTitle)},\n    ${bodyKey}: ${JSON.stringify(arBody)},\n`;
-  const parts = text.split(FEATURE_MARKER);
-  if (parts.length !== 3) {
-    console.warn("Could not find both feature-module markers in messages.ts — add keys by hand.");
-    return;
-  }
-  text = [parts[0], FEATURE_MARKER, "\n", blockEn, parts[1], FEATURE_MARKER, "\n", blockAr, parts[2]].join("");
-  writeFileSync(file, text);
+  const added = appendLocale("en", enTitle, enBody) && appendLocale("ar", arTitle, arBody);
+  if (!added) console.warn("i18n keys already present, skipping locales");
 }
 
 insertMessages(
@@ -208,6 +206,7 @@ if (withApi) {
   if (existsSync(servicePath)) {
     console.warn(`Service already exists, skipping: ${servicePath}`);
   } else {
+    mkdirSync(apiModuleDir, { recursive: true });
     writeFileSync(
       servicePath,
       `/**
@@ -224,7 +223,7 @@ export class ${pascal}Service {
 
 console.log(`Created feature module:
   apps/desktop/src/features/modules/${name}/
-${withApi ? `  apps/api/src/services/${name}-service.ts\n` : ""}`);
+${withApi ? `  apps/api/src/modules/${name}/${name}-service.ts\n` : ""}`);
 console.log(`Live at:  #/${audiences.includes("organization") && !audiences.includes("individual") ? "organizations" : "individuals"}/${name}
 ${withFlag ? `Enable:   localStorage.setItem("arrab.feature.${name}", "1")\n` : ""}See docs/FEATURE.md
 `);

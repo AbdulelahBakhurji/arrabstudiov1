@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router-dom";
 import type { AccountStatusResponse, PlanAudience, SubscriptionPlanId } from "@arrab/shared";
 import { PlansCatalog } from "@/domains/account/ui/PlansCatalog";
-import { Surface } from "@/app/shell/StudioFrame";
+import { Surface } from "@/shared/ui/Surface";
 import { arrabApi } from "@/core/api/api";
-import { subscribeAccountSession } from "@/domains/account/account-session";
+import { subscribeAccountSession } from "@/core/session/account-session";
 
 export const PLAN_PATH = {
   individual: "/plans/individuals",

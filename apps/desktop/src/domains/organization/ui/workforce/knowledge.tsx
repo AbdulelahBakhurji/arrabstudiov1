@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { BookOpen, ChevronDown, Loader2, Plus, Search, Trash2, Upload } from "lucide-react";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import type { OrgSeatCapabilities } from "@/domains/organization/org-seat";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { cn } from "@/shared/lib/utils";
 import { Empty, Stat } from "./primitives";
 import { relativeAge, type WorkforceData } from "./use-workforce-data";

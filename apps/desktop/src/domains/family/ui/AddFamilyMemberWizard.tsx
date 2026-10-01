@@ -30,7 +30,7 @@ import {
   listFamilyPortraits,
   type FamilyPortraitGender,
 } from "@/domains/family/family-portraits";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { cn } from "@/shared/lib/utils";
 
 type Kind = "adult" | "child";

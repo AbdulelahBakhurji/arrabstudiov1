@@ -9,7 +9,7 @@ import { useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { strFromU8, unzipSync } from "fflate";
 import type { SendMessageRequest, SkillLibraryEntry, WorkspaceHint } from "@arrab/shared";
-import { ACCOUNT_EVENT, readAccountSessionToken } from "../account/account-session";
+import { ACCOUNT_EVENT, readAccountSessionToken } from "../../core/session/account-session";
 import { FAMILY_EVENT, readActiveFamilyMemberId } from "../family/family-session";
 import { isTauriRuntime } from "../../core/platform/terminal";
 

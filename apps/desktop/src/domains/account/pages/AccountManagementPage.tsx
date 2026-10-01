@@ -16,7 +16,7 @@ import {
 import type { AccountStatusResponse, SubscriptionPlanId } from "@arrab/shared";
 import { SUBSCRIPTION_PLANS } from "@arrab/shared";
 import { FamilyHouseholdPanel } from "@/domains/family/ui/FamilyHouseholdPanel";
-import { Surface } from "@/app/shell/StudioFrame";
+import { Surface } from "@/shared/ui/Surface";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
 import {
@@ -25,15 +25,15 @@ import {
   initialsFromName,
   readAccountSessionToken,
   subscribeAccountSession,
-} from "@/domains/account/account-session";
+} from "@/core/session/account-session";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
 import { liveCompanions, useCompanionState } from "@/domains/companions/companions";
 import { openPlansPage } from "@/core/platform/desktop";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { useOrgSeatCapabilities } from "@/domains/organization/org-seat";
-import { clearGuestLocalMode, isGuestLocalMode, subscribeGuestMode } from "@/domains/account/guest-mode";
-import { audienceFromPlanId } from "@/app/roles/catalog";
-import { useRole } from "@/app/roles/RoleProvider";
+import { clearGuestLocalMode, isGuestLocalMode, subscribeGuestMode } from "@/core/session/guest-mode";
+import { audienceFromPlanId } from "@/domains/account/roles/catalog";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { cn } from "@/shared/lib/utils";
 
 type AccountSection = "overview" | "profile" | "plan" | "usage" | "family" | "security";

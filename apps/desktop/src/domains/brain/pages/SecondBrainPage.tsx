@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { SpaceSwitch, useCompanionSpace } from "@/domains/companions/ui/CompanionUI";
 import { getCompanionState, useCompanionState } from "@/domains/companions/companions";
 import { arrabApi } from "@/core/api/api";

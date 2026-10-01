@@ -13,9 +13,9 @@ import type { PlanAudience } from "@arrab/shared";
 import {
   audienceFromAccountSignals,
   ROLE_PATH,
-} from "@/app/roles/catalog";
-import { readAccountSessionToken } from "@/domains/account/account-session";
-import { isGuestLocalMode, subscribeGuestMode } from "@/domains/account/guest-mode";
+} from "@/domains/account/roles/catalog";
+import { readAccountSessionToken } from "@/core/session/account-session";
+import { isGuestLocalMode, subscribeGuestMode } from "@/core/session/guest-mode";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
 
 const STORAGE_KEY = "arrab.studioRole";

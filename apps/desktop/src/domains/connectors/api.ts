@@ -1,5 +1,5 @@
 import type { BindProjectRepoRequest, CollectionResponse, ConnectConnectorRequest, ConnectorPublic, ConnectorResource, EmailMessageDetail, ControlConnector, GithubCommitRequest, GithubCommitResponse, GithubCreatePullRequest, GithubPullRequestResponse, GithubRepoMetaResponse, GithubTreeResponse, ListEmailMessagesResponse, ProjectRepoBinding, SendEmailRequest, SendEmailResponse, OpenWaLinkStartRequest, OpenWaLinkStartResponse, OpenWaLinkStatusResponse, SendWhatsAppRequest, SendWhatsAppResponse, ListWhatsAppMessagesResponse, ArrangeEmailRequest, ArrangeEmailResponse, StartGmailOAuthResponse } from "@arrab/shared";
-import { readAccountSessionToken } from "@/domains/account/account-session";
+import { readAccountSessionToken } from "@/core/session/account-session";
 import { ApiRequestError, request } from "@/core/api/http";
 
 

@@ -8,8 +8,8 @@ import {
   getLastAgentPresence,
   subscribeAgentPresence,
   type AgentPresencePayload,
-} from "@/domains/companions/agent-presence";
-import { presenceDisplayCopy } from "@/domains/chat/approval-copy";
+} from "@/domains/notifications/agent-presence";
+import { presenceDisplayCopy } from "@/domains/notifications/approval-copy";
 import { companionPortraitUrl } from "@/domains/companions/companion-portrait";
 import { isTauriRuntime } from "@/core/platform/terminal";
 import { cn } from "@/shared/lib/utils";

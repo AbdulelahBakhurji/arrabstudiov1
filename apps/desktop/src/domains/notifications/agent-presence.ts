@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "../../core/platform/terminal";
-import { presenceDisplayCopy, sanitizePresenceText } from "../chat/approval-copy";
+import { presenceDisplayCopy, sanitizePresenceText } from "./approval-copy";
 
 export type AgentPresenceState = "working" | "thinking" | "needs_you" | "done" | "error";
 

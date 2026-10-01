@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import type { Conversation, Message } from "@arrab/shared";
-import { accountPartitionAliases, accountPartitionId, subscribeAccountPartition } from "../account/account-partition";
+import { accountPartitionAliases, accountPartitionId, subscribeAccountPartition } from "../../core/session/account-partition";
 import {
   deviceStoreClear,
   deviceStoreGetJson,

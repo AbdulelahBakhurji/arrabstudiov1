@@ -6,7 +6,7 @@
  */
 import { useSyncExternalStore } from "react";
 import type { Message } from "@arrab/shared";
-import { readAccountSessionToken, ACCOUNT_EVENT } from "../account/account-session";
+import { readAccountSessionToken, ACCOUNT_EVENT } from "../../core/session/account-session";
 import {
   FAMILY_EVENT,
   isFamilyChild,

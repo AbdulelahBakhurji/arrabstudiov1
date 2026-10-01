@@ -12,8 +12,8 @@
  */
 import { useSyncExternalStore } from "react";
 import { arrabApi } from "@/core/api/api";
-import { ACCOUNT_EVENT, readAccountId, readAccountSessionToken } from "../account/account-session";
-import { GUEST_COMPANION_LIMIT, isGuestLocalMode } from "../account/guest-mode";
+import { ACCOUNT_EVENT, readAccountId, readAccountSessionToken } from "../../core/session/account-session";
+import { GUEST_COMPANION_LIMIT, isGuestLocalMode } from "../../core/session/guest-mode";
 import { looksEncryptedLocal, openLocalJson, sealLocalJson } from "../../core/storage/local-secure";
 import {
   playbookText,

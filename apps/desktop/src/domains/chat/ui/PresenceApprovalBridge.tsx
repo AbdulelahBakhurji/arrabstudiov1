@@ -10,8 +10,8 @@ import {
   hideAgentPresence,
   PRESENCE_RESOLVE_EVENT,
   type PresenceResolveRequest,
-} from "@/domains/companions/agent-presence";
-import { pushToast } from "@/shared/lib/notify";
+} from "@/domains/notifications/agent-presence";
+import { pushToast } from "@/domains/notifications/notify";
 import { isApprovalId } from "@/domains/chat/ask-guard";
 import { isTauriRuntime } from "@/core/platform/terminal";
 

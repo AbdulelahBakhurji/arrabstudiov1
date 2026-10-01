@@ -1,10 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { clearAccountSession, subscribeAccountSession, readAccountSessionToken } from "@/domains/account/account-session";
+import { clearAccountSession, subscribeAccountSession, readAccountSessionToken } from "@/core/session/account-session";
 import { clientRequest, getApiRoot, isSecureApiRoot, sessionHeaders } from "@/core/api/api";
 import { markManagedUpdateNotice } from "@/domains/managed/app-updates";
 import { openExternalUrl } from "@/core/platform/desktop";
-import { ensureNotificationPermission, postNativeNotification } from "@/shared/lib/notify";
+import { ensureNotificationPermission, postNativeNotification } from "@/domains/notifications/notify";
 import { isTauriRuntime } from "@/core/platform/terminal";
 import { parseDeepLink, type DeepLinkRoute } from "./allowlist";
 import { createCommandRouter, createHandledIds, type CommandEffects } from "./commands";

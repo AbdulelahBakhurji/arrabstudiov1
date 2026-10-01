@@ -6,7 +6,7 @@ import {
   readPendingWebAuth,
   writeAccountSession,
   writePendingWebAuth,
-} from "@/domains/account/account-session";
+} from "@/core/session/account-session";
 import { focusMainWindow } from "@/core/platform/desktop";
 import { markPostAuthPlanSetup } from "@/domains/account/post-auth-setup";
 

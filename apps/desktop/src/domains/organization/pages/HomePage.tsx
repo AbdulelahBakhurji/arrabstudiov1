@@ -18,7 +18,7 @@ import {
   Zap,
 } from "lucide-react";
 import type { Agent, Task, TaskPriority, TaskStatus } from "@arrab/shared";
-import { Surface } from "@/app/shell/StudioFrame";
+import { Surface } from "@/shared/ui/Surface";
 import {
   Avatar,
   Card,
@@ -39,11 +39,11 @@ import {
   useWorkforceData,
 } from "@/domains/organization/ui/workforce/use-workforce-data";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { notifyStudio, pushToast } from "@/shared/lib/notify";
+import { notifyStudio, pushToast } from "@/domains/notifications/notify";
 import { useOrgSeatCapabilities } from "@/domains/organization/org-seat";
 import { parseStudioAssign } from "@/domains/studio/studio-assign";
 import { cn } from "@/shared/lib/utils";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 
 export { parseStudioAssign } from "@/domains/studio/studio-assign";
 

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { syncEncryptedChats } from "@/domains/chat/chat-history";
 import { unlockE2ee } from "@/domains/encryption/e2ee";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { useE2eeState } from "@/domains/encryption/ui/EncryptionPanel";
 
 const SYNC_MS = 45_000;

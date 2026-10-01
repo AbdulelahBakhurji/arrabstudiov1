@@ -24,7 +24,7 @@ import { useNavigate } from "react-router-dom";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import {
   countDeptEmployees,
   DEPT_SEAT_CAPACITY,

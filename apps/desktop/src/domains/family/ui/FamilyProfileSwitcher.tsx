@@ -3,7 +3,7 @@ import { ChevronDown } from "lucide-react";
 import type { FamilyAgeTier, FamilyMemberPublic, FamilyMemberRole } from "@arrab/shared";
 import { useFamilyProfile } from "@/domains/family/use-family-profile";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
-import { audienceFromPlanId } from "@/app/roles/catalog";
+import { audienceFromPlanId } from "@/domains/account/roles/catalog";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { cn } from "@/shared/lib/utils";
 import { resolveMemberFaceUrl } from "@/domains/family/family-portraits";

@@ -1,6 +1,6 @@
 import { ShieldAlert } from "lucide-react";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { clearAccountSession } from "@/domains/account/account-session";
+import { clearAccountSession } from "@/core/session/account-session";
 import { arrabApi } from "@/core/api/api";
 import { localized } from "@/domains/managed/client/types";
 import { setBlockingCollapsed, useManagedState } from "@/domains/managed/client/store";

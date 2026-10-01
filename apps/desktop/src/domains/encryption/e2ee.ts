@@ -10,8 +10,8 @@
  * see `ephemeral` in SendMessageRequest).
  */
 import type { Conversation, Message, WrappedChatKey } from "@arrab/shared";
-import { accountPartitionId, subscribeAccountPartition } from "../account/account-partition";
-import { onAccountSignOut } from "../account/account-session";
+import { accountPartitionId, subscribeAccountPartition } from "../../core/session/account-partition";
+import { onAccountSignOut } from "../../core/session/account-session";
 import { readOrgEmployeeSession } from "../organization/org-employee-session";
 import { deviceStoreGet, deviceStoreRemove, deviceStoreSet } from "../../core/storage/device-store";
 

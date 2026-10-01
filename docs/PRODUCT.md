@@ -1151,9 +1151,9 @@ Effective seat capacity = plan `seatLimit` + purchased `extraSeats`.
 | --- | --- |
 | Owner | Arrab Studio product |
 | Canonical plans | `packages/shared/src/account.ts` |
-| Canonical nav | `apps/desktop/src/roles/catalog.ts` |
+| Canonical nav | `apps/desktop/src/domains/account/roles/catalog.ts` |
 | Canonical family model | `packages/shared/src/family.ts` |
-| Canonical Guardian | `apps/desktop/src/lib/guardian.ts` |
+| Canonical Guardian | `apps/desktop/src/domains/family/guardian.ts` |
 | Status | Living document — update when plans or major surfaces change |
 
 ---

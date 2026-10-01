@@ -14,7 +14,7 @@ vi.mock("@/core/storage/local-secure", () => ({
   sealLocalJson: async (value: unknown) => value,
 }));
 
-vi.mock("@/domains/account/guest-mode", () => ({
+vi.mock("@/core/session/guest-mode", () => ({
   clearGuestLocalMode: () => undefined,
   enableGuestLocalMode: () => undefined,
 }));
@@ -23,7 +23,7 @@ import { arrabApi } from "@/core/api/api";
 import {
   clearAccountSession,
   writeAccountSession,
-} from "@/domains/account/account-session";
+} from "@/core/session/account-session";
 import { resolveAssistantChatTabs } from "@/domains/chat/assistant-chat-tabs";
 import {
   addCompanion,

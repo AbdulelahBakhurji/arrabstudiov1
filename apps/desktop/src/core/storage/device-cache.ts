@@ -5,8 +5,8 @@ import {
   deviceStoreRemove,
   deviceStoreSet,
 } from "./device-store";
-import { ACCOUNT_EVENT } from "../../domains/account/account-session";
-import { GUEST_LOCAL_KEY, isGuestLocalMode } from "../../domains/account/guest-mode";
+import { ACCOUNT_EVENT } from "../session/account-session";
+import { GUEST_LOCAL_KEY, isGuestLocalMode } from "../session/guest-mode";
 
 const ARRAB_PREFIX = "arrab.";
 const ACCOUNT_CACHE_KEY = "arrab.account.status.cache";

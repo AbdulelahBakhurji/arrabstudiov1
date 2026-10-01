@@ -7,7 +7,7 @@ alwaysApply: false
 # Desktop UI
 
 - Keep the existing visual language (`cp-`, `sf-`, `gh-`, `studio-claude`). Polish; do not redesign.
-- Routes: `apps/desktop/src/App.tsx`. Nav: `src/roles/catalog.ts`.
-- Family surfaces belong in `src/components/family/`. Organization in `src/components/organization/`. Shared chrome in `src/components/shared/`.
+- Routes: `apps/desktop/src/app/App.tsx`. Nav: `src/domains/account/roles/catalog.ts`.
+- Code lives in `src/domains/<name>/{api.ts,pages,ui}`. Family → `domains/family`, organization → `domains/organization`, cross-domain primitives → `src/shared/ui`. Imports point down: shared → core → domains → app.
 - Settings tabs are registered in `src/features/settings-tabs.ts`.
 - Feature flags: `src/features/flags.ts` until the slice is stable.

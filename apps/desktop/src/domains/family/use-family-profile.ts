@@ -8,7 +8,7 @@ import {
   writeActiveFamilyMemberId,
 } from "@/domains/family/family-session";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { COMPANION_FOCUS_KEY } from "@/domains/companions/companions";
 import { LAST_CHAT_AGENT_KEY, LAST_COWORK_AGENT_KEY } from "@/shared/lib/prefs";

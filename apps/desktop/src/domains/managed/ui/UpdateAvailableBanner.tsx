@@ -8,7 +8,7 @@ import {
 } from "@/domains/managed/app-updates";
 import { requestInAppUpdate } from "@/domains/managed/ui/UpdatePanel";
 import { readPrefs, subscribePrefs } from "@/shared/lib/prefs";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { cn } from "@/shared/lib/utils";
 
 const DISMISS_KEY = "arrab.updates.bannerDismissed";

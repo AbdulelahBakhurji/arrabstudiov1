@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import {
   acceptedWork,
   addWorkTask,
@@ -41,7 +41,7 @@ import {
 } from "@/domains/companions/ui/CompanionUI";
 import { useFamilyProfile } from "@/domains/family/use-family-profile";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
-import { audienceFromPlanId } from "@/app/roles/catalog";
+import { audienceFromPlanId } from "@/domains/account/roles/catalog";
 import { cn } from "@/shared/lib/utils";
 
 export function CompanionWorkPage() {

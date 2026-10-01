@@ -40,8 +40,8 @@ import {
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { userAskedForComputer } from "@/domains/companions/professional-companions";
 import { companionDisplayName } from "@/domains/companions/companion-catalog";
-import { useRole } from "@/app/roles/RoleProvider";
-import { audienceFromPlanId } from "@/app/roles/catalog";
+import { useRole } from "@/domains/account/roles/RoleProvider";
+import { audienceFromPlanId } from "@/domains/account/roles/catalog";
 import { useFamilyProfile } from "@/domains/family/use-family-profile";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
@@ -139,7 +139,7 @@ import {
   studioKindForCompanion,
   writeStudioActive,
 } from "@/domains/studio/studio-catalog";
-import { notifyStudio, pushToast } from "@/shared/lib/notify";
+import { notifyStudio, pushToast } from "@/domains/notifications/notify";
 import { cn } from "@/shared/lib/utils";
 import { useEnsureRealisticPortraits } from "@/domains/companions/ensure-companion-portraits";
 import { useCompanionPolicies, useManagedCompanions, useSendGate } from "@/domains/managed/client/hooks";

@@ -8,8 +8,8 @@ import {
   type CompanionSpace,
   type CompanionToneName,
 } from "@/domains/companions/companions";
-import { GUEST_COMPANION_LIMIT } from "@/domains/account/guest-mode";
-import { pushToast } from "@/shared/lib/notify";
+import { GUEST_COMPANION_LIMIT } from "@/core/session/guest-mode";
+import { pushToast } from "@/domains/notifications/notify";
 import { CompanionModal } from "./CompanionUI";
 
 export function AddCompanionDialog({

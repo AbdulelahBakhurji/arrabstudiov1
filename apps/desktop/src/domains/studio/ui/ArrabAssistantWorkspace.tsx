@@ -19,7 +19,7 @@ import {
 } from "lucide-react";
 import type { ConnectorPublic } from "@arrab/shared";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { useCompanionRoom } from "@/domains/companions/ui/useCompanionRoom";
 import { PhotoAvatar } from "@/domains/companions/ui/CompanionFace";
 import { ComposerPlusMenu } from "@/domains/chat/ui/ComposerPlusMenu";

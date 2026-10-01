@@ -4,7 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { isTauriRuntime } from "@/core/platform/terminal";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { cn } from "@/shared/lib/utils";
 import { arrabApi } from "@/core/api/api";
 import { connectorLabel } from "@/domains/connectors/connector-catalog";

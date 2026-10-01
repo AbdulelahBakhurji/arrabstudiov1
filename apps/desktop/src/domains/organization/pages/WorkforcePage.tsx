@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ClipboardPlus, Loader2, Sparkles, UserPlus, UsersRound } from "lucide-react";
 import type { Agent, Team } from "@arrab/shared";
-import { Surface } from "@/app/shell/StudioFrame";
+import { Surface } from "@/shared/ui/Surface";
 import { AgentsOfficeHost } from "@/domains/organization/ui/AgentsOfficeHost";
 import { OrgAdministrationPanel } from "@/domains/organization/ui/OrgAdministrationPanel";
 import {
@@ -37,8 +37,8 @@ import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import type { MessageKey } from "@/shared/i18n/messages";
 import { useOrgSeatCapabilities } from "@/domains/organization/org-seat";
 import { cn } from "@/shared/lib/utils";
-import { ROLE_PATH } from "@/app/roles/catalog";
-import { useRole } from "@/app/roles/RoleProvider";
+import { ROLE_PATH } from "@/domains/account/roles/catalog";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 
 type Tab = "overview" | "departments" | "tasks" | "knowledge" | "map" | "reports" | "seats";
 

@@ -26,8 +26,8 @@ import { ConnectorMark } from "@/domains/connectors/ui/ConnectorMark";
 import { applyControlCatalog, useControlConnectors } from "@/domains/connectors/control-connectors";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import type { MessageKey } from "@/shared/i18n/messages";
-import { useTheme } from "@/app/theme/ThemeProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useTheme } from "@/shared/theme/ThemeProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { arrabApi } from "@/core/api/api";
 import { PhotoAvatar } from "@/domains/companions/ui/CompanionFace";
 import { COMPANION_PRESETS, PRESET_HUES, type CompanionPreset } from "@/domains/companions/companion-catalog";
@@ -50,7 +50,7 @@ import {
   type FirstLaunchStep,
 } from "@/domains/account/first-launch-setup";
 import { markGettingStartedStep } from "@/domains/account/getting-started";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { cn } from "@/shared/lib/utils";
 
 const OAUTH_PROVIDERS = new Set<ConnectorProvider>([

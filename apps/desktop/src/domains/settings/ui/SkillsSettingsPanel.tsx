@@ -32,8 +32,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
-import { pushToast } from "@/shared/lib/notify";
+import { useRole } from "@/domains/account/roles/RoleProvider";
+import { pushToast } from "@/domains/notifications/notify";
 import { downloadBlob } from "@/domains/studio/studio-catalog";
 import { cn } from "@/shared/lib/utils";
 import {

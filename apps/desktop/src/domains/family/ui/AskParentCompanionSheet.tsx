@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { ShieldPlus } from "lucide-react";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { requestCompanionApproval } from "@/domains/family/guardian-store";
 import type { CompanionSpace } from "@/domains/companions/companions";
 

@@ -1,7 +1,7 @@
 import { hasLocalModelSelected } from "../chat/ai-prefs";
 import { readPrefs, updatePrefs, subscribePrefs } from "../../shared/lib/prefs";
 import { getCompanionState, liveCompanions } from "../companions/companions";
-import { ensureNotificationPermission } from "../../shared/lib/notify";
+import { ensureNotificationPermission } from "../notifications/notify";
 
 export const GETTING_STARTED_KEY = "arrab.gettingStarted";
 export const GETTING_STARTED_EVENT = "arrab:getting-started";

@@ -1,6 +1,6 @@
 import pkg from "../../../package.json";
 import { openExternalUrl } from "@/core/platform/desktop";
-import { postNativeNotification, pushToast } from "@/shared/lib/notify";
+import { postNativeNotification, pushToast } from "@/domains/notifications/notify";
 import { readPrefs } from "@/shared/lib/prefs";
 import { isTauriRuntime } from "@/core/platform/terminal";
 

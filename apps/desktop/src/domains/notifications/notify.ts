@@ -1,6 +1,6 @@
-import { readPrefs } from "./prefs";
-import { showAgentPresence, updateAgentPresence, hideAgentPresence } from "../../domains/companions/agent-presence";
-import { humanizeApprovalCopy, sanitizePresenceText } from "../../domains/chat/approval-copy";
+import { readPrefs } from "../../shared/lib/prefs";
+import { showAgentPresence, updateAgentPresence, hideAgentPresence } from "./agent-presence";
+import { humanizeApprovalCopy, sanitizePresenceText } from "./approval-copy";
 import { isTauriRuntime } from "../../core/platform/terminal";
 
 export type StudioToastTone = "info" | "success" | "warn" | "approval";

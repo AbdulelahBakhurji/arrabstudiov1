@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import type { FamilyAgeTier, FamilyMemberPublic } from "@arrab/shared";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import {
   addCompanion,
   liveCompanions,

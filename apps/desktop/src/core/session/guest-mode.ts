@@ -1,4 +1,4 @@
-import { clearAccountSession, readAccountSessionToken } from "@/domains/account/account-session";
+import { clearAccountSession, readAccountSessionToken } from "@/core/session/account-session";
 import { deviceStoreRemove } from "@/core/storage/device-store";
 import { readPrefs, updatePrefs } from "@/shared/lib/prefs";
 

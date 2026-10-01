@@ -32,7 +32,7 @@ import { useCompanionRoom } from "@/domains/companions/ui/useCompanionRoom";
 import { companionPortraitUrl } from "@/domains/companions/companion-portrait";
 import { fileToAvatarDataUrl } from "@/domains/companions/avatar-image";
 import { arrabApi } from "@/core/api/api";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import {
   addCompanion,
   getCompanionState,
@@ -90,7 +90,7 @@ import { MarketsTerminalWorkspace } from "@/domains/studio/ui/MarketsTerminalWor
 import { ComposerPlusMenu } from "@/domains/chat/ui/ComposerPlusMenu";
 import { ThinkingBlock } from "@/domains/chat/ui/ThinkingBlock";
 import { cn } from "@/shared/lib/utils";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { copyChatText } from "@/domains/chat/ui/ChatMarkdown";
 import {
   buildGamePreviewHtml,

@@ -20,17 +20,18 @@ import {
 } from "lucide-react";
 import appSymbol from "@/shared/assets/symbol.png";
 import "@/shared/styles/settings.css";
-import { Surface } from "@/app/shell/StudioFrame";
+import { Surface } from "@/shared/ui/Surface";
 import { FamilyHouseholdPanel } from "@/domains/family/ui/FamilyHouseholdPanel";
 import { UsagePacksPanel } from "@/domains/account/ui/UsagePacksPanel";
+import { clearLocalStudioData } from "@/domains/settings/clear-local-data";
 import { EncryptionPanel } from "@/domains/encryption/ui/EncryptionPanel";
 import { useFamilyProfile } from "@/domains/family/use-family-profile";
 import pkg from "../../../../package.json";
-import { useRole } from "@/app/roles/RoleProvider";
-import { audienceFromAccountSignals } from "@/app/roles/catalog";
+import { useRole } from "@/domains/account/roles/RoleProvider";
+import { audienceFromAccountSignals } from "@/domains/account/roles/catalog";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import type { MessageKey } from "@/shared/i18n/messages";
-import { useTheme } from "@/app/theme/ThemeProvider";
+import { useTheme } from "@/shared/theme/ThemeProvider";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
 import {
   clearAccountSession,
@@ -38,20 +39,19 @@ import {
   ACCOUNT_EVENT,
   readAccountSessionToken,
   subscribeAccountSession,
-} from "@/domains/account/account-session";
+} from "@/core/session/account-session";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
-import { isGuestLocalMode, subscribeGuestMode } from "@/domains/account/guest-mode";
+import { isGuestLocalMode, subscribeGuestMode } from "@/core/session/guest-mode";
 import { openExternalUrl, openPlansPage, setAlwaysOnTop } from "@/core/platform/desktop";
 import { pollWebAuthUntilDone, cancelAllWebAuthPolls } from "@/domains/account/web-auth";
 import {
   ensureNotificationPermission,
   notifyStudio,
   pushToast,
-} from "@/shared/lib/notify";
-import { demoAgentPresence } from "@/domains/companions/agent-presence";
+} from "@/domains/notifications/notify";
+import { demoAgentPresence } from "@/domains/notifications/agent-presence";
 import {
   clearCrashLog,
-  clearLocalStudioData,
   defaultPrefs,
   readCrashLog,
   readPrefs,

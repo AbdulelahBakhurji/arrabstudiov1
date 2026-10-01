@@ -12,7 +12,7 @@ import {
 } from "@/domains/managed/client/store";
 import { localized, type ActiveScreen } from "@/domains/managed/client/types";
 import { maintenanceView } from "@/domains/managed/client/updates";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { cn } from "@/shared/lib/utils";
 import { BlockingUpdateOverlay } from "./BlockingUpdateOverlay";
 import { openUpdatePanel, UpdatePanel } from "./UpdatePanel";

@@ -58,7 +58,7 @@ import type {
   WorkspaceHint,
 } from "@arrab/shared";
 import { ChatMarkdown, copyChatText } from "@/domains/chat/ui/ChatMarkdown";
-import { Surface } from "@/app/shell/StudioFrame";
+import { Surface } from "@/shared/ui/Surface";
 import { CompanionCatalog } from "@/domains/companions/ui/CompanionCatalog";
 import { IncognitoRoom } from "@/domains/encryption/ui/IncognitoRoom";
 import {
@@ -101,7 +101,7 @@ import { streamOllamaChat } from "@/domains/chat/local-models";
 
 import { AgentSteps, friendlyToolTitle, type AgentStep } from "@/domains/chat/ui/AgentSteps";
 import { ThinkingBlock, useThoughtTraces, type ThoughtTrace } from "@/domains/chat/ui/ThinkingBlock";
-import { humanizeApprovalCopy } from "@/domains/chat/approval-copy";
+import { humanizeApprovalCopy } from "@/domains/notifications/approval-copy";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { useStudioPrefs } from "@/shared/hooks/useStudioPrefs";
 import { arrabApi, ApiRequestError, isTransientApiError } from "@/core/api/api";
@@ -164,7 +164,7 @@ import {
   showAgentPresence,
   subscribePresenceResolve,
   updateAgentPresence,
-} from "@/domains/companions/agent-presence";
+} from "@/domains/notifications/agent-presence";
 
 type FocusMode = "chat" | "split" | "terminal";
 type WorkspaceKind = "none" | "folder" | "github";

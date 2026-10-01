@@ -6,9 +6,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen, emit } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { PhotoAvatar } from "@/domains/companions/ui/CompanionFace";
-import type { AgentPresencePayload } from "@/domains/companions/agent-presence";
-import { PRESENCE_RESOLVE_EVENT } from "@/domains/companions/agent-presence";
-import { presenceDisplayCopy } from "@/domains/chat/approval-copy";
+import type { AgentPresencePayload } from "@/domains/notifications/agent-presence";
+import { PRESENCE_RESOLVE_EVENT } from "@/domains/notifications/agent-presence";
+import { presenceDisplayCopy } from "@/domains/notifications/approval-copy";
 import { companionPortraitUrl } from "@/domains/companions/companion-portrait";
 
 function clampProgress(value: number | null | undefined): number {

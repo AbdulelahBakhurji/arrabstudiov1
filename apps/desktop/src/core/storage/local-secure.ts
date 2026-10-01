@@ -3,7 +3,7 @@
  * Key material is partitioned by signed-in account so switching accounts
  * never opens another account's sealed chats.
  */
-import { accountPartitionAliases, accountPartitionId, subscribeAccountPartition } from "../../domains/account/account-partition";
+import { accountPartitionAliases, accountPartitionId, subscribeAccountPartition } from "../session/account-partition";
 import {
   decryptJson,
   encryptJson,

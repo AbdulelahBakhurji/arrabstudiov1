@@ -11,11 +11,11 @@ import {
   clearGuestLocalMode,
   isGuestLocalMode,
   subscribeGuestMode,
-} from "@/domains/account/guest-mode";
+} from "@/core/session/guest-mode";
 import { consumePostAuthPlanSetup, peekPostAuthPlanSetup } from "@/domains/account/post-auth-setup";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 
 export function AuthGate() {
   const { signedIn, refresh } = useSignedInAccount();

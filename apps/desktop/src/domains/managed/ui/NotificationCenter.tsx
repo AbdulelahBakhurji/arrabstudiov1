@@ -28,7 +28,7 @@ import {
   removeNotification,
   subscribeNotificationInbox,
   type NotificationInboxItem,
-} from "@/shared/lib/notify";
+} from "@/domains/notifications/notify";
 import { cn } from "@/shared/lib/utils";
 
 type BellItem = {

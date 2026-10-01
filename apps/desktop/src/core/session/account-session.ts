@@ -83,7 +83,6 @@ export function clearAccountSession(): void {
     // ignore
   }
   clearPendingWebAuth();
-  void import("../family/family-session").then(({ clearFamilySession }) => clearFamilySession());
   window.dispatchEvent(new CustomEvent(ACCOUNT_EVENT));
 }
 

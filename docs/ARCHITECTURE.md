@@ -16,6 +16,47 @@ Desktop (Tauri / React)
         └── GatewayChatRuntime (conversation replies + usage)
 ```
 
+## Code layout
+
+Imports only point **down** each stack. `tests/architecture.test.ts` enforces this on every run.
+
+### Desktop — `apps/desktop/src`
+
+```text
+shared/      Pure building blocks. Imports nothing above it.
+  ui/ (primitives, Surface, EmptyState) · lib/ (utils, prefs) · hooks/ · i18n/ · theme/ · styles/ · assets/
+core/        Platform plumbing. May not import app/, entries/ or domains/ (except the api facade).
+  api/       http.ts (transport, auth headers, streaming) + api.ts (composed `arrabApi`)
+  session/   account session, account partition, guest mode
+  storage/   device store, device cache, local crypto envelopes
+  platform/  Tauri bridges: terminal, fs, desktop, web search
+domains/     One folder per product area. May not import app/ or entries/.
+  account · chat · companions · connectors · encryption · family · organization
+  managed · notifications · settings · studio · brain
+    <domain>/api.ts     endpoints this domain owns (composed into `arrabApi`)
+    <domain>/pages/     routed screens        <domain>/ui/   components
+    <domain>/*.ts       domain logic and state
+features/    Plug-in page registry (`pnpm new:feature`) — mounted by the app shell.
+app/         Composition root: main.tsx, App.tsx (routes), shell/ (StudioFrame, AuthGate, TitleBar).
+entries/     Separate Tauri window entry points: agent-presence, companion-panel, updater.
+legacy/      Retired screens kept for reference. Not imported by new code.
+```
+
+Copy lives with its domain: `shared/i18n/locales/{en,ar}/<domain>.ts`, keys shared across domains in `common.ts`.
+
+### API — `apps/api/src`
+
+```text
+platform/    config/ (env) · http/ (security, error handler) · crypto/ (field encryption) · context/ (per-request actor)
+modules/     One folder per domain: service, repository helpers, <domain>.routes.ts, tests next to the code.
+  accounts · billing · connectors · conversations · desk · encryption · erp · family · organization · workspace · control
+http/        v1.ts (global hooks + registers each module's routes) and deps.ts (the shared dependency contract)
+app.ts       Composition root: builds services and wires them into the Fastify app.
+index.ts     Process entry.
+```
+
+A feature adds `modules/<name>/{<name>-service.ts,<name>.routes.ts}` and registers it in `http/v1.ts`.
+
 ## Packages
 
 - **shared** — serializable domain types and the public HTTP contract

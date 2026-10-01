@@ -1,12 +1,12 @@
 import { HashRouter, Navigate, Outlet, Route, Routes } from "react-router-dom";
 import type { ReactNode } from "react";
 import { useOrgSeatCapabilities } from "@/domains/organization/org-seat";
-import { orgSeatCanOpen } from "@/app/roles/catalog";
+import { orgSeatCanOpen } from "@/domains/account/roles/catalog";
 import { TooltipProvider } from "@/shared/ui/primitives/tooltip";
 import { AuthGate } from "@/app/shell/AuthGate";
 import { StudioFrame } from "@/app/shell/StudioFrame";
 import { LanguageProvider } from "@/shared/i18n/LanguageProvider";
-import { ThemeProvider } from "@/app/theme/ThemeProvider";
+import { ThemeProvider } from "@/shared/theme/ThemeProvider";
 import { AccountManagementPage } from "@/domains/account/pages/AccountManagementPage";
 import { ActivityPage } from "@/domains/organization/pages/ActivityPage";
 import { ChatPage } from "@/domains/chat/pages/ChatPage";
@@ -23,10 +23,10 @@ import { SettingsPage } from "@/domains/settings/pages/SettingsPage";
 import { WorkforcePage } from "@/domains/organization/pages/WorkforcePage";
 import { WorkplacePage } from "@/domains/organization/pages/WorkplacePage";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
-import { isGuestLocalMode } from "@/domains/account/guest-mode";
-import { RoleFromPath } from "@/app/roles/RoleProvider";
-import { homePathForAudience, ROLE_PATH, studioModeFromAudience } from "@/app/roles/catalog";
-import { audienceFromAccountSignals } from "@/app/roles/catalog";
+import { isGuestLocalMode } from "@/core/session/guest-mode";
+import { RoleFromPath } from "@/domains/account/roles/RoleProvider";
+import { homePathForAudience, ROLE_PATH, studioModeFromAudience } from "@/domains/account/roles/catalog";
+import { audienceFromAccountSignals } from "@/domains/account/roles/catalog";
 import { pageFeaturesFor } from "@/features/registry";
 
 /**

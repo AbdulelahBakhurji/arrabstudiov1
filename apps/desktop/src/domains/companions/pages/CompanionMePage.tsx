@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { Cable, ImageUp, Settings2, UserRound, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
 import { forgetEverything, updateCompanion, useCompanionState } from "@/domains/companions/companions";
 import { AvatarImageError, fileToAvatarDataUrl } from "@/domains/companions/avatar-image";

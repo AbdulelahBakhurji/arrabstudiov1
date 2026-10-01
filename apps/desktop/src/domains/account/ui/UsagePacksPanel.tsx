@@ -3,7 +3,7 @@ import { Loader2, Plus, Zap } from "lucide-react";
 import type { AccountEntitlements, TokenTopUpPackId } from "@arrab/shared";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { TOP_UP_PACKS, formatPackPrice, formatTokens, openUsagePack, watchForPayment } from "@/domains/account/billing-actions";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 
 /** "Add usage" before anyone is paused — Settings → Account. */
 export function UsagePacksPanel({ entitlements }: { entitlements: AccountEntitlements }) {

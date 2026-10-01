@@ -46,14 +46,14 @@ import { PersonAvatar } from "@/domains/companions/ui/CompanionUI";
 import { ArtifactsPanel, extractArtifacts } from "@/domains/chat/ui/ArtifactsPanel";
 import { AgentSteps, friendlyToolTitle, type AgentStep } from "@/domains/chat/ui/AgentSteps";
 import { ThinkingBlock, useThoughtTraces } from "@/domains/chat/ui/ThinkingBlock";
-import { humanizeApprovalCopy } from "@/domains/chat/approval-copy";
+import { humanizeApprovalCopy } from "@/domains/notifications/approval-copy";
 import { MentionComposer } from "@/domains/chat/ui/MentionComposer";
-import { Surface } from "@/app/shell/StudioFrame";
+import { Surface } from "@/shared/ui/Surface";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { useStudioPrefs } from "@/shared/hooks/useStudioPrefs";
 import { LAST_COWORK_AGENT_KEY } from "@/shared/lib/prefs";
-import { notifyStudio } from "@/shared/lib/notify";
-import { showAgentPresence, subscribePresenceResolve } from "@/domains/companions/agent-presence";
+import { notifyStudio } from "@/domains/notifications/notify";
+import { showAgentPresence, subscribePresenceResolve } from "@/domains/notifications/agent-presence";
 import { arrabApi, ApiRequestError, isTransientApiError } from "@/core/api/api";
 import { buildResolveApprovalBody } from "@/domains/chat/resolve-approval";
 import {
@@ -99,7 +99,7 @@ import { syncWorkProfilesFromAgents } from "@/domains/organization/org-chat";
 import { prepareWorkplaceDesk, WORKPLACE_TASK_KEY } from "@/domains/organization/workplace-handoff";
 import { useOrgSeatCapabilities } from "@/domains/organization/org-seat";
 import { cn } from "@/shared/lib/utils";
-import { ROLE_PATH } from "@/app/roles/catalog";
+import { ROLE_PATH } from "@/domains/account/roles/catalog";
 
 type FocusMode = "chat" | "split";
 type DeskTab = "run" | "notes" | "restore";

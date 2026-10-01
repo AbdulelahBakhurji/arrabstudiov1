@@ -3,7 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LanguageProvider } from "@/shared/i18n/LanguageProvider";
-import { RoleProvider } from "@/app/roles/RoleProvider";
+import { RoleProvider } from "@/domains/account/roles/RoleProvider";
 import { CompanionsPage } from "@/domains/companions/pages/CompanionsPage";
 import {
   COMPANION_DRAFT_KEY,

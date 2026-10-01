@@ -29,9 +29,9 @@ pnpm monorepo. Desktop never holds provider keys or connector secrets. The API o
 
 Gate by plan audience (`audienceFromPlanId` / `navForRole`), not ad-hoc storage.
 
-- **Solo / individual** — `apps/desktop/src/pages/CompanionsPage.tsx`, `IndividualHomePage.tsx`
-- **Family** — `apps/desktop/src/components/family/`, `src/lib/guardian.ts`, `src/lib/family-*.ts`
-- **Organization** — `apps/desktop/src/components/organization/`, `src/pages/HomePage.tsx`, `WorkforcePage.tsx`, `ChatPage.tsx`
+- **Solo / individual** — `apps/desktop/src/domains/companions/pages/` (`CompanionsPage`, `IndividualHomePage`)
+- **Family** — `apps/desktop/src/domains/family/` (`ui/`, `guardian.ts`, `family-session.ts`)
+- **Organization** — `apps/desktop/src/domains/organization/` (`ui/`, `pages/HomePage`, `WorkforcePage`) and `domains/chat/pages/ChatPage.tsx`
 
 ## How to add a feature
 
@@ -47,18 +47,19 @@ API/data slice: `packages/shared` → `packages/database` → `apps/api` service
 
 ```text
 apps/desktop/src/
-  App.tsx                 Routes (individuals / organizations)
-  components/
-    family/               Household, Guardian, parental chat
-    organization/         HQ admin, org chat, live map
-    companions/           Companion rooms and catalog
-    managed/              Control-plane client (sync, updates, notices)
-    shared/               Cross-audience chrome
-  pages/                  Route screens
-  lib/                    Client logic (api, prefs, billing, guardian)
-  roles/catalog.ts        Rail destinations per audience
-  i18n/messages.ts        All user-visible copy
+  app/        main.tsx, App.tsx (routes), shell/ (StudioFrame, AuthGate, TitleBar)
+  entries/    Extra Tauri windows (agent-presence, companion-panel, updater)
+  domains/    account chat companions connectors encryption family organization
+              managed notifications settings studio brain
+              each: api.ts · pages/ · ui/ · domain logic
+  core/       api/ (http.ts + composed arrabApi) · session/ · storage/ · platform/
+  shared/     ui/ · lib/ · hooks/ · i18n/locales/{en,ar}/<domain>.ts · theme/ · styles/
+  features/   Plug-in page registry (modules/)
 ```
+
+Imports point down: `shared → core → domains → app/entries`. `tests/architecture.test.ts` fails the build on a violation.
+
+API: `platform/` (config, http security, crypto, request context) → `modules/<domain>/` (service + routes + tests) → `http/v1.ts`. Full layout in `docs/ARCHITECTURE.md`.
 
 ## Rules
 

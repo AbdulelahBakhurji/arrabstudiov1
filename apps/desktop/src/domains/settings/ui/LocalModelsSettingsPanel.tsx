@@ -22,7 +22,7 @@ import {
   type OllamaStatus,
 } from "@/domains/chat/local-models";
 import { openExternalUrl } from "@/core/platform/desktop";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { readPrefs, updatePrefs } from "@/shared/lib/prefs";
 import { cn } from "@/shared/lib/utils";
 

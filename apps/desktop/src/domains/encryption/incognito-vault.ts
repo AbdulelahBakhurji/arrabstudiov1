@@ -4,7 +4,7 @@
  * signed-in account so switching accounts never opens another vault.
  * The unlock key stays in RAM and is wiped on lock / account switch.
  */
-import { accountPartitionAliases, accountPartitionId, subscribeAccountPartition } from "../account/account-partition";
+import { accountPartitionAliases, accountPartitionId, subscribeAccountPartition } from "../../core/session/account-partition";
 import {
   deviceStoreClear,
   deviceStoreGet,

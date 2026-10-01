@@ -11,7 +11,7 @@ import {
   type E2eeState,
 } from "@/domains/encryption/e2ee";
 import { syncEncryptedChats } from "@/domains/chat/chat-history";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { cn } from "@/shared/lib/utils";
 
 /** Current encryption state for this device, kept live across lock/unlock. */

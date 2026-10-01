@@ -11,8 +11,8 @@ import {
 } from "@arrab/shared";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
-import { pushToast } from "@/shared/lib/notify";
-import { useRole } from "@/app/roles/RoleProvider";
+import { pushToast } from "@/domains/notifications/notify";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { cn } from "@/shared/lib/utils";
 
 const PLAN_CODE: Record<SubscriptionPlanId, string> = Object.fromEntries(

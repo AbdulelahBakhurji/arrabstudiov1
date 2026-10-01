@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { maybeNotifyAppUpdate } from "@/domains/managed/app-updates";
 import { publishUpdateCheckResult } from "@/domains/managed/ui/UpdateAvailableBanner";
 import { readPrefs, subscribePrefs } from "@/shared/lib/prefs";

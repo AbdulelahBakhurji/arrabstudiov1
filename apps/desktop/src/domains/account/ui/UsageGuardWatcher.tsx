@@ -1,9 +1,9 @@
 import { useEffect, useRef } from "react";
 import type { TokenUsageLevel } from "@arrab/shared";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { formatTokens } from "@/domains/account/billing-actions";
-import { postNativeNotification, pushToast } from "@/shared/lib/notify";
+import { postNativeNotification, pushToast } from "@/domains/notifications/notify";
 import { refreshAccountStatus, useSignedInAccount } from "@/domains/account/use-signed-in-account";
 
 const NOTIFIED_KEY = "arrab.usageGuard.notified";

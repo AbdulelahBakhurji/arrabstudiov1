@@ -7,6 +7,6 @@ alwaysApply: false
 # API and packages
 
 - Add types to `packages/shared`, export from `index.ts`, then persist / service / route.
-- Services live in `apps/api/src/services/`. HTTP in `apps/api/src/routes/`.
+- Each domain lives in `apps/api/src/modules/<domain>/` (service, `<domain>.routes.ts`, tests); route registration is composed in `apps/api/src/http/v1.ts`.
 - Desktop must not invent response shapes the API does not own.
 - Migrations belong in `packages/database`. Do not store provider keys on the client.

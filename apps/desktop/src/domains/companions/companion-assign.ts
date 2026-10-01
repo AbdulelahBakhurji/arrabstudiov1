@@ -13,7 +13,7 @@ import {
   type CompanionProfile,
 } from "@/domains/companions/companions";
 import { resolvePurposeIdFromDomain, purposeRegistryById } from "@/domains/companions/purpose-registry";
-import { showAgentPresence, hideAgentPresence } from "@/domains/companions/agent-presence";
+import { showAgentPresence, hideAgentPresence } from "@/domains/notifications/agent-presence";
 import { sanitizeCompanionAsk } from "@/domains/chat/ask-guard";
 
 async function ensureCompanionReady(person: CompanionProfile): Promise<CompanionProfile> {

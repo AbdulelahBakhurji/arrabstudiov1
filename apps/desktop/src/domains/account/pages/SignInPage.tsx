@@ -2,14 +2,14 @@ import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Languages, Moon, Sun } from "lucide-react";
 import logoTall from "@/shared/assets/logotall.png";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useTheme } from "@/app/theme/ThemeProvider";
+import { useTheme } from "@/shared/theme/ThemeProvider";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
-import { readPendingWebAuth } from "@/domains/account/account-session";
-import { enableGuestLocalMode } from "@/domains/account/guest-mode";
+import { readPendingWebAuth } from "@/core/session/account-session";
+import { enableGuestLocalMode } from "@/core/session/guest-mode";
 import { cancelAllWebAuthPolls, pollWebAuthUntilDone, resumePendingWebAuth } from "@/domains/account/web-auth";
 import { openExternalUrl } from "@/core/platform/desktop";
-import { pushToast } from "@/shared/lib/notify";
-import { ToastHost } from "@/shared/ui/ToastHost";
+import { pushToast } from "@/domains/notifications/notify";
+import { ToastHost } from "@/domains/notifications/ui/ToastHost";
 
 export function SignInPage({
   onSignedIn,

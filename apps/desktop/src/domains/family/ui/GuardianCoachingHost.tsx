@@ -1,8 +1,8 @@
 import { useEffect, useRef } from "react";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { useFamilyProfile } from "@/domains/family/use-family-profile";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import {
   GUARDIAN_STORE_EVENT,
   markCoachingAlertRead,

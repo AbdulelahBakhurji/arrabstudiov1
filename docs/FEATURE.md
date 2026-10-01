@@ -27,9 +27,9 @@ Skip layers you do not need.
 | 1. Module | `apps/desktop/src/features/modules/<id>/` | `feature` export + page |
 | 2. Contract | `packages/shared/src/` | Types; export from `index.ts` |
 | 3. Persist | `packages/database/` | Migration only if data must survive restart |
-| 4. Service | `apps/api/src/services/` | Business rules |
-| 5. HTTP | `apps/api/src/routes/v1.ts` | Route that calls the service |
-| 6. Client | `apps/desktop/src/lib/api.ts` | `arrabApi.*` only — no ad-hoc `fetch` |
+| 4. Service | `apps/api/src/modules/<domain>/` | Business rules (`*-service.ts`) |
+| 5. HTTP | `apps/api/src/modules/<domain>/<domain>.routes.ts` | Route that calls the service; register in `http/v1.ts` |
+| 6. Client | `apps/desktop/src/domains/<domain>/api.ts` | `arrabApi.*` only — no ad-hoc `fetch` |
 | 7. Settings | `apps/desktop/src/features/settings-tabs.ts` | Settings tab (not a page module) |
 
 ## Rules

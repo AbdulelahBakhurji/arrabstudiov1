@@ -1,4 +1,4 @@
-import { readAccountSessionToken } from "@/domains/account/account-session";
+import { readAccountSessionToken } from "@/core/session/account-session";
 import { normalizeApiRoutePrefix, readApiBaseOverride, readApiRoutePrefixOverride, splitApiBaseAndPrefix, writeApiBaseOverride, writeApiRoutePrefixOverride } from "@/shared/lib/prefs";
 import { isTauriRuntime } from "@/core/platform/terminal";
 import { invoke } from "@tauri-apps/api/core";

@@ -26,12 +26,12 @@ import type {
   Team,
   TeamMembership,
 } from "@arrab/shared";
-import { Surface } from "@/app/shell/StudioFrame";
+import { Surface } from "@/shared/ui/Surface";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
 import { prepareWorkplaceStudio } from "@/domains/organization/workplace-handoff";
 import { cn } from "@/shared/lib/utils";
-import { ROLE_PATH } from "@/app/roles/catalog";
+import { ROLE_PATH } from "@/domains/account/roles/catalog";
 
 type DeskTab = "overview" | "profile" | "data" | "skills" | "team" | "work";
 

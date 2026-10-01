@@ -28,7 +28,7 @@ import {
   PRESENCE_RESOLVE_EVENT,
   type AgentPresencePayload,
   type PresenceResolveRequest,
-} from "@/domains/companions/agent-presence";
+} from "@/domains/notifications/agent-presence";
 import { assignAgentTask, assignCompanionTask } from "@/domains/companions/companion-assign";
 import {
   getCompanionState,
@@ -36,9 +36,9 @@ import {
   type CompanionProfile,
 } from "@/domains/companions/companions";
 import { companionPortraitUrl } from "@/domains/companions/companion-portrait";
-import { humanizeApprovalCopy } from "@/domains/chat/approval-copy";
+import { humanizeApprovalCopy } from "@/domains/notifications/approval-copy";
 import { purposeRegistryById } from "@/domains/companions/purpose-registry";
-import { readStoredRole } from "@/app/roles/RoleProvider";
+import { readStoredRole } from "@/domains/account/roles/RoleProvider";
 
 type LiveRow = {
   id: string;

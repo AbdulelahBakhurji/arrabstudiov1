@@ -1,6 +1,6 @@
 /** Turn uploaded files into draft text blocks for chat composers. */
 
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 
 export type AttachResult = {
   parts: string[];

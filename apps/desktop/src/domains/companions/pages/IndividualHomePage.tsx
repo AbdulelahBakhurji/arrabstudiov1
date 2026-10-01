@@ -4,7 +4,7 @@ import { useCompanionPolicies } from "@/domains/managed/client/hooks";
 import { ArrowUpRight, MessageSquare, Plus, Sparkles, UsersRound, X } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useRole } from "@/app/roles/RoleProvider";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { workDestination } from "@/domains/chat/work-navigation";
 import {
   boardCards,
@@ -35,10 +35,10 @@ import {
   useCompanionSpace,
 } from "@/domains/companions/ui/CompanionUI";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { useFamilyProfile } from "@/domains/family/use-family-profile";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
-import { audienceFromPlanId } from "@/app/roles/catalog";
+import { audienceFromPlanId } from "@/domains/account/roles/catalog";
 import type { FamilyMemberPublic, FamilyMemberRole } from "@arrab/shared";
 import { cn } from "@/shared/lib/utils";
 import { FamilyCompanionWizard } from "@/domains/companions/ui/FamilyCompanionWizard";

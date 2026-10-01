@@ -1,8 +1,8 @@
 import type { AiGatewayStatusResponse } from "@arrab/shared";
-import { canUseCloudAi } from "@/domains/account/guest-mode";
+import { canUseCloudAi } from "@/core/session/guest-mode";
 import { readPrefs, type StudioPrefs } from "@/shared/lib/prefs";
 
-export { canUseCloudAi } from "@/domains/account/guest-mode";
+export { canUseCloudAi } from "@/core/session/guest-mode";
 
 /** Throw when cloud Arrab AI is requested without a signed-in session. */
 export function assertCloudAiAllowed(): void {

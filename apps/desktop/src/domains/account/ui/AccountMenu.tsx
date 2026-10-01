@@ -25,15 +25,15 @@ import {
   UserRound,
 } from "lucide-react";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { useTheme } from "@/app/theme/ThemeProvider";
+import { useTheme } from "@/shared/theme/ThemeProvider";
 import { arrabApi } from "@/core/api/api";
-import { clearAccountSession, initialsFromName } from "@/domains/account/account-session";
+import { clearAccountSession, initialsFromName } from "@/core/session/account-session";
 import { openExternalUrl } from "@/core/platform/desktop";
 import { useProfilePhoto } from "@/domains/companions/profile-photo";
-import { pushToast } from "@/shared/lib/notify";
+import { pushToast } from "@/domains/notifications/notify";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
-import { clearGuestLocalMode, isGuestLocalMode } from "@/domains/account/guest-mode";
-import { useRole } from "@/app/roles/RoleProvider";
+import { clearGuestLocalMode, isGuestLocalMode } from "@/core/session/guest-mode";
+import { useRole } from "@/domains/account/roles/RoleProvider";
 import { cn } from "@/shared/lib/utils";
 
 function daysUntil(iso: string | null | undefined): number | null {

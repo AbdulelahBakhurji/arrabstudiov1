@@ -5,7 +5,7 @@ import {
   subscribeToasts,
   type StudioToast,
   markNotificationRead,
-} from "@/shared/lib/notify";
+} from "@/domains/notifications/notify";
 import { cn } from "@/shared/lib/utils";
 
 function toneIcon(tone: StudioToast["tone"]) {
