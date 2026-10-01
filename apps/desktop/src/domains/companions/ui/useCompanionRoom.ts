@@ -161,6 +161,8 @@ async function ensureCompanionAgent(
           ready.purposeId || resolvePurposeIdFromDomain(ready.domain);
         const purpose = purposeRegistryById(purposeId);
         const agent = await arrabApi.createAgent({
+          // One agent per companion room, even if two launches race or local state is lost.
+          clientKey: `companion:${ready.id}:${ready.space}`,
           name: ready.name,
           role: purpose?.name ?? ready.domain,
           specialty: purposeId,

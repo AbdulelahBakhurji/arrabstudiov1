@@ -154,3 +154,16 @@ Without a provider key, the user message is still saved and the API reports `pro
 To add a new surface in small agile slices, follow [FEATURE.md](./FEATURE.md) (`pnpm new:feature …`).
 
 The local terminal runs only on the user’s laptop via Tauri (`run_local_command`). Agents cannot drive the shell yet.
+
+## Running the API locally
+
+The API never needs production settings to run on a dev machine:
+
+| Env | Local default | Notes |
+| --- | --- | --- |
+| `DATABASE_URL` | unset | Unset keeps persistence on disk. Set it only for Postgres (production uses it). |
+| `ARRAB_DATA_DIR` | `~/.arrab-studio` | File store used when `DATABASE_URL` is unset. Point it at a temp dir for a clean slate. |
+| Host / port | `127.0.0.1:8787` | Routes live under `/v1`. |
+| CORS | `localhost`, `127.0.0.1`, Tauri origins | Preflights are cached for 10 minutes (`Access-Control-Max-Age: 600`). |
+
+`apps/desktop/.env` may point `VITE_ARRAB_API_URL` at a hosted API. When developing against a local API, override it with a local `.env.local` (`VITE_ARRAB_API_URL=http://127.0.0.1:8787`, empty `VITE_ARRAB_API_ROUTE_PREFIX`) so a dev build never writes to production.

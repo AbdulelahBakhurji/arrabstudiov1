@@ -308,7 +308,7 @@ export function CompanionPanelApp() {
     if (isOrg) {
       const [agentsRes, activityRes, report] = await Promise.all([
         arrabApi.agents().catch(() => ({ items: [] as Agent[] })),
-        arrabApi.activity().catch(() => ({ items: [] as Activity[] })),
+        arrabApi.activity({ limit: 100 }).catch(() => ({ items: [] as Activity[] })),
         arrabApi.reportSummary().catch(() => null),
       ]);
       const runs = report?.recentTaskRuns ?? [];

@@ -71,7 +71,9 @@ describe("GatewayChatRuntime", () => {
     expect(capturedSystem).toContain("Standing instructions");
     expect(capturedSystem).toContain("cite assumptions");
     expect(capturedSystem).toContain("market research");
-    expect(capturedSystem).not.toContain("CALL_TOOL");
+    // Web + deliverable tools are always offered; desk-folder tools are not.
+    expect(capturedSystem).not.toContain("CALL_TOOL list_files");
+    expect(capturedSystem).not.toContain("run_terminal");
   });
 
   it("keeps CALL_TOOL hints when a desk folder is attached", async () => {
@@ -323,10 +325,14 @@ describe("GatewayChatRuntime", () => {
     expect(toolNames.some((name) => name.startsWith("list_files") || name === "run_terminal")).toBe(
       false,
     );
-    expect(arranged).toEqual([{ action: "archive", message_ids: "msg_a,msg_b" }]);
-    expect(result.toolsUsed).toContain("arrange_email");
-    expect(result.status).toBe("completed");
-    expect(result.output).toBe("Archived 2 messages.");
+    // arrange_email is Ask-first: it pauses for approval instead of touching the mailbox.
+    expect(arranged).toEqual([]);
+    expect(result.status).toBe("needs_approval");
+    expect(result.pendingTool?.name).toBe("arrange_email");
+    expect(result.pendingTool?.arguments).toMatchObject({
+      action: "archive",
+      message_ids: "msg_a,msg_b",
+    });
   });
 
   it("lists skills and loads one on demand via use_skill", async () => {

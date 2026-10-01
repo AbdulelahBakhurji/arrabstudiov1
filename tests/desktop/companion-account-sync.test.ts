@@ -17,6 +17,8 @@ vi.mock("@/core/storage/local-secure", () => ({
 vi.mock("@/core/session/guest-mode", () => ({
   clearGuestLocalMode: () => undefined,
   enableGuestLocalMode: () => undefined,
+  isGuestLocalMode: () => false,
+  isCloudSignedIn: () => true,
 }));
 
 import { arrabApi } from "@/core/api/api";
@@ -95,7 +97,7 @@ describe("same-account companions and chats", () => {
     const restored = getCompanionState().companions;
     expect(restored).toHaveLength(1);
     expect(restored[0]?.id).toBe(created.id);
-    expect(restored[0]?.name).toBe("Maya");
+    expect(restored[0]?.name).toBe("Lama");
   });
 
   it("does not show another account's companions", async () => {
@@ -151,7 +153,7 @@ describe("same-account companions and chats", () => {
 
     const state = getCompanionState();
     expect(state.companions).toHaveLength(1);
-    expect(state.companions[0]?.name).toBe("Maya");
+    expect(state.companions[0]?.name).toBe("Lama");
     expect(state.companions[0]?.conversationId).toBe("convo-maya");
     expect(state.assistantChatTabs.maya?.chat?.tabs[0]?.conversationId).toBe("convo-maya");
   });

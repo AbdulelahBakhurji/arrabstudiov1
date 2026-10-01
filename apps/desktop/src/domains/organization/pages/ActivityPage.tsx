@@ -84,6 +84,8 @@ function actorIcon(actorType: Activity["actorType"]) {
 export function ActivityPage() {
   const { t, locale } = useLanguage();
   const [items, setItems] = useState<Activity[] | null>(null);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [agents, setAgents] = useState<Agent[]>([]);
   const [employees, setEmployees] = useState<OrgEmployeePublic[]>([]);
   const [departments, setDepartments] = useState<OrgDepartment[]>([]);
@@ -120,6 +122,19 @@ export function ActivityPage() {
     return departments.find((item) => item.id === orgEmployee.departmentId)?.name ?? null;
   }, [departments, orgEmployee?.departmentId]);
 
+  const loadMore = useCallback(() => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    void arrabApi
+      .activity({ limit: 100, before: nextCursor })
+      .then((page) => {
+        setItems((current) => [...(current ?? []), ...page.items]);
+        setNextCursor(page.nextCursor ?? null);
+      })
+      .catch(() => undefined)
+      .finally(() => setLoadingMore(false));
+  }, [nextCursor, loadingMore]);
+
   const load = useCallback((opts?: { silent?: boolean }) => {
     const silent = Boolean(opts?.silent);
     if (!silent) {
@@ -127,14 +142,20 @@ export function ActivityPage() {
       setBusy(true);
     }
     void Promise.all([
-      arrabApi.activity(),
+      arrabApi.activity({ limit: 100 }),
       arrabApi.agents().catch(() => ({ items: [] as Agent[] })),
       arrabApi.orgWorkforce().catch(() => null),
       arrabApi.orgEmployees().catch(() => ({ items: [] as OrgEmployeePublic[] })),
       arrabApi.memberships().catch(() => ({ items: [] as TeamMembership[] })),
     ])
       .then(([activity, agentList, workforce, employeeList, memberList]) => {
-        setItems(activity.items);
+        // Keep older pages the user already loaded when a silent refresh brings new events.
+        setItems((current) => {
+          if (!silent || !current) return activity.items;
+          const fresh = new Set(activity.items.map((entry) => entry.id));
+          return [...activity.items, ...current.filter((entry) => !fresh.has(entry.id))];
+        });
+        if (!silent) setNextCursor(activity.nextCursor ?? null);
         setAgents(
           filterLiveWorkforceAgents(agentList.items).filter(isOrgWorkforceAgent),
         );
@@ -483,6 +504,11 @@ export function ActivityPage() {
               </article>
             );
           })}
+          {!error && nextCursor ? (
+            <button type="button" className="activity-link-btn" disabled={loadingMore} onClick={loadMore}>
+              {loadingMore ? t("loading") : t("activityLoadMore")}
+            </button>
+          ) : null}
         </div>
       </div>
     </Surface>

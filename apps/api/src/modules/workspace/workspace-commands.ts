@@ -161,6 +161,13 @@ export class WorkspaceCommandService {
   }
 
   async createAgent(input: CreateAgentRequest): Promise<Agent> {
+    const clientKey = input.clientKey?.trim().slice(0, 200) || null;
+    if (clientKey) {
+      const existing = (await this.persistence.agents.list()).find(
+        (item) => item.clientKey === clientKey && item.status !== "archived",
+      );
+      if (existing) return existing;
+    }
     await this.assertProjectInWorkspace(input.projectId);
     if (input.teamId) {
       const team = await this.persistence.teams.getById(input.teamId);
@@ -180,6 +187,7 @@ export class WorkspaceCommandService {
       instructions: optionalText(input.instructions, 8000),
       status: input.status ?? "draft",
       modelProviderId: null,
+      clientKey,
       createdAt: now,
       updatedAt: now,
     };
@@ -239,8 +247,11 @@ export class WorkspaceCommandService {
             ? brandId<ProjectId>(input.projectId)
             : null,
       status: input.status ?? existing.status,
-      updatedAt: this.clock.isoNow(),
+      updatedAt: existing.updatedAt,
     };
+    // Clients re-push unchanged instructions on every launch; don't rewrite or log a no-op.
+    if (JSON.stringify(updated) === JSON.stringify(existing)) return existing;
+    updated.updatedAt = this.clock.isoNow();
     await this.persistence.agents.update(updated);
     await this.record("updated", "agent", updated.id, `Updated AI employee "${updated.name}"`);
     return updated;

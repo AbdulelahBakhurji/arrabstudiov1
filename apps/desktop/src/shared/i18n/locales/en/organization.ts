@@ -174,6 +174,7 @@ export const organizationEn = {
     activityNoEmployees: "No organization employees yet — add them in Administration.",
     activityStatTotal: "events",
     activityEmptyFiltered: "No activity matches these filters.",
+    activityLoadMore: "Load older activity",
     pulsePeople: "People",
     orgTokenMeter: "Organization token pool",
     orgAdminHeroTitle: "Seats & people",

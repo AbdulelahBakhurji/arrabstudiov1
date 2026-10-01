@@ -173,7 +173,7 @@ export function useWorkforceData({ poll = true }: { poll?: boolean } = {}) {
       settle(arrabApi.knowledge(), { items: [] as Knowledge[] }),
       settle(arrabApi.taskRuns(), { items: [] as TaskRun[] }),
       settle(arrabApi.pendingApprovals(), { items: [] as Approval[] }),
-      settle(arrabApi.activity(), { items: [] as Activity[] }),
+      settle(arrabApi.activity({ limit: 200 }), { items: [] as Activity[] }),
     ]);
     let people = filterLiveWorkforceAgents(a.items);
     try {
@@ -210,7 +210,7 @@ export function useWorkforceData({ poll = true }: { poll?: boolean } = {}) {
       settle(arrabApi.tasks(), null),
       settle(arrabApi.pendingApprovals(), null),
       settle(arrabApi.taskRuns(), null),
-      settle(arrabApi.activity(), null),
+      settle(arrabApi.activity({ limit: 200 }), null),
     ]);
     if (!mounted.current) return;
     if (tk) setTasks(tk.items);

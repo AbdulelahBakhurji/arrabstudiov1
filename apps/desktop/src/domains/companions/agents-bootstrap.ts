@@ -44,7 +44,7 @@ export async function ensureDefaultSoloAgent(
       if (existing.length > 0) {
         return collapseDefaultSoloDupes(existing, body.name);
       }
-      const created = await arrabApi.createAgent(body);
+      const created = await arrabApi.createAgent({ ...body, clientKey: "default-solo" });
       return [created];
     })().finally(() => {
       ensureSoloLock = null;

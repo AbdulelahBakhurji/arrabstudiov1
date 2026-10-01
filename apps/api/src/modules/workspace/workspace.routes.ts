@@ -190,9 +190,18 @@ export function registerWorkspaceRoutes(app: FastifyInstance, deps: V1Deps, { as
   );
 
 
-  app.get("/v1/activity", async () => {
-    if (await deps.familyHousehold.isActiveChildSeat()) return { items: [] };
-    return { items: await deps.queries.listActivity() };
+  app.get<{ Querystring: { limit?: string; before?: string } }>("/v1/activity", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) return { items: [], nextCursor: null };
+    const parsed = Number.parseInt(request.query.limit ?? "", 10);
+    const limit = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1), 200) : 50;
+    const all = [...(await deps.queries.listActivity())].sort((a, b) =>
+      a.createdAt === b.createdAt ? 0 : a.createdAt < b.createdAt ? 1 : -1,
+    );
+    const before = request.query.before?.trim();
+    const start = before ? all.findIndex((item) => item.id === before) + 1 : 0;
+    const page = all.slice(start, start + limit);
+    const hasMore = start + limit < all.length;
+    return { items: page, nextCursor: hasMore ? (page[page.length - 1]?.id ?? null) : null };
   });
 
 

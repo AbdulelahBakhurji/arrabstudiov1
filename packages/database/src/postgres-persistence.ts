@@ -125,6 +125,7 @@ type AgentRow = {
   instructions: string | null;
   status: AgentStatus;
   model_provider_id: string | null;
+  client_key?: string | null;
   created_at: Date;
   updated_at: Date;
 };
@@ -205,6 +206,7 @@ function mapAgent(row: AgentRow): Agent {
     modelProviderId: row.model_provider_id
       ? brandId<ModelProviderId>(row.model_provider_id)
       : null,
+    clientKey: row.client_key ?? null,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
   };
@@ -358,8 +360,8 @@ class PostgresAgentRepository implements EntityRepository<Agent> {
   async create(entity: Agent): Promise<Agent> {
     await this.pool.query(
       `insert into agents
-       (id, workspace_id, project_id, name, role, specialty, bio, instructions, status, model_provider_id, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+       (id, workspace_id, project_id, name, role, specialty, bio, instructions, status, model_provider_id, created_at, updated_at, client_key)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         entity.id,
         entity.workspaceId,
@@ -373,6 +375,7 @@ class PostgresAgentRepository implements EntityRepository<Agent> {
         entity.modelProviderId,
         entity.createdAt,
         entity.updatedAt,
+        entity.clientKey ?? null,
       ],
     );
     return entity;

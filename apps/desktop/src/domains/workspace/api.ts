@@ -26,7 +26,15 @@ export const workspaceApi = {
     request<Project>("/v1/projects", { method: "POST", body }),
   updateProject: (id: string, body: UpdateProjectRequest) =>
     request<Project>(`/v1/projects/${id}`, { method: "PATCH", body }),
-  activity: () => request<CollectionResponse<Activity>>("/v1/activity"),
+  activity: (opts?: { limit?: number; before?: string }) => {
+    const qs = new URLSearchParams();
+    if (opts?.limit) qs.set("limit", String(opts.limit));
+    if (opts?.before) qs.set("before", opts.before);
+    const query = qs.toString();
+    return request<CollectionResponse<Activity> & { nextCursor?: string | null }>(
+      `/v1/activity${query ? `?${query}` : ""}`,
+    );
+  },
   goals: (status?: string) =>
     request<CollectionResponse<Goal>>(
       status ? `/v1/goals?status=${encodeURIComponent(status)}` : "/v1/goals",

@@ -315,6 +315,17 @@ export function CompanionsPage() {
   const [tabsLane, setTabsLane] = useState(chatTabLane);
   useEffect(() => {
     if (tabsCompanionId === active.id && tabsLane === chatTabLane) return;
+    // The first message creates the real General profile from its placeholder. Keep the
+    // open chat tab — re-resolving would change the room key and abort that very send.
+    if (
+      tabsLane === chatTabLane &&
+      active.domain === "general" &&
+      tabsCompanionId.startsWith(`general-${active.space}`) &&
+      !active.id.startsWith("general-")
+    ) {
+      setTabsCompanionId(active.id);
+      return;
+    }
     setTabsCompanionId(active.id);
     setTabsLane(chatTabLane);
     titledTabRef.current = null;
@@ -365,6 +376,20 @@ export function CompanionsPage() {
     `${nameOf(person)} ${person.domain}`.toLowerCase().includes(search.toLowerCase()),
   );
 
+  /** Rooms key drafts by chat tab; pin the destination's tab so the handed-off draft is found. */
+  function handoffRoomKey(person: CompanionProfile): string {
+    const tabs = resolveAssistantChatTabs(
+      person.id,
+      person.conversationId,
+      defaultChatTitle,
+      "chat",
+      readCompanionChatTabs(person.id, "chat"),
+    );
+    writeCompanionChatTabs(person.id, tabs, "chat");
+    const tab = tabs.tabs.find((item) => item.id === tabs.activeId) ?? tabs.tabs[0]!;
+    return `${companionRoomKey(person)}:${tab.id}:chat`;
+  }
+
   useEffect(() => {
     const person = findCompanion(getCompanionState(), sessionStorage.getItem(COMPANION_FOCUS_KEY));
     if (person) {
@@ -376,7 +401,7 @@ export function CompanionsPage() {
     if (carried) {
       setDraft(
         (current) => (current.trim() ? `${current}\n\n${carried}` : carried),
-        companionRoomKey(person ?? active),
+        person ? handoffRoomKey(person) : undefined,
       );
     }
     sessionStorage.removeItem(COMPANION_DRAFT_KEY);

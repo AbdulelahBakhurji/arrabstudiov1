@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  ensureCompanionsReady,
   acceptedWork,
   addWorkTask,
   captureWork,
@@ -12,7 +13,7 @@ import {
 } from "../../apps/desktop/src/domains/companions/companions";
 import { resolveWorkTarget, workDestination } from "../../apps/desktop/src/domains/chat/work-navigation";
 
-beforeEach(() => {
+beforeEach(async () => {
   const storage = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => storage.get(key) ?? null,
@@ -20,6 +21,7 @@ beforeEach(() => {
   });
   vi.stubGlobal("window", new EventTarget());
   forgetEverything();
+  await ensureCompanionsReady();
 });
 afterEach(() => vi.unstubAllGlobals());
 

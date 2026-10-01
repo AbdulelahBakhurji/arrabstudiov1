@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ensureCompanionsReady,
   addCompanion,
   addFact,
   boardCards,
@@ -18,7 +19,7 @@ import {
   visibleFacts,
 } from "../../apps/desktop/src/domains/companions/companions";
 
-beforeEach(() => {
+beforeEach(async () => {
   const storage = new Map<string, string>();
   vi.stubGlobal("localStorage", {
     getItem: (key: string) => storage.get(key) ?? null,
@@ -26,6 +27,7 @@ beforeEach(() => {
   });
   vi.stubGlobal("window", new EventTarget());
   forgetEverything();
+  await ensureCompanionsReady();
 });
 afterEach(() => vi.unstubAllGlobals());
 
@@ -103,7 +105,7 @@ describe("desktop companion flows", () => {
       "Protect sleep and wind-down.",
     );
     expect(companionInstructions(owner, visibleFacts(state, owner))).toContain(
-      "WATCHES (your only remit): sleep",
+      "WATCHES only: sleep",
     );
     expect(companionInstructions(other, visibleFacts(state, other))).not.toContain(
       "Private remembered fact",
@@ -118,10 +120,10 @@ describe("desktop companion flows", () => {
       connectors: ["gmail", "outlook"],
     });
     const text = companionInstructions(person, []);
-    expect(text).toContain("WATCHES (your only remit): inbox");
-    expect(text).toContain("PURPOSE (non-negotiable standing brief");
+    expect(text).toContain("WATCHES only: inbox");
+    expect(text).toContain("PURPOSE:\nTriage mail and draft replies.");
     expect(text).toContain("Triage mail and draft replies.");
-    expect(text).toContain("CONNECTORS this companion is configured to use: gmail, outlook");
-    expect(text).toContain("Base every answer on WATCHES + PURPOSE");
+    expect(text).toContain("Connectors: gmail, outlook.");
+    expect(text).toContain("Stay in remit.");
   });
 });

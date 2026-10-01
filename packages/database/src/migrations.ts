@@ -674,6 +674,14 @@ create table if not exists sealed_chat_tombstones (
 );
 `;
 
+/** Idempotent agent creation: one live agent per client key (existing rows keep a null key). */
+export const MIGRATION_036_AGENT_CLIENT_KEY = `
+alter table agents add column if not exists client_key text;
+create unique index if not exists agents_client_key_live_idx
+  on agents (workspace_id, client_key)
+  where client_key is not null and status <> 'archived';
+`;
+
 export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "001_core", sql: MIGRATION_001_CORE },
   { id: "002_conversations", sql: MIGRATION_002_CONVERSATIONS },
@@ -710,4 +718,5 @@ export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "033_crew", sql: MIGRATION_033_CREW },
   { id: "034_connector_owner_employee", sql: MIGRATION_034_CONNECTOR_OWNER_EMPLOYEE },
   { id: "035_sealed_vault", sql: MIGRATION_035_SEALED_VAULT },
+  { id: "036_agent_client_key", sql: MIGRATION_036_AGENT_CLIENT_KEY },
 ];

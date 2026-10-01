@@ -6,11 +6,14 @@ import { LanguageProvider } from "@/shared/i18n/LanguageProvider";
 import { RoleProvider } from "@/domains/account/roles/RoleProvider";
 import { CompanionsPage } from "@/domains/companions/pages/CompanionsPage";
 import {
+  ensureCompanionsReady,
   COMPANION_DRAFT_KEY,
   COMPANION_FOCUS_KEY,
   ensureGeneralCompanion,
   forgetEverything,
 } from "@/domains/companions/companions";
+import { resolveAssistantChatTabs, writeAssistantChatTabs } from "@/domains/chat/assistant-chat-tabs";
+import { writeAccountSession, clearAccountSession } from "@/core/session/account-session";
 import { createCompanionDraftStore } from "@/domains/companions/companion-drafts";
 
 // Install a DOM before React DOM is imported. Explicit setup also works when
@@ -22,7 +25,7 @@ const testDom = await vi.hoisted(async () => {
   });
   for (const key of [
     "window", "document", "navigator", "Node", "Element", "HTMLElement", "HTMLTextAreaElement",
-    "HTMLInputElement", "HTMLButtonElement", "HTMLDialogElement", "Event", "MouseEvent", "KeyboardEvent",
+    "HTMLInputElement", "HTMLButtonElement", "HTMLDialogElement", "Event", "CustomEvent", "StorageEvent", "MouseEvent", "KeyboardEvent",
     "localStorage", "sessionStorage",
   ]) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: dom.window[key] });
   globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
@@ -45,7 +48,7 @@ vi.mock("@/core/api/api", () => ({
     createAgent: vi.fn(async () => ({ id: "mock-agent" })),
     updateAgent: vi.fn(async () => ({ id: "mock-agent" })),
     createConversation: vi.fn(async () => ({ id: "mock-conversation" })),
-    conversation: vi.fn(async () => ({ messages: [] })),
+    conversation: vi.fn(async (id: string) => ({ conversation: { id, title: "Chat" }, messages: [] })),
     sendMessageStream: vi.fn((_id, _input, callbacks, signal) => new Promise<void>((resolve) => {
       mocked.streams.push({ callbacks, signal, resolve });
     })),
@@ -95,11 +98,14 @@ async function click(selector: string) {
   await act(async () => button!.click());
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   root = null;
   localStorage.clear();
   sessionStorage.clear();
+  clearAccountSession();
+  writeAccountSession("t".repeat(40), "acc_ui_test");
   forgetEverything();
+  await ensureCompanionsReady();
   mocked.streams.length = 0;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("Live network is forbidden in UI tests"))));
@@ -137,10 +143,13 @@ describe("real companion chat interactions", () => {
     expect(composer().disabled).toBe(false);
     expect(composer().value).toBe("");
     await typeDraft("Second question waiting");
+    // With a draft typed, the action becomes "queue", not Stop.
+    expect(host.querySelector(".cp-stop")).toBeNull();
+    await typeDraft("");
     await click(".cp-stop");
     expect(mocked.streams[0]!.signal.aborted).toBe(true);
-    expect(composer().value).toBe("Second question waiting");
     expect(host.querySelector(".cp-stop")).toBeNull();
+    await typeDraft("Second question waiting");
 
     await click(".cp-send");
     expect(mocked.streams).toHaveLength(2);
@@ -153,7 +162,8 @@ describe("real companion chat interactions", () => {
     });
     expect(composer().value).toBe("Third draft to keep");
     expect(host.textContent).not.toContain("STALE");
-    expect(host.querySelector(".cp-stop")).not.toBeNull();
+    // Still replying, but a typed draft turns Stop into a queued send.
+    expect(composer().disabled).toBe(false);
     await act(async () => {
       mocked.streams[1]!.callbacks.onToken("Fresh response");
       mocked.streams[1]!.resolve();
@@ -166,8 +176,14 @@ describe("real companion chat interactions", () => {
   it("appends a carried board draft to its destination exactly once in StrictMode", async () => {
     const person = ensureGeneralCompanion("work");
     const drafts = createCompanionDraftStore();
-    drafts.write("general-personal", "Personal stays untouched");
-    drafts.write("general-work", "Existing work draft");
+    // Drafts are keyed per chat tab, so pin each room's tab first.
+    const roomKey = (id: string, key: string) => {
+      const tabs = resolveAssistantChatTabs(id, null, "Chat", "chat", null);
+      writeAssistantChatTabs(id, tabs, "chat");
+      return `${key}:${tabs.activeId}:chat`;
+    };
+    drafts.write(roomKey("general-personal", "general-personal"), "Personal stays untouched");
+    drafts.write(roomKey(person.id, "general-work"), "Existing work draft");
     sessionStorage.setItem(COMPANION_FOCUS_KEY, person.id);
     sessionStorage.setItem(COMPANION_DRAFT_KEY, "Topic from the board");
     await mount(true);

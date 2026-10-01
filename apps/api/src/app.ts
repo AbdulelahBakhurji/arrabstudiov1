@@ -485,6 +485,7 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
         origin.includes("tauri.localhost");
       callback(null, allowed);
     },
+    maxAge: 600,
     methods: ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: [
       "Content-Type",

@@ -267,7 +267,7 @@ export function isFamilyPlanId(
   planId: string | null | undefined,
 ): planId is "family_free" | "family" | "family_plus" {
   const id = (planId ?? "").toLowerCase().replace(/_/g, "-");
-  return id === "family_free" || id === "family" || id === "family-plus" || id === "family_plus";
+  return id === "family-free" || id === "family" || id === "family-plus";
 }
 
 /**

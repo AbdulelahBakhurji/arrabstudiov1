@@ -173,6 +173,7 @@ export const organizationAr = {
     activityNoEmployees: "لا موظفين في المنظمة بعد — أضفهم من الإدارة.",
     activityStatTotal: "أحداث",
     activityEmptyFiltered: "لا نشاط يطابق هذه المرشحات.",
+    activityLoadMore: "تحميل نشاط أقدم",
     pulsePeople: "أشخاص",
     orgTokenMeter: "مجمع رموز المؤسسة",
     orgAdminHeroTitle: "المقاعد والأشخاص",

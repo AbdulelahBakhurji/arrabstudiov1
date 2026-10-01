@@ -70,6 +70,8 @@ export interface Agent extends Timestamps {
   instructions: string | null;
   status: AgentStatus;
   modelProviderId: ModelProviderId | null;
+  /** Client-chosen stable key (e.g. companion id + space) so repeated creates return the same agent. */
+  clientKey?: string | null;
 }
 
 export interface Team extends Timestamps {

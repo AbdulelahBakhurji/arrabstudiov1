@@ -4,9 +4,9 @@ import { RESERVED_FEATURE_PATHS } from "../apps/desktop/src/features/types.ts";
 import { STUDIO_FEATURES, pageFeaturesFor } from "../apps/desktop/src/features/registry.ts";
 
 describe("feature registry", () => {
-  it("starts with no plug-in pages so core nav stays stable", () => {
-    expect(STUDIO_FEATURES).toEqual([]);
-    expect(pageFeaturesFor("individual")).toEqual([]);
+  it("keeps plug-in pages out of the core nav", () => {
+    expect(STUDIO_FEATURES.map((f) => f.id)).toEqual(["companion-desk"]);
+    expect(pageFeaturesFor("individual").every((f) => f.nav === false)).toBe(true);
     expect(navForRole("individual").map((item) => item.path)).toEqual([
       "",
       "/studio",

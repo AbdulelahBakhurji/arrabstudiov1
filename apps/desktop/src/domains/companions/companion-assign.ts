@@ -26,6 +26,7 @@ async function ensureCompanionReady(person: CompanionProfile): Promise<Companion
     const purposeId = ready.purposeId || resolvePurposeIdFromDomain(ready.domain);
     const purpose = purposeRegistryById(purposeId);
     const agent = await arrabApi.createAgent({
+      clientKey: `companion:${ready.id}:${ready.space}`,
       name: ready.name,
       role: purpose?.name ?? ready.domain,
       specialty: purposeId,

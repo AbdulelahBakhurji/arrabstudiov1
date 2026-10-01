@@ -98,6 +98,8 @@ export interface UpdateProjectRequest {
 }
 
 export interface CreateAgentRequest {
+  /** Idempotency key: posting the same key again returns the existing non-archived agent. */
+  clientKey?: string | null;
   name: string;
   role: string;
   specialty?: string | null;
