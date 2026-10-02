@@ -22,8 +22,11 @@ export function registerBillingRoutes(app: FastifyInstance, deps: V1Deps, { asse
 
   app.get<{ Querystring: { id?: string; invoice?: string } }>(
     "/v1/billing/confirm",
-    async (request) =>
-      deps.billing.confirmInvoice(request.query.id ?? request.query.invoice ?? ""),
+    async (request) => {
+      assertOwnerSession(request, "Only the account owner can confirm billing");
+      await assertCap(request, "canAdminister", "Only admins can confirm organization billing");
+      return deps.billing.confirmInvoice(request.query.id ?? request.query.invoice ?? "");
+    },
   );
 
   app.post("/v1/billing/moyasar/callback", async (request) =>

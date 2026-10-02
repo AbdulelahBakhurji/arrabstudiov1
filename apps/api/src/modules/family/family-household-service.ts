@@ -1025,7 +1025,8 @@ export class FamilyHouseholdService {
       return;
     }
     const member = await this.persistence.familyMembers.getById(memberId);
-    if (!member) return;
+    // Fail closed: an unknown / spoofed family-member header must not be silently ignored (SEC-05).
+    if (!member) throw new NotFoundError("Family member not found");
     this.activeMemberByWorkspace.set(this.persistence.workspaceId, member.id);
     await this.persistence.familyHouseholdMeta.setActiveMemberId(member.id);
   }

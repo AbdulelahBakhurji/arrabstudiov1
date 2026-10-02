@@ -20,7 +20,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     env:
-      APP_DIR: /opt/arrab-studio
+      APP_DIR: /root/arrab/platform
     steps:
       - name: Check deploy secrets
         id: gate

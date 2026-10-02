@@ -33,6 +33,7 @@ export const ROUTE_RULES: Record<string, RouteRule> = {
   "POST /v1/account/sessions/revoke-all": { policy: "owner", detail: OWNER },
   "POST /v1/billing/checkout": { policy: "owner", detail: OWNER },
   "POST /v1/billing/top-up": { policy: "owner", detail: OWNER },
+  "GET /v1/billing/confirm": { policy: "owner", detail: OWNER },
   "PUT /v1/operator": { policy: "owner", detail: OWNER },
   // workforce operations
   "PATCH /v1/desk": { policy: "manager", detail: MANAGER },

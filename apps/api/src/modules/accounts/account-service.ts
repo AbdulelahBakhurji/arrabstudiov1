@@ -487,6 +487,28 @@ export class AccountService {
     return normalized;
   }
 
+  /** Extra strength rules for create / change only — never block an existing sign-in (SEC-07). */
+  private assertNewPassword(password: string): void {
+    const lowered = password.toLowerCase();
+    const common = new Set([
+      "password",
+      "password1",
+      "password12",
+      "password123",
+      "12345678",
+      "123456789",
+      "qwerty12",
+      "qwerty123",
+      "letmein1",
+      "welcome1",
+      "arrab123",
+      "arrabstudio",
+    ]);
+    if (common.has(lowered)) {
+      throw new ValidationError("Choose a less common password");
+    }
+  }
+
   /** Add a device session. Expired sessions are dropped and the list is capped (oldest first). */
   private withNewSession(
     account: StudioAccountRecord,
@@ -521,6 +543,7 @@ export class AccountService {
 
   async connect(input: ConnectAccountRequest, meta?: SessionMeta): Promise<ConnectAccountResponse> {
     const email = this.validateCredentials(input.email ?? "", input.password ?? "");
+    this.assertNewPassword(input.password ?? "");
     const existing = await this.persistence.accounts.get();
     if (existing) {
       throw new ValidationError("An account is already connected. Sign out first.");
@@ -770,6 +793,7 @@ export class AccountService {
       throw new UnauthorizedError("Your current password is not correct");
     }
     this.validateCredentials(account.email, next);
+    this.assertNewPassword(next);
     if (next === current) throw new ValidationError("Choose a password you have not used just now");
     const now = this.clock.isoNow();
     await this.persistence.accounts.upsert({
@@ -1059,6 +1083,7 @@ export class AccountService {
       );
     } else {
       this.assertMaySignUp(email);
+      this.assertNewPassword(input.password ?? "");
       accountCreated = true;
       await this.resetAccountScopedData();
       const issued = this.withNewSession(

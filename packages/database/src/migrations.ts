@@ -734,6 +734,37 @@ alter table task_runs add column if not exists team_run_id text;
 create index if not exists task_runs_team_run_idx on task_runs(team_run_id) where team_run_id is not null;
 `;
 
+/**
+ * Production 0.15.1 parity: widen plan ids (live + catalog), allow legacy dual rows per
+ * workspace (get() picks a primary), conflict on account id for upserts.
+ */
+export const MIGRATION_041_ACCOUNT_PLAN_AND_PRIMARY = `
+alter table studio_accounts drop constraint if exists studio_accounts_plan_id_check;
+alter table studio_accounts
+  add constraint studio_accounts_plan_id_check
+  check (plan_id in (
+    'free', 'pro', 'family_free', 'family', 'family_plus',
+    'team', 'business', 'enterprise', 'solo', 'studio', 'unlimited',
+    'starter', 'max'
+  ));
+
+-- Drop workspace-only primary key so a legacy dual-account workspace can keep both rows.
+-- id remains unique; get() selects one primary operator.
+do $$
+begin
+  if exists (
+    select 1 from pg_constraint
+    where conname = 'studio_accounts_pkey'
+      and conrelid = 'studio_accounts'::regclass
+  ) then
+    alter table studio_accounts drop constraint studio_accounts_pkey;
+  end if;
+end $$;
+
+create unique index if not exists studio_accounts_id_uidx on studio_accounts (id);
+create index if not exists studio_accounts_workspace_idx on studio_accounts (workspace_id);
+`;
+
 export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "001_core", sql: MIGRATION_001_CORE },
   { id: "002_conversations", sql: MIGRATION_002_CONVERSATIONS },
@@ -775,4 +806,5 @@ export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "038_account_sessions", sql: MIGRATION_038_ACCOUNT_SESSIONS },
   { id: "039_sync_records", sql: MIGRATION_039_SYNC_RECORDS },
   { id: "040_task_run_lifecycle", sql: MIGRATION_040_TASK_RUN_LIFECYCLE },
+  { id: "041_account_plan_and_primary", sql: MIGRATION_041_ACCOUNT_PLAN_AND_PRIMARY },
 ];

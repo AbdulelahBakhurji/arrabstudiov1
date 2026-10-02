@@ -2,7 +2,8 @@
 # Run on the Arrab API VPS (or via: ssh arrab 'bash -s' < scripts/deploy-api-vps.sh)
 set -euo pipefail
 
-APP_DIR="${APP_DIR:-/opt/arrab-studio}"
+# Production host path (override with APP_DIR=… if needed).
+APP_DIR="${APP_DIR:-/root/arrab/platform}"
 REPO_URL="${REPO_URL:-https://github.com/AbdulelahBakhurji/arrabstudiov1.git}"
 BRANCH="${BRANCH:-main}"
 SERVICE="${SERVICE:-arrab-api}"

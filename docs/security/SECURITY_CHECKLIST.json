@@ -1,0 +1,71 @@
+{
+  "version": "0.15.1",
+  "updated": "2026-10-02",
+  "items": [
+    {
+      "id": "default-deny",
+      "status": "PASS",
+      "note": "registerSecurity + authorization-matrix"
+    },
+    {
+      "id": "billing-confirm-owner",
+      "status": "PASS",
+      "note": "SEC-01 — no longer public"
+    },
+    {
+      "id": "secret-response-hard-fail",
+      "status": "PASS",
+      "note": "SEC-02 — payloadLooksLikeSecretLeak"
+    },
+    {
+      "id": "rate-limit-xff",
+      "status": "PASS",
+      "note": "SEC-03 — request.ip only"
+    },
+    {
+      "id": "production-cors",
+      "status": "PASS",
+      "note": "SEC-04 — loopback only when NODE_ENV≠production"
+    },
+    {
+      "id": "family-header-fail-closed",
+      "status": "PASS",
+      "note": "SEC-05"
+    },
+    {
+      "id": "body-limits",
+      "status": "PASS",
+      "note": "SEC-06 — 1 MiB / maxParamLength 200"
+    },
+    {
+      "id": "common-password-create",
+      "status": "PASS",
+      "note": "SEC-07 — connect/change only"
+    },
+    {
+      "id": "account-upsert-primary",
+      "status": "PASS",
+      "note": "SEC-08 — ON CONFLICT (id) + primary get()"
+    },
+    {
+      "id": "mfa-owner",
+      "status": "FAIL",
+      "note": "Not implemented"
+    },
+    {
+      "id": "moyasar-callback-signature",
+      "status": "PARTIAL",
+      "note": "Secret-key invoice re-fetch, not provider signature"
+    },
+    {
+      "id": "multi-instance-rate-limits",
+      "status": "PARTIAL",
+      "note": "In-process only — fine for single VPS"
+    },
+    {
+      "id": "multi-tenant-accounts",
+      "status": "FAIL",
+      "note": "Single studio account model; legacy dual rows pick a primary"
+    }
+  ]
+}

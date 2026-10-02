@@ -1200,8 +1200,27 @@ class PostgresAccountRepository implements AccountRepository {
   ) {}
 
   async get(): Promise<StudioAccountRecord | null> {
+    // Prefer a real operator over @arrab.studio smoke fixtures when legacy dual rows exist.
     const result = await this.pool.query<AccountRow>(
-      `select * from studio_accounts where workspace_id = $1`,
+      `select * from studio_accounts
+       where workspace_id = $1
+       order by
+         case when lower(email) like '%@arrab.studio' then 1 else 0 end,
+         case plan_id
+           when 'enterprise' then 0
+           when 'business' then 1
+           when 'unlimited' then 2
+           when 'studio' then 3
+           when 'solo' then 4
+           when 'max' then 5
+           when 'team' then 6
+           when 'pro' then 7
+           when 'starter' then 8
+           else 9
+         end,
+         connected_at desc nulls last,
+         created_at desc
+       limit 1`,
       [this.workspaceId],
     );
     const row = result.rows[0];
@@ -1215,12 +1234,12 @@ class PostgresAccountRepository implements AccountRepository {
          period_start, period_end, session_token_hash, connected_at, created_at, updated_at,
          token_top_ups, model_credit, paid_invoice_ids, sessions
        ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb,$16::jsonb,$17::jsonb)
-       on conflict (workspace_id) do update set
+       on conflict (id) do update set
+         workspace_id = excluded.workspace_id,
          token_top_ups = excluded.token_top_ups,
          model_credit = excluded.model_credit,
          paid_invoice_ids = excluded.paid_invoice_ids,
          sessions = excluded.sessions,
-         id = excluded.id,
          email = excluded.email,
          display_name = excluded.display_name,
          password_hash = excluded.password_hash,

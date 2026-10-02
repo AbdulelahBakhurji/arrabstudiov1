@@ -44,6 +44,8 @@ const PUBLIC_PREFIXES = [
   // Operational endpoints authenticate themselves (readiness is harmless; metrics needs ARRAB_METRICS_TOKEN).
   "/ready",
   "/metrics",
+  // Version / provider handshake for clients before sign-in.
+  "/v1/meta",
   "/v1/account/connect",
   "/v1/account/sign-in",
   "/v1/account/auth/",
@@ -51,7 +53,7 @@ const PUBLIC_PREFIXES = [
   "/v1/account/refresh",
   "/v1/billing/plans",
   "/v1/billing/moyasar/callback",
-  "/v1/billing/confirm",
+  // /v1/billing/confirm is owner-only (SEC-01) — not public.
   "/v1/releases",
   "/v1/connectors/catalog",
   "/v1/connectors/gmail/oauth/callback",
@@ -106,8 +108,19 @@ function stripRoutePrefix(path: string, routePrefix: string): string {
   return path;
 }
 
-function clientKey(request: FastifyRequest): string {
-  return request.ip || request.headers["x-forwarded-for"]?.toString() || "unknown";
+/** Rate-limit key — trustProxy-aware `request.ip` only (never raw X-Forwarded-For). */
+export function clientKey(request: FastifyRequest): string {
+  return request.ip || "unknown";
+}
+
+/**
+ * True when a JSON body looks like it leaked *stored* secrets (SEC-02).
+ * Auth responses intentionally return `sessionToken` / `refreshToken` once — those are not leaks.
+ */
+export function payloadLooksLikeSecretLeak(payload: string): boolean {
+  return /("passwordHash"|"sessionTokenHash"|"tokenHash"|"refreshHash"|"prevRefreshHash"|"clientSecret"|"privateKey"|"apiKey")\s*:/.test(
+    payload,
+  );
 }
 
 /**
@@ -164,6 +177,8 @@ export async function registerSecurity(
       path.startsWith("/v1/account/refresh") ||
       path.startsWith("/v1/org/employees/sign-in") ||
       path.startsWith("/v1/family/members/sign-in") ||
+      path.startsWith("/v1/billing/confirm") ||
+      path.startsWith("/v1/billing/moyasar/callback") ||
       path.includes("/oauth/start")
     ) {
       const key = `${clientKey(request)}:${path}`;
@@ -223,10 +238,18 @@ export async function registerSecurity(
     );
   });
 
-  // Never echo secrets in structured logs.
-  app.addHook("onSend", async (request, _reply, payload) => {
-    if (typeof payload === "string" && /("accessToken"|"refreshToken"|"secret"|"password")\s*:/.test(payload)) {
-      request.log.warn("Blocked response payload that looked like it contained secrets");
+  // Never echo secrets — hard-fail the response (SEC-02). Warn-only was a real hole.
+  app.addHook("onSend", async (request, reply, payload) => {
+    if (typeof payload === "string" && payloadLooksLikeSecretLeak(payload)) {
+      request.log.error("Blocked response payload that looked like it contained secrets");
+      reply.code(500);
+      return JSON.stringify({
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "Response blocked for safety",
+          requestId: request.id,
+        },
+      });
     }
     return payload;
   });

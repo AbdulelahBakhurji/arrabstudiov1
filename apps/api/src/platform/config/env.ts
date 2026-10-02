@@ -310,7 +310,9 @@ export function loadApiEnv(): ApiEnv {
     signupEmails: parseCsv(readOptionalEnv("ARRAB_SIGNUP_EMAILS", "")).map((email) => email.trim().toLowerCase()).filter(Boolean),
     moyasarSecretKey: readOptionalEnv("MOYASAR_SECRET_KEY"),
     moyasarPublishableKey: readOptionalEnv("MOYASAR_PUBLISHABLE_KEY"),
-    dataEncryptionKey: readOptionalEnv("DATA_ENCRYPTION_KEY"),
+    // Production hosts historically used ARRAB_DATA_ENCRYPTION_KEY; accept either.
+    dataEncryptionKey:
+      readOptionalEnv("DATA_ENCRYPTION_KEY") ?? readOptionalEnv("ARRAB_DATA_ENCRYPTION_KEY"),
     releasesDir:
       readOptionalEnv("ARRAB_RELEASES_DIR") ?? "/var/www/testingworkspace/releases",
     googleClientId: readOptionalEnv("GOOGLE_CLIENT_ID"),

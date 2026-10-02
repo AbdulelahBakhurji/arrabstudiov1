@@ -1,6 +1,8 @@
 # Deploy Arrab API (production)
 
-Public host: `https://api.arrabai.com/r/nmpi6uidtpkh1bdf`
+Public host: `https://api.arrabai.com/r/nmpi6uidtpkh1bdf`  
+Host path: `/root/arrab/platform` (override with `APP_DIR` if needed)  
+Service: `arrab-api` (systemd → `dist/index.js`)
 
 Desktop release builds already point at that URL (`VITE_ARRAB_API_URL` + route prefix).
 
@@ -30,7 +32,7 @@ Push to `main` (paths under `apps/api`, `packages/*`, deploy scripts) or run **w
 ```bash
 ssh arrab 'bash -s' < scripts/deploy-api-vps.sh
 # or on the host:
-APP_DIR=/opt/arrab-studio bash scripts/deploy-api-vps.sh
+APP_DIR=/root/arrab/platform bash scripts/deploy-api-vps.sh
 ```
 
 ## Smoke after deploy

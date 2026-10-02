@@ -2,6 +2,8 @@
 
 Arrab Studio is a **desktop client + cloud API** product. The downloadable app must stay safe for every user: **no secrets in the binary**, **session token guards**, and **connector tokens only on the API**.
 
+API hardening (0.15.1): see [security/HARDENING.md](./security/HARDENING.md) and [security/SECURITY_CHECKLIST.json](./security/SECURITY_CHECKLIST.json).
+
 ## Desktop (what users download)
 
 The desktop application must **never** contain:

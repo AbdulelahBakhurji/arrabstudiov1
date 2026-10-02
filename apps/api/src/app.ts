@@ -498,6 +498,9 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
   const app = Fastify({
     // A hop count is valid at runtime; the typings only list boolean | string.
     trustProxy: context.env.trustProxy as boolean,
+    // Bound request size / path params so hostile clients cannot OOM the process (SEC-06).
+    bodyLimit: 1 * 1024 * 1024,
+    routerOptions: { maxParamLength: 200 },
     // Every request has an id: the caller's `X-Request-Id` when it is well-formed (end-to-end
     // correlation from the app), otherwise a fresh UUID. It is echoed on the response and in errors.
     genReqId: (req) => requestIdFrom(req),
@@ -577,9 +580,10 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
         callback(null, true);
         return;
       }
+      const loopbackOk = process.env.NODE_ENV !== "production";
       const allowed =
         context.env.corsOrigins.includes(origin) ||
-        /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin) ||
+        (loopbackOk && /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) ||
         origin === "tauri://localhost" ||
         /^https?:\/\/tauri\.localhost$/i.test(origin);
       callback(null, allowed);
