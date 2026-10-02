@@ -12,9 +12,8 @@ import {
   randomKeyB64,
   type CryptoEnvelopeV1,
 } from "./crypto-envelope";
-import { deviceStoreGet, deviceStoreRemove, deviceStoreSet } from "./device-store";
+import { getSecureStorage } from "../platform/secure-storage";
 
-const KEY_NS = "secure";
 const LEGACY_KEY_ID = "workspace.aes.v1";
 
 let cachedKey: CryptoKey | null = null;
@@ -25,8 +24,10 @@ function keyIdFor(partition: string): string {
 }
 
 async function loadOrCreateRawKey(partition: string): Promise<string> {
+  // OS Keychain where the platform has one; the app-data file store otherwise (see secure-storage).
+  const store = await getSecureStorage();
   const id = keyIdFor(partition);
-  const existing = await deviceStoreGet(KEY_NS, id);
+  const existing = await store.get(id);
   if (existing && existing.length >= 40) {
     return existing;
   }
@@ -34,21 +35,21 @@ async function loadOrCreateRawKey(partition: string): Promise<string> {
   if (partition !== "guest") {
     for (const alias of accountPartitionAliases()) {
       if (alias === partition) continue;
-      const aliasKey = await deviceStoreGet(KEY_NS, keyIdFor(alias));
+      const aliasKey = await store.get(keyIdFor(alias));
       if (aliasKey && aliasKey.length >= 40) {
-        await deviceStoreSet(KEY_NS, id, aliasKey);
-        await deviceStoreRemove(KEY_NS, keyIdFor(alias));
+        await store.set(id, aliasKey);
+        await store.remove(keyIdFor(alias));
         return aliasKey;
       }
     }
-    const legacy = await deviceStoreGet(KEY_NS, LEGACY_KEY_ID);
+    const legacy = await store.get(LEGACY_KEY_ID);
     if (legacy && legacy.length >= 40) {
-      await deviceStoreSet(KEY_NS, id, legacy);
+      await store.set(id, legacy);
       return legacy;
     }
   }
   const created = randomKeyB64();
-  await deviceStoreSet(KEY_NS, id, created);
+  await store.set(id, created);
   return created;
 }
 
@@ -87,8 +88,9 @@ export function looksEncryptedLocal(value: unknown): boolean {
 
 /** Drop this account's workspace AES key (local sealed data becomes unreadable). */
 export async function wipeWorkspaceVaultKey(): Promise<void> {
+  const store = await getSecureStorage();
   for (const part of accountPartitionAliases()) {
-    await deviceStoreRemove(KEY_NS, keyIdFor(part));
+    await store.remove(keyIdFor(part));
   }
   resetKeyCache();
 }

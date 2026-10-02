@@ -271,7 +271,7 @@ export class BillingService {
       ) {
         throw new ValidationError("Paid amount does not match the credit quote");
       }
-      return this.accounts.addModelCredit({ deepseekHalalas, otherHalalas }, invoice.id);
+      return this.accounts.addModelCredit({ deepseekHalalas, otherHalalas, amountHalalas }, invoice.id);
     }
     if (invoice.metadata?.kind === "top_up") {
       const packId = invoice.metadata.packId?.trim() ?? "";
@@ -292,7 +292,7 @@ export class BillingService {
     if (invoice.amount !== plan.monthlyPriceHalalas || invoice.currency !== plan.currency) {
       throw new ValidationError("Paid amount does not match the selected plan");
     }
-    return this.accounts.applyPlan(planId);
+    return this.accounts.applyPaidPlan(planId, invoice.id);
   }
 }
 

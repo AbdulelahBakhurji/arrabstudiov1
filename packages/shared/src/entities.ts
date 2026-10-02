@@ -152,7 +152,13 @@ export interface Knowledge extends Timestamps {
   content: string;
 }
 
-export type TaskRunStatus = "completed" | "failed" | "needs_provider" | "awaiting_approval";
+export type TaskRunStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "needs_provider"
+  | "awaiting_approval"
+  | "cancelled";
 
 export interface TaskRun {
   id: TaskRunId;
@@ -163,6 +169,22 @@ export interface TaskRun {
   status: TaskRunStatus;
   summary: string | null;
   createdAt: string;
+  /** Present when this run was started as part of a team orchestration. */
+  teamRunId?: string | null;
+}
+
+export type TeamRunStatus = "running" | "completed" | "failed" | "cancelled" | "partial";
+
+/** In-process / API view of a multi-agent team orchestration (child work is TaskRun rows). */
+export interface TeamRun {
+  id: string;
+  workspaceId: WorkspaceId;
+  teamId: TeamId;
+  status: TeamRunStatus;
+  brief: string;
+  taskRunIds: TaskRunId[];
+  createdAt: string;
+  finishedAt: string | null;
 }
 
 export interface Skill extends Timestamps {

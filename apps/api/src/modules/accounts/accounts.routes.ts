@@ -1,8 +1,26 @@
-import type { ActivateSubscriptionRequest, ConnectAccountRequest, SignInAccountRequest, StartWebAuthRequest, CompleteWebAuthRequest, VerifyAccountSessionRequest, UpdateAccountProfileRequest } from "@arrab/shared";
-import type { FastifyInstance } from "fastify";
+import type { ChangePasswordRequest, ActivateSubscriptionRequest, ConnectAccountRequest, SignInAccountRequest, StartWebAuthRequest, CompleteWebAuthRequest, VerifyAccountSessionRequest, UpdateAccountProfileRequest } from "@arrab/shared";
+import { escapeHtml } from "../../platform/http/html-safe.js";
+import { ForbiddenError } from "@arrab/core";
+import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { SessionMeta } from "./account-service.js";
 import type { RouteHelpers, V1Deps } from "../../http/deps.js";
 
-export function registerAccountsRoutes(app: FastifyInstance, deps: V1Deps, { assertCap }: RouteHelpers): void {
+/** Device label sent by the client (headers are advisory: they only name the device in the user's own device list). */
+function sessionMeta(request: FastifyRequest): SessionMeta {
+  const header = (name: string) => {
+    const value = request.headers[name];
+    return (Array.isArray(value) ? value[0] : value) ?? undefined;
+  };
+  return {
+    deviceName: header("x-arrab-device-name"),
+    platform: header("x-arrab-platform"),
+    appVersion: header("x-arrab-app-version"),
+    // Opt in to short-lived access tokens + refresh rotation.
+    refresh: header("x-arrab-refresh") === "1",
+  };
+}
+
+export function registerAccountsRoutes(app: FastifyInstance, deps: V1Deps, { assertCap, assertOwnerSession }: RouteHelpers): void {
   app.get("/v1/account", async (request) => {
     const status = request.account
       ? await deps.accounts.statusFor(request.account)
@@ -28,13 +46,13 @@ export function registerAccountsRoutes(app: FastifyInstance, deps: V1Deps, { ass
   });
 
   app.post<{ Body: ConnectAccountRequest }>("/v1/account/connect", async (request) => {
-    const result = await deps.accounts.connect(request.body ?? { email: "", password: "" });
+    const result = await deps.accounts.connect(request.body ?? { email: "", password: "" }, sessionMeta(request));
     await deps.familyHousehold.clearSeatLock();
     return result;
   });
 
   app.post<{ Body: SignInAccountRequest }>("/v1/account/sign-in", async (request) => {
-    const result = await deps.accounts.signIn(request.body ?? { email: "", password: "" });
+    const result = await deps.accounts.signIn(request.body ?? { email: "", password: "" }, sessionMeta(request));
     await deps.familyHousehold.clearSeatLock();
     return result;
   });
@@ -43,30 +61,78 @@ export function registerAccountsRoutes(app: FastifyInstance, deps: V1Deps, { ass
     deps.accounts.verifySession(request.body?.sessionToken ?? ""),
   );
 
-  app.post("/v1/account/disconnect", async () => {
+  /** Rotate the session: refresh token in, new access + refresh token out. Public (the access token is expired by definition). */
+  app.post<{ Body: { refreshToken?: string } }>("/v1/account/refresh", async (request) =>
+    deps.accounts.refreshSession(request.body?.refreshToken ?? ""),
+  );
+
+  app.post<{ Body: ChangePasswordRequest }>("/v1/account/password", async (request) => {
+    assertOwnerSession(request, "Only the account owner can change the password");
+    return deps.accounts.changePassword(request.body ?? { currentPassword: "", newPassword: "" }, request.sessionId);
+  });
+
+  app.post("/v1/account/disconnect", async (request) => {
+    assertOwnerSession(request, "Only the account owner can remove the account");
     await deps.familyHousehold.clearSeatLock();
     return deps.accounts.disconnect();
   });
 
-  app.post("/v1/account/logout", async () => {
-    // Connectors belong to the signed-in user — they sign out with them.
-    await deps.connectors.signOutCurrentUser();
-    await deps.familyHousehold.clearSeatLock();
-    return deps.accounts.logout();
+  app.post("/v1/account/logout", async (request) => {
+    // Only a real device session can sign itself out. A request that carries no session of its own
+    // (an org employee, an anonymous caller) must never be able to end the owner's sessions.
+    if (!request.sessionId) throw new ForbiddenError("No session to sign out");
+    // Only this device signs out. The user's connectors and household lock are cleared when the
+    // last device leaves, so signing out on a phone does not break the Mac.
+    const { status, remainingSessions } = await deps.accounts.logout(request.sessionId);
+    // A family seat leaving never wipes the household's connectors; only the owner's last device does.
+    if (remainingSessions === 0 && !request.seatMemberId) {
+      await deps.connectors.signOutCurrentUser();
+      await deps.familyHousehold.clearSeatLock();
+    }
+    return status;
+  });
+
+  app.get("/v1/account/sessions", async (request) => {
+    assertOwnerSession(request, "Only the account owner can see signed-in devices");
+    return { sessions: await deps.accounts.listSessions(request.sessionId) };
+  });
+
+  app.delete<{ Params: { id: string } }>("/v1/account/sessions/:id", async (request) => {
+    assertOwnerSession(request, "Only the account owner can sign devices out");
+    const remaining = await deps.accounts.revokeSession(request.params.id);
+    if (remaining === 0) {
+      await deps.connectors.signOutCurrentUser();
+      await deps.familyHousehold.clearSeatLock();
+    }
+    return { sessions: await deps.accounts.listSessions(request.sessionId) };
+  });
+
+  /** "Sign out everywhere" (keeps this device unless `includeCurrent` is true). */
+  app.post<{ Body: { includeCurrent?: boolean } }>("/v1/account/sessions/revoke-all", async (request) => {
+    assertOwnerSession(request, "Only the account owner can sign devices out");
+    const keep = request.body?.includeCurrent ? null : request.sessionId;
+    const remaining = await deps.accounts.revokeAllSessions(keep);
+    if (remaining === 0) {
+      await deps.connectors.signOutCurrentUser();
+      await deps.familyHousehold.clearSeatLock();
+    }
+    return { sessions: await deps.accounts.listSessions(request.sessionId) };
   });
 
   app.post<{ Body: ActivateSubscriptionRequest }>("/v1/account/subscribe", async (request) => {
+    assertOwnerSession(request, "Only the account owner can change the plan");
     await assertCap(request, "canAdminister", "Only admins can change organization plans");
     return deps.accounts.activateSubscription(request.body ?? { code: "" });
   });
 
-  app.patch<{ Body: UpdateAccountProfileRequest }>("/v1/account", async (request) =>
-    deps.accounts.updateProfile(request.body ?? {}),
-  );
+  app.patch<{ Body: UpdateAccountProfileRequest }>("/v1/account", async (request) => {
+    assertOwnerSession(request, "Only the account owner can edit the account");
+    return deps.accounts.updateProfile(request.body ?? {});
+  });
 
 
-  app.post<{ Body: StartWebAuthRequest }>("/v1/account/auth/web/start", async () =>
-    deps.accounts.startWebAuth(),
+  app.post<{ Body: StartWebAuthRequest }>("/v1/account/auth/web/start", async (request) =>
+    deps.accounts.startWebAuth(sessionMeta(request)),
   );
 
   app.get<{ Querystring: { state?: string; pollSecret?: string } }>(
@@ -109,7 +175,7 @@ export function registerAccountsRoutes(app: FastifyInstance, deps: V1Deps, { ass
   <form class="card" id="form">
     <h1>Sign in to Arrab Studio</h1>
     <p>Complete sign-in here. When it succeeds, Arrab Studio opens automatically.</p>
-    <input type="hidden" name="state" value="${state.replace(/"/g, "&quot;")}" />
+    <input type="hidden" name="state" value="${escapeHtml(state)}" />
     <label>Display name<input name="displayName" placeholder="Your name" /></label>
     <label>Email<input name="email" type="email" required placeholder="you@company.com" /></label>
     <label>Password<input name="password" type="password" required minlength="8" placeholder="At least 8 characters" /></label>

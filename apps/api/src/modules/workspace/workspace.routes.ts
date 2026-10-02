@@ -1,6 +1,6 @@
-import { ForbiddenError, ValidationError } from "@arrab/core";
+import { ForbiddenError, NotFoundError, ValidationError } from "@arrab/core";
 import { fetchLiveCandles, fetchLiveQuotes } from "./market-data-service.js";
-import type { BindProjectRepoRequest, CreateGoalRequest, CreateProjectRequest, CreateTaskRequest, UpdateGoalRequest, UpdateOperatorRequest, UpsertCompanionStateRequest, UpdateProjectRequest, UpdateTaskRequest } from "@arrab/shared";
+import type { BindProjectRepoRequest, CreateGoalRequest, CreateProjectRequest, CreateTaskRequest, StartTeamRunRequest, UpdateGoalRequest, UpdateOperatorRequest, UpsertCompanionStateRequest, UpdateProjectRequest, UpdateTaskRequest } from "@arrab/shared";
 import type { FastifyInstance } from "fastify";
 import { listStudioReleases } from "./releases.js";
 import type { RouteHelpers, V1Deps } from "../../http/deps.js";
@@ -48,7 +48,7 @@ export function registerWorkspaceRoutes(app: FastifyInstance, deps: V1Deps, { as
 
   app.get("/v1/usage", async (request) => {
     const employee = request.orgEmployee ?? null;
-    const perms = deps.orgWorkforce.permissionsFor(employee);
+    const perms = deps.orgWorkforce.permissionsFor(employee, employee === null);
     // Non-admin seats see only usage for agents in their department — never the org token pool.
     if (employee && !perms.canAdminister) {
       const agents = await deps.orgWorkforce.filterAgents(
@@ -134,6 +134,38 @@ export function registerWorkspaceRoutes(app: FastifyInstance, deps: V1Deps, { as
 
   app.get("/v1/task-runs", async () => ({ items: await deps.queries.listTaskRuns() }));
 
+  app.get<{ Params: { id: string } }>("/v1/task-runs/:id", async (request) => {
+    const run = await deps.taskExecution.getRun(request.params.id);
+    if (!run) throw new NotFoundError("TaskRun", request.params.id);
+    return { run };
+  });
+
+  app.post<{ Params: { id: string } }>("/v1/task-runs/:id/cancel", async (request) => {
+    await assertCap(request, "canAssignWork", "Managers and admins can cancel task runs");
+    return { run: await deps.taskExecution.cancelRun(request.params.id) };
+  });
+
+  app.get("/v1/team-runs", async () => ({ items: deps.teamRuns.list() }));
+
+  app.get<{ Params: { id: string } }>("/v1/team-runs/:id", async (request) => {
+    const teamRun = deps.teamRuns.get(request.params.id);
+    if (!teamRun) throw new NotFoundError("TeamRun", request.params.id);
+    return { teamRun };
+  });
+
+  app.post<{ Params: { id: string }; Body: StartTeamRunRequest }>(
+    "/v1/teams/:id/run",
+    async (request) => {
+      await assertCap(request, "canAssignWork", "Managers and admins can run teams");
+      deps.orgWorkforce.assertNotLockedOutOfActions(request.orgEmployee);
+      return deps.teamRuns.start(request.params.id, request.body?.brief ?? "");
+    },
+  );
+
+  app.post<{ Params: { id: string } }>("/v1/team-runs/:id/cancel", async (request) => {
+    await assertCap(request, "canAssignWork", "Managers and admins can cancel team runs");
+    return deps.teamRuns.cancel(request.params.id);
+  });
 
   app.get("/v1/projects", async () => ({ items: await deps.queries.listProjects() }));
 

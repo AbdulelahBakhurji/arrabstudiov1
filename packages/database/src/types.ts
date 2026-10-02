@@ -153,7 +153,9 @@ export interface MemoryRepository extends EntityRepository<Memory> {
 export interface TaskRunRepository {
   list(): Promise<TaskRun[]>;
   listByTask(taskId: string): Promise<TaskRun[]>;
+  getById(id: string): Promise<TaskRun | null>;
   create(run: TaskRun): Promise<TaskRun>;
+  update(run: TaskRun): Promise<TaskRun>;
 }
 
 export interface SkillRepository extends EntityRepository<Skill> {
@@ -217,6 +219,36 @@ export interface SealedVaultRepository {
   purgeWorkspace(): Promise<void>;
 }
 
+/**
+ * Revisioned records for cross-device sync (see `@arrab/shared` sync protocol).
+ * Writes are compare-and-set on `rev`, so two devices can never silently overwrite each other.
+ */
+export interface SyncRecordRepository {
+  get(ownerKey: string, kind: string, id: string): Promise<import("@arrab/shared").SyncRecord | null>;
+  /**
+   * Store `record` only if the stored revision is `expectedRev` (0 = must not exist).
+   * Returns the stored record with its server sequence, or `null` if the revision moved.
+   * `opId` makes the call idempotent: a repeat returns the record the first call produced.
+   */
+  compareAndSet(
+    ownerKey: string,
+    record: import("@arrab/shared").SyncRecord,
+    expectedRev: number,
+    opId: string,
+  ): Promise<{ record: import("@arrab/shared").SyncRecord; seq: number } | null>;
+  /** The record a previously applied op produced, if this op id was already seen. */
+  getOpResult(ownerKey: string, opId: string): Promise<import("@arrab/shared").SyncRecord | null>;
+  /** Records changed after `afterSeq`, oldest first. */
+  listAfter(
+    ownerKey: string,
+    afterSeq: number,
+    limit: number,
+    kinds?: string[],
+  ): Promise<Array<{ record: import("@arrab/shared").SyncRecord; seq: number }>>;
+  purgeOwner(ownerKey: string): Promise<void>;
+  purgeWorkspace(): Promise<void>;
+}
+
 export interface ControlDeskRepository {
   getPolicy(): Promise<ControlMaintenance | null>;
   setPolicy(policy: ControlMaintenance): Promise<ControlMaintenance>;
@@ -263,6 +295,7 @@ export interface Persistence {
   companionDesk: CompanionDeskRepository;
   crew: CrewRepository;
   sealedVault: SealedVaultRepository;
+  syncRecords: SyncRecordRepository;
 }
 
 export const LOCAL_ORGANIZATION_ID = "org_local_studio";

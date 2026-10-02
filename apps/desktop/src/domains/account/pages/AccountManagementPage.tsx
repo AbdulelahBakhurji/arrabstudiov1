@@ -13,7 +13,7 @@ import {
   UserRound,
   UsersRound,
 } from "lucide-react";
-import type { AccountStatusResponse, SubscriptionPlanId } from "@arrab/shared";
+import type { AccountSessionPublic, AccountStatusResponse, SubscriptionPlanId } from "@arrab/shared";
 import { SUBSCRIPTION_PLANS } from "@arrab/shared";
 import { FamilyHouseholdPanel } from "@/domains/family/ui/FamilyHouseholdPanel";
 import { Surface } from "@/shared/ui/Surface";
@@ -121,6 +121,9 @@ export function AccountManagementPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [displayName, setDisplayName] = useState("");
+  const [sessions, setSessions] = useState<AccountSessionPublic[]>([]);
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
   const hasSession = Boolean(readAccountSessionToken());
   const statusRef = useRef<AccountStatusResponse | null>(null);
   statusRef.current = status;
@@ -292,11 +295,65 @@ export function AccountManagementPage() {
     }
   }
 
+  const refreshSessions = useCallback(() => {
+    if (!isSignedIn) {
+      setSessions([]);
+      setSessionsError(null);
+      return;
+    }
+    setSessionsLoading(true);
+    void arrabApi
+      .listAccountSessions()
+      .then((res) => {
+        setSessions(res.sessions ?? []);
+        setSessionsError(null);
+      })
+      .catch((err: unknown) => {
+        setSessions([]);
+        setSessionsError(err instanceof ApiRequestError ? err.message : t("amDevicesLoadError"));
+      })
+      .finally(() => setSessionsLoading(false));
+  }, [isSignedIn, t]);
+
+  useEffect(() => {
+    if (section !== "security" || !isSignedIn) return;
+    refreshSessions();
+  }, [section, isSignedIn, refreshSessions]);
+
+  async function revokeSession(sessionId: string) {
+    if (!window.confirm(t("amDeviceRevokeConfirm"))) return;
+    setBusy(true);
+    try {
+      const res = await arrabApi.revokeAccountSession(sessionId);
+      setSessions(res.sessions ?? []);
+      pushToast({ title: t("amDeviceRevoked"), tone: "info" });
+    } catch (err: unknown) {
+      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revokeOtherSessions() {
+    if (!window.confirm(t("amDevicesRevokeAllConfirm"))) return;
+    setBusy(true);
+    try {
+      const res = await arrabApi.revokeAllAccountSessions({});
+      setSessions(res.sessions ?? []);
+      pushToast({ title: t("amDevicesRevokeAllDone"), tone: "success" });
+    } catch (err: unknown) {
+      setError(err instanceof ApiRequestError ? err.message : t("apiUnavailable"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function logout() {
     setBusy(true);
     try {
       await arrabApi.logoutAccount().catch(() => undefined);
       clearAccountSession();
+      setSessions([]);
       setStatus((prev) => (prev ? { ...prev, connected: false, account: null } : null));
       pushToast({ title: t("accountLoggedOut"), tone: "info" });
     } catch (err: unknown) {
@@ -917,6 +974,73 @@ export function AccountManagementPage() {
                   />
                 </div>
               </Panel>
+
+              {isSignedIn ? (
+                <Panel>
+                  <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-base font-semibold tracking-tight text-white">
+                        {t("amDevices")}
+                      </h2>
+                      <p className="mt-1 text-sm text-neutral-500">{t("amDevicesBody")}</p>
+                    </div>
+                    {sessions.some((s) => !s.current) ? (
+                      <button
+                        type="button"
+                        disabled={busy || sessionsLoading}
+                        onClick={() => void revokeOtherSessions()}
+                        className="inline-flex h-9 shrink-0 items-center justify-center rounded-lg border border-white/15 px-3 text-sm text-neutral-200 transition hover:bg-white/5 disabled:opacity-40"
+                      >
+                        {t("amDevicesRevokeAll")}
+                      </button>
+                    ) : null}
+                  </div>
+                  {sessionsLoading && sessions.length === 0 ? (
+                    <p className="text-sm text-neutral-500">{t("amSaving")}</p>
+                  ) : null}
+                  {sessionsError ? (
+                    <p className="text-sm text-red-300/90">{sessionsError}</p>
+                  ) : null}
+                  {!sessionsLoading && !sessionsError && sessions.length === 0 ? (
+                    <p className="text-sm text-neutral-500">{t("amDevicesEmpty")}</p>
+                  ) : null}
+                  <ul className="space-y-2">
+                    {sessions.map((device) => (
+                      <li
+                        key={device.id}
+                        className="flex flex-col gap-2 rounded-xl border border-white/10 bg-black/30 p-4 sm:flex-row sm:items-center sm:justify-between"
+                      >
+                        <div className="min-w-0">
+                          <p className="truncate text-sm text-white">
+                            {device.deviceName || device.platform || "—"}
+                            {device.current ? (
+                              <span className="ms-2 text-xs text-emerald-300/90">
+                                {t("amDeviceCurrent")}
+                              </span>
+                            ) : null}
+                          </p>
+                          <p className="mt-0.5 text-xs text-neutral-500">
+                            {device.platform}
+                            {device.appVersion ? ` · v${device.appVersion}` : ""}
+                            {" · "}
+                            {formatDate(device.lastSeenAt, locale)}
+                          </p>
+                        </div>
+                        {!device.current ? (
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onClick={() => void revokeSession(device.id)}
+                            className="h-9 shrink-0 rounded-lg border border-white/15 px-3 text-sm text-neutral-200 transition hover:bg-white/5 disabled:opacity-40"
+                          >
+                            {t("amDeviceRevoke")}
+                          </button>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </Panel>
+              ) : null}
 
               <Panel>
                 <h2 className="text-sm font-medium text-white">{t("amDangerZone")}</h2>

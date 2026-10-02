@@ -1,6 +1,7 @@
 import { ServiceUnavailableError, ValidationError } from "@arrab/core";
 
 const MOYASAR_API = "https://api.moyasar.com/v1";
+const MOYASAR_TIMEOUT_MS = 15_000;
 
 export interface MoyasarInvoice {
   id: string;
@@ -48,15 +49,22 @@ export class HttpMoyasarClient implements MoyasarClient {
   constructor(private readonly secretKey: string) {}
 
   private async request(path: string, init?: RequestInit): Promise<MoyasarInvoice> {
-    const response = await fetch(`${MOYASAR_API}${path}`, {
-      ...init,
-      headers: {
-        Authorization: moyasarAuthHeader(this.secretKey),
-        Accept: "application/json",
-        ...(init?.body ? { "Content-Type": "application/json" } : {}),
-        ...(init?.headers ?? {}),
-      },
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${MOYASAR_API}${path}`, {
+        ...init,
+        // A payment call must not hang a request (or a callback retry) indefinitely.
+        signal: AbortSignal.timeout(MOYASAR_TIMEOUT_MS),
+        headers: {
+          Authorization: moyasarAuthHeader(this.secretKey),
+          Accept: "application/json",
+          ...(init?.body ? { "Content-Type": "application/json" } : {}),
+          ...(init?.headers ?? {}),
+        },
+      });
+    } catch {
+      throw new ServiceUnavailableError("The payment provider did not respond. Try again in a moment.");
+    }
     if (!response.ok) {
       throw new ValidationError(await parseMoyasarError(response));
     }
@@ -73,21 +81,12 @@ export class HttpMoyasarClient implements MoyasarClient {
       back_url: input.backUrl,
       metadata: input.metadata,
     };
-    try {
-      return await this.request("/invoices", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-    } catch (error) {
-      if (!(error instanceof ValidationError)) {
-        throw error;
-      }
-      delete body.metadata;
-      return this.request("/invoices", {
-        method: "POST",
-        body: JSON.stringify(body),
-      });
-    }
+    // No retry without metadata: an invoice that lacks the account/plan metadata can never be
+    // matched to a payment, so the customer would pay and receive nothing.
+    return this.request("/invoices", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
   }
 
   async getInvoice(id: string): Promise<MoyasarInvoice> {

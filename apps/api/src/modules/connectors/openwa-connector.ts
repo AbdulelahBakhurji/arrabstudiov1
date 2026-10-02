@@ -1,5 +1,8 @@
 /**
  * OpenWA — self-hosted WhatsApp gateway (https://github.com/rmyndharis/OpenWA).
+ *
+ * OpenWA session routes take a UUID path id (`ParseUUIDPipe`). Arrab keeps a
+ * human session *name* (`as-…` / `arrab`) and stores the gateway UUID as `gatewayId`.
  */
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { ValidationError } from "@arrab/core";
@@ -14,9 +17,9 @@ export type OpenWaSecret = {
   kind: "openwa";
   baseUrl: string;
   apiKey: string;
-  /** Session name/id in OpenWA (e.g. arrab). */
+  /** Session name in OpenWA (e.g. as-abc123 / arrab). Used for create + list?name=. */
   sessionId: string;
-  /** Gateway's own session id when it differs from the name (webhooks may carry either). */
+  /** OpenWA's UUID session id — required for /sessions/:id/* routes. */
   gatewayId?: string;
   webhookSecret: string | null;
   /** Companion that drafts WhatsApp replies for this linked phone. */
@@ -42,8 +45,32 @@ export type OpenWaWebhookPayload = {
   };
 };
 
+type OpenWaSessionDto = {
+  id?: string;
+  name?: string;
+  status?: string;
+  phone?: string | null;
+};
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function trimBaseUrl(raw: string): string {
   return raw.trim().replace(/\/+$/, "");
+}
+
+export function isOpenWaGatewayId(value: string | null | undefined): boolean {
+  return Boolean(value && UUID_RE.test(value.trim()));
+}
+
+/** Path id for OpenWA /sessions/:sessionId/* — must be the gateway UUID. */
+export function openWaPathId(secret: OpenWaSecret): string {
+  const gateway = secret.gatewayId?.trim();
+  if (gateway && isOpenWaGatewayId(gateway)) return gateway;
+  if (isOpenWaGatewayId(secret.sessionId)) return secret.sessionId.trim();
+  throw new ValidationError(
+    "OpenWA session is not ready (missing gateway session id). Tap Connect WhatsApp again.",
+  );
 }
 
 export function parseOpenWaSecret(raw: string): OpenWaSecret | null {
@@ -92,6 +119,7 @@ export function buildOpenWaSecret(input: {
   baseUrl: string;
   apiKey: string;
   sessionId: string;
+  gatewayId?: string | null;
   webhookSecret?: string | null;
   replyCompanionId?: string;
   replyCompanionName?: string;
@@ -110,11 +138,13 @@ export function buildOpenWaSecret(input: {
   if (webhookSecret && webhookSecret.length < 16) {
     throw new ValidationError("OpenWA webhook secret must be at least 16 characters");
   }
+  const gatewayId = input.gatewayId?.trim();
   return {
     kind: "openwa",
     baseUrl,
     apiKey,
     sessionId,
+    ...(gatewayId && isOpenWaGatewayId(gatewayId) ? { gatewayId } : {}),
     webhookSecret,
     ...(input.replyCompanionId ? { replyCompanionId: input.replyCompanionId.slice(0, 80) } : {}),
     ...(input.replyCompanionName
@@ -152,8 +182,60 @@ async function openWaFetch<T>(
 
 const STOPPED_STATUSES = new Set(["created", "stopped", "disconnected", "failed", "logged_out", "error"]);
 
+function withGatewayId(secret: OpenWaSecret, session: OpenWaSessionDto): OpenWaSecret {
+  const id = session.id?.trim();
+  if (id && isOpenWaGatewayId(id)) {
+    return { ...secret, gatewayId: id };
+  }
+  return secret;
+}
+
+async function findOpenWaSessionByName(secret: OpenWaSecret): Promise<OpenWaSessionDto | null> {
+  const listed = await openWaFetch<OpenWaSessionDto[]>(
+    secret,
+    `/sessions?name=${encodeURIComponent(secret.sessionId)}`,
+  ).catch(() => [] as OpenWaSessionDto[]);
+  return listed[0] ?? null;
+}
+
+/** Resolve (or create) the OpenWA session and attach `gatewayId` (UUID). */
+export async function resolveOpenWaSession(secret: OpenWaSecret): Promise<{
+  session: OpenWaSessionDto;
+  secret: OpenWaSecret;
+}> {
+  if (secret.gatewayId && isOpenWaGatewayId(secret.gatewayId)) {
+    try {
+      const session = await openWaFetch<OpenWaSessionDto>(
+        secret,
+        `/sessions/${encodeURIComponent(secret.gatewayId)}`,
+      );
+      return { session, secret: withGatewayId(secret, session) };
+    } catch {
+      /* gateway id stale — fall through to name lookup */
+    }
+  }
+
+  let session = await findOpenWaSessionByName(secret);
+  if (!session) {
+    try {
+      session = await openWaFetch<OpenWaSessionDto>(secret, "/sessions", {
+        method: "POST",
+        body: JSON.stringify({ name: secret.sessionId }),
+      });
+    } catch {
+      // 409 name already exists (race) — list again
+      session = await findOpenWaSessionByName(secret);
+    }
+  }
+  if (!session?.id || !isOpenWaGatewayId(session.id)) {
+    throw new ValidationError("OpenWA could not create or find a session for this workspace");
+  }
+  return { session, secret: withGatewayId(secret, session) };
+}
+
 async function startOpenWaSession(secret: OpenWaSecret): Promise<void> {
-  await openWaFetch(secret, `/sessions/${encodeURIComponent(secret.sessionId)}/start`, {
+  const pathId = openWaPathId(secret);
+  await openWaFetch(secret, `/sessions/${encodeURIComponent(pathId)}/start`, {
     method: "POST",
     body: JSON.stringify({}),
   }).catch(() => undefined);
@@ -165,34 +247,17 @@ export async function verifyOpenWaSecret(secret: OpenWaSecret): Promise<{
   secret: OpenWaSecret;
 }> {
   await openWaFetch<{ status?: string }>(secret, "/health");
-  let session: { id?: string; name?: string; status?: string; phone?: string | null } | null = null;
-  try {
-    session = await openWaFetch(secret, `/sessions/${encodeURIComponent(secret.sessionId)}`);
-    if (STOPPED_STATUSES.has((session?.status ?? "").toLowerCase())) {
-      await startOpenWaSession(secret);
-    }
-  } catch {
-    session = await openWaFetch(secret, "/sessions", {
-      method: "POST",
-      body: JSON.stringify({ name: secret.sessionId }),
-    });
-    try {
-      await openWaFetch(secret, `/sessions/${encodeURIComponent(secret.sessionId)}/start`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-    } catch {
-      /* QR pairing may still be pending. */
-    }
+  const resolved = await resolveOpenWaSession(secret);
+  const status = (resolved.session.status ?? "created").toLowerCase();
+  if (STOPPED_STATUSES.has(status)) {
+    await startOpenWaSession(resolved.secret);
   }
-  const status = session?.status ?? "created";
-  const phone = session?.phone?.trim();
-  const label = phone ? `WhatsApp · ${phone}` : `WhatsApp · linking (${status})`;
-  const gatewayId = session?.id && session.id !== secret.sessionId ? session.id : secret.gatewayId;
+  const phone = resolved.session.phone?.trim();
+  const label = phone ? `WhatsApp · ${phone}` : `WhatsApp · linking (${resolved.session.status ?? status})`;
   return {
     label,
     scopes: ["openwa_messaging"],
-    secret: gatewayId ? { ...secret, gatewayId } : secret,
+    secret: resolved.secret,
   };
 }
 
@@ -211,9 +276,13 @@ export async function sendOpenWaText(
   const text = input.text.trim();
   if (!text) throw new ValidationError("Message text is required");
   const chatId = openWaChatId(input.to);
+  const resolved = secret.gatewayId && isOpenWaGatewayId(secret.gatewayId)
+    ? { secret }
+    : await resolveOpenWaSession(secret);
+  const pathId = openWaPathId(resolved.secret);
   const result = await openWaFetch<{ messageId?: string }>(
-    secret,
-    `/sessions/${encodeURIComponent(secret.sessionId)}/messages/send-text`,
+    resolved.secret,
+    `/sessions/${encodeURIComponent(pathId)}/messages/send-text`,
     {
       method: "POST",
       body: JSON.stringify({ chatId, text }),
@@ -281,30 +350,22 @@ export function extractOpenWaInbound(
 }
 
 export async function fetchOpenWaSessionView(secret: OpenWaSecret): Promise<OpenWaSessionView> {
-  const sessionId = encodeURIComponent(secret.sessionId);
-  let session: { status?: string; phone?: string | null } = {};
-  try {
-    session = await openWaFetch<{ status?: string; phone?: string | null }>(
-      secret,
-      `/sessions/${sessionId}`,
-    );
-  } catch {
-    session = { status: "unknown" };
-  }
-  let status = (session.status ?? "unknown").toLowerCase();
-  const phone = session.phone?.trim() || null;
+  const resolved = await resolveOpenWaSession(secret);
+  const pathId = openWaPathId(resolved.secret);
+  let status = (resolved.session.status ?? "unknown").toLowerCase();
+  const phone = resolved.session.phone?.trim() || null;
   const linked = Boolean(phone) || status === "connected" || status === "authenticated";
   let qrCode: string | null = null;
   if (!linked) {
     // A stopped session never produces a QR — kick it so the user can scan.
     if (STOPPED_STATUSES.has(status)) {
-      await startOpenWaSession(secret);
+      await startOpenWaSession(resolved.secret);
       status = "starting";
     }
     try {
       const qr = await openWaFetch<{ qrCode?: string; qr?: string }>(
-        secret,
-        `/sessions/${sessionId}/qr`,
+        resolved.secret,
+        `/sessions/${encodeURIComponent(pathId)}/qr`,
       );
       qrCode = normalizeOpenWaQr(qr.qrCode ?? qr.qr);
     } catch {
@@ -317,30 +378,43 @@ export async function fetchOpenWaSessionView(secret: OpenWaSecret): Promise<Open
 export async function ensureOpenWaWebhook(
   secret: OpenWaSecret,
   webhookUrl: string,
-): Promise<void> {
-  if (!secret.webhookSecret) return;
-  const sessionId = encodeURIComponent(secret.sessionId);
+): Promise<OpenWaSecret> {
+  if (!secret.webhookSecret) return secret;
+  const resolved = await resolveOpenWaSession(secret);
+  const pathId = openWaPathId(resolved.secret);
   const existing = await openWaFetch<
     Array<{ id: string; url: string; active?: boolean }>
-  >(secret, `/sessions/${sessionId}/webhooks`).catch(() => []);
+  >(resolved.secret, `/sessions/${encodeURIComponent(pathId)}/webhooks`).catch(() => []);
   const normalized = webhookUrl.trim();
-  if (existing.some((item) => item.url === normalized && item.active !== false)) return;
-  await openWaFetch(secret, `/sessions/${sessionId}/webhooks`, {
+  if (existing.some((item) => item.url === normalized && item.active !== false)) {
+    return resolved.secret;
+  }
+  await openWaFetch(resolved.secret, `/sessions/${encodeURIComponent(pathId)}/webhooks`, {
     method: "POST",
     body: JSON.stringify({
       url: normalized,
       events: ["message.received"],
-      secret: secret.webhookSecret,
+      secret: resolved.secret.webhookSecret,
       retryCount: 3,
     }),
   });
+  return resolved.secret;
 }
 
 /** Unlink the phone and drop the gateway session (best effort — never blocks sign-out). */
 export async function logoutOpenWaSession(secret: OpenWaSecret): Promise<void> {
-  const sessionId = encodeURIComponent(secret.sessionId);
-  await openWaFetch(secret, `/sessions/${sessionId}/logout`, { method: "POST", body: "{}" }).catch(
+  let pathId: string;
+  try {
+    const resolved = await resolveOpenWaSession(secret);
+    pathId = openWaPathId(resolved.secret);
+  } catch {
+    return;
+  }
+  await openWaFetch(secret, `/sessions/${encodeURIComponent(pathId)}/logout`, {
+    method: "POST",
+    body: "{}",
+  }).catch(() => undefined);
+  await openWaFetch(secret, `/sessions/${encodeURIComponent(pathId)}`, { method: "DELETE" }).catch(
     () => undefined,
   );
-  await openWaFetch(secret, `/sessions/${sessionId}`, { method: "DELETE" }).catch(() => undefined);
 }

@@ -1,3 +1,4 @@
+import { clientInfoHeaders } from "../platform/client-info";
 import { readAccountSessionToken } from "@/core/session/account-session";
 import { normalizeApiRoutePrefix, readApiBaseOverride, readApiRoutePrefixOverride, splitApiBaseAndPrefix, writeApiBaseOverride, writeApiRoutePrefixOverride } from "@/shared/lib/prefs";
 import { isTauriRuntime } from "@/core/platform/terminal";
@@ -94,7 +95,7 @@ export function unreachableMessage(kind: "timeout" | "network", detail?: string)
 }
 
 export function buildAuthHeaders(): Record<string, string> {
-  const authHeaders: Record<string, string> = {};
+  const authHeaders: Record<string, string> = { ...clientInfoHeaders() };
   try {
     const accountToken = readAccountSessionToken();
     if (accountToken) {

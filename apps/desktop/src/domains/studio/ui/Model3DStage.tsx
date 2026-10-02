@@ -71,6 +71,8 @@ export function Model3DStage({ html, empty = false }: Model3DStageProps) {
         verts?: number;
         shading?: string;
       } | null;
+      // Only the preview frame we created may report stats.
+      if (event.source !== frameRef.current?.contentWindow) return;
       if (!data || data.type !== "arrab-model-stats") return;
       setStats({
         fps: typeof data.fps === "number" ? data.fps : null,
@@ -257,7 +259,7 @@ export function Model3DStage({ html, empty = false }: Model3DStageProps) {
           ref={frameRef}
           title={t("studioModelPreview")}
           className="st-model-frame"
-          sandbox="allow-scripts allow-same-origin"
+          sandbox="allow-scripts"
           srcDoc={srcDoc}
           onLoad={pushControls}
         />

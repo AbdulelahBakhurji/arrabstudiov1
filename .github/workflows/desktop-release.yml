@@ -11,8 +11,9 @@ on:
     tags:
       - "v*"
 
+# Least privilege: only the publish job may write to the repository.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   macos:
@@ -32,8 +33,19 @@ jobs:
           VITE_ARRAB_API_URL: https://api.arrabai.com
           VITE_ARRAB_API_ROUTE_PREFIX: /r/nmpi6uidtpkh1bdf
           ARRAB_UNIVERSAL: ${{ inputs.universal_mac && '1' || '0' }}
+          # Developer ID signing + notarization (set these repository secrets before tagging a release).
+          # Without them the build is unsigned and the in-app installer refuses to run (by design).
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # minisign key for the signed updater (latest.json + .sig artifacts).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
-          pnpm install
+          pnpm install --frozen-lockfile
           pnpm ship:mac
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
@@ -61,9 +73,11 @@ jobs:
         env:
           VITE_ARRAB_API_URL: https://api.arrabai.com
           VITE_ARRAB_API_ROUTE_PREFIX: /r/nmpi6uidtpkh1bdf
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         shell: bash
         run: |
-          pnpm install
+          pnpm install --frozen-lockfile
           pnpm ship:windows
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -80,6 +94,8 @@ jobs:
     needs: [macos, windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - name: Download macOS artifacts

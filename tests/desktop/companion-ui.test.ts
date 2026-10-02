@@ -12,7 +12,10 @@ import {
   ensureGeneralCompanion,
   forgetEverything,
 } from "@/domains/companions/companions";
-import { resolveAssistantChatTabs, writeAssistantChatTabs } from "@/domains/chat/assistant-chat-tabs";
+import {
+  resolveAssistantChatTabs,
+  writeAssistantChatTabs,
+} from "@/domains/chat/assistant-chat-tabs";
 import { writeAccountSession, clearAccountSession } from "@/core/session/account-session";
 import { createCompanionDraftStore } from "@/domains/companions/companion-drafts";
 
@@ -21,13 +24,33 @@ import { createCompanionDraftStore } from "@/domains/companions/companion-drafts
 const testDom = await vi.hoisted(async () => {
   const { JSDOM } = await import("jsdom");
   const dom = new JSDOM("<!doctype html><html><body></body></html>", {
-    url: "https://arrab.test/", pretendToBeVisual: true,
+    url: "https://arrab.test/",
+    pretendToBeVisual: true,
   });
   for (const key of [
-    "window", "document", "navigator", "Node", "Element", "HTMLElement", "HTMLTextAreaElement",
-    "HTMLInputElement", "HTMLButtonElement", "HTMLDialogElement", "Event", "CustomEvent", "StorageEvent", "MouseEvent", "KeyboardEvent",
-    "localStorage", "sessionStorage",
-  ]) Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: dom.window[key] });
+    "window",
+    "document",
+    "navigator",
+    "Node",
+    "Element",
+    "HTMLElement",
+    "HTMLTextAreaElement",
+    "HTMLInputElement",
+    "HTMLButtonElement",
+    "HTMLDialogElement",
+    "Event",
+    "CustomEvent",
+    "StorageEvent",
+    "MouseEvent",
+    "KeyboardEvent",
+    "localStorage",
+    "sessionStorage",
+  ])
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      writable: true,
+      value: dom.window[key],
+    });
   globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window);
   globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window);
   return dom;
@@ -36,7 +59,10 @@ afterAll(() => testDom.window.close());
 
 const mocked = vi.hoisted(() => ({
   streams: [] as Array<{
-    callbacks: { onToken: (text: string) => void; onDone: (result: { assistantMessage: { content: string } }) => void };
+    callbacks: {
+      onToken: (text: string) => void;
+      onDone: (result: { assistantMessage: { content: string } }) => void;
+    };
     signal: AbortSignal;
     resolve: () => void;
   }>,
@@ -48,10 +74,16 @@ vi.mock("@/core/api/api", () => ({
     createAgent: vi.fn(async () => ({ id: "mock-agent" })),
     updateAgent: vi.fn(async () => ({ id: "mock-agent" })),
     createConversation: vi.fn(async () => ({ id: "mock-conversation" })),
-    conversation: vi.fn(async (id: string) => ({ conversation: { id, title: "Chat" }, messages: [] })),
-    sendMessageStream: vi.fn((_id, _input, callbacks, signal) => new Promise<void>((resolve) => {
-      mocked.streams.push({ callbacks, signal, resolve });
+    conversation: vi.fn(async (id: string) => ({
+      conversation: { id, title: "Chat" },
+      messages: [],
     })),
+    sendMessageStream: vi.fn(
+      (_id, _input, callbacks, signal) =>
+        new Promise<void>((resolve) => {
+          mocked.streams.push({ callbacks, signal, resolve });
+        }),
+    ),
   },
 }));
 vi.mock("@/domains/account/use-signed-in-account", () => ({
@@ -65,9 +97,11 @@ async function mount(strict = false) {
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
-  const page = createElement(MemoryRouter, { initialEntries: ["/individuals"] },
-    createElement(LanguageProvider, { children:
-      createElement(RoleProvider, { role: "individual" }, createElement(CompanionsPage)),
+  const page = createElement(
+    MemoryRouter,
+    { initialEntries: ["/individuals"] },
+    createElement(LanguageProvider, {
+      children: createElement(RoleProvider, { role: "individual" }, createElement(CompanionsPage)),
     }),
   );
   await act(async () => root!.render(strict ? createElement(StrictMode, null, page) : page));
@@ -86,7 +120,10 @@ function composer() {
 async function typeDraft(value: string) {
   await act(async () => {
     // Use the native setter so React receives an actual input change.
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(composer(), value);
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(
+      composer(),
+      value,
+    );
     composer().dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
@@ -108,7 +145,10 @@ beforeEach(async () => {
   await ensureCompanionsReady();
   mocked.streams.length = 0;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  vi.stubGlobal("fetch", vi.fn(() => Promise.reject(new Error("Live network is forbidden in UI tests"))));
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.reject(new Error("Live network is forbidden in UI tests"))),
+  );
   Object.defineProperty(HTMLElement.prototype, "scrollTo", { configurable: true, value: vi.fn() });
 });
 

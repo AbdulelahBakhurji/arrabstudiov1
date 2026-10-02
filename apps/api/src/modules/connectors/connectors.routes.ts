@@ -4,6 +4,7 @@ import { extractWhatsAppInbound } from "./whatsapp-connector.js";
 import type { ConnectConnectorRequest, GithubCommitRequest, GithubCreatePullRequest, SendEmailRequest, SendWhatsAppRequest, ArrangeEmailRequest, OpenWaLinkStartRequest } from "@arrab/shared";
 import type { FastifyInstance } from "fastify";
 import type { V1Deps } from "../../http/deps.js";
+import { escapeHtml, isSafeRedirectUrl, jsonForScript } from "../../platform/http/html-safe.js";
 
 function oauthDesktopBridgeHtml(input: {
   provider:
@@ -26,7 +27,7 @@ function oauthDesktopBridgeHtml(input: {
   const deepLink = input.ok
     ? `arrab://connectors/connected?provider=${encodeURIComponent(input.provider)}`
     : `arrab://connectors/error?provider=${encodeURIComponent(input.provider)}`;
-  const next = input.nextUrl.replace(/"/g, "&quot;");
+  const safeNextUrl = isSafeRedirectUrl(input.nextUrl) ? input.nextUrl : deepLink;
   const title = input.ok ? "Connected" : "Connection failed";
   const body = input.ok
     ? `Opening Arrab Studio… ${input.provider} is ready.`
@@ -50,12 +51,12 @@ function oauthDesktopBridgeHtml(input: {
   <div class="card">
     <h1>${title}</h1>
     <p id="msg">${body}</p>
-    <p><a id="open" href="${deepLink}">Open Arrab Studio</a></p>
+    <p><a id="open" href="${escapeHtml(deepLink)}">Open Arrab Studio</a></p>
   </div>
   <script>
     (function () {
-      var deep = ${JSON.stringify(deepLink)};
-      var next = ${JSON.stringify(input.nextUrl)};
+      var deep = ${jsonForScript(deepLink)};
+      var next = ${jsonForScript(safeNextUrl)};
       try { window.location.href = deep; } catch (e) {}
       window.setTimeout(function () {
         window.location.replace(next);

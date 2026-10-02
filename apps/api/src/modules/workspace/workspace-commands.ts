@@ -1,4 +1,5 @@
 import {
+  AppError,
   NotFoundError,
   ValidationError,
   randomIdGenerator,
@@ -96,6 +97,28 @@ export class WorkspaceCommandService {
     private readonly clock: Clock = systemClock,
   ) {}
 
+  /** Plan limit on live AI employees (`null` = unlimited). Wired by the composition root. */
+  private agentLimit: () => Promise<number | null> = async () => null;
+
+  setAgentLimit(limit: () => Promise<number | null>): void {
+    this.agentLimit = limit;
+  }
+
+  /** A plan that caps AI employees must also cap un-archiving, or archive/restore sidesteps the limit. */
+  private async assertAgentCapacity(): Promise<void> {
+    const limit = await this.agentLimit();
+    if (limit === null) return;
+    const live = (await this.persistence.agents.list()).filter((item) => item.status !== "archived").length;
+    if (live >= limit) {
+      throw new AppError(
+        "PLAN_LIMIT",
+        `Your plan includes ${limit} AI employee${limit === 1 ? "" : "s"}. Archive one or upgrade to add more.`,
+        403,
+        true,
+      );
+    }
+  }
+
   private async record(
     verb: Activity["verb"],
     objectType: string,
@@ -169,6 +192,7 @@ export class WorkspaceCommandService {
       if (existing) return existing;
     }
     await this.assertProjectInWorkspace(input.projectId);
+    await this.assertAgentCapacity();
     if (input.teamId) {
       const team = await this.persistence.teams.getById(input.teamId);
       if (!team) {
@@ -228,6 +252,9 @@ export class WorkspaceCommandService {
     }
     if (input.projectId !== undefined) {
       await this.assertProjectInWorkspace(input.projectId);
+    }
+    if (existing.status === "archived" && input.status && input.status !== "archived") {
+      await this.assertAgentCapacity();
     }
     const updated: Agent = {
       ...existing,

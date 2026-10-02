@@ -5,7 +5,8 @@ vi.mock("@/core/storage/device-store", () => {
   const data = new Map<string, string>();
   return {
     deviceStoreGet: async (ns: string, key: string) => data.get(`${ns}/${key}`) ?? null,
-    deviceStoreSet: async (ns: string, key: string, value: string) => void data.set(`${ns}/${key}`, value),
+    deviceStoreSet: async (ns: string, key: string, value: string) =>
+      void data.set(`${ns}/${key}`, value),
     deviceStoreRemove: async (ns: string, key: string) => void data.delete(`${ns}/${key}`),
   };
 });
@@ -38,7 +39,10 @@ function fakeServer() {
       deleted: [] as string[],
     }),
     e2eePutChat: async (id: string, body: { sealed: string }) => {
-      chats.set(id, { sealed: body.sealed, updatedAt: new Date(Date.now() + tick++).toISOString() });
+      chats.set(id, {
+        sealed: body.sealed,
+        updatedAt: new Date(Date.now() + tick++).toISOString(),
+      });
     },
     e2eeDeleteChat: async (id: string) => void chats.delete(id),
     e2eeReset: async () => {
@@ -51,7 +55,13 @@ function fakeServer() {
 
 const conversation = { id: "chat-12345678", title: "Secret plans" } as unknown as Conversation;
 const messages = [
-  { id: "m1", conversationId: "chat-12345678", role: "user", content: "the launch is on friday", createdAt: "2026-01-01T00:00:00.000Z" },
+  {
+    id: "m1",
+    conversationId: "chat-12345678",
+    role: "user",
+    content: "the launch is on friday",
+    createdAt: "2026-01-01T00:00:00.000Z",
+  },
 ] as unknown as Message[];
 
 beforeEach(async () => {

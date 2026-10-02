@@ -2,8 +2,8 @@ import { timingSafeEqual } from "node:crypto";
 import { ForbiddenError, UnauthorizedError } from "@arrab/core";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AccountService } from "../accounts/account-service.js";
-import { ErpCompanionService } from "./erp-companion-service.js";
-import { ControlNotificationService, ControlDeskService } from "../control/control-notification-service.js";
+import { type ErpCompanionService } from "./erp-companion-service.js";
+import { type ControlNotificationService, type ControlDeskService } from "../control/control-notification-service.js";
 import type { ControlNotificationComposer } from "../control/control-notification-composer.js";
 
 function bearer(request: FastifyRequest): string | null {

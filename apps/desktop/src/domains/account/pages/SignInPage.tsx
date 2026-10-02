@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ExternalLink, Languages, Moon, Sun } from "lucide-react";
 import logoTall from "@/shared/assets/logotall.png";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
@@ -7,6 +7,7 @@ import { arrabApi, ApiRequestError } from "@/core/api/api";
 import { readPendingWebAuth } from "@/core/session/account-session";
 import { enableGuestLocalMode } from "@/core/session/guest-mode";
 import { cancelAllWebAuthPolls, pollWebAuthUntilDone, resumePendingWebAuth } from "@/domains/account/web-auth";
+import { signInWithCredentials } from "@/domains/account/seat-sign-in";
 import { openExternalUrl } from "@/core/platform/desktop";
 import { pushToast } from "@/domains/notifications/notify";
 
@@ -22,6 +23,8 @@ export function SignInPage({
   const [busy, setBusy] = useState(false);
   const [webWaiting, setWebWaiting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const pollSignalRef = useRef<{ cancelled: boolean; timer?: number }>({ cancelled: false });
   const signedInRef = useRef(false);
 
@@ -121,6 +124,38 @@ export function SignInPage({
     }
   }
 
+  async function submitCredentials(event: FormEvent) {
+    event.preventDefault();
+    setError(null);
+    setBusy(true);
+    try {
+      const result = await signInWithCredentials({ email, password });
+      signedInRef.current = true;
+      const title =
+        result.kind === "organization"
+          ? t("seatSignedInOrg")
+          : result.kind === "family"
+            ? t("seatSignedInFamily")
+            : t("accountSignedIn");
+      pushToast({
+        title,
+        body: `${result.displayName} · ${result.email}`,
+        tone: "success",
+      });
+      onSignedIn();
+    } catch (err: unknown) {
+      setError(
+        err instanceof ApiRequestError
+          ? err.message
+          : err instanceof Error
+            ? err.message
+            : t("apiUnavailable"),
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div dir={dir} className="relative flex h-full w-full overflow-hidden bg-[var(--color-background)] text-foreground">
       <div
@@ -187,11 +222,64 @@ export function SignInPage({
           </div>
 
           <div className="arrab-rise-delay-1 space-y-4 rounded-[28px] border border-white/10 bg-[#0a0a0a]/95 p-6 shadow-2xl backdrop-blur-md">
+            <form className="space-y-3" onSubmit={(e) => void submitCredentials(e)}>
+              <div>
+                <label className="mb-1.5 block text-xs text-neutral-400" htmlFor="arrab-sign-in-email">
+                  {t("seatSignInEmail")}
+                </label>
+                <input
+                  id="arrab-sign-in-email"
+                  type="email"
+                  autoComplete="username"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  disabled={busy || webWaiting}
+                  className="h-11 w-full rounded-xl border border-white/10 bg-black/40 px-3 text-sm text-white outline-none ring-emerald-400/40 placeholder:text-neutral-600 focus:ring-2 disabled:opacity-50"
+                  placeholder="you@company.com"
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-xs text-neutral-400" htmlFor="arrab-sign-in-password">
+                  {t("seatSignInPassword")}
+                </label>
+                <input
+                  id="arrab-sign-in-password"
+                  type="password"
+                  autoComplete="current-password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  disabled={busy || webWaiting}
+                  className="h-11 w-full rounded-xl border border-white/10 bg-black/40 px-3 text-sm text-white outline-none ring-emerald-400/40 placeholder:text-neutral-600 focus:ring-2 disabled:opacity-50"
+                />
+              </div>
+              <button
+                type="submit"
+                disabled={busy || webWaiting || !email.trim() || !password}
+                className="inline-flex h-12 w-full items-center justify-center rounded-full bg-white text-sm font-semibold text-black transition hover:bg-neutral-100 disabled:opacity-50"
+              >
+                {busy && !webWaiting ? t("seatSignInBusy") : t("seatSignInSubmit")}
+              </button>
+              <p className="text-center text-[11px] leading-relaxed text-neutral-500">
+                {t("seatSignInHint")}
+              </p>
+            </form>
+
+            <div className="relative py-1">
+              <div className="absolute inset-0 flex items-center" aria-hidden>
+                <div className="w-full border-t border-white/10" />
+              </div>
+              <div className="relative flex justify-center">
+                <span className="bg-[#0a0a0a] px-3 text-[11px] uppercase tracking-wide text-neutral-500">
+                  {t("seatSignInOr")}
+                </span>
+              </div>
+            </div>
+
             <button
               type="button"
               disabled={busy || webWaiting}
               onClick={() => void startBrowserSignIn()}
-              className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-full bg-white text-sm font-semibold text-black transition hover:bg-neutral-100 disabled:opacity-50"
+              className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-full border border-white/15 bg-transparent text-sm font-medium text-neutral-100 transition hover:bg-white/5 disabled:opacity-50"
             >
               <ExternalLink className="size-4" strokeWidth={1.8} />
               {webWaiting ? t("webAuthWaiting") : t("signInWithBrowser")}

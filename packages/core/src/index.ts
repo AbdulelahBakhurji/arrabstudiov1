@@ -5,6 +5,7 @@ export {
   QuotaExceededError,
   ServiceUnavailableError,
   SessionBudgetExceededError,
+  TokenExpiredError,
   UnauthorizedError,
   ValidationError,
 } from "./errors.js";
@@ -19,3 +20,9 @@ export {
   type RateLimitDecision,
   type RateLimiter,
 } from "./ports.js";
+export {
+  isBlockedHostname,
+  isBlockedIpAddress,
+  resolvePublicHost,
+  type ResolvedPublicHost,
+} from "./net-safety.js";

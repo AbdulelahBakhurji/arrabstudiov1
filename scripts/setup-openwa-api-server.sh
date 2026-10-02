@@ -27,6 +27,22 @@ cd "$VENDOR"
 if [ ! -f .env ]; then
   cp .env.minimal .env
 fi
+
+# Linux Docker → API on host (bridge gateway). SSRF blocks private ranges by default.
+DOCKER_HOST_IP="${DOCKER_HOST_IP:-172.17.0.1}"
+ensure_openwa_env() {
+  local key="$1"
+  local value="$2"
+  if grep -q "^${key}=" .env; then
+    sed -i.bak "s|^${key}=.*|${key}=${value}|" .env
+    rm -f .env.bak
+  else
+    printf '%s=%s\n' "$key" "$value" >> .env
+  fi
+}
+ensure_openwa_env "SSRF_ALLOWED_HOSTS" "${DOCKER_HOST_IP},host.docker.internal,127.0.0.1,localhost"
+ensure_openwa_env "WEBHOOK_SSRF_PROTECT" "true"
+
 mkdir -p data/sessions data/media
 
 echo "Starting OpenWA (bind ${OPENWA_PORT} on localhost)…"
@@ -77,25 +93,45 @@ if [ -z "$PUBLIC_BASE" ]; then
 fi
 ARRAB_WEBHOOK="${PUBLIC_BASE%/}${ROUTE_PREFIX}/v1/connectors/openwa/webhook"
 
-# Linux Docker → API on host
-DOCKER_HOST_IP="${DOCKER_HOST_IP:-172.17.0.1}"
 INTERNAL_WEBHOOK="http://${DOCKER_HOST_IP}:${API_PORT}${ROUTE_PREFIX}/v1/connectors/openwa/webhook"
 
 echo "OpenWA API key written to $ENV_FILE (OPENWA_API_KEY)."
 echo "Public webhook (for docs): $ARRAB_WEBHOOK"
 echo "Registering OpenWA webhook → $INTERNAL_WEBHOOK"
 
-LEGACY_SESSION="arrab"
-curl -sf -X POST "${OPENWA_BASE}/api/sessions" \
-  -H "X-API-Key: $API_KEY" \
-  -H "Content-Type: application/json" \
-  -d "{\"name\":\"${LEGACY_SESSION}\"}" >/dev/null 2>&1 || true
+extract_session_id() {
+  node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8')); const id=Array.isArray(d)?d[0]?.id:d?.id; process.stdout.write(id||'');"
+}
 
-curl -sf -X POST "${OPENWA_BASE}/api/sessions/${LEGACY_SESSION}/webhooks" \
+LEGACY_SESSION="arrab"
+SESSION_JSON="$(curl -sf -X POST "${OPENWA_BASE}/api/sessions" \
   -H "X-API-Key: $API_KEY" \
   -H "Content-Type: application/json" \
-  -d "{\"url\":\"${INTERNAL_WEBHOOK}\",\"events\":[\"message.received\"],\"secret\":\"${WEBHOOK_SECRET}\",\"retryCount\":3}" \
-  >/dev/null 2>&1 || echo "(Legacy session webhook skipped — per-user sessions register on link.)"
+  -d "{\"name\":\"${LEGACY_SESSION}\"}" 2>/dev/null || true)"
+SESSION_UUID=""
+if [ -n "$SESSION_JSON" ]; then
+  SESSION_UUID="$(printf '%s' "$SESSION_JSON" | extract_session_id 2>/dev/null || true)"
+fi
+if [ -z "$SESSION_UUID" ]; then
+  LIST_JSON="$(curl -sf "${OPENWA_BASE}/api/sessions?name=${LEGACY_SESSION}" \
+    -H "X-API-Key: $API_KEY" 2>/dev/null || true)"
+  if [ -n "$LIST_JSON" ]; then
+    SESSION_UUID="$(printf '%s' "$LIST_JSON" | extract_session_id 2>/dev/null || true)"
+  fi
+fi
+
+if [ -n "${SESSION_UUID:-}" ]; then
+  if ! curl -sf -X POST "${OPENWA_BASE}/api/sessions/${SESSION_UUID}/webhooks" \
+    -H "X-API-Key: $API_KEY" \
+    -H "Content-Type: application/json" \
+    -d "{\"url\":\"${INTERNAL_WEBHOOK}\",\"events\":[\"message.received\"],\"secret\":\"${WEBHOOK_SECRET}\",\"retryCount\":3}"; then
+    echo "(Legacy session webhook skipped — check SSRF_ALLOWED_HOSTS includes ${DOCKER_HOST_IP}.)"
+  else
+    echo ""
+  fi
+else
+  echo "(Legacy session webhook skipped — per-user sessions register on link.)"
+fi
 
 echo ""
 echo "Done. Restart arrab-api so it loads OPENWA_* from $ENV_FILE."

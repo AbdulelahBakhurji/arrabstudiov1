@@ -22,8 +22,10 @@ export function registerErrorHandler(app: FastifyInstance): void {
   app.setErrorHandler((error: unknown, request, reply) => {
     if (error instanceof AppError) {
       request.log.warn({ err: error, code: error.code }, error.message);
+      // Tell well-behaved clients when to come back (they back off instead of hammering).
+      if (error.statusCode === 429 && !reply.hasHeader("Retry-After")) reply.header("Retry-After", "30");
       return reply.status(error.statusCode).send({
-        error: { code: error.code, message: error.expose ? error.message : "Request failed" },
+        error: { code: error.code, message: error.expose ? error.message : "Request failed", requestId: request.id },
       });
     }
 
@@ -33,6 +35,7 @@ export function registerErrorHandler(app: FastifyInstance): void {
       error: {
         code: "INTERNAL_ERROR",
         message: statusCode >= 500 ? "An unexpected error occurred" : messageFromUnknown(error),
+        requestId: request.id,
       },
     });
   });

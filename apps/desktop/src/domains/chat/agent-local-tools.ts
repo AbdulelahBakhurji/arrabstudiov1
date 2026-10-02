@@ -2,9 +2,11 @@
  * Client-side execution helpers for Arrab agent tools that must run on the desk
  * (filesystem + terminal). Shared by Cowork and Chat.
  */
+import { assertWorkspaceRelative, GIT_SAFE, shellQuote } from "./shell-safety";
 import {
   createDir,
   deletePath,
+  writeBinaryFile,
   listDir,
   openPath,
   readTextFile,
@@ -130,23 +132,8 @@ async function writeBinaryRelative(
   relative: string,
   bytes: Uint8Array,
 ): Promise<void> {
-  const b64 = uint8ToBase64(bytes);
-  const script = [
-    "import base64, pathlib, sys",
-    `path = pathlib.Path(${JSON.stringify(relative)})`,
-    "path.parent.mkdir(parents=True, exist_ok=True)",
-    `path.write_bytes(base64.b64decode(${JSON.stringify(b64)}))`,
-    "print(path.resolve())",
-  ].join("\n");
-  const written = await runLocalCommand(
-    `python3 - <<'PY'\n${script}\nPY`,
-    folderPath,
-  );
-  if (written.code !== 0) {
-    throw new Error(
-      written.stderr.trim() || written.stdout.trim() || "Failed to write binary file",
-    );
-  }
+  // Native, containment-checked write (no shell, works on Windows).
+  await writeBinaryFile(folderPath, relative, uint8ToBase64(bytes));
 }
 
 function readCheckpoints(): EditCheckpoint[] {
@@ -157,8 +144,24 @@ function readCheckpoints(): EditCheckpoint[] {
   }
 }
 
-function writeCheckpoints(items: EditCheckpoint[]) {
-  localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(items.slice(0, MAX_CHECKPOINTS)));
+/** localStorage holds ~5 MB; checkpoints are best-effort undo data and must never break an edit. */
+const MAX_CHECKPOINT_BYTES = 1_500_000;
+
+function writeCheckpoints(items: EditCheckpoint[]): boolean {
+  let kept = items.slice(0, MAX_CHECKPOINTS);
+  // Newest first: drop the oldest until the total fits.
+  let size = kept.reduce((sum, item) => sum + item.content.length, 0);
+  while (kept.length > 1 && size > MAX_CHECKPOINT_BYTES) {
+    const dropped = kept[kept.length - 1]!;
+    size -= dropped.content.length;
+    kept = kept.slice(0, -1);
+  }
+  try {
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(kept));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function listEditCheckpoints(folderPath?: string | null): EditCheckpoint[] {
@@ -178,13 +181,15 @@ export async function restoreEditCheckpoint(
   return { ok: true, path: item.path, message: `Restored ${item.path}` };
 }
 
+/** Returns whether a restorable copy of the previous version now exists. */
 async function pushCheckpoint(
   folderPath: string,
   relativePath: string,
   reason: EditCheckpoint["reason"],
-) {
+): Promise<boolean> {
   try {
     const file = await readTextFile(folderPath, relativePath);
+    if (file.content.length > MAX_CHECKPOINT_BYTES) return false;
     const next: EditCheckpoint = {
       id: crypto.randomUUID(),
       path: relativePath,
@@ -193,9 +198,10 @@ async function pushCheckpoint(
       createdAt: new Date().toISOString(),
       reason,
     };
-    writeCheckpoints([next, ...readCheckpoints().filter((item) => !(item.folderPath === folderPath && item.path === relativePath))]);
+    return writeCheckpoints([next, ...readCheckpoints().filter((item) => !(item.folderPath === folderPath && item.path === relativePath))]);
   } catch {
     // new file — no prior content to checkpoint
+    return false;
   }
 }
 
@@ -292,9 +298,9 @@ export async function executeLocalAgentTool(
           const msg = "ERROR: write_file requires path.";
           return { ok: false, summary: msg, toolResult: msg };
         }
-        await pushCheckpoint(folderPath, path, "write_file");
+        const checkpointed = await pushCheckpoint(folderPath, path, "write_file");
         const saved = await writeTextFile(folderPath, path, content);
-        const toolResult = `WROTE ${path} (${saved.size} bytes). Previous version checkpointed.`;
+        const toolResult = `WROTE ${path} (${saved.size} bytes).${checkpointed ? " Previous version checkpointed." : ""}`;
         return { ok: true, summary: toolResult, toolResult };
       }
       case "apply_patch": {
@@ -319,10 +325,11 @@ export async function executeLocalAgentTool(
           const msg = `ERROR: old_string matched ${occurrences} times in ${path}. Provide a more unique old_string.`;
           return { ok: false, summary: msg, toolResult: msg };
         }
-        await pushCheckpoint(folderPath, path, "apply_patch");
-        const next = file.content.replace(oldString, newString);
+        const checkpointed = await pushCheckpoint(folderPath, path, "apply_patch");
+        // Function replacer: `$&`, `$1` … in the model's text must stay literal.
+        const next = file.content.replace(oldString, () => newString);
         const saved = await writeTextFile(folderPath, path, next);
-        const toolResult = `PATCHED ${path} (${saved.size} bytes). Replaced ${oldString.length}→${newString.length} chars. Checkpoint saved.`;
+        const toolResult = `PATCHED ${path} (${saved.size} bytes). Replaced ${oldString.length}→${newString.length} chars.${checkpointed ? " Checkpoint saved." : ""}`;
         return { ok: true, summary: toolResult, toolResult };
       }
       case "run_terminal": {
@@ -390,7 +397,7 @@ export async function executeLocalAgentTool(
         return { ok: true, summary: toolResult, toolResult };
       }
       case "git_status": {
-        const result = await runLocalCommand("git status -sb && git diff --stat", folderPath);
+        const result = await runLocalCommand(`${GIT_SAFE} status -sb && ${GIT_SAFE} diff --no-ext-diff --stat`, folderPath);
         const toolResult = [
           `exit_code=${result.code}`,
           result.stdout.trim() || "(empty)",
@@ -406,7 +413,9 @@ export async function executeLocalAgentTool(
       }
       case "git_diff": {
         const path = normalizeRel(args.path || "");
-        const cmd = path ? `git diff -- ${JSON.stringify(path)}` : "git diff";
+        const cmd = path
+          ? `${GIT_SAFE} diff --no-ext-diff --no-textconv -- ${shellQuote(assertWorkspaceRelative(path))}`
+          : `${GIT_SAFE} diff --no-ext-diff --no-textconv`;
         const result = await runLocalCommand(cmd, folderPath);
         const body = result.stdout.trim().slice(0, 16000) || "(no diff)";
         const toolResult = [`exit_code=${result.code}`, body].join("\n");
@@ -480,8 +489,8 @@ export async function executeLocalAgentTool(
         const printCmd = [
           "set -e",
           'ROOT="$(pwd)"',
-          `HTML="$ROOT/${htmlPath.replace(/"/g, '\\"')}"`,
-          `PDF="$ROOT/${pdfPath.replace(/"/g, '\\"')}"`,
+          `HTML="$ROOT/"${shellQuote(assertWorkspaceRelative(htmlPath))}`,
+          `PDF="$ROOT/"${shellQuote(assertWorkspaceRelative(pdfPath))}`,
           "BIN=\"\"",
           ...chromeBins.map(
             (bin) => `if [ -z "$BIN" ] && [ -x ${JSON.stringify(bin)} ]; then BIN=${JSON.stringify(bin)}; fi`,
@@ -635,17 +644,19 @@ export async function executeLocalAgentTool(
         };
       }
       case "read_document": {
-        const path = normalizeRel(args.path || args.relative || "");
-        if (!path) {
+        const requested = normalizeRel(args.path || args.relative || "");
+        if (!requested) {
           const msg = "ERROR: read_document requires path.";
           return { ok: false, summary: msg, toolResult: msg };
         }
+        // Several branches below hand this path to a shell or an interpreter: it must be inside the folder.
+        const path = assertWorkspaceRelative(requested);
         const lower = path.toLowerCase();
         if (/\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(lower)) {
           const info = await runLocalCommand(
             [
               "set -e",
-              `FILE=${JSON.stringify(path)}`,
+              `FILE=${shellQuote(assertWorkspaceRelative(path))}`,
               'if command -v sips >/dev/null 2>&1; then sips -g pixelWidth -g pixelHeight -g format "$FILE" 2>/dev/null || true; fi',
               'ls -la "$FILE"',
               'file "$FILE" 2>/dev/null || true',
@@ -691,7 +702,7 @@ export async function executeLocalAgentTool(
           const extracted = await runLocalCommand(
             [
               "set +e",
-              `FILE=${JSON.stringify(path)}`,
+              `FILE=${shellQuote(assertWorkspaceRelative(path))}`,
               'if command -v pdftotext >/dev/null 2>&1; then pdftotext -layout "$FILE" - | head -c 24000; exit $?; fi',
               'python3 - <<\'PY\'',
               "from pathlib import Path",

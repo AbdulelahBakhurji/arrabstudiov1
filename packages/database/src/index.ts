@@ -17,6 +17,7 @@ export type {
   CompanionDeskRepository,
   CrewRepository,
   SealedVaultRepository,
+  SyncRecordRepository,
   AccountRepository,
   Persistence,
   ProjectRepoBindingRepository,

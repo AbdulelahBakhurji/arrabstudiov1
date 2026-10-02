@@ -54,8 +54,8 @@ export async function getDeviceId(): Promise<string> {
 }
 
 /**
- * The `reset_device` command gets a fresh identity.
- * TODO(contract): wire "Sign out of all devices" here once the server exposes that endpoint.
+ * Rotate the managed-client device id (fresh push identity).
+ * Account sessions are separate: use `arrabApi.revokeAllAccountSessions()` / Account → Security.
  */
 export async function resetDeviceId(): Promise<string> {
   const id = newDeviceId();

@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 private final class OnceResume: @unchecked Sendable {
   private let lock = NSLock()
@@ -1246,6 +1247,14 @@ final class ArrabAPIClient: ObservableObject {
     return String(text[range])
   }
 
+  /// Names this device in the user's device list (Settings → signed-in devices) and in diagnostics.
+  private func applyClientInfo(_ req: inout URLRequest) {
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+    req.setValue("ios", forHTTPHeaderField: "X-Arrab-Platform")
+    req.setValue(version, forHTTPHeaderField: "X-Arrab-App-Version")
+    req.setValue(UIDevice.current.name.isEmpty ? "iPhone" : UIDevice.current.name, forHTTPHeaderField: "X-Arrab-Device-Name")
+  }
+
   private func applyAuth(_ req: inout URLRequest) {
     if let token = sessionToken, !token.isEmpty {
       req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -1267,6 +1276,7 @@ final class ArrabAPIClient: ObservableObject {
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     req.setValue("application/json", forHTTPHeaderField: "Accept")
     if let timeout { req.timeoutInterval = timeout }
+    applyClientInfo(&req)
     if authed { applyAuth(&req) }
     if let body {
       req.httpBody = try JSONEncoder().encode(AnyEncodable(body))

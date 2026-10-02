@@ -1,4 +1,5 @@
-import { ValidationError } from "@arrab/core";
+import { randomUUID } from "node:crypto";
+import { ValidationError, resolvePublicHost } from "@arrab/core";
 import type { ConnectorResource } from "@arrab/shared";
 import { Client } from "ssh2";
 
@@ -69,7 +70,13 @@ export function parseSshSecret(raw: string): SshSecret | null {
   }
 }
 
-function connectClient(secret: SshSecret, readyTimeoutMs = 12_000): Promise<Client> {
+/**
+ * The API runs in the cloud, so a user-supplied host must never be a way to probe the
+ * API's own network (databases, metadata service, sibling containers). Vet the host and
+ * connect to the exact address that was vetted.
+ */
+async function connectClient(secret: SshSecret, readyTimeoutMs = 12_000): Promise<Client> {
+  const target = await resolvePublicHost(secret.host);
   return new Promise((resolve, reject) => {
     const client = new Client();
     const timer = setTimeout(() => {
@@ -87,7 +94,7 @@ function connectClient(secret: SshSecret, readyTimeoutMs = 12_000): Promise<Clie
         reject(new ValidationError(error.message || "SSH connection failed"));
       })
       .connect({
-        host: secret.host,
+        host: target.address,
         port: secret.port,
         username: secret.username,
         password: secret.authMode === "password" ? secret.password : undefined,
@@ -187,6 +194,7 @@ export async function execSshCommand(
           reject(new ValidationError(error.message || "SSH exec failed"));
           return;
         }
+        // Bounded as it streams: a chatty remote command must not grow API memory.
         let stdout = "";
         let stderr = "";
         stream
@@ -194,15 +202,15 @@ export async function execSshCommand(
             clearTimeout(timer);
             resolve({
               code: typeof code === "number" ? code : null,
-              stdout: stdout.slice(0, 80_000),
-              stderr: stderr.slice(0, 20_000),
+              stdout,
+              stderr,
             });
           })
           .on("data", (chunk: Buffer | string) => {
-            stdout += chunk.toString();
+            if (stdout.length < 80_000) stdout = (stdout + chunk.toString()).slice(0, 80_000);
           });
         stream.stderr.on("data", (chunk: Buffer | string) => {
-          stderr += chunk.toString();
+          if (stderr.length < 20_000) stderr = (stderr + chunk.toString()).slice(0, 20_000);
         });
       });
     }),
@@ -210,5 +218,5 @@ export async function execSshCommand(
 }
 
 function cryptoRandom(): string {
-  return `ssh-${Math.random().toString(36).slice(2, 10)}`;
+  return `ssh-${randomUUID().slice(0, 8)}`;
 }

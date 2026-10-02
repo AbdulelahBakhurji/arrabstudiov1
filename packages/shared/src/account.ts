@@ -302,7 +302,8 @@ export function resolvePlanAudience(input: {
   if (["family", "family-plus", "family-free"].includes(id)) {
     return "family";
   }
-  if (["free", "pro", "solo", "studio"].includes(id)) {
+  // Include live control-plane aliases (starter / max) still served by api.arrabai.com 0.14.x.
+  if (["free", "pro", "solo", "studio", "starter", "max"].includes(id)) {
     return "individual";
   }
 
@@ -378,10 +379,21 @@ export const TOKEN_TOP_UP_PACKS: Record<TokenTopUpPackId, TokenTopUpPack> = {
   },
 };
 
+/**
+ * Custom credit is paid in SAR but metered in tokens like everything else. It converts at the rate of
+ * the smallest usage pack (the least generous one): 500,000 tokens for 15 SAR. Previously the credit
+ * was recorded and shown but never spent, so a customer could pay and receive nothing.
+ */
+export const CUSTOM_CREDIT_TOKENS_PER_HALALA = TOKEN_TOP_UP_PACKS.boost_500k.tokens / TOKEN_TOP_UP_PACKS.boost_500k.priceHalalas;
+
+export function tokensForCredit(amountHalalas: number): number {
+  return Math.max(0, Math.floor(amountHalalas * CUSTOM_CREDIT_TOKENS_PER_HALALA));
+}
+
 export interface TokenTopUpRecord {
   /** Moyasar invoice id (or redeem reference) — makes applying a purchase idempotent. */
   invoiceId: string;
-  packId: TokenTopUpPackId;
+  packId: TokenTopUpPackId | "custom_credit";
   tokens: number;
   purchasedAt: string;
   /** Tokens only count while this matches the account's current period end. */
@@ -455,6 +467,53 @@ export interface StudioAccountRecord {
   tokenTopUps?: TokenTopUpRecord[];
   /** Custom credit balances. Absent until the first custom top-up. */
   modelCredit?: ModelCreditBalance;
+  /**
+   * Paid plan invoices already applied (most recent 100). A paid invoice is single-use: without
+   * this, one payment could be re-confirmed every month to renew a plan for free.
+   */
+  paidInvoiceIds?: string[];
+  /** Signed-in devices. `sessionTokenHash` is kept only so sessions issued before this existed still work. */
+  sessions?: AccountSession[];
+}
+
+/** One signed-in device. Tokens are stored only as hashes. */
+export interface AccountSession {
+  id: string;
+  tokenHash: string;
+  deviceName: string;
+  /** e.g. macos, windows, ios, android, huawei, web, cli */
+  platform: string;
+  appVersion: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  /**
+   * Set for a family seat signed in with its own login. The session is *bound to that seat*: the
+   * server derives the acting member from it (never from a header or global state) and refuses
+   * account-level actions (plan, billing, disconnect, other devices' sessions).
+   */
+  seatMemberId?: string | null;
+  /**
+   * Short-lived access + rotating refresh (opt-in per client). `tokenHash` stops working at
+   * `accessExpiresAt`; `refreshHash` is exchanged for a new pair. `prevRefreshHash` detects theft: a
+   * refresh token that was already rotated away and shows up again ends the whole session.
+   */
+  accessExpiresAt?: string | null;
+  refreshHash?: string | null;
+  prevRefreshHash?: string | null;
+  rotatedAt?: string | null;
+}
+
+/** What a client may see about its own sessions (never the hash). */
+export interface AccountSessionPublic {
+  id: string;
+  deviceName: string;
+  platform: string;
+  appVersion: string | null;
+  createdAt: string;
+  lastSeenAt: string;
+  expiresAt: string;
+  current: boolean;
 }
 
 export interface AccountPublic {

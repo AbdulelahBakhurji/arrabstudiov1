@@ -65,3 +65,11 @@ export class SessionBudgetExceededError extends AppError {
     this.name = "SessionBudgetExceededError";
   }
 }
+
+/** The access token was valid but has expired: the client should refresh it (not sign the user out). */
+export class TokenExpiredError extends AppError {
+  constructor() {
+    super("TOKEN_EXPIRED", "Your access token expired. Refresh the session.", 401, true);
+    this.name = "TokenExpiredError";
+  }
+}

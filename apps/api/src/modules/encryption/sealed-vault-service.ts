@@ -67,6 +67,11 @@ export class SealedVaultService {
   }
 
   /** Each user — org employee, family seat, or the account owner — has a separate vault. */
+  /** Also used by sync so every per-user store is partitioned identically. */
+  async currentOwnerKey(): Promise<string> {
+    return this.ownerKey();
+  }
+
   private async ownerKey(): Promise<string> {
     const employeeId = currentRequestActor().employeeId;
     if (employeeId) return `emp:${employeeId}`;

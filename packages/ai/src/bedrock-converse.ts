@@ -16,6 +16,18 @@ import {
   normalizeBedrockModelId,
 } from "./bedrock.js";
 import { OpenAiCompatibleAdapter } from "./openai-compatible.js";
+import {
+  STREAM_CONNECT_TIMEOUT_MS,
+  clientStatusForProvider,
+  providerFetch,
+  readProviderJson,
+  readStreamChunk,
+} from "./provider-http.js";
+
+/** Cancellation must end the request — never fall through to a "backup" model call. */
+function isCancellation(error: unknown): boolean {
+  return error instanceof AiGatewayError && error.code === "CANCELLED";
+}
 
 export interface BedrockConverseConfig {
   id?: string;
@@ -297,24 +309,28 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
       return this.openAiCompat.complete(normalized);
     }
     const modelId = encodeURIComponent(normalized.model.model);
-    const response = await fetch(`${this.baseUrl}/model/${modelId}/converse`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-        Accept: "application/json",
+    const response = await providerFetch(
+      `${this.baseUrl}/model/${modelId}/converse`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify(this.buildBody(normalized)),
       },
-      body: JSON.stringify(this.buildBody(normalized)),
-    });
+      { signal: request.signal },
+    );
 
-    const payload = (await response.json()) as BedrockConverseResponse;
+    const payload = await readProviderJson<BedrockConverseResponse>(response);
     if (!response.ok) {
       throw new AiGatewayError(
         "PROVIDER_ERROR",
         payload.message ??
           payload.Message ??
           `Bedrock request failed with ${response.status}`,
-        response.status >= 400 && response.status < 500 ? response.status : 502,
+        clientStatusForProvider(response.status),
       );
     }
     return extractCompletion(payload, normalized);
@@ -324,6 +340,7 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
     try {
       return await this.completeOnce(request);
     } catch (error) {
+      if (isCancellation(error)) throw error;
       const message = error instanceof Error ? error.message : String(error);
       const fallback = normalizeBedrockModelId("amazon.nova-lite-v1:0", this.region);
       const current = normalizeBedrockModelId(request.model.model, this.region);
@@ -355,6 +372,7 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
         yield* this.openAiCompat.streamComplete!(normalized);
         return;
       } catch (error) {
+        if (isCancellation(error)) throw error;
         const message = error instanceof Error ? error.message : String(error);
         const fallback = normalizeBedrockModelId("amazon.nova-lite-v1:0", this.region);
         if (!this.isInvalidModelError(message) || normalized.model.model === fallback) {
@@ -384,8 +402,9 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
       }
       return;
     } catch (error) {
-      // Once text reached the user a silent retry would duplicate it.
-      if (emitted) throw error;
+      // Once text reached the user a silent retry would duplicate it; a cancelled request
+      // must stay cancelled instead of re-running as a full (billed) completion.
+      if (emitted || isCancellation(error)) throw error;
     }
     // Stream unavailable (model/region) — full completion with Nova fallback.
     const completion = await this.complete(normalized);
@@ -409,21 +428,25 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
       config.maxTokens = Math.max(config.maxTokens, budget + 1024);
       delete config.temperature;
     }
-    const response = await fetch(`${this.baseUrl}/model/${modelId}/converse-stream`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        "Content-Type": "application/json",
-        Accept: "application/vnd.amazon.eventstream",
+    const response = await providerFetch(
+      `${this.baseUrl}/model/${modelId}/converse-stream`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          "Content-Type": "application/json",
+          Accept: "application/vnd.amazon.eventstream",
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    });
+      { signal: request.signal, timeoutMs: STREAM_CONNECT_TIMEOUT_MS },
+    );
     if (!response.ok || !response.body) {
-      const payload = (await response.json().catch(() => ({}))) as BedrockConverseResponse;
+      const payload = await readProviderJson<BedrockConverseResponse>(response);
       throw new AiGatewayError(
         "PROVIDER_ERROR",
         payload.message ?? payload.Message ?? `Bedrock stream failed with ${response.status}`,
-        response.status >= 400 && response.status < 500 ? response.status : 502,
+        clientStatusForProvider(response.status),
       );
     }
 
@@ -436,7 +459,7 @@ export class BedrockConverseAdapter implements ModelProviderAdapter {
     const tools = new Map<number, { id: string; name: string; input: string }>();
 
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readStreamChunk(reader, { signal: request.signal });
       if (done) break;
       const merged = new Uint8Array(pending.length + value.length);
       merged.set(pending);

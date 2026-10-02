@@ -16,6 +16,7 @@ import { TOKEN_GUARD_EVENT } from "@/domains/account/token-guard";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/primitives/tooltip";
 import logoTall from "@/shared/assets/logotall.png";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
+import { ConnectivityBanner } from "./ConnectivityBanner";
 import { useTheme } from "@/shared/theme/ThemeProvider";
 import { arrabApi } from "@/core/api/api";
 import { subscribeAccountSession } from "@/core/session/account-session";
@@ -523,6 +524,7 @@ export function StudioFrame() {
 
         <main className="flex h-full min-h-0 min-w-0 flex-col overflow-hidden ps-[96px] pe-3 pb-3">
           <MaintenanceBanner />
+          <ConnectivityBanner />
           <UpdateAvailableBanner />
           {guestLocal && !account ? (
             <div className="mb-2 flex shrink-0 items-center justify-between gap-3 rounded-xl border border-amber-400/25 bg-amber-500/10 px-3 py-2 text-xs text-amber-50">

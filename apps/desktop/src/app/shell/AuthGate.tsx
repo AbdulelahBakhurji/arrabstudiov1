@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
 import { FirstLaunchSetup } from "@/domains/account/ui/FirstLaunchSetup";
 import { SignInPage } from "@/domains/account/pages/SignInPage";
@@ -16,9 +16,18 @@ import { consumePostAuthPlanSetup, peekPostAuthPlanSetup } from "@/domains/accou
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { useRole } from "@/domains/account/roles/RoleProvider";
+import {
+  readOrgEmployeeSession,
+  subscribeOrgEmployeeSession,
+} from "@/domains/organization/org-employee-session";
 
 export function AuthGate() {
   const { signedIn, refresh } = useSignedInAccount();
+  const orgSeat = useSyncExternalStore(
+    subscribeOrgEmployeeSession,
+    readOrgEmployeeSession,
+    () => null,
+  );
   const { dir } = useLanguage();
   const { href } = useRole();
   const navigate = useNavigate();
@@ -66,8 +75,8 @@ export function AuthGate() {
     );
   }
 
-  // Signed-in → full studio. Guest local-only → studio with cloud AI locked.
-  if (signedIn || guestLocal) {
+  // Account owner / family seat, org employee seat, or guest local-only.
+  if (signedIn || guestLocal || orgSeat) {
     return <Outlet />;
   }
 

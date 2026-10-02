@@ -85,6 +85,8 @@ export function Game3DStage({
         collected?: number;
         total?: number;
       } | null;
+      // Only the preview frame we created may report stats.
+      if (event.source !== frameRef.current?.contentWindow) return;
       if (!data || data.type !== "arrab-game-stats") return;
       setStats({
         fps: typeof data.fps === "number" ? data.fps : null,
@@ -312,7 +314,7 @@ export function Game3DStage({
           ref={frameRef}
           title={t("studioGamePreview")}
           className="st-game-frame"
-          sandbox="allow-scripts allow-same-origin"
+          sandbox="allow-scripts"
           srcDoc={srcDoc}
           onLoad={pushControls}
         />

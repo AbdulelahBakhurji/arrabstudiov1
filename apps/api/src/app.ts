@@ -1,5 +1,7 @@
+import { SyncService } from "./modules/sync/sync-service.js";
 import { SealedVaultService } from "./modules/encryption/sealed-vault-service.js";
 import cors from "@fastify/cors";
+import { timingSafeEqual } from "node:crypto";
 import {
   AnthropicMessagesAdapter,
   BedrockConverseAdapter,
@@ -24,11 +26,18 @@ import {
   type DatabaseConnection,
   type Persistence,
 } from "@arrab/database";
-import { ValidationError } from "@arrab/core";
+import { AppError, ValidationError } from "@arrab/core";
 import { orgSeatLimitForPlan } from "@arrab/shared";
 import Fastify, { type FastifyInstance } from "fastify";
 import type { ApiEnv } from "./platform/config/env.js";
 import { configureFieldCrypto } from "./platform/crypto/field-crypto.js";
+import { Metrics } from "./platform/observability/metrics.js";
+import { requestIdFrom } from "./platform/http/request-id.js";
+import {
+  buildModelRegistry,
+  fallbackChainFor,
+  type ModelRegistry,
+} from "./platform/config/model-catalog.js";
 import { registerErrorHandler } from "./platform/http/error-handler.js";
 import { registerSecurity } from "./platform/http/security.js";
 import { registerV1Routes } from "./http/v1.js";
@@ -44,6 +53,7 @@ import { BillingService } from "./modules/billing/billing-service.js";
 import { createMoyasarClient } from "./modules/billing/moyasar.js";
 import { GoalService } from "./modules/workspace/goal-service.js";
 import { TaskExecutionService } from "./modules/workspace/task-execution-service.js";
+import { TeamRunService } from "./modules/workspace/team-run-service.js";
 import { DeskService } from "./modules/desk/desk-service.js";
 import { CrewService } from "./modules/organization/crew-service.js";
 import { OrgWorkforceService } from "./modules/organization/org-workforce-service.js";
@@ -52,7 +62,11 @@ import { FamilyHouseholdService } from "./modules/family/family-household-servic
 import { WorkspaceCommandService } from "./modules/workspace/workspace-commands.js";
 import { WorkspaceQueryService } from "./modules/workspace/workspace-query.js";
 
+/** Largest signed-webhook body we will buffer (Meta / OpenWA payloads are a few KB). */
+const WEBHOOK_BODY_LIMIT_BYTES = 1_048_576;
+
 export interface ApiContext {
+  metrics: Metrics;
   env: ApiEnv;
   persistence: Persistence;
   postgres: DatabaseConnection | null;
@@ -61,6 +75,7 @@ export interface ApiContext {
   chatRuntime: GatewayChatRuntime;
   defaultModel: string;
   primaryProviderId: string;
+  modelRegistry: ModelRegistry;
   queries: WorkspaceQueryService;
   commands: WorkspaceCommandService;
   conversations: ConversationService;
@@ -69,16 +84,22 @@ export interface ApiContext {
   billing: BillingService;
   goals: GoalService;
   taskExecution: TaskExecutionService;
+  teamRuns: TeamRunService;
   orgWorkforce: OrgWorkforceService;
   familyHousehold: FamilyHouseholdService;
   sealedVault: SealedVaultService;
   desk: DeskService;
   crew: CrewService;
   workforceBlueprint: WorkforceBlueprintService;
+  sync: SyncService;
 }
 
 export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
-  configureFieldCrypto(env.dataEncryptionKey);
+  configureFieldCrypto(
+    env.dataEncryptionKey,
+    env.dataDir,
+    Boolean(env.databaseUrl) && process.env.ARRAB_ALLOW_INSECURE_DATA_KEY === "1",
+  );
   if (env.databaseUrl && !env.dataEncryptionKey?.trim()) {
     const message =
       "[arrab-api] DATA_ENCRYPTION_KEY is required when DATABASE_URL is set. Use a 32-byte key (64 hex chars or base64). Set ARRAB_ALLOW_INSECURE_DATA_KEY=1 only for local emergencies.";
@@ -352,10 +373,18 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     env.openwaBaseUrl,
     env.openwaApiKey?.trim() || null,
   );
+  if (env.allowPlanCodes && env.databaseUrl) {
+    console.warn(
+      "[arrab-api] ARRAB_ENABLE_PLAN_CODES=1 on a database-backed API: anyone can redeem a public code for a paid plan. Disable it in production.",
+    );
+  }
   const accounts = new AccountService(
     persistence,
     env.publicBaseUrl,
     env.authWebUrl,
+    undefined,
+    undefined,
+    { allowPlanCodes: env.allowPlanCodes, signupEmails: env.signupEmails },
   );
   const billing = new BillingService(
     accounts,
@@ -368,6 +397,15 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
   sealedVault.setFamilyHousehold(familyHousehold);
   accounts.onAccountReset(() => connectors.purgeAll());
   accounts.onAccountReset(() => sealedVault.purgeAll());
+  const sync = new SyncService(persistence, () => sealedVault.currentOwnerKey());
+  accounts.onAccountReset(() => sync.purgeAll());
+  const metrics = new Metrics();
+  const modelRegistry = buildModelRegistry({
+    primaryProviderId,
+    defaultModel: resolvedDefaultModel,
+    openRouterModels: env.openRouterModels,
+    bedrockModels: env.bedrockModels,
+  });
   const conversations = new ConversationService(
     persistence,
     aiGateway,
@@ -376,6 +414,11 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     connectors,
     accounts,
     familyHousehold,
+    undefined,
+    undefined,
+    new Set(modelRegistry.models.map((entry) => entry.id)),
+    (model) => fallbackChainFor(modelRegistry, model).slice(1),
+    metrics,
   );
   const goals = new GoalService(persistence);
   const taskExecution = new TaskExecutionService(
@@ -384,6 +427,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     aiGateway,
     accounts,
   );
+  const teamRuns = new TeamRunService(persistence, commands, taskExecution);
   const desk = new DeskService(
     persistence,
     aiGateway,
@@ -406,11 +450,13 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     familyHousehold,
     resolvedDefaultModel,
   );
+  // Org seats are an organization-plan feature: 0 on individual/family plans (not the old default of 8).
   const orgWorkforce = new OrgWorkforceService(persistence, undefined, undefined, async () => {
-    const status = await accounts.status();
-    const planId = status.entitlements?.planId ?? status.account?.planId ?? null;
-    return planId ? orgSeatLimitForPlan(planId) : null;
+    const plan = await accounts.planEntitlements();
+    if (!plan) return null;
+    return plan.orgWorkforce ? orgSeatLimitForPlan(plan.planId) : 0;
   });
+  commands.setAgentLimit(async () => (await accounts.planEntitlements())?.maxAgents ?? null);
   const workforceBlueprint = new WorkforceBlueprintService(
     persistence,
     aiGateway,
@@ -419,6 +465,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
   );
 
   return {
+    metrics,
     env,
     persistence,
     postgres,
@@ -427,6 +474,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     chatRuntime,
     defaultModel: resolvedDefaultModel,
     primaryProviderId,
+    modelRegistry,
     queries,
     commands,
     conversations,
@@ -435,21 +483,72 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     billing,
     goals,
     taskExecution,
+    teamRuns,
     orgWorkforce,
     familyHousehold,
     sealedVault,
     desk,
     crew,
     workforceBlueprint,
+    sync,
   };
 }
 
 export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: context.env.logLevel === "error" ? false : { level: context.env.logLevel },
+    // A hop count is valid at runtime; the typings only list boolean | string.
+    trustProxy: context.env.trustProxy as boolean,
+    // Every request has an id: the caller's `X-Request-Id` when it is well-formed (end-to-end
+    // correlation from the app), otherwise a fresh UUID. It is echoed on the response and in errors.
+    genReqId: (req) => requestIdFrom(req),
+    logger:
+      context.env.logLevel === "error"
+        ? false
+        : {
+            level: context.env.logLevel,
+            ...(context.env.logStream ? { stream: context.env.logStream } : {}),
+            // Credentials never reach a log line.
+            redact: {
+              paths: [
+                "req.headers.authorization",
+                'req.headers["x-arrab-account-session"]',
+                'req.headers["x-arrab-employee-session"]',
+                'req.headers["x-arrab-refresh-token"]',
+                "req.headers.cookie",
+              ],
+              censor: "[redacted]",
+            },
+          },
   });
 
   app.decorate("arrab", context);
+
+  // Observability: request id on every response, RED metrics per route pattern.
+  const metrics = context.metrics;
+  metrics.describe("arrab_http_requests_total", "HTTP requests by route pattern, method and status class");
+  metrics.describe("arrab_http_request_duration_ms", "HTTP request latency in milliseconds");
+  metrics.describe("arrab_ai_requests_total", "AI completion attempts by provider, model and outcome");
+  metrics.describe("arrab_ai_request_duration_ms", "AI completion latency in milliseconds");
+  metrics.describe("arrab_ai_tokens_total", "Tokens billed by provider, model and direction");
+  metrics.describe("arrab_ai_fallback_total", "AI model fallbacks after a retryable provider error");
+  app.addHook("onRequest", async (request, reply) => {
+    reply.header("X-Request-Id", request.id);
+  });
+  app.addHook("onResponse", async (request, reply) => {
+    const route = (request.routeOptions.url ?? "unmatched").replace(/^\/r\/[^/]+/, "");
+    const labels = { route, method: request.method, status: `${Math.floor(reply.statusCode / 100)}xx` };
+    metrics.inc("arrab_http_requests_total", labels);
+    metrics.observe("arrab_http_request_duration_ms", reply.elapsedTime, { route, method: request.method });
+  });
+
+  // Route inventory: used by the authorization matrix tests, and handy for ops ("what does this API expose?").
+  const routeTable: Array<{ method: string; url: string }> = [];
+  app.decorate("routeTable", routeTable);
+  app.addHook("onRoute", (route) => {
+    for (const method of Array.isArray(route.method) ? route.method : [route.method]) {
+      if (method !== "HEAD" && method !== "OPTIONS") routeTable.push({ method, url: route.url });
+    }
+  });
 
   /**
    * Coolify public URL keeps `/r/<id>` on the request. Strip it so `/health` and
@@ -481,8 +580,8 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
       const allowed =
         context.env.corsOrigins.includes(origin) ||
         /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin) ||
-        origin.startsWith("tauri://") ||
-        origin.includes("tauri.localhost");
+        origin === "tauri://localhost" ||
+        /^https?:\/\/tauri\.localhost$/i.test(origin);
       callback(null, allowed);
     },
     maxAge: 600,
@@ -494,13 +593,27 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
       "X-Arrab-Account-Session",
       "X-Arrab-Employee-Session",
       "X-Arrab-Family-Member",
+      "X-Arrab-Platform",
+      "X-Arrab-App-Version",
+      "X-Arrab-Device-Name",
+      "X-Arrab-Refresh",
+      "X-Request-Id",
       "X-Requested-With",
     ],
+    // Lets browser clients read the correlation id and rate-limit hints.
+    exposedHeaders: ["X-Request-Id", "Retry-After"],
   });
   await registerSecurity(
     app,
     context.accounts,
-    (token) => context.orgWorkforce.resolveSession(token),
+    async (token) => {
+      const employee = await context.orgWorkforce.resolveSession(token);
+      if (!employee) return null;
+      // A seat only means something on an organization plan: after a downgrade its sessions stop working
+      // immediately instead of lingering with org access.
+      const plan = await context.accounts.planEntitlements();
+      return !plan || plan.orgWorkforce ? employee : null;
+    },
     stripPrefix,
   );
   registerErrorHandler(app);
@@ -509,6 +622,21 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
   // Force cross-origin so desktop/browser clients can read API responses.
   app.addHook("onSend", async (_request, reply, payload) => {
     reply.header("Cross-Origin-Resource-Policy", "cross-origin");
+    // JSON API: never render, frame, sniff or cache authenticated responses.
+    reply.header("X-Content-Type-Options", "nosniff");
+    reply.header("X-Frame-Options", "DENY");
+    reply.header("Referrer-Policy", "no-referrer");
+    // Sign-in / OAuth bridge pages carry inline script + style; JSON gets the strict policy.
+    const isHtml = String(reply.getHeader("content-type") ?? "").startsWith("text/html");
+    reply.header(
+      "Content-Security-Policy",
+      isHtml
+        ? "frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'"
+        : "default-src 'none'; frame-ancestors 'none'",
+    );
+    reply.header("Strict-Transport-Security", "max-age=15552000; includeSubDomains");
+    reply.header("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    if (!reply.hasHeader("Cache-Control")) reply.header("Cache-Control", "no-store");
     return payload;
   });
 
@@ -538,8 +666,16 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
       return payload;
     }
     const chunks: Buffer[] = [];
+    let received = 0;
     for await (const chunk of payload) {
-      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk));
+      const piece = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk);
+      received += piece.length;
+      // These endpoints are public (authenticated only by signature, which needs the whole body):
+      // cap what we buffer so an unauthenticated POST cannot exhaust memory.
+      if (received > WEBHOOK_BODY_LIMIT_BYTES) {
+        throw new AppError("PAYLOAD_TOO_LARGE", "Webhook payload is too large", 413, true);
+      }
+      chunks.push(piece);
     }
     const buf = Buffer.concat(chunks);
     (request as { rawBody?: string }).rawBody = buf.toString("utf8");
@@ -556,12 +692,14 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     billing: context.billing,
     goals: context.goals,
     taskExecution: context.taskExecution,
+    teamRuns: context.teamRuns,
     orgWorkforce: context.orgWorkforce,
     familyHousehold: context.familyHousehold,
     sealedVault: context.sealedVault,
     desk: context.desk,
     crew: context.crew,
     workforceBlueprint: context.workforceBlueprint,
+    sync: context.sync,
     gateway: context.aiGateway,
     persistence: context.persistence.kind,
     workspaceId: context.persistence.workspaceId,
@@ -569,7 +707,8 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     bedrockModels: context.env.bedrockModels,
     openRouterModels: context.env.openRouterModels,
     openRouterApiKey: context.env.openRouterApiKey,
-    primaryProviderId: context.env.primaryProviderId,
+    primaryProviderId: context.primaryProviderId,
+    modelRegistry: context.modelRegistry,
     bedrockRegion: context.env.bedrockRegion,
     releasesDir: context.env.releasesDir,
     publicBaseUrl: context.env.siteUrl,
@@ -594,6 +733,30 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
       service: "arrab-api" as const,
       time: new Date().toISOString(),
     }));
+
+    // Readiness: can this instance actually serve? (liveness is /health and never touches the database)
+    instance.get("/ready", async (_request, reply) => {
+      try {
+        if (context.postgres) await context.postgres.ping();
+        else await context.persistence.getWorkspace();
+        return { status: "ready" as const };
+      } catch {
+        return reply.status(503).send({ status: "unavailable" as const });
+      }
+    });
+
+    // Prometheus scrape endpoint. Off unless ARRAB_METRICS_TOKEN is set; compares in constant time.
+    instance.get("/metrics", async (request, reply) => {
+      const expected = context.env.metricsToken?.trim();
+      if (!expected) return reply.status(404).send({ error: { code: "NOT_FOUND", message: "Not found" } });
+      const given = (request.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
+      const a = Buffer.from(given);
+      const b = Buffer.from(expected);
+      if (a.length !== b.length || !timingSafeEqual(a, b)) {
+        return reply.status(401).send({ error: { code: "UNAUTHORIZED", message: "Invalid metrics token" } });
+      }
+      return reply.type("text/plain; version=0.0.4").send(context.metrics.render());
+    });
     registerV1Routes(instance, v1Options);
     registerClientRoutes(instance, {
       notifications: controlNotifications,
@@ -632,5 +795,6 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
 declare module "fastify" {
   interface FastifyInstance {
     arrab: ApiContext;
+    routeTable: Array<{ method: string; url: string }>;
   }
 }

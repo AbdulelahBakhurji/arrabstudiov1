@@ -41,6 +41,12 @@ describe("plan → studio shell", () => {
     expect(studioModeFromAudience("individual")).toBe("individual");
   });
 
+  it("maps live API 0.14 plan aliases (starter/max) to the individuals shell", () => {
+    expect(audienceFromPlanId("starter")).toBe("individual");
+    expect(audienceFromPlanId("max")).toBe("individual");
+    expect(resolvePlanAudience({ planId: "family-plus" })).toBe("family");
+  });
+
   it("exposes Workforce on organization nav and not on individual", () => {
     expect(navForRole("organization").some((item) => item.key === "workforce")).toBe(true);
     expect(navForRole("individual").some((item) => item.key === "workforce")).toBe(false);

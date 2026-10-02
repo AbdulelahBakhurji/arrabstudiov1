@@ -65,6 +65,8 @@ const testEnv: ApiEnv = {
   finnhubApiKey: undefined,
   finnhubWebhookSecret: undefined,
   apiRoutePrefix: "",
+  // Tests redeem public plan codes; production keeps them off (see ARRAB_ENABLE_PLAN_CODES).
+  allowPlanCodes: true,
 };
 
 describe("arrab api", () => {
@@ -1322,6 +1324,44 @@ describe("arrab api", () => {
     const after = await app.inject({ method: "GET", url: "/erp/connectors" });
     expect((after.json() as { items: unknown[] }).items).toHaveLength(1);
 
+    await app.close();
+  });
+
+  it("sends hardening headers and rejects look-alike CORS origins", async () => {
+    const context = await createApiContext(testEnv);
+    const app = await buildApp(context);
+
+    const health = await app.inject({ method: "GET", url: "/health" });
+    expect(health.headers["x-content-type-options"]).toBe("nosniff");
+    expect(health.headers["x-frame-options"]).toBe("DENY");
+    expect(health.headers["content-security-policy"]).toContain("default-src 'none'");
+    expect(health.headers["cache-control"]).toBe("no-store");
+
+    const allowed = await app.inject({
+      method: "GET",
+      url: "/health",
+      headers: { origin: "https://tauri.localhost" },
+    });
+    expect(allowed.headers["access-control-allow-origin"]).toBe("https://tauri.localhost");
+    const spoofed = await app.inject({
+      method: "GET",
+      url: "/health",
+      headers: { origin: "https://tauri.localhost.evil.example" },
+    });
+    expect(spoofed.headers["access-control-allow-origin"]).toBeUndefined();
+
+    await app.close();
+  });
+
+  it("escapes the sign-in page state parameter", async () => {
+    const context = await createApiContext(testEnv);
+    const app = await buildApp(context);
+    const page = await app.inject({
+      method: "GET",
+      url: `/v1/account/auth/web?state=${encodeURIComponent('"><script>alert(1)</script>')}`,
+    });
+    expect(page.body).not.toContain("<script>alert(1)");
+    expect(page.body).toContain("&lt;script&gt;");
     await app.close();
   });
 });

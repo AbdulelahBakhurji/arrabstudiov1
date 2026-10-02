@@ -1,5 +1,6 @@
 import type { SealedVaultService } from "../modules/encryption/sealed-vault-service.js";
 import type { AiGateway } from "@arrab/ai";
+import type { SyncService } from "../modules/sync/sync-service.js";
 import type { DeskService } from "../modules/desk/desk-service.js";
 import type { CrewService } from "../modules/organization/crew-service.js";
 import type { WorkforceBlueprintService } from "../modules/organization/workforce-blueprint-service.js";
@@ -12,6 +13,7 @@ import type { AccountService } from "../modules/accounts/account-service.js";
 import type { BillingService } from "../modules/billing/billing-service.js";
 import type { GoalService } from "../modules/workspace/goal-service.js";
 import type { TaskExecutionService } from "../modules/workspace/task-execution-service.js";
+import type { TeamRunService } from "../modules/workspace/team-run-service.js";
 import type { OrgWorkforceService } from "../modules/organization/org-workforce-service.js";
 import type { WorkspaceCommandService } from "../modules/workspace/workspace-commands.js";
 import type { WorkspaceQueryService } from "../modules/workspace/workspace-query.js";
@@ -25,12 +27,14 @@ export type V1Deps = {
     billing: BillingService;
     goals: GoalService;
     taskExecution: TaskExecutionService;
+    teamRuns: TeamRunService;
     orgWorkforce: OrgWorkforceService;
     familyHousehold: FamilyHouseholdService;
     sealedVault: SealedVaultService;
     desk: DeskService;
     crew: CrewService;
     workforceBlueprint: WorkforceBlueprintService;
+    sync: SyncService;
     gateway: AiGateway;
     persistence: PersistenceMode;
     workspaceId: string;
@@ -39,6 +43,8 @@ export type V1Deps = {
     openRouterModels?: string[];
     openRouterApiKey?: string;
     primaryProviderId?: string;
+    /** Built once at boot; shared by `/v1/ai/status` and `/v1/ai/models`. */
+    modelRegistry?: import("../platform/config/model-catalog.js").ModelRegistry;
     bedrockRegion?: string;
     releasesDir: string;
     publicBaseUrl: string;
@@ -51,5 +57,6 @@ export type RouteHelpers = {
     capability: Parameters<OrgWorkforceService["assertCapability"]>[1],
     detail: string,
   ) => Promise<void>;
+  assertOwnerSession: (request: FastifyRequest, detail: string) => void;
   clientIp: (request: { ip?: string; headers: Record<string, unknown> }) => string | null;
 };

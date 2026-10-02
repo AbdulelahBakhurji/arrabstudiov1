@@ -200,8 +200,17 @@ export class OrgWorkforceService {
     private readonly planSeatLimit: () => Promise<number | null> = async () => null,
   ) {}
 
+  /** Departments and seats exist only on organization plans. */
+  private async assertOrganizationPlan(): Promise<void> {
+    const plan = await this.planSeatLimit().catch(() => null);
+    if (plan === 0) {
+      throw new ForbiddenError("Departments and employee seats are part of the Team, Business and Enterprise plans");
+    }
+  }
+
   private async seatLimit(seatsUsed: number, departmentCount: number): Promise<number> {
     const plan = await this.planSeatLimit().catch(() => null);
+    if (plan === 0) return 0; // plan has no org seats
     if (plan && plan > 0) return plan;
     return Math.max(8, Math.max(1, departmentCount) * 8, seatsUsed);
   }
@@ -241,6 +250,19 @@ export class OrgWorkforceService {
       canViewAllAgents: isAdmin,
       canViewAudit: isAdmin,
     };
+  }
+
+  /**
+   * Capability check for service methods. `actor === null` is the *account owner* (or the empty
+   * local studio): the route layer's default-deny guard has already required a studio session, so a
+   * null actor can only be the owner. Seats are judged by their own role and never administer.
+   */
+  private assertActorCan(
+    actor: OrgEmployeeRecord | null,
+    capability: keyof ReturnType<OrgWorkforceService["permissionsFor"]>,
+    detail: string,
+  ): void {
+    this.assertCapability(actor, capability, detail, null, actor === null);
   }
 
   assertCapability(
@@ -293,7 +315,8 @@ export class OrgWorkforceService {
   }
 
   async snapshot(employee: OrgEmployeeRecord | null): Promise<OrgWorkforceSnapshot> {
-    const permissions = this.permissionsFor(employee);
+    // No employee session on an authenticated request = the account owner.
+    const permissions = this.permissionsFor(employee, employee === null);
     const [departments, employees, events] = await Promise.all([
       this.persistence.orgDepartments.list(),
       permissions.canViewDirectory
@@ -333,7 +356,8 @@ export class OrgWorkforceService {
     input: CreateOrgDepartmentRequest,
     actor: OrgEmployeeRecord | null,
   ): Promise<OrgDepartment> {
-    this.assertCapability(actor, "canAdminister", "Only admins can create departments");
+    this.assertActorCan(actor, "canAdminister", "Only admins can create departments");
+    await this.assertOrganizationPlan();
     const name = input.name?.trim() ?? "";
     if (!name) throw new ValidationError("Department name is required");
     if (input.teamId) {
@@ -360,7 +384,7 @@ export class OrgWorkforceService {
     input: UpdateOrgDepartmentRequest,
     actor: OrgEmployeeRecord | null,
   ): Promise<OrgDepartment> {
-    this.assertCapability(actor, "canAdminister", "Only admins can update departments");
+    this.assertActorCan(actor, "canAdminister", "Only admins can update departments");
     const existing = await this.persistence.orgDepartments.getById(id);
     if (!existing) throw new NotFoundError("Department", id);
     if (input.teamId) {
@@ -387,7 +411,7 @@ export class OrgWorkforceService {
   }
 
   async deleteDepartment(id: string, actor: OrgEmployeeRecord | null): Promise<{ ok: true }> {
-    this.assertCapability(actor, "canAdminister", "Only admins can delete departments");
+    this.assertActorCan(actor, "canAdminister", "Only admins can delete departments");
     const existing = await this.persistence.orgDepartments.getById(id);
     if (!existing) throw new NotFoundError("Department", id);
     const employees = await this.persistence.orgEmployees.list();
@@ -406,7 +430,7 @@ export class OrgWorkforceService {
   }
 
   async listEmployees(actor: OrgEmployeeRecord | null): Promise<OrgEmployeePublic[]> {
-    this.assertCapability(actor, "canViewDirectory", "Only admins can view the employee directory");
+    this.assertActorCan(actor, "canViewDirectory", "Only admins can view the employee directory");
     return (await this.persistence.orgEmployees.list()).map((item) =>
       toPublic(withSecurityDefaults(item)),
     );
@@ -416,7 +440,8 @@ export class OrgWorkforceService {
     input: CreateOrgEmployeeRequest,
     actor: OrgEmployeeRecord | null,
   ): Promise<OrgEmployeePublic> {
-    this.assertCapability(actor, "canAdminister", "Only admins can provision seats");
+    this.assertActorCan(actor, "canAdminister", "Only admins can provision seats");
+    await this.assertOrganizationPlan();
     const email = requireEmail(input.email);
     const password = requireStrongPassword(input.password, email);
     const displayName = input.displayName?.trim() ?? "";
@@ -481,7 +506,7 @@ export class OrgWorkforceService {
     input: UpdateOrgEmployeeRequest,
     actor: OrgEmployeeRecord | null,
   ): Promise<OrgEmployeePublic> {
-    this.assertCapability(actor, "canAdminister", "Only admins can update seats");
+    this.assertActorCan(actor, "canAdminister", "Only admins can update seats");
     const found = await this.persistence.orgEmployees.getById(id);
     if (!found) throw new NotFoundError("Employee", id);
     const existing = withSecurityDefaults(found);
@@ -532,7 +557,7 @@ export class OrgWorkforceService {
   }
 
   async deleteEmployee(id: string, actor: OrgEmployeeRecord | null): Promise<{ ok: true }> {
-    this.assertCapability(actor, "canAdminister", "Only admins can delete seats");
+    this.assertActorCan(actor, "canAdminister", "Only admins can delete seats");
     const existing = await this.persistence.orgEmployees.getById(id);
     if (!existing) throw new NotFoundError("Employee", id);
     if (actor?.id === id) {

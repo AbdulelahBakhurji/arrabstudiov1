@@ -1,7 +1,8 @@
 /** Lightweight web search + page scrape for agent tools (no API key required). */
 
-import { lookup } from "node:dns/promises";
-import { isIP } from "node:net";
+import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { isBlockedIpAddress, resolvePublicHost } from "@arrab/core";
 
 const UA =
   "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
@@ -23,42 +24,19 @@ function stripTags(html: string): string {
     .trim();
 }
 
-function ipv4Octets(ip: string): number[] | null {
-  const parts = ip.split(".");
-  if (parts.length !== 4) return null;
-  const nums = parts.map((p) => Number(p));
-  if (nums.some((n) => !Number.isInteger(n) || n < 0 || n > 255)) return null;
-  return nums;
-}
+/** Re-exported for tests and callers; the implementation lives in @arrab/core. */
+export { isBlockedIpAddress };
 
-/** Block loopback, link-local, private, and cloud metadata targets. */
-export function isBlockedIpAddress(ip: string): boolean {
-  const v4 = ipv4Octets(ip);
-  if (v4) {
-    const a = v4[0]!;
-    const b = v4[1]!;
-    if (a === 10) return true;
-    if (a === 127) return true;
-    if (a === 0) return true;
-    if (a === 169 && b === 254) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
-    if (a >= 224) return true; // multicast / reserved
-    return false;
-  }
-  const lower = ip.toLowerCase();
-  if (lower === "::1" || lower === "::") return true;
-  if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA
-  if (lower.startsWith("fe80:")) return true;
-  if (lower.startsWith("ff")) return true; // multicast
-  // IPv4-mapped IPv6
-  const mapped = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  if (mapped?.[1]) return isBlockedIpAddress(mapped[1]);
-  return false;
-}
+const MAX_BODY_BYTES = 1_500_000;
 
-async function assertSafePublicUrl(raw: string): Promise<URL> {
+type PublicResponse = {
+  status: number;
+  contentType: string;
+  body: string;
+  url: string;
+};
+
+async function assertSafePublicUrl(raw: string): Promise<{ url: URL; address: string; family: 4 | 6 }> {
   let parsed: URL;
   try {
     parsed = new URL(raw);
@@ -71,49 +49,88 @@ async function assertSafePublicUrl(raw: string): Promise<URL> {
   if (parsed.username || parsed.password) {
     throw new Error("URLs with credentials are not allowed");
   }
-  const host = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-  if (
-    host === "localhost" ||
-    host.endsWith(".localhost") ||
-    host === "metadata.google.internal" ||
-    host.endsWith(".internal") ||
-    host.endsWith(".local")
-  ) {
-    throw new Error("private or metadata hosts are not allowed");
+  try {
+    const { address, family } = await resolvePublicHost(parsed.hostname);
+    return { url: parsed, address, family };
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : "host is not allowed");
   }
-  const addresses = isIP(host)
-    ? [host]
-    : (await lookup(host, { all: true, verbatim: true })).map((r) => r.address);
-  if (addresses.length === 0) {
-    throw new Error("host could not be resolved");
-  }
-  for (const address of addresses) {
-    if (isBlockedIpAddress(address)) {
-      throw new Error("private or metadata hosts are not allowed");
-    }
-  }
-  return parsed;
 }
 
-async function fetchPublicUrl(
-  rawUrl: string,
-  init: RequestInit,
-): Promise<Response> {
-  let current = await assertSafePublicUrl(rawUrl);
+/**
+ * One GET with the connection pinned to the address that was just vetted, so a DNS answer
+ * that changes between the check and the connect (rebinding) cannot reach a private host.
+ * The body is read with a hard byte cap and the whole request has a deadline.
+ */
+function pinnedGet(
+  target: { url: URL; address: string; family: 4 | 6 },
+  headers: Record<string, string>,
+  timeoutMs: number,
+): Promise<{ status: number; headers: IncomingHttpHeaders; body: string }> {
+  return new Promise((resolve, reject) => {
+    const request = (target.url.protocol === "https:" ? httpsRequest : httpRequest)(
+      target.url,
+      {
+        method: "GET",
+        headers,
+        timeout: timeoutMs,
+        lookup: (_host, _options, callback) => {
+          (callback as (err: Error | null, address: string, family: number) => void)(
+            null,
+            target.address,
+            target.family,
+          );
+        },
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        let size = 0;
+        response.on("data", (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > MAX_BODY_BYTES) {
+            // Enough to summarise; stop pulling the rest of an arbitrarily large body.
+            chunks.push(chunk.subarray(0, Math.max(0, chunk.length - (size - MAX_BODY_BYTES))));
+            response.destroy();
+            return;
+          }
+          chunks.push(chunk);
+        });
+        const finish = () =>
+          resolve({
+            status: response.statusCode ?? 0,
+            headers: response.headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          });
+        response.on("end", finish);
+        response.on("close", finish);
+        response.on("error", reject);
+      },
+    );
+    request.on("timeout", () => request.destroy(new Error("request timed out")));
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+async function fetchPublicUrl(rawUrl: string, headers: Record<string, string>, timeoutMs: number): Promise<PublicResponse> {
+  const deadline = Date.now() + timeoutMs;
+  let target = await assertSafePublicUrl(rawUrl);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    const response = await fetch(current, {
-      ...init,
-      redirect: "manual",
-    });
+    const remaining = Math.max(1_000, deadline - Date.now());
+    const response = await pinnedGet(target, headers, remaining);
     if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
-      if (!location) {
-        throw new Error("redirect missing Location");
-      }
-      current = await assertSafePublicUrl(new URL(location, current).toString());
+      const location = response.headers.location;
+      if (!location) throw new Error("redirect missing Location");
+      target = await assertSafePublicUrl(new URL(location, target.url).toString());
       continue;
     }
-    return response;
+    const type = response.headers["content-type"];
+    return {
+      status: response.status,
+      contentType: Array.isArray(type) ? (type[0] ?? "") : (type ?? ""),
+      body: response.body,
+      url: target.url.toString(),
+    };
   }
   throw new Error("too many redirects");
 }
@@ -254,21 +271,22 @@ export async function fetchUrl(rawUrl: string): Promise<string> {
   }
   let parsed: URL;
   try {
-    parsed = await assertSafePublicUrl(value);
+    parsed = (await assertSafePublicUrl(value)).url;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return `ERROR: fetch_url blocked — ${message}`;
   }
   try {
-    const response = await fetchPublicUrl(parsed.toString(), {
-      headers: {
+    const response = await fetchPublicUrl(
+      parsed.toString(),
+      {
         Accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8",
         "User-Agent": UA,
       },
-      signal: AbortSignal.timeout(18_000),
-    });
-    const contentType = response.headers.get("content-type") || "";
-    const body = await response.text();
+      18_000,
+    );
+    const contentType = response.contentType;
+    const body = response.body;
     const excerpt =
       contentType.includes("json") || contentType.includes("text/plain")
         ? body.trim().slice(0, 14_000)
@@ -307,22 +325,23 @@ export async function scrapePage(rawUrl: string, options: ScrapeOptions = {}): P
 
   let parsed: URL;
   try {
-    parsed = await assertSafePublicUrl(value);
+    parsed = (await assertSafePublicUrl(value)).url;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return `ERROR: scrape_page blocked — ${message}`;
   }
 
   try {
-    const response = await fetchPublicUrl(parsed.toString(), {
-      headers: {
+    const response = await fetchPublicUrl(
+      parsed.toString(),
+      {
         Accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.8",
         "User-Agent": UA,
       },
-      signal: AbortSignal.timeout(20_000),
-    });
-    const contentType = response.headers.get("content-type") || "";
-    const body = await response.text();
+      20_000,
+    );
+    const contentType = response.contentType;
+    const body = response.body;
     const finalUrl = response.url || parsed.toString();
 
     if (contentType.includes("json") || contentType.includes("text/plain")) {

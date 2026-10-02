@@ -1,4 +1,5 @@
-import { UnauthorizedError } from "@arrab/core";
+import { ForbiddenError, UnauthorizedError } from "@arrab/core";
+import { ruleFor } from "./route-policy.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { OrgWorkforceService } from "../modules/organization/org-workforce-service.js";
 import { registerWorkspaceRoutes } from "../modules/workspace/workspace.routes.js";
@@ -9,6 +10,7 @@ import { registerOrganizationRoutes } from "../modules/organization/organization
 import { registerFamilyRoutes } from "../modules/family/family.routes.js";
 import { registerConversationsRoutes } from "../modules/conversations/conversations.routes.js";
 import { registerConnectorsRoutes } from "../modules/connectors/connectors.routes.js";
+import { registerSyncRoutes } from "../modules/sync/sync.routes.js";
 import { registerEncryptionRoutes } from "../modules/encryption/encryption.routes.js";
 import type { RouteHelpers, V1Deps } from "./deps.js";
 
@@ -58,11 +60,9 @@ export function registerV1Routes(app: FastifyInstance, deps: V1Deps): void {
     );
   };
 
+  // `request.ip` already honours the configured `trustProxy` hop count. Reading X-Forwarded-For
+  // directly would let any client write its own address into audit / security logs.
   function clientIp(request: { ip?: string; headers: Record<string, unknown> }): string | null {
-    const forwarded = request.headers["x-forwarded-for"];
-    if (typeof forwarded === "string" && forwarded.trim()) {
-      return forwarded.split(",")[0]?.trim() || null;
-    }
     return request.ip ?? null;
   }
 
@@ -70,7 +70,33 @@ export function registerV1Routes(app: FastifyInstance, deps: V1Deps): void {
     deps.orgWorkforce.snapshot(request.orgEmployee),
   );
 
-  const helpers: RouteHelpers = { assertCap, clientIp };
+  /**
+   * Account-level actions (plan, billing, deleting the account, other devices' sessions) belong to the
+   * account owner's own session. A family seat (child/partner login) or an organization employee holds
+   * a *scoped* session and must never reach them, whatever their in-app role.
+   */
+  const assertOwnerSession = (request: FastifyRequest, detail: string) => {
+    if (request.orgEmployee || request.seatMemberId) throw new ForbiddenError(detail);
+  };
+
+  // Central policy table (see route-policy.ts): who may call which account/workforce route.
+  app.addHook("preHandler", async (request) => {
+    const rule = ruleFor(request.method, request.routeOptions.url ?? "");
+    if (!rule) return;
+    if (rule.policy === "owner") {
+      assertOwnerSession(request, rule.detail);
+      return;
+    }
+    if (request.orgEmployee) {
+      if (!deps.orgWorkforce.permissionsFor(request.orgEmployee).canAssignWork) throw new ForbiddenError(rule.detail);
+      return;
+    }
+    if (!rule.childAllowed && request.seatMemberId && (await deps.familyHousehold.isActiveChildSeat())) {
+      throw new ForbiddenError(rule.detail);
+    }
+  });
+
+  const helpers: RouteHelpers = { assertCap, assertOwnerSession, clientIp };
   registerWorkspaceRoutes(app, deps, helpers);
   registerAccountsRoutes(app, deps, helpers);
   registerBillingRoutes(app, deps, helpers);
@@ -80,4 +106,5 @@ export function registerV1Routes(app: FastifyInstance, deps: V1Deps): void {
   registerConversationsRoutes(app, deps);
   registerConnectorsRoutes(app, deps);
   registerEncryptionRoutes(app, deps);
+  registerSyncRoutes(app, deps);
 }

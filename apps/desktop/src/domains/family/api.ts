@@ -1,4 +1,4 @@
-import type { FamilyHouseholdSnapshot, FamilyMemberPublic, FamilyGuidancePublic, CreateFamilyMemberRequest, UpdateFamilyMemberRequest, FamilyMemberSignInRequest, FamilyMemberSignInResponse, SwitchFamilyProfileRequest, SwitchFamilyProfileResponse, GrantFamilyTokensRequest, PurchaseFamilySeatsRequest, CreateFamilyGuidanceRequest } from "@arrab/shared";
+import type { FamilyHouseholdSnapshot, FamilyMemberPublic, FamilyGuidancePublic, CreateFamilyMemberRequest, UpdateFamilyMemberRequest, FamilyMemberSignInRequest, FamilyMemberSignInResponse, SwitchFamilyProfileRequest, SwitchFamilyProfileResponse, GrantFamilyTokensRequest, PurchaseFamilySeatsRequest, CreateFamilyGuidanceRequest, UpdateFamilyGuardianRequest, AcknowledgeFamilySafetyRequest } from "@arrab/shared";
 import { request } from "@/core/api/http";
 
 
@@ -16,6 +16,10 @@ export const familyApi = {
       method: "POST",
       body,
     }),
+  updateFamilyGuardian: (id: string, body: UpdateFamilyGuardianRequest) =>
+    request<FamilyMemberPublic>(`/v1/family/members/${id}/guardian`, { method: "PATCH", body }),
+  acknowledgeFamilySafety: (body: AcknowledgeFamilySafetyRequest = {}) =>
+    request<FamilyHouseholdSnapshot>("/v1/family/safety/acknowledge", { method: "POST", body }),
   switchFamilyProfile: (body: SwitchFamilyProfileRequest) =>
     request<SwitchFamilyProfileResponse>("/v1/family/switch", { method: "POST", body }),
   grantFamilyTokens: (body: GrantFamilyTokensRequest) =>

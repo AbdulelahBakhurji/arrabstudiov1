@@ -3,6 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { ClipboardPlus, Loader2, Sparkles, UserPlus, UsersRound } from "lucide-react";
 import type { Agent, Team } from "@arrab/shared";
 import { Surface } from "@/shared/ui/Surface";
+import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
+import { canShowLiveMap } from "@/domains/organization/live-map-gate";
 import { AgentsOfficeHost } from "@/domains/organization/ui/AgentsOfficeHost";
 import { OrgAdministrationPanel } from "@/domains/organization/ui/OrgAdministrationPanel";
 import {
@@ -62,7 +64,13 @@ export function WorkforcePage() {
   const { href } = useRole();
   const navigate = useNavigate();
   const caps = useOrgSeatCapabilities();
+  const { account } = useSignedInAccount();
   const data = useWorkforceData();
+  const liveMap = canShowLiveMap({
+    seatAllows: caps.canOpenLiveMap,
+    planId: account?.planId ?? null,
+    development: import.meta.env.DEV,
+  });
 
   const [tab, setTabState] = useState<Tab>(readTab);
   const [deptId, setDeptId] = useState<string | null>(null);
@@ -91,12 +99,12 @@ export function WorkforcePage() {
       { id: "tasks", label: "ccTasks", count: data.openTasks.length || undefined },
       { id: "knowledge", label: "ccKnowledge" },
     ];
-    if (caps.canOpenLiveMap) list.push({ id: "map", label: "hqLiveMap" });
+    if (liveMap) list.push({ id: "map", label: "hqLiveMap" });
     if (caps.canAdminister) {
       list.push({ id: "reports", label: "ccReports" }, { id: "seats", label: "wxTabSeats" });
     }
     return list;
-  }, [caps.canAdminister, caps.canOpenLiveMap, data.approvals.length, data.departments.length, data.draftsAwaitingRequest.length, data.openTasks.length]);
+  }, [caps.canAdminister, liveMap, data.approvals.length, data.departments.length, data.draftsAwaitingRequest.length, data.openTasks.length]);
 
   // Seats never land on owner-only tabs.
   useEffect(() => {

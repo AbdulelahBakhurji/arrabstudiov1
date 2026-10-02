@@ -16,6 +16,8 @@ export interface ApiEnv {
   port: number;
   logLevel: "fatal" | "error" | "warn" | "info" | "debug" | "trace";
   corsOrigins: string[];
+  /** Fastify `trustProxy`: true, a hop count, or false. Set when behind Traefik/Coolify so client IPs (rate limits) are real. */
+  trustProxy: boolean | number;
   databaseUrl: string | undefined;
   /** Local on-device data directory when Postgres is not configured. */
   dataDir: string | undefined;
@@ -48,6 +50,17 @@ export interface ApiEnv {
    * Example: /r/nmpi6uidtpkh1bdf — leave empty for local / Railway direct hosts.
    */
   apiRoutePrefix: string;
+  /**
+   * Accept paid-plan redeem codes (PRO-ARRAB …). Off by default: the codes are public constants,
+   * so on a real deployment they would hand out paid plans for free. Dev / internal builds only.
+   */
+  allowPlanCodes?: boolean;
+  /** Bearer token that unlocks GET /metrics. Unset = the endpoint does not exist. */
+  metricsToken?: string;
+  /** Test hook: where structured logs go (default stdout). */
+  logStream?: { write(chunk: string): void };
+  /** Restrict who can create the studio account (comma-separated emails). Empty = open sign-up. */
+  signupEmails?: string[];
   /** Moyasar secret key (sk_test_… / sk_live_…). Empty = billing checkout disabled. */
   moyasarSecretKey: string | undefined;
   /** Moyasar publishable key for hosted forms (optional). */
@@ -269,6 +282,7 @@ export function loadApiEnv(): ApiEnv {
     host,
     port,
     logLevel: logLevel as ApiEnv["logLevel"],
+    trustProxy: parseTrustProxy(readOptionalEnv("ARRAB_TRUST_PROXY")),
     corsOrigins: parseCsv(
       readOptionalEnv(
         "ARRAB_CORS_ORIGINS",
@@ -291,6 +305,9 @@ export function loadApiEnv(): ApiEnv {
     authWebUrl,
     siteUrl: (siteUrl ?? publicBaseUrl).replace(/\/$/, ""),
     apiRoutePrefix: normalizeApiRoutePrefix(readOptionalEnv("ARRAB_API_ROUTE_PREFIX")),
+    allowPlanCodes: readOptionalEnv("ARRAB_ENABLE_PLAN_CODES") === "1",
+    metricsToken: readOptionalEnv("ARRAB_METRICS_TOKEN"),
+    signupEmails: parseCsv(readOptionalEnv("ARRAB_SIGNUP_EMAILS", "")).map((email) => email.trim().toLowerCase()).filter(Boolean),
     moyasarSecretKey: readOptionalEnv("MOYASAR_SECRET_KEY"),
     moyasarPublishableKey: readOptionalEnv("MOYASAR_PUBLISHABLE_KEY"),
     dataEncryptionKey: readOptionalEnv("DATA_ENCRYPTION_KEY"),
@@ -374,4 +391,12 @@ export function assertBedrockConfigured(env: ApiEnv): void {
   throw new Error(
     "AWS_BEARER_TOKEN_BEDROCK is not set. Create a long-term Bedrock API key in AWS (eu-north-1), then add it to Railway Variables.",
   );
+}
+
+function parseTrustProxy(raw: string | undefined): boolean | number {
+  const value = raw?.trim().toLowerCase();
+  if (!value || value === "0" || value === "false") return false;
+  if (value === "true") return true;
+  const hops = Number(value);
+  return Number.isInteger(hops) && hops > 0 && hops < 10 ? hops : false;
 }

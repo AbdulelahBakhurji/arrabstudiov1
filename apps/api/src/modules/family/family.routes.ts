@@ -1,14 +1,22 @@
-import type { CreateFamilyMemberRequest, UpdateFamilyMemberRequest, FamilyMemberSignInRequest, SwitchFamilyProfileRequest, GrantFamilyTokensRequest, PurchaseFamilySeatsRequest, CreateFamilyGuidanceRequest } from "@arrab/shared";
+import type { CreateFamilyMemberRequest, UpdateFamilyMemberRequest, FamilyMemberSignInRequest, SwitchFamilyProfileRequest, GrantFamilyTokensRequest, PurchaseFamilySeatsRequest, CreateFamilyGuidanceRequest, UpdateFamilyGuardianRequest, AcknowledgeFamilySafetyRequest } from "@arrab/shared";
 import type { FastifyInstance } from "fastify";
 import type { V1Deps } from "../../http/deps.js";
+
+function headerOf(request: { headers: Record<string, unknown> }, name: string): string | undefined {
+  const value = request.headers[name];
+  return (Array.isArray(value) ? (value[0] as string) : (value as string | undefined)) ?? undefined;
+}
 
 export function registerFamilyRoutes(app: FastifyInstance, deps: V1Deps): void {
   app.get("/v1/family", async () => deps.familyHousehold.snapshot());
 
   app.post<{ Body: FamilyMemberSignInRequest }>("/v1/family/members/sign-in", async (request) =>
-    deps.familyHousehold.signInMember(
-      request.body ?? { email: "", password: "" },
-    ),
+    deps.familyHousehold.signInMember(request.body ?? { email: "", password: "" }, {
+      deviceName: headerOf(request, "x-arrab-device-name"),
+      platform: headerOf(request, "x-arrab-platform"),
+      appVersion: headerOf(request, "x-arrab-app-version"),
+      refresh: headerOf(request, "x-arrab-refresh") === "1",
+    }),
   );
 
   app.post<{ Body: CreateFamilyMemberRequest }>("/v1/family/members", async (request) =>
@@ -25,6 +33,15 @@ export function registerFamilyRoutes(app: FastifyInstance, deps: V1Deps): void {
 
   app.delete<{ Params: { id: string } }>("/v1/family/members/:id", async (request) =>
     deps.familyHousehold.deleteMember(request.params.id),
+  );
+
+  app.patch<{ Params: { id: string }; Body: UpdateFamilyGuardianRequest }>(
+    "/v1/family/members/:id/guardian",
+    async (request) => deps.familyHousehold.updateGuardian(request.params.id, request.body ?? {}),
+  );
+
+  app.post<{ Body: AcknowledgeFamilySafetyRequest }>("/v1/family/safety/acknowledge", async (request) =>
+    deps.familyHousehold.acknowledgeSafety(request.body ?? {}),
   );
 
   app.post<{ Body: SwitchFamilyProfileRequest }>("/v1/family/switch", async (request) =>

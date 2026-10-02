@@ -48,6 +48,11 @@ export interface AiCompletionRequest {
    * Omitted = the provider's fastest mode (no extra reasoning requested).
    */
   reasoning?: "low" | "medium" | "high";
+  /**
+   * Cancels the upstream provider call. Wire it to the client connection so a closed tab or a
+   * pressed "stop" button ends generation (and spend) instead of letting it run to completion.
+   */
+  signal?: AbortSignal;
 }
 
 export interface AiTokenUsage {

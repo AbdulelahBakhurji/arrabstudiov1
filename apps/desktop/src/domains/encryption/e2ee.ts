@@ -153,7 +153,7 @@ async function unwrapRawKey(wrapped: WrappedChatKey, passphrase: string): Promis
   return bytes;
 }
 
-async function useRawKey(raw: Uint8Array, persist: boolean): Promise<void> {
+async function installRawKey(raw: Uint8Array, persist: boolean): Promise<void> {
   chatKey = await crypto.subtle.importKey("raw", buf(raw), { name: "AES-GCM", length: 256 }, false, [
     "encrypt",
     "decrypt",
@@ -174,7 +174,7 @@ async function restoreDeviceKey(): Promise<boolean> {
   const stored = await deviceStoreGet(KEY_NS, storedKeyId());
   if (!stored) return false;
   try {
-    await useRawKey(fromB64(stored), false);
+    await installRawKey(fromB64(stored), false);
     return true;
   } catch {
     return false;
@@ -203,14 +203,14 @@ export async function setupE2ee(passphrase: string): Promise<void> {
   assertPassphrase(passphrase);
   const raw = crypto.getRandomValues(new Uint8Array(32));
   await requireApi().e2eePutKey({ wrappedKey: await wrapRawKey(raw, passphrase) });
-  await useRawKey(raw, true);
+  await installRawKey(raw, true);
 }
 
 /** Unlock on this device (or any new device) with the passphrase. */
 export async function unlockE2ee(passphrase: string): Promise<void> {
   const { wrappedKey } = await requireApi().e2eeKey();
   if (!wrappedKey) throw new Error("Encryption is not set up yet");
-  await useRawKey(await unwrapRawKey(wrappedKey, passphrase), true);
+  await installRawKey(await unwrapRawKey(wrappedKey, passphrase), true);
 }
 
 /** Re-wrap the same chat key under a new passphrase; history stays readable everywhere. */

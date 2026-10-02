@@ -92,7 +92,11 @@ describe("desktop companion flows", () => {
     expect(getCompanionState().companions[0]!.lastMemory).toBeNull();
   });
   it("keeps an unshared memory available only to its owner", () => {
-    const owner = addCompanion({ name: "Ivy", domain: "sleep", brief: "Protect sleep and wind-down." });
+    const owner = addCompanion({
+      name: "Ivy",
+      domain: "sleep",
+      brief: "Protect sleep and wind-down.",
+    });
     const other = addCompanion({ name: "Sam", domain: "money", space: "work" });
     addFact({ companionId: owner.id, text: "Private remembered fact", source: "You" });
     setFactShared(getCompanionState().facts[0]!.id, false);

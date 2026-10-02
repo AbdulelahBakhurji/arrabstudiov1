@@ -111,6 +111,26 @@ describe("billing + releases", () => {
     expect(confirmed.entitlements.tokenLimit).toBe(2_000_000);
   });
 
+  it("treats a paid invoice as single-use so it cannot renew the plan again", async () => {
+    const context = await createApiContext(testEnv);
+    await context.accounts.connect({
+      email: "replay@arrab.studio",
+      password: "securepass",
+      displayName: "Replayer",
+    });
+    const billing = new BillingService(context.accounts, new FakeMoyasar(), testEnv.siteUrl);
+    await billing.checkout("pro");
+    expect((await billing.confirmInvoice("inv_test")).account?.planId).toBe("pro");
+
+    // Same invoice again (callback retry): harmless.
+    expect((await billing.confirmInvoice("inv_test")).account?.planId).toBe("pro");
+
+    // The customer drops to Free; replaying the old paid invoice must not bring Pro back.
+    await context.accounts.applyPlan("free");
+    const replayed = await billing.confirmInvoice("inv_test");
+    expect(replayed.account?.planId).toBe("free");
+  });
+
   it("pauses chat on billing day until the same plan is paid again", async () => {
     const context = await createApiContext(testEnv);
     await context.accounts.connect({

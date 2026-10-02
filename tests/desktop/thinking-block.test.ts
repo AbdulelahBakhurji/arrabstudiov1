@@ -2,7 +2,11 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { LanguageProvider } from "@/shared/i18n/LanguageProvider";
-import { ThinkingBlock, useThoughtTraces, type ThoughtTrace } from "@/domains/chat/ui/ThinkingBlock";
+import {
+  ThinkingBlock,
+  useThoughtTraces,
+  type ThoughtTrace,
+} from "@/domains/chat/ui/ThinkingBlock";
 
 const testDom = await vi.hoisted(async () => {
   const { JSDOM } = await import("jsdom");
@@ -10,8 +14,22 @@ const testDom = await vi.hoisted(async () => {
     url: "https://arrab.test/",
     pretendToBeVisual: true,
   });
-  for (const key of ["window", "document", "navigator", "Node", "Element", "HTMLElement", "Event", "MouseEvent", "localStorage"]) {
-    Object.defineProperty(globalThis, key, { configurable: true, writable: true, value: dom.window[key] });
+  for (const key of [
+    "window",
+    "document",
+    "navigator",
+    "Node",
+    "Element",
+    "HTMLElement",
+    "Event",
+    "MouseEvent",
+    "localStorage",
+  ]) {
+    Object.defineProperty(globalThis, key, {
+      configurable: true,
+      writable: true,
+      value: dom.window[key],
+    });
   }
   return dom;
 });

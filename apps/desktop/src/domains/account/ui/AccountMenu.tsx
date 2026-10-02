@@ -4,6 +4,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type ReactNode,
 } from "react";
@@ -34,6 +35,11 @@ import { pushToast } from "@/domains/notifications/notify";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
 import { clearGuestLocalMode, isGuestLocalMode } from "@/core/session/guest-mode";
 import { useRole } from "@/domains/account/roles/RoleProvider";
+import {
+  clearOrgEmployeeSession,
+  readOrgEmployeeSession,
+  subscribeOrgEmployeeSession,
+} from "@/domains/organization/org-employee-session";
 import { cn } from "@/shared/lib/utils";
 
 function daysUntil(iso: string | null | undefined): number | null {
@@ -53,6 +59,11 @@ export function AccountMenu({ onOpenPalette }: { onOpenPalette: () => void }) {
   const navigate = useNavigate();
   const location = useLocation();
   const { account, status, signedIn } = useSignedInAccount();
+  const orgSeat = useSyncExternalStore(
+    subscribeOrgEmployeeSession,
+    readOrgEmployeeSession,
+    () => null,
+  );
   const photo = useProfilePhoto();
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
@@ -72,8 +83,16 @@ export function AccountMenu({ onOpenPalette }: { onOpenPalette: () => void }) {
     return () => window.removeEventListener("resize", place);
   }, [open]);
 
-  const user = signedIn && !isGuestLocalMode() ? account : null;
-  const rawEntitlements = user ? status?.entitlements : null;
+  const accountUser = signedIn && !isGuestLocalMode() ? account : null;
+  const seatUser = !accountUser && orgSeat
+    ? {
+        displayName: orgSeat.employee.displayName,
+        email: orgSeat.employee.email,
+        periodEnd: null as string | null,
+      }
+    : null;
+  const user = accountUser ?? seatUser;
+  const rawEntitlements = accountUser ? status?.entitlements : null;
   const entitlements =
     rawEntitlements?.connected && !rawEntitlements.planName.trim().toLowerCase().startsWith("local")
       ? rawEntitlements
@@ -81,7 +100,7 @@ export function AccountMenu({ onOpenPalette }: { onOpenPalette: () => void }) {
   const used = entitlements?.tokensUsed ?? 0;
   const limit = entitlements?.tokenLimit ?? null;
   const pct = limit && limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
-  const daysLeft = daysUntil(user?.periodEnd);
+  const daysLeft = daysUntil(accountUser?.periodEnd);
   const initials = user ? initialsFromName(user.displayName, user.email) : "";
 
   useEffect(() => setOpen(false), [location.pathname, location.search]);
@@ -125,8 +144,14 @@ export function AccountMenu({ onOpenPalette }: { onOpenPalette: () => void }) {
   async function signOut() {
     setSigningOut(true);
     try {
-      await arrabApi.logoutAccount().catch(() => undefined);
-      clearAccountSession();
+      if (orgSeat) {
+        await arrabApi.orgEmployeeSignOut().catch(() => undefined);
+        clearOrgEmployeeSession();
+      }
+      if (accountUser) {
+        await arrabApi.logoutAccount().catch(() => undefined);
+        clearAccountSession();
+      }
       pushToast({ title: t("accountLoggedOut"), tone: "info" });
       setOpen(false);
     } finally {
@@ -189,14 +214,16 @@ export function AccountMenu({ onOpenPalette }: { onOpenPalette: () => void }) {
                     </>
                   )}
                 </div>
-                {user ? (
+                {accountUser ? (
                   <span className={cn("acm-plan", entitlements?.overLimit && "is-warn")}>
-                    {entitlements?.planName || user.planName}
+                    {entitlements?.planName || accountUser.planName}
                   </span>
+                ) : orgSeat ? (
+                  <span className="acm-plan">{orgSeat.employee.role}</span>
                 ) : null}
               </div>
 
-              {user ? (
+              {accountUser ? (
                 <button
                   type="button"
                   role="menuitem"
@@ -251,7 +278,7 @@ export function AccountMenu({ onOpenPalette }: { onOpenPalette: () => void }) {
                   hint={`${MOD}U`}
                   onClick={() => go("/account")}
                 />
-                {user ? (
+                {accountUser ? (
                   <MenuItem
                     icon={<CreditCard size={15} strokeWidth={1.7} />}
                     label={t("amPlanBilling")}

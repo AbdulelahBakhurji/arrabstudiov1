@@ -13,7 +13,12 @@ import { defaultPrefs } from "../../apps/desktop/src/shared/lib/prefs";
 const at = (h: number, m = 0, day = 15) => new Date(2026, 9, day, h, m, 0, 0);
 
 describe("quiet hours", () => {
-  const quiet = { ...defaultPrefs(), quietHoursEnabled: true, quietStart: "22:00", quietEnd: "07:00" };
+  const quiet = {
+    ...defaultPrefs(),
+    quietHoursEnabled: true,
+    quietStart: "22:00",
+    quietEnd: "07:00",
+  };
 
   it("parses HH:MM and rejects junk", () => {
     expect(parseClock("07:30")).toBe(450);
@@ -33,7 +38,9 @@ describe("quiet hours", () => {
     const lunch = { ...quiet, quietStart: "12:00", quietEnd: "13:00" };
     expect(isInQuietHours(lunch, at(12, 30))).toBe(true);
     expect(isInQuietHours(lunch, at(13, 0))).toBe(false);
-    expect(isInQuietHours({ ...quiet, quietStart: "08:00", quietEnd: "08:00" }, at(8, 0))).toBe(false);
+    expect(isInQuietHours({ ...quiet, quietStart: "08:00", quietEnd: "08:00" }, at(8, 0))).toBe(
+      false,
+    );
     expect(isInQuietHours({ ...quiet, quietHoursEnabled: false }, at(23, 0))).toBe(false);
   });
 });
@@ -41,15 +48,33 @@ describe("quiet hours", () => {
 describe("delivery", () => {
   it("delivers everything normally and respects per-kind toggles", () => {
     const prefs = defaultPrefs();
-    expect(deliveryFor("approvals", prefs, at(12))).toEqual({ toast: true, os: true, presence: true });
-    expect(deliveryFor("cowork", prefs, at(12))).toEqual({ toast: false, os: false, presence: false });
+    expect(deliveryFor("approvals", prefs, at(12))).toEqual({
+      toast: true,
+      os: true,
+      presence: true,
+    });
+    expect(deliveryFor("cowork", prefs, at(12))).toEqual({
+      toast: false,
+      os: false,
+      presence: false,
+    });
   });
 
   it("holds interruptions during quiet hours but lets approvals through", () => {
     const prefs = { ...defaultPrefs(), notifyCowork: true, quietHoursEnabled: true };
-    expect(deliveryFor("connector", prefs, at(23))).toEqual({ toast: false, os: false, presence: false });
-    expect(deliveryFor("approvals", prefs, at(23))).toEqual({ toast: true, os: true, presence: false });
-    expect(deliveryFor("approvals", { ...prefs, quietAllowApprovals: false }, at(23)).os).toBe(false);
+    expect(deliveryFor("connector", prefs, at(23))).toEqual({
+      toast: false,
+      os: false,
+      presence: false,
+    });
+    expect(deliveryFor("approvals", prefs, at(23))).toEqual({
+      toast: true,
+      os: true,
+      presence: false,
+    });
+    expect(deliveryFor("approvals", { ...prefs, quietAllowApprovals: false }, at(23)).os).toBe(
+      false,
+    );
   });
 
   it("holds interruptions while snoozed and resumes afterwards", () => {

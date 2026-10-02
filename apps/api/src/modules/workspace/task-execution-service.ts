@@ -27,6 +27,8 @@ import type { AccountService } from "../accounts/account-service.js";
 import type { ConversationService } from "../conversations/conversation-service.js";
 
 export class TaskExecutionService {
+  private readonly inflight = new Map<string, AbortController>();
+
   constructor(
     private readonly persistence: Persistence,
     private readonly conversations: ConversationService,
@@ -57,9 +59,32 @@ export class TaskExecutionService {
     });
   }
 
+  async getRun(runId: string): Promise<TaskRun | null> {
+    return this.persistence.taskRuns.getById(runId);
+  }
+
+  async cancelRun(runId: string): Promise<TaskRun> {
+    const run = await this.persistence.taskRuns.getById(runId);
+    if (!run) throw new NotFoundError("TaskRun", runId);
+    if (run.status !== "running" && run.status !== "awaiting_approval") {
+      throw new ValidationError(`Task run is already ${run.status}`);
+    }
+    const controller = this.inflight.get(run.id);
+    controller?.abort();
+    this.inflight.delete(run.id);
+    const cancelled: TaskRun = {
+      ...run,
+      status: "cancelled",
+      summary: run.summary ?? "Cancelled by operator",
+    };
+    await this.persistence.taskRuns.update(cancelled);
+    await this.record("failed", "task", run.taskId, `Task run cancelled`);
+    return cancelled;
+  }
+
   async runTask(
     taskId: string,
-    options: { requireApproval?: boolean } = {},
+    options: { requireApproval?: boolean; teamRunId?: string | null; signal?: AbortSignal } = {},
   ): Promise<RunTaskResponse> {
     await this.accounts.assertWithinQuota();
 
@@ -97,6 +122,7 @@ export class TaskExecutionService {
         status: "awaiting_approval",
         summary: "Waiting for operator approval before running.",
         createdAt: this.clock.isoNow(),
+        teamRunId: options.teamRunId ?? null,
       };
       await this.persistence.taskRuns.create(run);
       await this.record("created", "approval", approval.id, `Approval requested to run "${task.title}"`);
@@ -125,18 +151,27 @@ export class TaskExecutionService {
       updatedAt: this.clock.isoNow(),
     });
 
+    const runId = brandId<TaskRunId>(this.ids.next("trun"));
+    let run: TaskRun = {
+      id: runId,
+      workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
+      taskId: brandId<TaskId>(task.id),
+      agentId: brandId<AgentId>(agent.id),
+      conversationId: null,
+      status: "running",
+      summary: null,
+      createdAt: this.clock.isoNow(),
+      teamRunId: options.teamRunId ?? null,
+    };
+    await this.persistence.taskRuns.create(run);
+
     if (!providerConfigured) {
-      const run: TaskRun = {
-        id: brandId<TaskRunId>(this.ids.next("trun")),
-        workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
-        taskId: brandId<TaskId>(task.id),
-        agentId: brandId<AgentId>(agent.id),
-        conversationId: null,
+      run = {
+        ...run,
         status: "needs_provider",
         summary: "No model provider configured — task marked in progress only.",
-        createdAt: this.clock.isoNow(),
       };
-      await this.persistence.taskRuns.create(run);
+      await this.persistence.taskRuns.update(run);
       await this.record(
         "ran",
         "task",
@@ -154,26 +189,45 @@ export class TaskExecutionService {
       };
     }
 
+    const controller = new AbortController();
+    this.inflight.set(run.id, controller);
+    const onOuterAbort = () => controller.abort();
+    options.signal?.addEventListener("abort", onOuterAbort, { once: true });
+    if (options.signal?.aborted) controller.abort();
+
     const conversation = await this.conversations.createConversation({
       agentId: agent.id,
       title: `Task: ${task.title}`.slice(0, 120),
       projectId: task.projectId ?? agent.projectId ?? undefined,
     });
+    run = { ...run, conversationId: brandId<ConversationId>(conversation.id) };
+    await this.persistence.taskRuns.update(run);
 
     try {
-      const reply = await this.conversations.sendMessage(conversation.id, { content: prompt });
+      const reply = await this.conversations.sendMessage(
+        conversation.id,
+        { content: prompt },
+        { signal: controller.signal },
+      );
+      if (controller.signal.aborted) {
+        run = {
+          ...run,
+          status: "cancelled",
+          summary: "Cancelled by operator",
+        };
+        await this.persistence.taskRuns.update(run);
+        await this.record("failed", "task", task.id, `Task run cancelled`);
+        return {
+          task: (await this.persistence.tasks.getById(task.id)) ?? task,
+          run,
+          conversationId: conversation.id,
+          assistantMessage: null,
+          providerConfigured: true,
+        };
+      }
       const summary = reply.assistantMessage?.content?.slice(0, 280) ?? null;
-      const run: TaskRun = {
-        id: brandId<TaskRunId>(this.ids.next("trun")),
-        workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
-        taskId: brandId<TaskId>(task.id),
-        agentId: brandId<AgentId>(agent.id),
-        conversationId: brandId<ConversationId>(conversation.id),
-        status: "completed",
-        summary,
-        createdAt: this.clock.isoNow(),
-      };
-      await this.persistence.taskRuns.create(run);
+      run = { ...run, status: "completed", summary };
+      await this.persistence.taskRuns.update(run);
       await this.record(
         "ran",
         "task",
@@ -183,7 +237,6 @@ export class TaskExecutionService {
         agent.id,
       );
 
-      // Capture a short memory from the run (encrypted at rest)
       if (summary) {
         await this.persistence.memories.create({
           id: brandId<MemoryId>(this.ids.next("mem")),
@@ -205,20 +258,36 @@ export class TaskExecutionService {
         providerConfigured: true,
       };
     } catch (error: unknown) {
+      const cancelled =
+        controller.signal.aborted ||
+        (error instanceof Error &&
+          ((error as { code?: string }).code === "CANCELLED" || /cancel/i.test(error.message)));
       const message = error instanceof Error ? error.message : "Task run failed";
-      const run: TaskRun = {
-        id: brandId<TaskRunId>(this.ids.next("trun")),
-        workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
-        taskId: brandId<TaskId>(task.id),
-        agentId: brandId<AgentId>(agent.id),
-        conversationId: brandId<ConversationId>(conversation.id),
-        status: "failed",
-        summary: message,
-        createdAt: this.clock.isoNow(),
+      run = {
+        ...run,
+        status: cancelled ? "cancelled" : "failed",
+        summary: cancelled ? "Cancelled by operator" : message,
       };
-      await this.persistence.taskRuns.create(run);
-      await this.record("failed", "task", task.id, `Task run failed: ${message}`);
+      await this.persistence.taskRuns.update(run);
+      await this.record(
+        "failed",
+        "task",
+        task.id,
+        cancelled ? `Task run cancelled` : `Task run failed: ${message}`,
+      );
+      if (cancelled) {
+        return {
+          task: (await this.persistence.tasks.getById(task.id)) ?? task,
+          run,
+          conversationId: conversation.id,
+          assistantMessage: null,
+          providerConfigured: true,
+        };
+      }
       throw error;
+    } finally {
+      options.signal?.removeEventListener("abort", onOuterAbort);
+      this.inflight.delete(run.id);
     }
   }
 }

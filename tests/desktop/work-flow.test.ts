@@ -11,7 +11,10 @@ import {
   suggestedWork,
   touchThread,
 } from "../../apps/desktop/src/domains/companions/companions";
-import { resolveWorkTarget, workDestination } from "../../apps/desktop/src/domains/chat/work-navigation";
+import {
+  resolveWorkTarget,
+  workDestination,
+} from "../../apps/desktop/src/domains/chat/work-navigation";
 
 beforeEach(async () => {
   const storage = new Map<string, string>();
@@ -25,7 +28,12 @@ beforeEach(async () => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-const input = { companionId: null, text: "Review proposal", capturedFrom: "You", space: "work" as const };
+const input = {
+  companionId: null,
+  text: "Review proposal",
+  capturedFrom: "You",
+  space: "work" as const,
+};
 
 describe("adding tasks and saving ideas", () => {
   it("adds an explicit task immediately without an invented schedule", () => {
@@ -82,26 +90,41 @@ describe("exact board destinations", () => {
   it("retains the task identity and space after completion", () => {
     const task = addWorkTask(input)!;
     setWorkState(task.id, "done");
-    const destination = new URL(workDestination({ workId: task.id, threadId: null, space: "work" }), "https://example.test");
+    const destination = new URL(
+      workDestination({ workId: task.id, threadId: null, space: "work" }),
+      "https://example.test",
+    );
     expect(destination.pathname).toBe("/work");
     expect(destination.searchParams.get("space")).toBe("work");
     expect(resolveWorkTarget(getCompanionState(), destination.searchParams)).toMatchObject({
-      kind: "work", item: { id: task.id, state: "done", space: "work" },
+      kind: "work",
+      item: { id: task.id, state: "done", space: "work" },
     });
   });
 
   it("resolves an archived thread and preserves same-title threads in each space", () => {
     touchThread({ ...input, title: "Website launch", summary: "Work context" });
     const workThread = getCompanionState().threads[0]!;
-    touchThread({ companionId: null, title: "Website launch", summary: "Personal context", space: "personal" });
+    touchThread({
+      companionId: null,
+      title: "Website launch",
+      summary: "Personal context",
+      space: "personal",
+    });
     setThreadArchived(workThread.id, true);
     const state = getCompanionState();
     expect(state.threads).toHaveLength(2);
-    expect(state.threads.find((thread) => thread.id === workThread.id)?.summary).toBe("Work context");
-    const destination = new URL(workDestination({ workId: null, threadId: workThread.id, space: "work" }), "https://example.test");
+    expect(state.threads.find((thread) => thread.id === workThread.id)?.summary).toBe(
+      "Work context",
+    );
+    const destination = new URL(
+      workDestination({ workId: null, threadId: workThread.id, space: "work" }),
+      "https://example.test",
+    );
     expect(destination.searchParams.get("view")).toBe("threads");
     expect(resolveWorkTarget(state, destination.searchParams)).toMatchObject({
-      kind: "thread", item: { id: workThread.id, archived: true, space: "work" },
+      kind: "thread",
+      item: { id: workThread.id, archived: true, space: "work" },
     });
   });
 

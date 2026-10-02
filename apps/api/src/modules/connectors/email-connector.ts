@@ -1,4 +1,4 @@
-import { ValidationError } from "@arrab/core";
+import { ValidationError, resolvePublicHost } from "@arrab/core";
 import type {
   ConnectorResource,
   EmailMessageDetail,
@@ -105,11 +105,31 @@ export function buildEmailSecret(input: {
   };
 }
 
+/**
+ * IMAP/SMTP hosts are user-supplied and this code runs in the cloud: vet each host and
+ * connect to the vetted address (TLS still validates the certificate for the real name).
+ */
+async function smtpTransport(secret: EmailSecret, connectionTimeout: number) {
+  const target = await resolvePublicHost(secret.smtpHost);
+  return nodemailer.createTransport({
+    host: target.address,
+    port: secret.smtpPort,
+    secure: secret.smtpPort === 465 || secret.secure,
+    auth: { user: secret.address, pass: secret.password },
+    tls: { servername: target.host },
+    connectionTimeout,
+    greetingTimeout: connectionTimeout,
+    socketTimeout: 60_000,
+  });
+}
+
 async function withImap<T>(secret: EmailSecret, fn: (client: ImapFlow) => Promise<T>): Promise<T> {
+  const target = await resolvePublicHost(secret.imapHost);
   const client = new ImapFlow({
-    host: secret.imapHost,
+    host: target.address,
     port: secret.imapPort,
     secure: true,
+    servername: target.host,
     auth: { user: secret.address, pass: secret.password },
     logger: false,
     connectionTimeout: 20_000,
@@ -135,13 +155,7 @@ export async function verifyEmailSecret(secret: EmailSecret): Promise<{ label: s
     }
   });
   // SMTP smoke: create transport and verify
-  const transport = nodemailer.createTransport({
-    host: secret.smtpHost,
-    port: secret.smtpPort,
-    secure: secret.smtpPort === 465 || secret.secure,
-    auth: { user: secret.address, pass: secret.password },
-    connectionTimeout: 16_000,
-  });
+  const transport = await smtpTransport(secret, 16_000);
   try {
     await transport.verify();
   } catch (err: unknown) {
@@ -282,13 +296,7 @@ export async function sendEmailMessage(
   if (!to || !subject || !text) {
     throw new ValidationError("to, subject, and text are required");
   }
-  const transport = nodemailer.createTransport({
-    host: secret.smtpHost,
-    port: secret.smtpPort,
-    secure: secret.smtpPort === 465 || secret.secure,
-    auth: { user: secret.address, pass: secret.password },
-    connectionTimeout: 20_000,
-  });
+  const transport = await smtpTransport(secret, 20_000);
   try {
     const info = await transport.sendMail({
       from: secret.address,

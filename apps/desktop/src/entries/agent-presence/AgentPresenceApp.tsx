@@ -52,7 +52,7 @@ export function AgentPresenceApp() {
   }, []);
 
   useEffect(() => {
-    let unsubs: Array<() => void> = [];
+    const unsubs: Array<() => void> = [];
     void (async () => {
       try {
         unsubs.push(

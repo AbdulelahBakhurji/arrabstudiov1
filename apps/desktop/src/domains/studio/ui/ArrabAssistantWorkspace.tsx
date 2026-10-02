@@ -968,7 +968,13 @@ export function ArrabAssistantWorkspace({
             </div>
           </header>
           {previewUrl ? (
-            <iframe title={preview.title || "preview"} src={previewUrl} className="st-assist-preview-frame" />
+            <iframe
+              title={preview.title || "preview"}
+              src={previewUrl}
+              // Generated HTML: scripts may run, but never with this app's origin (blob: URLs inherit it).
+              sandbox="allow-scripts"
+              className="st-assist-preview-frame"
+            />
           ) : (
             <p className="st-assist-empty">
               {ar ? "لا معاينة متاحة لهذا الملف." : "No in-app preview for this file."}

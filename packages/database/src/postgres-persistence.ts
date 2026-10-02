@@ -49,6 +49,8 @@ import {
   type WorkspaceId,
   type StudioAccountRecord,
   type TokenTopUpRecord,
+  type AccountSession,
+  type SyncRecord,
   type ModelCreditBalance,
   type SubscriptionPlanId,
   type SubscriptionStatus,
@@ -91,6 +93,7 @@ import {
   type Persistence,
   type ProjectRepoBindingRepository,
   type SkillRepository,
+  type SyncRecordRepository,
   type TaskRepository,
   type TaskRunRepository,
   type TeamMembershipRepository,
@@ -1158,6 +1161,8 @@ type AccountRow = {
   updated_at: Date;
   token_top_ups?: TokenTopUpRecord[] | null;
   model_credit?: ModelCreditBalance | null;
+  paid_invoice_ids?: string[] | null;
+  sessions?: AccountSession[] | null;
 };
 
 function mapAccount(row: AccountRow): StudioAccountRecord {
@@ -1176,6 +1181,8 @@ function mapAccount(row: AccountRow): StudioAccountRecord {
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
     tokenTopUps: Array.isArray(row.token_top_ups) ? row.token_top_ups : [],
+    paidInvoiceIds: Array.isArray(row.paid_invoice_ids) ? row.paid_invoice_ids : [],
+    sessions: Array.isArray(row.sessions) ? row.sessions : [],
     modelCredit: row.model_credit?.deepseekHalalas != null || row.model_credit?.otherHalalas != null
       ? {
           deepseekHalalas: row.model_credit.deepseekHalalas ?? 0,
@@ -1206,11 +1213,13 @@ class PostgresAccountRepository implements AccountRepository {
       `insert into studio_accounts (
          workspace_id, id, email, display_name, password_hash, plan_id, subscription_status,
          period_start, period_end, session_token_hash, connected_at, created_at, updated_at,
-         token_top_ups, model_credit
-       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb)
+         token_top_ups, model_credit, paid_invoice_ids, sessions
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb,$16::jsonb,$17::jsonb)
        on conflict (workspace_id) do update set
          token_top_ups = excluded.token_top_ups,
          model_credit = excluded.model_credit,
+         paid_invoice_ids = excluded.paid_invoice_ids,
+         sessions = excluded.sessions,
          id = excluded.id,
          email = excluded.email,
          display_name = excluded.display_name,
@@ -1238,6 +1247,8 @@ class PostgresAccountRepository implements AccountRepository {
         account.updatedAt,
         JSON.stringify(account.tokenTopUps ?? []),
         JSON.stringify(account.modelCredit ?? {}),
+        JSON.stringify(account.paidInvoiceIds ?? []),
+        JSON.stringify(account.sessions ?? []),
       ],
     );
     return account;
@@ -1452,20 +1463,18 @@ class PostgresTaskRunRepository implements TaskRunRepository {
     private readonly workspaceId: string,
   ) {}
 
-  async list(): Promise<TaskRun[]> {
-    const result = await this.pool.query<{
-      id: string;
-      workspace_id: string;
-      task_id: string;
-      agent_id: string;
-      conversation_id: string | null;
-      status: TaskRunStatus;
-      summary: string | null;
-      created_at: Date;
-    }>(`select * from task_runs where workspace_id = $1 order by created_at desc`, [
-      this.workspaceId,
-    ]);
-    return result.rows.map((row) => ({
+  private mapRow(row: {
+    id: string;
+    workspace_id: string;
+    task_id: string;
+    agent_id: string;
+    conversation_id: string | null;
+    status: TaskRunStatus;
+    summary: string | null;
+    created_at: Date;
+    team_run_id?: string | null;
+  }): TaskRun {
+    return {
       id: brandId<TaskRunId>(row.id),
       workspaceId: brandId<WorkspaceId>(row.workspace_id),
       taskId: brandId<TaskId>(row.task_id),
@@ -1476,18 +1485,55 @@ class PostgresTaskRunRepository implements TaskRunRepository {
       status: row.status,
       summary: row.summary,
       createdAt: iso(row.created_at),
-    }));
+      teamRunId: row.team_run_id ?? null,
+    };
+  }
+
+  async list(): Promise<TaskRun[]> {
+    const result = await this.pool.query<{
+      id: string;
+      workspace_id: string;
+      task_id: string;
+      agent_id: string;
+      conversation_id: string | null;
+      status: TaskRunStatus;
+      summary: string | null;
+      created_at: Date;
+      team_run_id: string | null;
+    }>(`select * from task_runs where workspace_id = $1 order by created_at desc`, [
+      this.workspaceId,
+    ]);
+    return result.rows.map((row) => this.mapRow(row));
   }
 
   async listByTask(taskId: string): Promise<TaskRun[]> {
     return (await this.list()).filter((item) => item.taskId === taskId);
   }
 
+  async getById(id: string): Promise<TaskRun | null> {
+    const result = await this.pool.query<{
+      id: string;
+      workspace_id: string;
+      task_id: string;
+      agent_id: string;
+      conversation_id: string | null;
+      status: TaskRunStatus;
+      summary: string | null;
+      created_at: Date;
+      team_run_id: string | null;
+    }>(`select * from task_runs where workspace_id = $1 and id = $2 limit 1`, [
+      this.workspaceId,
+      id,
+    ]);
+    const row = result.rows[0];
+    return row ? this.mapRow(row) : null;
+  }
+
   async create(run: TaskRun): Promise<TaskRun> {
     await this.pool.query(
       `insert into task_runs
-       (id, workspace_id, task_id, agent_id, conversation_id, status, summary, created_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8)`,
+       (id, workspace_id, task_id, agent_id, conversation_id, status, summary, created_at, team_run_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
       [
         run.id,
         run.workspaceId,
@@ -1497,6 +1543,24 @@ class PostgresTaskRunRepository implements TaskRunRepository {
         run.status,
         run.summary,
         run.createdAt,
+        run.teamRunId ?? null,
+      ],
+    );
+    return run;
+  }
+
+  async update(run: TaskRun): Promise<TaskRun> {
+    await this.pool.query(
+      `update task_runs
+       set conversation_id = $3, status = $4, summary = $5, team_run_id = $6
+       where workspace_id = $1 and id = $2`,
+      [
+        run.workspaceId,
+        run.id,
+        run.conversationId,
+        run.status,
+        run.summary,
+        run.teamRunId ?? null,
       ],
     );
     return run;
@@ -1879,6 +1943,7 @@ export async function createPostgresPersistence(pool: Pool): Promise<Persistence
     companionDesk: new PostgresCompanionDeskRepository(pool, context.workspace.id),
     crew: new PostgresCrewRepository(pool, context.workspace.id),
     sealedVault: new PostgresSealedVaultRepository(pool, context.workspace.id),
+    syncRecords: new PostgresSyncRecordRepository(pool, context.workspace.id),
   };
 }
 
@@ -1985,6 +2050,128 @@ class PostgresControlNotificationRepository {
       [item.id, JSON.stringify(item)],
     );
     return (result.rowCount ?? 0) > 0 ? item : null;
+  }
+}
+
+type SyncRow = {
+  kind: SyncRecord["kind"];
+  id: string;
+  rev: number;
+  deleted: boolean;
+  updated_at: Date;
+  updated_by: string;
+  data: Record<string, unknown>;
+  seq: string;
+};
+
+function mapSyncRow(row: SyncRow): { record: SyncRecord; seq: number } {
+  return {
+    record: {
+      kind: row.kind,
+      id: row.id,
+      rev: row.rev,
+      deleted: row.deleted,
+      updatedAt: iso(row.updated_at),
+      updatedBy: row.updated_by,
+      data: row.data,
+    },
+    seq: Number(row.seq),
+  };
+}
+
+class PostgresSyncRecordRepository implements SyncRecordRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async get(ownerKey: string, kind: string, id: string): Promise<SyncRecord | null> {
+    const result = await this.pool.query<SyncRow>(
+      `select * from sync_records where workspace_id = $1 and owner_key = $2 and kind = $3 and id = $4`,
+      [this.workspaceId, ownerKey, kind, id],
+    );
+    return result.rows[0] ? mapSyncRow(result.rows[0]).record : null;
+  }
+
+  async compareAndSet(ownerKey: string, record: SyncRecord, expectedRev: number, opId: string) {
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const values = [
+        this.workspaceId,
+        ownerKey,
+        record.kind,
+        record.id,
+        record.rev,
+        record.deleted,
+        record.updatedAt,
+        record.updatedBy,
+        JSON.stringify(record.data),
+      ];
+      // One statement decides the race: insert a brand-new record, or update only if the stored
+      // revision is still the one the caller based its edit on.
+      const write =
+        expectedRev === 0
+          ? await client.query<SyncRow>(
+              `insert into sync_records (workspace_id, owner_key, kind, id, rev, deleted, updated_at, updated_by, data)
+               values ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)
+               on conflict (workspace_id, owner_key, kind, id) do nothing
+               returning *`,
+              values,
+            )
+          : await client.query<SyncRow>(
+              `update sync_records set rev = $5, deleted = $6, updated_at = $7, updated_by = $8, data = $9::jsonb,
+                      seq = nextval('sync_records_seq')
+               where workspace_id = $1 and owner_key = $2 and kind = $3 and id = $4 and rev = $10
+               returning *`,
+              [...values, expectedRev],
+            );
+      if (write.rowCount === 0) {
+        await client.query("rollback");
+        return null;
+      }
+      await client.query(
+        `insert into sync_ops (workspace_id, owner_key, op_id, kind, id) values ($1,$2,$3,$4,$5)
+         on conflict do nothing`,
+        [this.workspaceId, ownerKey, opId, record.kind, record.id],
+      );
+      await client.query("commit");
+      return mapSyncRow(write.rows[0]!);
+    } catch (error) {
+      await client.query("rollback").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getOpResult(ownerKey: string, opId: string): Promise<SyncRecord | null> {
+    const op = await this.pool.query<{ kind: string; id: string }>(
+      `select kind, id from sync_ops where workspace_id = $1 and owner_key = $2 and op_id = $3`,
+      [this.workspaceId, ownerKey, opId],
+    );
+    const hit = op.rows[0];
+    return hit ? this.get(ownerKey, hit.kind, hit.id) : null;
+  }
+
+  async listAfter(ownerKey: string, afterSeq: number, limit: number, kinds?: string[]) {
+    const result = await this.pool.query<SyncRow>(
+      `select * from sync_records
+       where workspace_id = $1 and owner_key = $2 and seq > $3 and ($4::text[] is null or kind = any($4::text[]))
+       order by seq asc limit $5`,
+      [this.workspaceId, ownerKey, afterSeq, kinds?.length ? kinds : null, limit],
+    );
+    return result.rows.map(mapSyncRow);
+  }
+
+  async purgeOwner(ownerKey: string): Promise<void> {
+    await this.pool.query(`delete from sync_records where workspace_id = $1 and owner_key = $2`, [this.workspaceId, ownerKey]);
+    await this.pool.query(`delete from sync_ops where workspace_id = $1 and owner_key = $2`, [this.workspaceId, ownerKey]);
+  }
+
+  async purgeWorkspace(): Promise<void> {
+    await this.pool.query(`delete from sync_records where workspace_id = $1`, [this.workspaceId]);
+    await this.pool.query(`delete from sync_ops where workspace_id = $1`, [this.workspaceId]);
   }
 }
 

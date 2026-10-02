@@ -1,6 +1,7 @@
 import type { AiGateway } from "@arrab/ai";
 import {
   executeApprovedTool,
+  formatToolResult,
   isClientExecTool,
   type AgentRunResult,
   type AgentSkillTools,
@@ -20,7 +21,6 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Persistence } from "@arrab/database";
 import {
   brandId,
-  guardianHardHit,
   toolResultAttestationPayload,
   type Activity,
   type ActivityId,
@@ -221,7 +221,51 @@ export class ConversationService {
     private readonly familyHousehold: FamilyHouseholdService | null = null,
     private readonly ids: IdGenerator = randomIdGenerator,
     private readonly clock: Clock = systemClock,
+    /** Models a client may select; `null` accepts any (tests, local single-provider setups). */
+    private readonly allowedModels: ReadonlySet<string> | null = null,
+    /** Same-provider backups after the resolved primary (excludes the primary itself). */
+    private readonly modelFallbacksFor: ((model: string) => readonly string[]) | null = null,
+    private readonly metrics: {
+      inc: (name: string, labels?: Record<string, string | number>, by?: number) => void;
+      observe: (name: string, valueMs: number, labels?: Record<string, string | number>) => void;
+    } | null = null,
   ) {}
+
+  /** A requested model outside the offered catalog falls back to the default, never to "anything". */
+  private resolveModel(requested: string | null | undefined): string {
+    const wanted = requested?.trim();
+    if (!wanted) return this.defaultModel;
+    if (this.allowedModels && !this.allowedModels.has(wanted)) return this.defaultModel;
+    return wanted;
+  }
+
+  private recordAiMetrics(input: {
+    provider: string;
+    model: string;
+    outcome: "success" | "error" | "cancelled";
+    durationMs: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    fallbackFrom?: string | null;
+  }): void {
+    if (!this.metrics) return;
+    const labels = { provider: input.provider, model: input.model };
+    this.metrics.inc("arrab_ai_requests_total", { ...labels, outcome: input.outcome });
+    this.metrics.observe("arrab_ai_request_duration_ms", input.durationMs, labels);
+    if (input.inputTokens) {
+      this.metrics.inc("arrab_ai_tokens_total", { ...labels, direction: "input" }, input.inputTokens);
+    }
+    if (input.outputTokens) {
+      this.metrics.inc("arrab_ai_tokens_total", { ...labels, direction: "output" }, input.outputTokens);
+    }
+    if (input.fallbackFrom) {
+      this.metrics.inc("arrab_ai_fallback_total", {
+        from_model: input.fallbackFrom,
+        to_model: input.model,
+        reason: "retryable_error",
+      });
+    }
+  }
 
   private async trackFamilyUsage(tokens: number): Promise<void> {
     if (!this.familyHousehold || tokens <= 0) return;
@@ -507,7 +551,26 @@ export class ConversationService {
     return { messages: saved };
   }
 
+  /** Typical cost of one reply (input + output), reserved while it is generated. */
+  private static readonly REPLY_RESERVE_TOKENS = 2_500;
+
   async sendMessage(
+    conversationId: string,
+    input: SendMessageRequest,
+    options?: Parameters<ConversationService["sendMessageUnreserved"]>[2],
+  ): Promise<SendMessageResponse> {
+    const typed = typeof input?.content === "string" ? input.content : "";
+    const reservation = await this.accounts.reserveTokens(
+      ConversationService.REPLY_RESERVE_TOKENS + Math.ceil(typed.length / 4),
+    );
+    try {
+      return await this.sendMessageUnreserved(conversationId, input, options);
+    } finally {
+      reservation.release();
+    }
+  }
+
+  private async sendMessageUnreserved(
     conversationId: string,
     input: SendMessageRequest,
     options?: {
@@ -516,8 +579,13 @@ export class ConversationService {
       onTool?: (name: string, result: string) => void;
       onToolStart?: (name: string, detail?: string) => void;
       onApproval?: (approval: Approval) => void;
+      /** Aborts the provider call when the client goes away. */
+      signal?: AbortSignal;
     },
   ): Promise<SendMessageResponse> {
+    if (input.content !== undefined && input.content !== null && typeof input.content !== "string") {
+      throw new ValidationError("Message content must be text");
+    }
     const content = input.content?.trim() ?? "";
     if (content.length === 0) {
       throw new ValidationError("Message content is required");
@@ -528,12 +596,9 @@ export class ConversationService {
 
     const childSeat = (await this.familyHousehold?.isActiveChildSeat()) === true;
     if (childSeat) {
-      const hard = guardianHardHit(content);
-      if (hard) {
-        throw new ForbiddenError(
-          `Family safety boundary: ${hard.labelEn}. Ask a parent if you need help.`,
-        );
-      }
+      // Hard failsafes + the parent's blocked words; logs a safety event for parents and
+      // counts activity. Throws FamilyGuardianError (403) when the message is blocked.
+      await this.familyHousehold?.screenMessage(content);
       // Never trust client-supplied skill bodies or goal hints for child seats.
       input = {
         ...input,
@@ -638,6 +703,11 @@ export class ConversationService {
     if (providerConfigured) {
       const projectId = conversation.projectId ?? agent.projectId;
       const contextParts: string[] = [];
+
+      if (childSeat) {
+        const guardianBlock = await this.familyHousehold?.guardianPromptBlock();
+        if (guardianBlock) contextParts.push(guardianBlock);
+      }
 
       if (profile.conciseReplyHint) {
         contextParts.push(
@@ -1047,12 +1117,15 @@ export class ConversationService {
           : codingFolder
             ? Math.max(profile.maxOutputTokens, codingFloor)
             : profile.maxOutputTokens;
+      const resolvedModel = this.resolveModel(input.model);
       const runRequest = {
         agent,
         conversationId: conversation.id,
         input: content,
         history,
-        model: input.model?.trim() || this.defaultModel,
+        model: resolvedModel,
+        modelFallbacks: this.modelFallbacksFor?.(resolvedModel) ?? [],
+        signal: options?.signal,
         systemExtra,
         // Reasoning tokens share the completion budget on most providers.
         maxOutputTokens: capToRemainingTokens(
@@ -1086,35 +1159,60 @@ export class ConversationService {
       };
 
       let result: AgentRunResult;
-      if (options?.onToken && this.runtime.runStream) {
-        result = {
-          status: "completed",
-          output: "",
-          error: null,
-          usage: null,
-          providerId: null,
-          model: null,
-          toolsUsed: [],
-        };
-        for await (const event of this.runtime.runStream(runRequest, this.gateway)) {
-          if (event.type === "token") {
-            options.onToken(event.text);
-            result.output = (result.output ?? "") + event.text;
-          } else if (event.type === "thinking") {
-            options.onThinking?.(event.text);
-          } else if (event.type === "tool_start") {
-            options.onToolStart?.(event.name, event.detail);
-          } else if (event.type === "tool") {
-            options.onTool?.(event.name, event.result);
-            toolsUsed.push(event.name);
-          } else if (event.type === "done") {
-            result = event.result;
-            toolsUsed = event.result.toolsUsed ?? toolsUsed;
+      const aiStarted = Date.now();
+      try {
+        if (options?.onToken && this.runtime.runStream) {
+          result = {
+            status: "completed",
+            output: "",
+            error: null,
+            usage: null,
+            providerId: null,
+            model: null,
+            toolsUsed: [],
+          };
+          for await (const event of this.runtime.runStream(runRequest, this.gateway)) {
+            if (event.type === "token") {
+              options.onToken(event.text);
+              result.output = (result.output ?? "") + event.text;
+            } else if (event.type === "thinking") {
+              options.onThinking?.(event.text);
+            } else if (event.type === "tool_start") {
+              options.onToolStart?.(event.name, event.detail);
+            } else if (event.type === "tool") {
+              options.onTool?.(event.name, event.result);
+              toolsUsed.push(event.name);
+            } else if (event.type === "done") {
+              result = event.result;
+              toolsUsed = event.result.toolsUsed ?? toolsUsed;
+            }
           }
+        } else {
+          result = await this.runtime.run(runRequest, this.gateway);
+          toolsUsed = result.toolsUsed ?? [];
         }
-      } else {
-        result = await this.runtime.run(runRequest, this.gateway);
-        toolsUsed = result.toolsUsed ?? [];
+        this.recordAiMetrics({
+          provider: result.providerId ?? "unknown",
+          model: result.model ?? resolvedModel,
+          outcome: "success",
+          durationMs: Date.now() - aiStarted,
+          inputTokens: result.usage?.inputTokens,
+          outputTokens: result.usage?.outputTokens,
+          fallbackFrom: result.fallbackFrom,
+        });
+      } catch (error) {
+        const cancelled =
+          error instanceof Error &&
+          (/cancel/i.test(error.name) ||
+            (error as { code?: string }).code === "CANCELLED" ||
+            options?.signal?.aborted);
+        this.recordAiMetrics({
+          provider: "unknown",
+          model: resolvedModel,
+          outcome: cancelled ? "cancelled" : "error",
+          durationMs: Date.now() - aiStarted,
+        });
+        throw error;
       }
 
       if (result.status === "needs_approval" && result.pendingTool) {
@@ -1469,8 +1567,7 @@ export class ConversationService {
     const isEmailMutating =
       detail.toolName === "send_email" || detail.toolName === "arrange_email";
     const resumeInput = [
-      `TOOL_RESULT ${detail.toolName}:`,
-      toolResult,
+      formatToolResult(detail.toolName, toolResult),
       "",
       isLocal
         ? [

@@ -17,6 +17,7 @@ import {
   type Organization,
   type OrganizationId,
   type Project,
+  type SyncRecord,
   type ProjectRepoBinding,
   type Skill,
   type Task,
@@ -67,6 +68,7 @@ import {
   type CompanionDeskRepository,
   type CrewRepository,
   type SealedVaultRepository,
+  type SyncRecordRepository,
   type WorkspaceContext,
 } from "./types.js";
 
@@ -444,8 +446,19 @@ class MemoryTaskRunRepository implements TaskRunRepository {
     return (await this.list()).filter((item) => item.taskId === taskId);
   }
 
+  async getById(id: string): Promise<TaskRun | null> {
+    return this.items.find((item) => item.id === id) ?? null;
+  }
+
   async create(run: TaskRun): Promise<TaskRun> {
     this.items.push(run);
+    return run;
+  }
+
+  async update(run: TaskRun): Promise<TaskRun> {
+    const index = this.items.findIndex((item) => item.id === run.id);
+    if (index < 0) throw new Error(`TaskRun ${run.id} was not found`);
+    this.items[index] = run;
     return run;
   }
 }
@@ -589,6 +602,11 @@ export type MemorySnapshot = {
   sealedKeys: Record<string, WrappedChatKey>;
   sealedChats: Record<string, Record<string, SealedChat>>;
   sealedDeleted: Record<string, Record<string, string>>;
+  /** Revisioned sync records, keyed `${ownerKey}|${kind}|${id}`. */
+  syncRecords: Record<string, { record: SyncRecord; seq: number }>;
+  /** opId → record it produced, keyed `${ownerKey}|${opId}`. */
+  syncOps: Record<string, SyncRecord>;
+  syncSeq: number;
 };
 
 export type MemoryPersistenceOptions = {
@@ -686,6 +704,9 @@ export function emptyMemorySnapshot(now = new Date().toISOString()): MemorySnaps
     sealedKeys: {},
     sealedChats: {},
     sealedDeleted: {},
+    syncRecords: {},
+    syncOps: {},
+    syncSeq: 0,
   };
 }
 
@@ -811,7 +832,55 @@ export function normalizeMemorySnapshot(
     sealedKeys: raw.sealedKeys && typeof raw.sealedKeys === "object" ? raw.sealedKeys : {},
     sealedChats: raw.sealedChats && typeof raw.sealedChats === "object" ? raw.sealedChats : {},
     sealedDeleted: raw.sealedDeleted && typeof raw.sealedDeleted === "object" ? raw.sealedDeleted : {},
+    syncRecords: raw.syncRecords && typeof raw.syncRecords === "object" ? raw.syncRecords : {},
+    syncOps: raw.syncOps && typeof raw.syncOps === "object" ? raw.syncOps : {},
+    syncSeq: typeof raw.syncSeq === "number" ? raw.syncSeq : 0,
   };
+}
+
+class MemorySyncRecordRepository implements SyncRecordRepository {
+  constructor(private readonly snapshot: MemorySnapshot) {}
+
+  async get(ownerKey: string, kind: string, id: string): Promise<SyncRecord | null> {
+    return this.snapshot.syncRecords[`${ownerKey}|${kind}|${id}`]?.record ?? null;
+  }
+
+  async compareAndSet(ownerKey: string, record: SyncRecord, expectedRev: number, opId: string) {
+    const key = `${ownerKey}|${record.kind}|${record.id}`;
+    const current = this.snapshot.syncRecords[key]?.record;
+    if ((current?.rev ?? 0) !== expectedRev) return null;
+    this.snapshot.syncSeq += 1;
+    const stored = { record: { ...record }, seq: this.snapshot.syncSeq };
+    this.snapshot.syncRecords[key] = stored;
+    this.snapshot.syncOps[`${ownerKey}|${opId}`] = stored.record;
+    return stored;
+  }
+
+  async getOpResult(ownerKey: string, opId: string): Promise<SyncRecord | null> {
+    // Same as Postgres: the op is known, so answer with the record as it is now.
+    const produced = this.snapshot.syncOps[`${ownerKey}|${opId}`];
+    return produced ? (this.snapshot.syncRecords[`${ownerKey}|${produced.kind}|${produced.id}`]?.record ?? null) : null;
+  }
+
+  async listAfter(ownerKey: string, afterSeq: number, limit: number, kinds?: string[]) {
+    const prefix = `${ownerKey}|`;
+    return Object.entries(this.snapshot.syncRecords)
+      .filter(([key, item]) => key.startsWith(prefix) && item.seq > afterSeq && (!kinds?.length || kinds.includes(item.record.kind)))
+      .map(([, item]) => item)
+      .sort((a, b) => a.seq - b.seq)
+      .slice(0, limit);
+  }
+
+  async purgeOwner(ownerKey: string): Promise<void> {
+    const prefix = `${ownerKey}|`;
+    for (const key of Object.keys(this.snapshot.syncRecords)) if (key.startsWith(prefix)) delete this.snapshot.syncRecords[key];
+    for (const key of Object.keys(this.snapshot.syncOps)) if (key.startsWith(prefix)) delete this.snapshot.syncOps[key];
+  }
+
+  async purgeWorkspace(): Promise<void> {
+    this.snapshot.syncRecords = {};
+    this.snapshot.syncOps = {};
+  }
 }
 
 class MemorySealedVaultRepository implements SealedVaultRepository {
@@ -1315,5 +1384,6 @@ export function createInMemoryPersistence(
     companionDesk: wrap(new MemoryCompanionDeskRepository(snapshot)),
     crew: wrap(new MemoryCrewRepository(snapshot)),
     sealedVault: wrap(new MemorySealedVaultRepository(snapshot)),
+    syncRecords: wrap(new MemorySyncRecordRepository(snapshot)),
   };
 }

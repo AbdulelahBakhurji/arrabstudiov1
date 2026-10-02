@@ -118,7 +118,7 @@ function mergeFiles(base: StudioFile[], next: StudioFile[]): StudioFile[] {
 }
 
 function isDesignAsk(text: string) {
-  return /design|website|web|site|page|ui|layout|landing|screen|mobile|phone|app|game|roblox|luau|model|mesh|3d|sculpt|صم[مّ]|موقع|واجهة|شاشة|جوال|لعبة|روبلوكس|نمذج|نحت/i.test(
+  return /design|website|web|site|page|ui|layout|landing|screen|mobile|phone|app|game|roblox|luau|model|mesh|3d|sculpt|صم(?:م|ّ)|موقع|واجهة|شاشة|جوال|لعبة|روبلوكس|نمذج|نحت/i.test(
     text,
   );
 }

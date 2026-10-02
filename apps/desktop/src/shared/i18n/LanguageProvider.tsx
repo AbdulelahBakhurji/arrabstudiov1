@@ -23,7 +23,9 @@ const STORAGE_KEY = "arrab.locale";
 
 function readInitialLocale(): Locale {
   const saved = window.localStorage.getItem(STORAGE_KEY);
-  return saved === "ar" ? "ar" : "en";
+  if (saved === "ar" || saved === "en") return saved;
+  // First launch: follow the system language rather than assuming English.
+  return (navigator.language ?? "").toLowerCase().startsWith("ar") ? "ar" : "en";
 }
 
 export function LanguageProvider({ children }: { children: ReactNode }) {

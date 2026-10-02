@@ -58,8 +58,6 @@ const testEnv: ApiEnv = {
   finnhubWebhookSecret: undefined,
 };
 
-
-
 function row(id: string, connectedAt: string): ConnectorSecretRecord {
   return {
     id,
@@ -116,9 +114,13 @@ describe("a new account never inherits the previous account's data", () => {
     const account = (await signUp(app, "now@arrab.studio")).json() as { sessionToken: string };
     // Leftover from before this account existed (e.g. created by a removed account).
     await context.persistence.connectors.create(row("leftover", "2000-01-01T00:00:00.000Z"));
-    await context.persistence.connectors.create(row("mine", new Date(Date.now() + 1000).toISOString()));
+    await context.persistence.connectors.create(
+      row("mine", new Date(Date.now() + 1000).toISOString()),
+    );
     const auth = { authorization: `Bearer ${account.sessionToken}` };
     const list = await app.inject({ method: "GET", url: "/v1/connectors", headers: auth });
-    expect((list.json() as { items: Array<{ id: string }> }).items.map((c) => c.id)).toEqual(["mine"]);
+    expect((list.json() as { items: Array<{ id: string }> }).items.map((c) => c.id)).toEqual([
+      "mine",
+    ]);
   });
 });

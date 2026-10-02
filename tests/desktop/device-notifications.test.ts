@@ -39,7 +39,12 @@ describe("device-only notifications", () => {
 
   it("does not expose an in-app toast or inbox API any more", async () => {
     const mod = (await load()) as Record<string, unknown>;
-    for (const name of ["subscribeToasts", "getNotificationInbox", "subscribeNotificationInbox", "setUnreadBadge"]) {
+    for (const name of [
+      "subscribeToasts",
+      "getNotificationInbox",
+      "subscribeNotificationInbox",
+      "setUnreadBadge",
+    ]) {
       expect(mod[name]).toBeUndefined();
     }
   });
@@ -70,7 +75,11 @@ describe("device-only notifications", () => {
     await notifyStudio({ kind: "connector", title: "Slack connected" });
     expect(created).toHaveLength(0);
 
-    updatePrefs({ notifyConnector: true, dndUntil: Date.now() + 3_600_000, quietAllowApprovals: false });
+    updatePrefs({
+      notifyConnector: true,
+      dndUntil: Date.now() + 3_600_000,
+      quietAllowApprovals: false,
+    });
     await notifyStudio({ kind: "connector", title: "Slack connected" });
     await notifyStudio({ kind: "approvals", title: "Approve email", approvalId: "a1" });
     expect(created).toHaveLength(0);

@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::{Component, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -9,6 +9,19 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Emitter;
 use tauri::Manager;
+
+mod exec;
+mod opener;
+mod safe_fs;
+mod secure;
+mod update_guard;
+
+use safe_fs::ApprovedRoots;
+
+/// Longest a terminal command may run before its process tree is killed.
+const COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
+/// Per-stream cap on captured command output.
+const COMMAND_OUTPUT_CAP: usize = 1_000_000;
 
 /// Menu-bar and presence windows must not reach the desk, shell, or device store.
 fn main_window_only(window: &tauri::WebviewWindow) -> Result<(), String> {
@@ -28,157 +41,161 @@ fn allow_windows(window: &tauri::WebviewWindow, allowed: &[&str]) -> Result<(), 
     Err("Blocked: this window cannot use that command".into())
 }
 
-fn resolve_under_root(root: &str, relative: &str) -> Result<PathBuf, String> {
-    let root_path = PathBuf::from(root.trim());
-    if !root_path.is_dir() {
-        return Err("Workspace folder does not exist".into());
-    }
-    let root_canon = root_path
-        .canonicalize()
-        .map_err(|err| format!("Invalid workspace folder: {err}"))?;
+/// Resolve a workspace-relative path. The root must be a folder the user opened, and the result
+/// stays inside it (see `safe_fs`). Returns the canonical root and the resolved path.
+fn workspace_path(
+    roots: &ApprovedRoots,
+    root: &str,
+    relative: &str,
+) -> Result<(PathBuf, PathBuf), String> {
+    let root_canon = roots.require(root)?;
+    let path = safe_fs::resolve_in_root(&root_canon, relative)?;
+    Ok((root_canon, path))
+}
 
-    let rel = relative.trim().trim_start_matches(['/', '\\']);
-    if rel.is_empty() {
-        return Ok(root_canon);
+/// Like `workspace_path`, but refuses the workspace root itself and anything inside `.git`.
+fn workspace_edit_path(
+    roots: &ApprovedRoots,
+    root: &str,
+    relative: &str,
+) -> Result<PathBuf, String> {
+    let (root_canon, path) = workspace_path(roots, root, relative)?;
+    if safe_fs::is_protected(&root_canon, &path) {
+        return Err("The workspace root and .git are protected from edits".into());
     }
-    if rel.contains('\0') {
-        return Err("Invalid path".into());
-    }
+    Ok(path)
+}
 
-    let candidate = root_canon.join(rel);
-    let mut cleaned = PathBuf::new();
-    for component in candidate.components() {
-        match component {
-            Component::ParentDir => {
-                if !cleaned.pop() {
-                    return Err("Path escapes workspace".into());
-                }
-            }
-            Component::CurDir => {}
-            other => cleaned.push(other.as_os_str()),
-        }
+fn secure_error(err: secure::SecureError) -> String {
+    match err {
+        secure::SecureError::Unavailable => "unavailable".into(),
+        secure::SecureError::Invalid => "Invalid secure-storage request".into(),
+        secure::SecureError::Failed(message) => format!("Secure storage failed: {message}"),
     }
+}
 
-    let canon = if cleaned.exists() {
-        cleaned
-            .canonicalize()
-            .map_err(|err| format!("Invalid path: {err}"))?
-    } else {
-        let parent = cleaned
-            .parent()
-            .ok_or_else(|| "Invalid path".to_string())?
-            .canonicalize()
-            .map_err(|err| format!("Invalid path: {err}"))?;
-        let name = cleaned
-            .file_name()
-            .ok_or_else(|| "Invalid path".to_string())?;
-        parent.join(name)
-    };
-
-    if !canon.starts_with(&root_canon) {
-        return Err("Path escapes workspace".into());
-    }
-    Ok(canon)
+/// Whether this build can keep secrets in an OS-protected store (Keychain etc.).
+#[tauri::command]
+fn secure_storage_available(window: tauri::WebviewWindow) -> Result<bool, String> {
+    main_window_only(&window)?;
+    Ok(secure::available())
 }
 
 #[tauri::command]
-fn pick_folder(window: tauri::WebviewWindow) -> Result<Option<String>, String> {
+fn secure_get(window: tauri::WebviewWindow, key: String) -> Result<Option<String>, String> {
+    main_window_only(&window)?;
+    secure::get(&key).map_err(secure_error)
+}
+
+#[tauri::command]
+fn secure_set(window: tauri::WebviewWindow, key: String, value: String) -> Result<(), String> {
+    main_window_only(&window)?;
+    secure::set(&key, &value).map_err(secure_error)
+}
+
+#[tauri::command]
+fn secure_delete(window: tauri::WebviewWindow, key: String) -> Result<(), String> {
+    main_window_only(&window)?;
+    secure::delete(&key).map_err(secure_error)
+}
+
+#[tauri::command]
+fn pick_folder(
+    window: tauri::WebviewWindow,
+    roots: tauri::State<'_, ApprovedRoots>,
+) -> Result<Option<String>, String> {
     main_window_only(&window)?;
     let folder = rfd::FileDialog::new()
         .set_title("Choose workspace folder")
         .pick_folder();
-    Ok(folder.map(|path| path.to_string_lossy().to_string()))
+    // Choosing it in the native dialog *is* the grant: only approved folders are usable by the file tools.
+    match folder {
+        Some(path) => Ok(Some(roots.approve(&path)?.to_string_lossy().to_string())),
+        None => Ok(None),
+    }
 }
 
 #[tauri::command]
 fn list_dir(
     window: tauri::WebviewWindow,
+    roots: tauri::State<'_, ApprovedRoots>,
     root: String,
     relative: Option<String>,
 ) -> Result<serde_json::Value, String> {
     main_window_only(&window)?;
-    let path = resolve_under_root(&root, relative.as_deref().unwrap_or(""))?;
+    let (root_canon, path) = workspace_path(&roots, &root, relative.as_deref().unwrap_or(""))?;
     if !path.is_dir() {
         return Err("Not a directory".into());
     }
 
     let mut entries = Vec::new();
+    // Bounded: a directory with a million entries must not be sorted and serialized whole.
+    const MAX_SCANNED: usize = 20_000;
     let read = fs::read_dir(&path).map_err(|err| err.to_string())?;
-    for item in read.flatten() {
+    for item in read.flatten().take(MAX_SCANNED) {
         let meta = item.metadata().ok();
-        let file_type = meta.as_ref().map(|m| {
-            if m.is_dir() {
-                "dir"
-            } else if m.is_file() {
-                "file"
-            } else {
-                "other"
-            }
-        });
-        let name = item.file_name().to_string_lossy().to_string();
-        if name == ".git" || name == "node_modules" || name == "target" || name == "dist" {
-            // still show, but keep listing bounded below
-        }
-        let rel = {
-            let root_canon = PathBuf::from(root.trim())
-                .canonicalize()
-                .map_err(|err| err.to_string())?;
-            item.path()
-                .strip_prefix(&root_canon)
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or(name.clone())
+        let kind = match meta.as_ref() {
+            Some(m) if m.is_dir() => "dir",
+            Some(m) if m.is_file() => "file",
+            _ => "other",
         };
-        entries.push(serde_json::json!({
-            "name": name,
-            "path": rel,
-            "kind": file_type.unwrap_or("other"),
-            "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
-        }));
+        let name = item.file_name().to_string_lossy().to_string();
+        let rel = item
+            .path()
+            .strip_prefix(&root_canon)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| name.clone());
+        entries.push((
+            kind,
+            name.to_lowercase(),
+            serde_json::json!({
+                "name": name,
+                "path": rel,
+                "kind": kind,
+                "size": meta.as_ref().map(|m| m.len()).unwrap_or(0),
+            }),
+        ));
     }
 
-    entries.sort_by(|a, b| {
-        let ak = a.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        let bk = b.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        match (ak, bk) {
-            ("dir", "file") => std::cmp::Ordering::Less,
-            ("file", "dir") => std::cmp::Ordering::Greater,
-            _ => a
-                .get("name")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_lowercase()
-                .cmp(
-                    &b.get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_lowercase(),
-                ),
-        }
+    // Folders first, then case-insensitive by name.
+    entries.sort_by(|a, b| match (a.0, b.0) {
+        ("dir", "file") => std::cmp::Ordering::Less,
+        ("file", "dir") => std::cmp::Ordering::Greater,
+        _ => a.1.cmp(&b.1),
     });
 
     Ok(serde_json::json!({
         "path": relative.unwrap_or_default(),
-        "entries": entries.into_iter().take(200).collect::<Vec<_>>(),
+        "entries": entries.into_iter().take(200).map(|(_, _, value)| value).collect::<Vec<_>>(),
     }))
 }
 
 #[tauri::command]
 fn read_text_file(
     window: tauri::WebviewWindow,
+    roots: tauri::State<'_, ApprovedRoots>,
     root: String,
     relative: String,
 ) -> Result<serde_json::Value, String> {
     main_window_only(&window)?;
-    let path = resolve_under_root(&root, &relative)?;
+    let (_, path) = workspace_path(&roots, &root, &relative)?;
     if !path.is_file() {
         return Err("Not a file".into());
     }
+    const MAX_BYTES: u64 = 400_000;
     let meta = fs::metadata(&path).map_err(|err| err.to_string())?;
-    if meta.len() > 400_000 {
+    if meta.len() > MAX_BYTES {
         return Err("File is too large to open in Cowork (400KB max)".into());
     }
-    let bytes = fs::read(&path).map_err(|err| err.to_string())?;
-    if bytes.iter().any(|b| *b == 0) {
+    // Read at most MAX_BYTES + 1 even if the file grows between the check and the read.
+    let mut bytes = Vec::new();
+    fs::File::open(&path)
+        .and_then(|file| file.take(MAX_BYTES + 1).read_to_end(&mut bytes))
+        .map_err(|err| err.to_string())?;
+    if bytes.len() as u64 > MAX_BYTES {
+        return Err("File is too large to open in Cowork (400KB max)".into());
+    }
+    if bytes.contains(&0) {
         return Err("Binary files are not supported in the editor".into());
     }
     let content = String::from_utf8(bytes).map_err(|_| "File is not valid UTF-8".to_string())?;
@@ -192,6 +209,7 @@ fn read_text_file(
 #[tauri::command]
 fn write_text_file(
     window: tauri::WebviewWindow,
+    roots: tauri::State<'_, ApprovedRoots>,
     root: String,
     relative: String,
     content: String,
@@ -200,11 +218,11 @@ fn write_text_file(
     if content.len() > 800_000 {
         return Err("Content is too large to save".into());
     }
-    let path = resolve_under_root(&root, &relative)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let path = workspace_edit_path(&roots, &root, &relative)?;
+    if path.is_dir() {
+        return Err("That path is a folder".into());
     }
-    fs::write(&path, content.as_bytes()).map_err(|err| err.to_string())?;
+    safe_fs::write_atomic(&path, content.as_bytes()).map_err(|err| err.to_string())?;
     let meta = fs::metadata(&path).map_err(|err| err.to_string())?;
     Ok(serde_json::json!({
         "path": relative.replace('\\', "/"),
@@ -216,14 +234,67 @@ fn write_text_file(
     }))
 }
 
+fn command_json(out: &exec::Captured) -> serde_json::Value {
+    let mut stderr = out.stderr.clone();
+    if out.timed_out {
+        stderr.push_str(&format!(
+            "\n[stopped: the command ran longer than {} seconds]",
+            COMMAND_TIMEOUT.as_secs()
+        ));
+    }
+    if out.truncated {
+        stderr.push_str("\n[output was truncated]");
+    }
+    serde_json::json!({
+        "code": out.code,
+        "stdout": out.stdout,
+        "stderr": stderr,
+        "timedOut": out.timed_out,
+        "ranAt": SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0),
+    })
+}
+
+/// Write raw bytes (base64 from the webview) inside the workspace. Replaces the old approach of
+/// piping a Python script through the shell, which broke on Windows and let a crafted path
+/// write outside the folder.
 #[tauri::command]
-fn run_local_command(
+fn write_binary_file(
     window: tauri::WebviewWindow,
+    roots: tauri::State<'_, ApprovedRoots>,
+    root: String,
+    relative: String,
+    base64_data: String,
+) -> Result<serde_json::Value, String> {
+    use base64::Engine;
+    main_window_only(&window)?;
+    if base64_data.len() > 42_000_000 {
+        return Err("Content is too large to save".into());
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(base64_data.as_bytes())
+        .map_err(|_| "Content is not valid base64".to_string())?;
+    let path = workspace_edit_path(&roots, &root, &relative)?;
+    if path.is_dir() {
+        return Err("That path is a folder".into());
+    }
+    safe_fs::write_atomic(&path, &bytes).map_err(|err| err.to_string())?;
+    Ok(serde_json::json!({ "path": relative.replace('\\', "/"), "size": bytes.len() }))
+}
+
+/// Runs a shell command the user approved in the UI. Async + bounded: the command runs off the
+/// UI thread, has a wall-clock deadline, and its process tree is killed when that expires.
+#[tauri::command]
+async fn run_local_command(
+    window: tauri::WebviewWindow,
+    roots: tauri::State<'_, ApprovedRoots>,
     command: String,
     cwd: Option<String>,
 ) -> Result<serde_json::Value, String> {
     main_window_only(&window)?;
-    let trimmed = command.trim();
+    let trimmed = command.trim().to_string();
     if trimmed.is_empty() {
         return Err("Command is empty".into());
     }
@@ -231,51 +302,32 @@ fn run_local_command(
         return Err("Command is too long".into());
     }
 
-    let workdir = match cwd {
-        Some(path) => {
-            let trimmed_cwd = path.trim();
-            if trimmed_cwd.is_empty() {
-                return Err("Working directory is empty".into());
-            }
-            let buf = PathBuf::from(trimmed_cwd);
-            if !buf.is_dir() {
-                return Err("Working directory does not exist".into());
-            }
-            Some(buf)
-        }
+    let workdir = match cwd.as_deref().map(str::trim) {
+        Some("") => return Err("Working directory is empty".into()),
+        // Commands run inside a folder the user opened, never an arbitrary directory.
+        Some(path) => Some(roots.require(path)?),
         None => None,
     };
 
     let mut process = if cfg!(target_os = "windows") {
         let mut cmd = Command::new("cmd");
-        cmd.args(["/C", trimmed]);
+        cmd.args(["/C", &trimmed]);
         cmd
     } else {
-        // Cap runaway commands so the desk stays responsive.
         let mut cmd = Command::new("sh");
         cmd.args(["-lc", &format!("ulimit -t 120; {}", trimmed)]);
         cmd
     };
-
     if let Some(dir) = workdir.as_ref() {
         process.current_dir(dir);
     }
 
-    let output = process.output().map_err(|err| err.to_string())?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    let code = output.status.code().unwrap_or(-1);
-
-    Ok(serde_json::json!({
-        "code": code,
-        "stdout": stdout,
-        "stderr": stderr,
-        "ranAt": SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    }))
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        exec::run_bounded(process, COMMAND_TIMEOUT, COMMAND_OUTPUT_CAP)
+    })
+    .await
+    .map_err(|err| format!("Command task failed: {err}"))??;
+    Ok(command_json(&out))
 }
 
 fn companion_sandbox_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -339,7 +391,7 @@ fn sandbox_profile(dir: &str) -> String {
 
 /// One approved command, sealed to the companion folder on this Mac.
 #[tauri::command]
-fn run_sandbox_command(
+async fn run_sandbox_command(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
     command: String,
@@ -349,8 +401,8 @@ fn run_sandbox_command(
     if !cfg!(target_os = "macos") {
         return Err("The sandbox runs on this Mac".into());
     }
-    let trimmed = command.trim();
-    if command_can_wipe(trimmed) {
+    let trimmed = command.trim().to_string();
+    if command_can_wipe(&trimmed) {
         return Err("That command stays blocked".into());
     }
     let sandbox = match companion.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
@@ -364,10 +416,12 @@ fn run_sandbox_command(
     process.arg("/bin/sh");
     process.args(["-c", &format!("cd '{quoted}' || exit 1; ulimit -t 120; {trimmed}")]);
     process.current_dir(&sandbox);
-    let output = process.output().map_err(|err| err.to_string())?;
-    let code = output.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        exec::run_bounded(process, COMMAND_TIMEOUT, COMMAND_OUTPUT_CAP)
+    })
+    .await
+    .map_err(|err| format!("Command task failed: {err}"))??;
+
     let log_path = sandbox.join("Runs.txt");
     let mut prior = fs::read_to_string(&log_path).unwrap_or_default();
     if prior.len() > 40_000 {
@@ -375,18 +429,13 @@ fn run_sandbox_command(
     }
     let _ = fs::write(
         &log_path,
-        format!("{prior}$ {trimmed}\n{stdout}{stderr}exit {code}\n---\n"),
+        format!("{prior}$ {trimmed}\n{}{}exit {}\n---\n", out.stdout, out.stderr, out.code),
     );
-    Ok(serde_json::json!({
-        "code": code,
-        "stdout": stdout,
-        "stderr": stderr,
-        "sealed": true,
-        "ranAt": SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0),
-    }))
+    let mut value = command_json(&out);
+    if let Some(map) = value.as_object_mut() {
+        map.insert("sealed".into(), serde_json::Value::Bool(true));
+    }
+    Ok(value)
 }
 
 #[tauri::command]
@@ -440,7 +489,7 @@ fn machine_dir(app: &tauri::AppHandle, companion: &str) -> Result<PathBuf, Strin
     Ok(canon)
 }
 
-fn desktop_file(machine: &PathBuf, name: &str) -> Result<PathBuf, String> {
+fn desktop_file(machine: &std::path::Path, name: &str) -> Result<PathBuf, String> {
     let trimmed = name.trim();
     if trimmed.is_empty()
         || trimmed.len() > 80
@@ -554,16 +603,29 @@ fn desktop_filename(name: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn copy_onto_desktop(machine: &PathBuf, source: &std::path::Path) -> Result<String, String> {
+/// Credential stores that must never be copied into a companion's reachable folder.
+fn is_sensitive_user_path(path: &std::path::Path) -> bool {
+    const SENSITIVE: &[&str] = &[".ssh", ".aws", ".gnupg", ".kube", ".docker", "Keychains", ".azure", ".config/gcloud"];
+    let text = path.to_string_lossy().replace('\\', "/").to_ascii_lowercase();
+    SENSITIVE
+        .iter()
+        .any(|part| text.contains(&format!("/{}/", part.to_ascii_lowercase())))
+}
+
+fn copy_onto_desktop(machine: &std::path::Path, source: &std::path::Path) -> Result<String, String> {
     let raw_name = source
         .file_name()
         .ok_or("That file cannot sit on this desktop")?
         .to_string_lossy()
         .to_string();
     let name = desktop_filename(&raw_name)?;
-    let meta = fs::metadata(source).map_err(|err| err.to_string())?;
+    // symlink_metadata: a dropped symlink must not smuggle in whatever it points at.
+    let meta = fs::symlink_metadata(source).map_err(|err| err.to_string())?;
     if !meta.is_file() {
         return Err("That file cannot sit on this desktop".into());
+    }
+    if is_sensitive_user_path(source) {
+        return Err("That file is in a protected location".into());
     }
     if meta.len() > 30_000_000 {
         return Err("That file is too large for this desktop".into());
@@ -624,11 +686,13 @@ fn sandbox_import_file(
     Ok(serde_json::json!({ "saved": true, "name": name }))
 }
 
+/// Browser data-store identity for one companion. Derived with SHA-256 so two different slugs
+/// can never share cookies / sign-ins (the previous XOR fold collided for slugs over 16 bytes).
 fn companion_store_id(slug: &str) -> [u8; 16] {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(format!("arrab-companion-store:{slug}").as_bytes());
     let mut id = [0u8; 16];
-    for (index, byte) in slug.bytes().enumerate() {
-        id[index % 16] ^= byte.wrapping_add(index as u8);
-    }
+    id.copy_from_slice(&digest[..16]);
     id
 }
 
@@ -833,8 +897,9 @@ fn sandbox_handoff(
 }
 
 #[tauri::command]
-fn search_workspace(
+async fn search_workspace(
     window: tauri::WebviewWindow,
+    roots: tauri::State<'_, ApprovedRoots>,
     root: String,
     query: String,
     relative: Option<String>,
@@ -842,31 +907,38 @@ fn search_workspace(
     case_sensitive: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     main_window_only(&window)?;
-    let q = query.trim();
+    let q = query.trim().to_string();
     if q.is_empty() {
         return Err("Query is empty".into());
     }
     if q.len() > 200 {
         return Err("Query is too long".into());
     }
-    let start = resolve_under_root(&root, relative.as_deref().unwrap_or(""))?;
+    let (root_canon, start) = workspace_path(&roots, &root, relative.as_deref().unwrap_or(""))?;
     if !start.exists() {
         return Err("Search path does not exist".into());
     }
+    // A scan reads up to thousands of files: do it off the UI thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        search_workspace_blocking(root_canon, start, q, glob, case_sensitive)
+    })
+    .await
+    .map_err(|err| format!("Search task failed: {err}"))?
+}
+
+fn search_workspace_blocking(
+    root_canon: PathBuf,
+    start: PathBuf,
+    q: String,
+    glob: Option<String>,
+    case_sensitive: Option<bool>,
+) -> Result<serde_json::Value, String> {
     let case_sensitive = case_sensitive.unwrap_or(false);
-    let needle = if case_sensitive {
-        q.to_string()
-    } else {
-        q.to_lowercase()
-    };
+    let needle = if case_sensitive { q.clone() } else { q.to_lowercase() };
     let glob_filter = glob
         .as_ref()
         .map(|g| g.trim().trim_start_matches("*.").to_lowercase())
         .filter(|g| !g.is_empty());
-
-    let root_canon = PathBuf::from(root.trim())
-        .canonicalize()
-        .map_err(|err| err.to_string())?;
 
     let skip_dirs = [
         ".git",
@@ -931,7 +1003,7 @@ fn search_workspace(
                 Ok(b) => b,
                 Err(_) => continue,
             };
-            if bytes.iter().any(|b| *b == 0) {
+            if bytes.contains(&0) {
                 continue;
             }
             let Ok(content) = String::from_utf8(bytes) else {
@@ -1032,6 +1104,7 @@ fn namespace_dir(app: &tauri::AppHandle, namespace: &str) -> Result<PathBuf, Str
 fn ensure_assistant_desk(
     window: tauri::WebviewWindow,
     app: tauri::AppHandle,
+    roots: tauri::State<'_, ApprovedRoots>,
 ) -> Result<String, String> {
     main_window_only(&window)?;
     let root = app
@@ -1040,7 +1113,8 @@ fn ensure_assistant_desk(
         .map_err(|err| err.to_string())?
         .join("desk");
     fs::create_dir_all(&root).map_err(|err| err.to_string())?;
-    Ok(root.to_string_lossy().to_string())
+    // App-owned folder: granted without a dialog.
+    Ok(roots.approve(&root)?.to_string_lossy().to_string())
 }
 
 fn store_file(app: &tauri::AppHandle, namespace: &str, key: &str) -> Result<PathBuf, String> {
@@ -1078,7 +1152,7 @@ fn device_store_set(
         return Err("Value is too large to store on this device".into());
     }
     let path = store_file(&app, &namespace, &key)?;
-    fs::write(path, value.as_bytes()).map_err(|err| err.to_string())
+    safe_fs::write_atomic(&path, value.as_bytes()).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -1516,7 +1590,7 @@ fn ensure_companion_panel(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow
     }
 
     let window = builder.build().map_err(|err| err.to_string())?;
-    let _ = window.on_window_event(|event| {
+    window.on_window_event(|event| {
         if matches!(event, tauri::WindowEvent::Moved(_)) {
             companion_panel_mark_user_moved();
         }
@@ -1668,22 +1742,8 @@ fn emit_update_progress(app: &tauri::AppHandle, phase: &str, percent: u32, detai
     );
 }
 
-fn github_update_url(url: &str) -> Result<reqwest::Url, String> {
-    let parsed = reqwest::Url::parse(url.trim()).map_err(|_| "Invalid update URL".to_string())?;
-    if parsed.scheme() != "https" {
-        return Err("Update URL must be https".into());
-    }
-    let host = parsed.host_str().unwrap_or("").to_ascii_lowercase();
-    let allowed = host == "github.com"
-        || host == "githubusercontent.com"
-        || host.ends_with(".githubusercontent.com")
-        || host == "arrabai.com"
-        || host.ends_with(".arrabai.com");
-    if !allowed {
-        return Err("Update URL must come from GitHub or arrabai.com".into());
-    }
-    Ok(parsed)
-}
+/// Largest installer we will download (a Tauri app is far below this).
+const MAX_UPDATE_BYTES: u64 = 1_500_000_000;
 
 fn sh_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
@@ -1700,35 +1760,230 @@ fn installed_app_bundle() -> Result<std::path::PathBuf, String> {
     Ok(bundle.to_path_buf())
 }
 
+/// Fresh, private (0700) directory for one update download. `create_dir` fails if the name
+/// already exists, so a pre-planted directory or symlink in /tmp cannot be reused.
+fn private_update_dir() -> Result<PathBuf, String> {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let dir = std::env::temp_dir().join(format!("arrab-update-{}-{nanos}", std::process::id()));
+    fs::create_dir(&dir).map_err(|err| format!("Could not prepare the update folder: {err}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).map_err(|err| err.to_string())?;
+    }
+    Ok(dir)
+}
+
+/// Download an installer from a pinned release URL. Redirects may only land on release hosts,
+/// the size is capped, and the file is written into a private directory.
+async fn download_installer(
+    url: &str,
+    mut on_progress: impl FnMut(u64, u64),
+) -> Result<PathBuf, String> {
+    let parsed = update_guard::pin_release_url(url)?;
+    let file_name = parsed
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .filter(|name| !name.is_empty())
+        .unwrap_or("arrab-studio-update")
+        .to_string();
+    // Keep only a plain file name; never let the URL choose a path.
+    let safe_name: String = file_name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect();
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.previous().len() >= 6 || !update_guard::redirect_allowed(attempt.url()) {
+                attempt.stop()
+            } else {
+                attempt.follow()
+            }
+        }))
+        .connect_timeout(Duration::from_secs(20))
+        .read_timeout(Duration::from_secs(90))
+        .build()
+        .map_err(|err| err.to_string())?;
+    let mut response = client
+        .get(parsed)
+        .send()
+        .await
+        .map_err(|err| format!("Download failed: {err}"))?;
+    if response.status().is_redirection() {
+        return Err("The download was redirected somewhere that is not trusted".into());
+    }
+    if !response.status().is_success() {
+        return Err(format!("Download failed ({})", response.status()));
+    }
+    let total = response.content_length().unwrap_or(0);
+    if total > MAX_UPDATE_BYTES {
+        return Err("The update is larger than expected".into());
+    }
+    let dir = private_update_dir()?;
+    let dest = dir.join(safe_name);
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&dest)
+        .map_err(|err| err.to_string())?;
+    let mut received: u64 = 0;
+    let result: Result<(), String> = async {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|err| format!("Download interrupted: {err}"))?
+        {
+            received += chunk.len() as u64;
+            if received > MAX_UPDATE_BYTES {
+                return Err("The update is larger than expected".into());
+            }
+            file.write_all(&chunk).map_err(|err| err.to_string())?;
+            on_progress(received, total);
+        }
+        file.flush().map_err(|err| err.to_string())?;
+        if total > 0 && received < total {
+            return Err("Download was incomplete. Check your connection and try again.".into());
+        }
+        Ok(())
+    }
+    .await;
+    if let Err(err) = result {
+        let _ = fs::remove_dir_all(&dir);
+        return Err(err);
+    }
+    Ok(dest)
+}
+
+#[cfg(target_os = "macos")]
+fn codesign_team(path: &std::path::Path) -> Option<String> {
+    let output = Command::new("/usr/bin/codesign")
+        .args(["-dv", "--verbose=2"])
+        .arg(path)
+        .output()
+        .ok()?;
+    // codesign prints its description on stderr.
+    update_guard::parse_team_identifier(&String::from_utf8_lossy(&output.stderr))
+}
+
+/// Mount the DMG read-only, and require its app to be validly signed by the same Developer ID
+/// team as the running app. Anything else (including an unsigned running app) is refused, so
+/// "update" can never mean "run whatever was downloaded".
+#[cfg(target_os = "macos")]
+fn verify_macos_installer(dmg: &std::path::Path) -> Result<(), String> {
+    let running = installed_app_bundle()?;
+    let expected = codesign_team(&running).ok_or_else(|| {
+        "This copy of Arrab Studio is not signed with a Developer ID, so it cannot verify an installer. Download the update from the release page instead.".to_string()
+    })?;
+    let mount = private_update_dir()?;
+    let attach = Command::new("/usr/bin/hdiutil")
+        .args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint"])
+        .arg(&mount)
+        .arg(dmg)
+        .output()
+        .map_err(|err| err.to_string())?;
+    if !attach.status.success() {
+        let _ = fs::remove_dir_all(&mount);
+        return Err("The downloaded installer could not be opened".into());
+    }
+    let verdict = (|| {
+        let app = fs::read_dir(&mount)
+            .map_err(|err| err.to_string())?
+            .flatten()
+            .map(|entry| entry.path())
+            .find(|path| path.extension().and_then(|e| e.to_str()) == Some("app"))
+            .ok_or_else(|| "The installer does not contain an app".to_string())?;
+        let valid = Command::new("/usr/bin/codesign")
+            .args(["--verify", "--deep", "--strict"])
+            .arg(&app)
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !valid {
+            return Err("The downloaded app's signature is not valid".to_string());
+        }
+        match codesign_team(&app) {
+            Some(team) if team == expected => Ok(()),
+            _ => Err("The downloaded app was not signed by the same developer".to_string()),
+        }
+    })();
+    let _ = Command::new("/usr/bin/hdiutil").args(["detach", "-force"]).arg(&mount).status();
+    let _ = fs::remove_dir_all(&mount);
+    verdict
+}
+
+/// Windows: the installer must carry a valid Authenticode signature from the same certificate
+/// as the running executable.
+#[cfg(target_os = "windows")]
+fn verify_windows_installer(installer: &std::path::Path) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+    let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+    let ps = |value: &std::path::Path| format!("'{}'", value.to_string_lossy().replace('\'', "''"));
+    let script = format!(
+        "$cur = Get-AuthenticodeSignature -LiteralPath {exe}; $new = Get-AuthenticodeSignature -LiteralPath {new}; \
+         if ($cur.Status -ne 'Valid' -or $new.Status -ne 'Valid' -or $cur.SignerCertificate.Thumbprint -ne $new.SignerCertificate.Thumbprint) {{ exit 1 }}",
+        exe = ps(&exe),
+        new = ps(installer),
+    );
+    let status = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", &script])
+        .creation_flags(0x0800_0000)
+        .status()
+        .map_err(|err| err.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("The installer is not signed by the same publisher as this app, so it was not run. Download the update from the release page instead.".into())
+    }
+}
+
+#[cfg(target_os = "macos")]
 fn stage_macos_relaunch(dmg: &std::path::Path) -> Result<(), String> {
     let bundle = installed_app_bundle()?;
-    let script_path = std::env::temp_dir().join("arrab-install-update.sh");
+    let team = codesign_team(&bundle).ok_or("The running app is not Developer ID signed")?;
+    let dir = private_update_dir()?;
+    let script_path = dir.join("install-update.sh");
+    // The new app is verified again right before it replaces the old one, and is copied next to
+    // the destination first, so a failed copy never leaves the user without an app.
     let script = format!(
         r#"#!/bin/bash
 set -euo pipefail
 DMG={dmg}
 DEST={dest}
+TEAM={team}
 PID={pid}
 while kill -0 "$PID" 2>/dev/null; do sleep 0.3; done
-MOUNT=$(mktemp -d /tmp/arrab-update.XXXXXX)
-hdiutil attach -nobrowse -readonly -mountpoint "$MOUNT" "$DMG"
-APP=$(find "$MOUNT" -maxdepth 2 -name '*.app' -print -quit)
-if [ -z "$APP" ]; then
-  hdiutil detach "$MOUNT" || true
-  echo "Installer did not contain an app" >&2
-  exit 1
-fi
+MOUNT=$(mktemp -d)
+cleanup() {{ hdiutil detach -force "$MOUNT" >/dev/null 2>&1 || true; rm -rf "$MOUNT"; }}
+trap cleanup EXIT
+hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$MOUNT" "$DMG"
+APP=$(find "$MOUNT" -maxdepth 1 -name '*.app' -print -quit)
+[ -n "$APP" ] || {{ echo "Installer did not contain an app" >&2; exit 1; }}
+/usr/bin/codesign --verify --deep --strict "$APP"
+NEWTEAM=$(/usr/bin/codesign -dv --verbose=2 "$APP" 2>&1 | sed -n 's/^TeamIdentifier=//p')
+[ "$NEWTEAM" = "$TEAM" ] || {{ echo "Signature mismatch" >&2; exit 1; }}
+STAGE="$DEST.arrab-new"
+rm -rf "$STAGE"
+ditto "$APP" "$STAGE"
 rm -rf "$DEST"
-ditto "$APP" "$DEST"
-hdiutil detach "$MOUNT" || true
-rm -rf "$MOUNT" "$DMG"
+mv "$STAGE" "$DEST"
+rm -rf "$(dirname "$DMG")"
 open "$DEST"
 "#,
         dmg = sh_quote(&dmg.to_string_lossy()),
         dest = sh_quote(&bundle.to_string_lossy()),
+        team = sh_quote(&team),
         pid = std::process::id(),
     );
-    fs::write(&script_path, script).map_err(|err| err.to_string())?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&script_path)
+        .map_err(|err| err.to_string())?;
+    file.write_all(script.as_bytes()).map_err(|err| err.to_string())?;
+    drop(file);
     Command::new("/usr/bin/nohup")
         .arg("/bin/bash")
         .arg(&script_path)
@@ -1747,43 +2002,21 @@ async fn install_app_update(
     url: String,
 ) -> Result<(), String> {
     main_window_only(&window)?;
-    let parsed = github_update_url(&url)?;
     emit_update_progress(&app, "download", 0, "Downloading update");
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(8))
-        .timeout(Duration::from_secs(600))
-        .build()
-        .map_err(|err| err.to_string())?;
-    let mut response = client
-        .get(parsed)
-        .send()
-        .await
-        .map_err(|err| format!("Download failed: {err}"))?;
-    if !response.status().is_success() {
-        return Err(format!("Download failed ({})", response.status()));
-    }
-    let total = response.content_length().unwrap_or(0);
-    let dest = std::env::temp_dir().join("arrab-studio-update.dmg");
-    let mut file = fs::File::create(&dest).map_err(|err| err.to_string())?;
-    let mut got: u64 = 0;
-    while let Some(chunk) = response.chunk().await.map_err(|err| err.to_string())? {
-        file.write_all(&chunk).map_err(|err| err.to_string())?;
-        got += chunk.len() as u64;
-        let percent = if total > 0 {
-            ((got.saturating_mul(100)) / total).min(99) as u32
-        } else {
-            0
-        };
-        emit_update_progress(&app, "download", percent, "Downloading update");
-    }
-    file.flush().map_err(|err| err.to_string())?;
-    emit_update_progress(&app, "install", 100, "Installing update");
+    let progress = app.clone();
+    let dest = download_installer(&url, move |got, total| {
+        let percent = update_percent(got, total);
+        emit_update_progress(&progress, "download", percent, "Downloading update");
+    })
+    .await?;
+    emit_update_progress(&app, "install", 100, "Verifying update");
     #[cfg(target_os = "macos")]
     {
+        verify_macos_installer(&dest)?;
         stage_macos_relaunch(&dest)?;
         emit_update_progress(&app, "restart", 100, "Restarting Arrab Studio");
         app.exit(0);
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -1866,69 +2099,28 @@ fn hide_app_windows_for_update(app: &tauri::AppHandle) {
 }
 
 fn update_percent(received: u64, total: u64) -> u32 {
-    if total == 0 {
-        0
-    } else {
-        ((received.saturating_mul(100)) / total).min(99) as u32
-    }
+    received.saturating_mul(100).checked_div(total).map_or(0, |p| p.min(99) as u32)
 }
 
 async fn download_update_installer(
     app: &tauri::AppHandle,
     url: &str,
 ) -> Result<std::path::PathBuf, String> {
-    let parsed = github_update_url(url)?;
-    let file_name = parsed
-        .path_segments()
-        .and_then(|mut segments| segments.next_back())
-        .unwrap_or("arrab-studio-update")
-        .to_string();
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::limited(8))
-        .connect_timeout(Duration::from_secs(20))
-        .read_timeout(Duration::from_secs(90))
-        .build()
-        .map_err(|err| err.to_string())?;
-    let mut response = client
-        .get(parsed)
-        .send()
-        .await
-        .map_err(|err| format!("Download failed: {err}"))?;
-    if !response.status().is_success() {
-        return Err(format!("Download failed ({})", response.status()));
-    }
-    let total = response.content_length().unwrap_or(0);
-    let dir = std::env::temp_dir().join("arrab-studio-update");
-    fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
-    let dest = dir.join(file_name.replace(['/', '\\'], "_"));
-    let mut file = fs::File::create(&dest).map_err(|err| err.to_string())?;
-    let mut received: u64 = 0;
+    set_updater_status(app, |status| status.phase = "download".into());
     let mut last_percent = u32::MAX;
-    set_updater_status(app, |status| {
-        status.phase = "download".into();
-        status.total = total;
-    });
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|err| format!("Download interrupted: {err}"))?
-    {
-        file.write_all(&chunk).map_err(|err| err.to_string())?;
-        received += chunk.len() as u64;
+    let progress = app.clone();
+    download_installer(url, move |received, total| {
         let percent = update_percent(received, total);
         if percent != last_percent || total == 0 {
             last_percent = percent;
-            set_updater_status(app, |status| {
+            set_updater_status(&progress, |status| {
+                status.total = total;
                 status.percent = percent;
                 status.received = received;
             });
         }
-    }
-    file.flush().map_err(|err| err.to_string())?;
-    if total > 0 && received < total {
-        return Err("Download was incomplete. Check your connection and try again.".into());
-    }
-    Ok(dest)
+    })
+    .await
 }
 
 /// Hand the installer to a detached helper that waits for this process to exit,
@@ -1940,6 +2132,7 @@ fn stage_installer_and_relaunch(installer: &std::path::Path) -> Result<(), Strin
         if !lower.ends_with(".dmg") {
             return Err("This release has no macOS installer (.dmg).".into());
         }
+        verify_macos_installer(installer)?;
         return stage_macos_relaunch(installer);
     }
     #[cfg(target_os = "windows")]
@@ -1948,6 +2141,7 @@ fn stage_installer_and_relaunch(installer: &std::path::Path) -> Result<(), Strin
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         let ps = |value: &str| format!("'{}'", value.replace('\'', "''"));
         let exe = std::env::current_exe().map_err(|err| err.to_string())?;
+        verify_windows_installer(installer)?;
         let install = if lower.ends_with(".msi") {
             format!(
                 "Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', '\"{}\"', '/passive', '/norestart') -Wait",
@@ -1966,7 +2160,7 @@ fn stage_installer_and_relaunch(installer: &std::path::Path) -> Result<(), Strin
             exe = ps(&exe.to_string_lossy()),
             installer = ps(&installer.to_string_lossy()),
         );
-        let script_path = std::env::temp_dir().join("arrab-install-update.ps1");
+        let script_path = private_update_dir()?.join("install-update.ps1");
         fs::write(&script_path, script).map_err(|err| err.to_string())?;
         Command::new("powershell.exe")
             .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File"])
@@ -2082,7 +2276,7 @@ fn start_app_update(
 ) -> Result<(), String> {
     main_window_only(&window)?;
     let fallback_url = match url.as_deref().map(str::trim) {
-        Some(value) if !value.is_empty() => Some(github_update_url(value)?.to_string()),
+        Some(value) if !value.is_empty() => Some(update_guard::pin_release_url(value)?.to_string()),
         _ => None,
     };
     if state.running.swap(true, std::sync::atomic::Ordering::SeqCst) {
@@ -2159,45 +2353,18 @@ fn app_update_open_download(
         .map(|status| status.fallback_url.clone())
         .unwrap_or_default();
     let target = if url.is_empty() {
-        "https://github.com/AbdulelahBakhurji/arrabstudiov1/releases/latest".to_string()
+        format!("https://github.com/{}/releases/latest", update_guard::RELEASES_REPO)
     } else {
-        github_update_url(&url)?.to_string()
+        update_guard::pin_release_url(&url)?.to_string()
     };
-    let status = if cfg!(target_os = "macos") {
-        Command::new("open").arg(&target).status()
-    } else if cfg!(target_os = "windows") {
-        Command::new("cmd").args(["/C", "start", "", &target]).status()
-    } else {
-        Command::new("xdg-open").arg(&target).status()
-    }
-    .map_err(|err| err.to_string())?;
-    if !status.success() {
-        return Err("Failed to open browser".into());
-    }
+    opener::open_url(&target)?;
     Ok(())
 }
 
 #[tauri::command]
 fn open_external_url(window: tauri::WebviewWindow, url: String) -> Result<(), String> {
     main_window_only(&window)?;
-    let trimmed = url.trim();
-    if !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
-        return Err("Only http(s) URLs are allowed".into());
-    }
-    let status = if cfg!(target_os = "macos") {
-        Command::new("open").arg(trimmed).status()
-    } else if cfg!(target_os = "windows") {
-        Command::new("cmd")
-            .args(["/C", "start", "", trimmed])
-            .status()
-    } else {
-        Command::new("xdg-open").arg(trimmed).status()
-    }
-    .map_err(|err| err.to_string())?;
-    if !status.success() {
-        return Err("Failed to open browser".into());
-    }
-    Ok(())
+    opener::open_url(&url)
 }
 
 #[derive(serde::Deserialize)]
@@ -2284,10 +2451,18 @@ async fn native_http_request(
         builder = builder.body(body);
     }
 
-    let response = builder.send().await.map_err(|err| err.to_string())?;
+    let mut response = builder.send().await.map_err(|err| err.to_string())?;
     let status = response.status().as_u16();
-    let body = response.text().await.map_err(|err| err.to_string())?;
-    Ok(NativeHttpResponse { status, body })
+    // A misbehaving server must not be able to stream gigabytes into memory.
+    const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|err| err.to_string())? {
+        if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
+            return Err("The response was larger than allowed".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(NativeHttpResponse { status, body: String::from_utf8_lossy(&bytes).to_string() })
 }
 
 /// In-flight streaming requests, keyed by the caller's id so they can be cancelled.
@@ -2446,8 +2621,16 @@ async fn desktop_web_fetch(window: tauri::WebviewWindow, url: String) -> Result<
     if !status.is_success() {
         return Err(format!("Web lookup HTTP {}", status.as_u16()));
     }
-    let text = response.text().await.map_err(|err| err.to_string())?;
-    Ok(text.chars().take(90_000).collect())
+    // Search pages are small; stop reading well before an abusive body could matter.
+    let mut response = response;
+    let mut bytes: Vec<u8> = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|err| err.to_string())? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() >= 1_000_000 {
+            break;
+        }
+    }
+    Ok(String::from_utf8_lossy(&bytes).chars().take(90_000).collect())
 }
 
 #[tauri::command]
@@ -2466,11 +2649,12 @@ fn native_http_stream_cancel(
 #[tauri::command]
 fn delete_path(
     window: tauri::WebviewWindow,
+    roots: tauri::State<'_, ApprovedRoots>,
     root: String,
     relative: String,
 ) -> Result<serde_json::Value, String> {
     main_window_only(&window)?;
-    let path = resolve_under_root(&root, &relative)?;
+    let path = workspace_edit_path(&roots, &root, &relative)?;
     if !path.exists() {
         return Err("Path does not exist".into());
     }
@@ -2488,13 +2672,14 @@ fn delete_path(
 #[tauri::command]
 fn rename_path(
     window: tauri::WebviewWindow,
+    roots: tauri::State<'_, ApprovedRoots>,
     root: String,
     from: String,
     to: String,
 ) -> Result<serde_json::Value, String> {
     main_window_only(&window)?;
-    let src = resolve_under_root(&root, &from)?;
-    let dest = resolve_under_root(&root, &to)?;
+    let src = workspace_edit_path(&roots, &root, &from)?;
+    let dest = workspace_edit_path(&roots, &root, &to)?;
     if !src.exists() {
         return Err("Source path does not exist".into());
     }
@@ -2514,11 +2699,12 @@ fn rename_path(
 #[tauri::command]
 fn create_dir(
     window: tauri::WebviewWindow,
+    roots: tauri::State<'_, ApprovedRoots>,
     root: String,
     relative: String,
 ) -> Result<serde_json::Value, String> {
     main_window_only(&window)?;
-    let path = resolve_under_root(&root, &relative)?;
+    let path = workspace_edit_path(&roots, &root, &relative)?;
     fs::create_dir_all(&path).map_err(|err| err.to_string())?;
     Ok(serde_json::json!({
         "path": relative.replace('\\', "/"),
@@ -2529,27 +2715,21 @@ fn create_dir(
 #[tauri::command]
 fn open_path(
     window: tauri::WebviewWindow,
+    roots: tauri::State<'_, ApprovedRoots>,
     root: String,
     relative: Option<String>,
 ) -> Result<serde_json::Value, String> {
     main_window_only(&window)?;
-    let path = resolve_under_root(&root, relative.as_deref().unwrap_or(""))?;
+    let (_, path) = workspace_path(&roots, &root, relative.as_deref().unwrap_or(""))?;
     if !path.exists() {
         return Err("Path does not exist".into());
     }
-    let status = if cfg!(target_os = "macos") {
-        Command::new("open").arg(&path).status()
-    } else if cfg!(target_os = "windows") {
-        Command::new("cmd")
-            .args(["/C", "start", "", &path.to_string_lossy()])
-            .status()
-    } else {
-        Command::new("xdg-open").arg(&path).status()
+    // Opening runs the OS default handler; for scripts and installers that means executing them.
+    // This command is also auto-approved for the AI, so it must never launch code.
+    if safe_fs::is_launchable(&path) {
+        return Err("Programs and scripts are not opened from here. Run them in the terminal if you intend to.".into());
     }
-    .map_err(|err| err.to_string())?;
-    if !status.success() {
-        return Err("Failed to open path".into());
-    }
+    opener::open_path(&path)?;
     Ok(serde_json::json!({
         "path": relative.unwrap_or_else(|| ".".into()).replace('\\', "/"),
         "opened": true,
@@ -2593,6 +2773,11 @@ fn agents_office_up() -> bool {
 #[tauri::command]
 fn ensure_agents_office(window: tauri::WebviewWindow) -> Result<String, String> {
     main_window_only(&window)?;
+    // Internal tool that runs `node serve.mjs` from a source checkout: development builds only.
+    // A shipped app must never go looking for a script in the working directory.
+    if !cfg!(debug_assertions) {
+        return Err("Agents Office is only available in development builds".into());
+    }
     if agents_office_up() {
         return Ok(AGENTS_OFFICE_URL.to_string());
     }
@@ -2640,6 +2825,16 @@ fn agents_office_status(window: tauri::WebviewWindow) -> Result<serde_json::Valu
 /// Ephemeral LAN preview so a real phone can open Studio designs on the same Wi‑Fi.
 static PHONE_PREVIEW_HTML: Mutex<Option<Arc<String>>> = Mutex::new(None);
 static PHONE_PREVIEW_PORT: Mutex<Option<u16>> = Mutex::new(None);
+/// The preview is reachable by anyone on the same network, so it is served only under an
+/// unguessable path and only for a limited time.
+static PHONE_PREVIEW_ACCESS: Mutex<Option<(String, SystemTime)>> = Mutex::new(None);
+const PHONE_PREVIEW_TTL: Duration = Duration::from_secs(30 * 60);
+
+fn new_preview_token() -> Result<String, String> {
+    let mut bytes = [0u8; 16];
+    getrandom::getrandom(&mut bytes).map_err(|err| format!("No secure random source: {err}"))?;
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
 
 fn lan_ipv4() -> Option<String> {
     #[cfg(target_os = "macos")]
@@ -2693,7 +2888,8 @@ fn ensure_phone_preview_server() -> Result<u16, String> {
     if let Some(port) = *PHONE_PREVIEW_PORT.lock().map_err(|_| "Preview lock poisoned")? {
         return Ok(port);
     }
-    let listener = TcpListener::bind("127.0.0.1:0").map_err(|err| format!("Preview bind failed: {err}"))?;
+    // 0.0.0.0 so a phone on the same Wi-Fi can reach it (loopback would make the LAN URL dead).
+    let listener = TcpListener::bind("0.0.0.0:0").map_err(|err| format!("Preview bind failed: {err}"))?;
     let port = listener
         .local_addr()
         .map_err(|err| format!("Preview addr failed: {err}"))?
@@ -2708,8 +2904,32 @@ fn ensure_phone_preview_server() -> Result<u16, String> {
 }
 
 fn handle_phone_preview_request(mut stream: TcpStream) -> Result<(), String> {
+    // One silent connection must not park the single-threaded server for everyone else.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(3)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
     let mut buf = [0u8; 1024];
-    let _ = stream.read(&mut buf);
+    let read = stream.read(&mut buf).unwrap_or(0);
+    let request_line = String::from_utf8_lossy(&buf[..read]);
+    let requested = request_line
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .unwrap_or("")
+        .trim_start_matches('/')
+        .split('?')
+        .next()
+        .unwrap_or("")
+        .to_string();
+    let allowed = PHONE_PREVIEW_ACCESS
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+        .map(|(token, expires)| requested == token && SystemTime::now() < expires)
+        .unwrap_or(false);
+    if !allowed {
+        let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+        return Ok(());
+    }
     let html = PHONE_PREVIEW_HTML
         .lock()
         .map_err(|_| "Preview lock poisoned".to_string())?
@@ -2722,7 +2942,7 @@ fn handle_phone_preview_request(mut stream: TcpStream) -> Result<(), String> {
         });
     let body = html.as_bytes();
     let header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nAccess-Control-Allow-Origin: http://127.0.0.1\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream
@@ -2749,9 +2969,12 @@ fn start_phone_preview(
     }
     *PHONE_PREVIEW_HTML.lock().map_err(|_| "Preview lock poisoned")? = Some(Arc::new(html));
     let port = ensure_phone_preview_server()?;
+    let token = new_preview_token()?;
+    *PHONE_PREVIEW_ACCESS.lock().map_err(|_| "Preview lock poisoned")? =
+        Some((token.clone(), SystemTime::now() + PHONE_PREVIEW_TTL));
     let lan = lan_ipv4().unwrap_or_else(|| "127.0.0.1".into());
-    let lan_url = format!("http://{lan}:{port}/");
-    let local_url = format!("http://127.0.0.1:{port}/");
+    let lan_url = format!("http://{lan}:{port}/{token}");
+    let local_url = format!("http://127.0.0.1:{port}/{token}");
     Ok(serde_json::json!({
         "port": port,
         "lanUrl": lan_url,
@@ -3491,7 +3714,7 @@ fn read_ssh_config_hosts() -> Result<Vec<SshConfigHost>, String> {
             }
         }
     }
-    hosts.sort_by(|a, b| a.alias.to_lowercase().cmp(&b.alias.to_lowercase()));
+    hosts.sort_by_key(|host| host.alias.to_lowercase());
     Ok(hosts)
 }
 
@@ -3504,6 +3727,18 @@ fn list_ssh_config_hosts(window: tauri::WebviewWindow) -> Result<Vec<SshConfigHo
 #[tauri::command]
 fn read_ssh_identity(window: tauri::WebviewWindow, path: String) -> Result<String, String> {
     main_window_only(&window)?;
+    // A private key leaves this machine only with an explicit, native confirmation the webview
+    // cannot click for itself.
+    let confirmed = rfd::MessageDialog::new()
+        .set_title("Use this SSH key?")
+        .set_description(format!(
+            "Arrab Studio wants to read the private key {path} so it can connect to your server. Allow?"
+        ))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show();
+    if confirmed != rfd::MessageDialogResult::Yes {
+        return Err("SSH key access was declined".into());
+    }
     let home = user_home()?;
     let ssh = home
         .join(".ssh")
@@ -3528,7 +3763,7 @@ fn read_ssh_identity(window: tauri::WebviewWindow, path: String) -> Result<Strin
 }
 
 #[tauri::command]
-fn ssh_config_exec(
+async fn ssh_config_exec(
     window: tauri::WebviewWindow,
     alias: String,
     command: String,
@@ -3546,42 +3781,30 @@ fn ssh_config_exec(
     if command.is_empty() || command.len() > 8_000 {
         return Err("SSH command is empty or too long".into());
     }
-    let mut child = Command::new("ssh")
-        .args([
-            "-o",
-            "BatchMode=yes",
-            "-o",
-            "ConnectTimeout=12",
-            "-o",
-            "StrictHostKeyChecking=accept-new",
-            &alias,
-            &command,
-        ])
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("Could not start ssh: {err}"))?;
-    let started = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if started.elapsed() > Duration::from_secs(20) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err("SSH connection timed out".into());
-            }
-            Ok(None) => thread::sleep(Duration::from_millis(40)),
-            Err(err) => return Err(err.to_string()),
-        }
+    let mut process = Command::new("ssh");
+    process.args([
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=12",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "--",
+        &alias,
+        &command,
+    ]);
+    let out = tauri::async_runtime::spawn_blocking(move || {
+        exec::run_bounded(process, Duration::from_secs(20), 64_000)
+    })
+    .await
+    .map_err(|err| format!("SSH task failed: {err}"))??;
+    if out.timed_out {
+        return Err("SSH connection timed out".into());
     }
-    let output = child.wait_with_output().map_err(|err| err.to_string())?;
-    let stdout = String::from_utf8_lossy(&output.stdout).chars().take(12_000).collect::<String>();
-    let stderr = String::from_utf8_lossy(&output.stderr).chars().take(4_000).collect::<String>();
     Ok(serde_json::json!({
-        "code": output.status.code(),
-        "stdout": stdout,
-        "stderr": stderr,
+        "code": out.code,
+        "stdout": out.stdout.chars().take(12_000).collect::<String>(),
+        "stderr": out.stderr.chars().take(4_000).collect::<String>(),
     }))
 }
 
@@ -3606,6 +3829,10 @@ pub fn run() {
         .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             pick_folder,
+            secure_storage_available,
+            secure_get,
+            secure_set,
+            secure_delete,
             run_local_command,
             run_sandbox_command,
             open_companion_sandbox,
@@ -3622,6 +3849,7 @@ pub fn run() {
             list_dir,
             read_text_file,
             write_text_file,
+            write_binary_file,
             search_workspace,
             delete_path,
             rename_path,
@@ -3666,6 +3894,9 @@ pub fn run() {
             ssh_config_exec
         ])
         .setup(|app| {
+            // Folders the user opened in earlier sessions stay usable; nothing else is.
+            let data_dir = app.path().app_data_dir()?;
+            app.manage(ApprovedRoots::load(data_dir.join("approved-roots.json")));
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.maximize();
                 // Only compiled when the optional `devtools` Cargo feature is on.
@@ -3727,6 +3958,14 @@ pub fn run() {
                 // Tray "Quit" calls app.exit(0) and sets a code — allow that.
                 if code.is_none() {
                     api.prevent_exit();
+                }
+            }
+            tauri::RunEvent::Exit => {
+                if let Ok(mut slot) = AGENTS_OFFICE_CHILD.lock() {
+                    if let Some(mut child) = slot.take() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
                 }
             }
             #[cfg(target_os = "macos")]

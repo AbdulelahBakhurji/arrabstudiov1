@@ -100,3 +100,23 @@ Ignored / never ship:
 3. GitHub App callback is `https://api.arrabai.com/v1/connectors/github/oauth/callback`
 4. Confirm `GET /v1/connectors` without a session returns **401** once an account exists
 5. Confirm signed-in desktop can list connectors and complete GitHub browser login
+
+## Desktop trust boundaries (hardening notes)
+
+- **File tools** only operate inside a folder the user chose in the native dialog (or the app-owned desk).
+  The approved list is kept in Rust (`safe_fs::ApprovedRoots`); paths are resolved with symlinks followed and must
+  stay inside the root. The root itself and `.git/` cannot be edited or deleted through the tools.
+- **Terminal commands** run off the UI thread with a 120 s wall-clock limit (whole process tree killed) and capped output.
+- **Opening links/files** never goes through a shell (`opener.rs`); programs/scripts are not opened by the auto-approved `open_path` tool.
+- **Model-generated HTML** is rendered only in sandboxed iframes **without** `allow-same-origin` — a framed script can never reach the app's origin or `__TAURI_INTERNALS__`.
+- **Agent shell strings** are built with `shellQuote` + `assertWorkspaceRelative`; git runs with `core.fsmonitor`/external diff disabled. Tool output is fenced as untrusted data in the prompt.
+- **Updates**: the signed Tauri updater is preferred. The installer fallback only accepts release assets of this project, follows redirects only through GitHub release hosts, caps size, and on macOS refuses to install unless the app is validly signed by the **same Developer ID team** as the running app (Windows: same Authenticode certificate).
+- **Secrets**: the workspace encryption key lives in the macOS Keychain (file fallback elsewhere, not mirrored into `localStorage`). SSH private keys are read only after a native confirmation dialog.
+
+## API hardening notes
+
+- Plan redeem codes are public constants; paid plans are not redeemable unless `ARRAB_ENABLE_PLAN_CODES=1` (dev only). Paid invoices are single-use.
+- Webhooks fail closed (WhatsApp requires `WHATSAPP_APP_SECRET`) and buffer at most 1 MiB.
+- Server-side fetches (web tools, SSH, IMAP/SMTP) resolve the host, refuse private/loopback/metadata addresses in every IPv4/IPv6 spelling, and connect to the vetted IP (no DNS-rebinding window).
+- Model selection is limited to the offered catalog; provider calls have deadlines, cancellation (client disconnect aborts the upstream call), bounded retries and stall detection.
+- Without `DATA_ENCRYPTION_KEY`, local data uses a random per-install key (never a key derivable from the source).

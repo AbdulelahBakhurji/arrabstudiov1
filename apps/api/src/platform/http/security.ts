@@ -1,5 +1,5 @@
 import { runWithRequestActor } from "../context/request-actor.js";
-import { UnauthorizedError, AppError, type AuthPrincipal } from "@arrab/core";
+import { UnauthorizedError, AppError, TokenExpiredError, type AuthPrincipal } from "@arrab/core";
 import type { OrgEmployeeRecord, StudioAccountRecord } from "@arrab/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AccountService } from "../../modules/accounts/account-service.js";
@@ -10,6 +10,10 @@ declare module "fastify" {
     orgEmployee: OrgEmployeeRecord | null;
     /** Resolved studio account from Authorization / X-Arrab-Account-Session. */
     account: StudioAccountRecord | null;
+    /** The device session the request's token belongs to. */
+    sessionId: string | null;
+    /** Family seat this session is bound to (null = owner session). */
+    seatMemberId: string | null;
   }
 }
 
@@ -17,14 +21,34 @@ type RateBucket = { count: number; resetAt: number };
 
 const AUTH_RATE_LIMIT = 30;
 const AUTH_RATE_WINDOW_MS = 60_000;
+/** Per-IP ceiling across the whole API (health excluded) — blunts scraping and request floods. */
+const GLOBAL_RATE_LIMIT = 1200;
+const MAX_BUCKETS = 20_000;
+
+function pruneBuckets(buckets: Map<string, RateBucket>, now: number): void {
+  if (buckets.size < MAX_BUCKETS) return;
+  for (const [key, bucket] of buckets) {
+    if (bucket.resetAt < now) buckets.delete(key);
+  }
+  // Still full of live entries (distributed flood): drop the oldest rather than grow without bound.
+  while (buckets.size >= MAX_BUCKETS) {
+    const oldest = buckets.keys().next().value;
+    if (oldest === undefined) break;
+    buckets.delete(oldest);
+  }
+}
 
 /** Paths that must stay public (browser redirects, sign-in, health). */
 const PUBLIC_PREFIXES = [
   "/health",
+  // Operational endpoints authenticate themselves (readiness is harmless; metrics needs ARRAB_METRICS_TOKEN).
+  "/ready",
+  "/metrics",
   "/v1/account/connect",
   "/v1/account/sign-in",
   "/v1/account/auth/",
   "/v1/account/session",
+  "/v1/account/refresh",
   "/v1/billing/plans",
   "/v1/billing/moyasar/callback",
   "/v1/billing/confirm",
@@ -44,6 +68,8 @@ const PUBLIC_PREFIXES = [
   "/v1/connectors/google_calendar/oauth/callback",
   "/v1/connectors/figma/oauth/callback",
   "/v1/connectors/whatsapp/webhook",
+  // Finnhub pushes with a shared-secret header (verified in the handler), never a session.
+  "/v1/connectors/finnhub/webhook",
   // OpenWA gateway callback — authenticated by its HMAC signature, not a studio session.
   "/v1/connectors/openwa/webhook",
   "/v1/org/employees/sign-in",
@@ -65,7 +91,10 @@ function extractAccountToken(request: FastifyRequest): string | null {
 
 function isPublicPath(url: string, routePrefix = ""): boolean {
   const path = stripRoutePrefix(url.split("?")[0] ?? url, routePrefix);
-  return PUBLIC_PREFIXES.some((prefix) => path === prefix || path.startsWith(prefix));
+  // Segment-bounded: "/v1/account/session" must not also make "/v1/account/sessions" public.
+  return PUBLIC_PREFIXES.some(
+    (prefix) => path === prefix || path.startsWith(prefix.endsWith("/") ? prefix : `${prefix}/`),
+  );
 }
 
 function stripRoutePrefix(path: string, routePrefix: string): string {
@@ -93,6 +122,9 @@ export async function requireStudioSession(
   if (request.account) return;
   if (request.orgEmployee) return;
   if (!(await accounts.hasAccount())) return;
+  // A real session whose short-lived access token ran out is "refresh", not "signed out":
+  // the client must be able to tell the two apart.
+  if ((await accounts.accessTokenState(extractAccountToken(request))) === "expired") throw new TokenExpiredError();
   throw new UnauthorizedError("Sign in required to use Arrab Studio");
 }
 
@@ -109,19 +141,34 @@ export async function registerSecurity(
     request.principal = { type: "anonymous" };
     request.orgEmployee = null;
     request.account = null;
+    request.sessionId = null;
+    request.seatMemberId = null;
 
     const fullPath = request.url.split("?")[0] ?? request.url;
     const path = stripRoutePrefix(fullPath, prefix);
+    if (path !== "/health") {
+      const now = Date.now();
+      pruneBuckets(buckets, now);
+      const key = `global:${clientKey(request)}`;
+      const bucket = buckets.get(key);
+      if (!bucket || bucket.resetAt < now) {
+        buckets.set(key, { count: 1, resetAt: now + AUTH_RATE_WINDOW_MS });
+      } else if (++bucket.count > GLOBAL_RATE_LIMIT) {
+        throw new AppError("RATE_LIMITED", "Too many requests — slow down and retry shortly", 429, true);
+      }
+    }
     if (
       path.startsWith("/v1/account/auth/") ||
       path.startsWith("/v1/account/sign-in") ||
       path.startsWith("/v1/account/connect") ||
+      path.startsWith("/v1/account/refresh") ||
       path.startsWith("/v1/org/employees/sign-in") ||
       path.startsWith("/v1/family/members/sign-in") ||
       path.includes("/oauth/start")
     ) {
       const key = `${clientKey(request)}:${path}`;
       const now = Date.now();
+      pruneBuckets(buckets, now);
       const bucket = buckets.get(key);
       if (!bucket || bucket.resetAt < now) {
         buckets.set(key, { count: 1, resetAt: now + AUTH_RATE_WINDOW_MS });
@@ -139,9 +186,12 @@ export async function registerSecurity(
     }
 
     const token = extractAccountToken(request);
-    const account = await accounts.resolveSessionToken(token);
-    if (account) {
+    const resolved = await accounts.resolveSession(token);
+    const account = resolved?.account ?? null;
+    if (resolved && account) {
       request.account = account;
+      request.sessionId = resolved.sessionId;
+      request.seatMemberId = resolved.seatMemberId;
       request.principal = {
         type: "user",
         userId: account.id,
@@ -167,7 +217,10 @@ export async function registerSecurity(
 
   // Callback-style so AsyncLocalStorage covers the route handler (async hooks can't guarantee it).
   app.addHook("preHandler", (request, _reply, done) => {
-    runWithRequestActor({ employeeId: request.orgEmployee?.id ?? null }, done);
+    runWithRequestActor(
+      { employeeId: request.orgEmployee?.id ?? null, seatMemberId: request.seatMemberId },
+      done,
+    );
   });
 
   // Never echo secrets in structured logs.

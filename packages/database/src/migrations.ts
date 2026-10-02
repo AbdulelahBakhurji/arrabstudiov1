@@ -682,6 +682,58 @@ create unique index if not exists agents_client_key_live_idx
   where client_key is not null and status <> 'archived';
 `;
 
+/** Paid plan invoices are single-use (see StudioAccountRecord.paidInvoiceIds). */
+export const MIGRATION_037_PAID_INVOICE_IDS = `
+alter table studio_accounts
+  add column if not exists paid_invoice_ids jsonb not null default '[]'::jsonb;
+`;
+
+/** One account, many signed-in devices (see StudioAccountRecord.sessions). */
+export const MIGRATION_038_ACCOUNT_SESSIONS = `
+alter table studio_accounts
+  add column if not exists sessions jsonb not null default '[]'::jsonb;
+`;
+
+/** Revisioned records + idempotency log for cross-device sync. */
+export const MIGRATION_039_SYNC_RECORDS = `
+create sequence if not exists sync_records_seq;
+
+create table if not exists sync_records (
+  workspace_id text not null references workspaces(id) on delete cascade,
+  owner_key text not null,
+  kind text not null,
+  id text not null,
+  rev integer not null,
+  deleted boolean not null default false,
+  updated_at timestamptz not null,
+  updated_by text not null,
+  data jsonb not null,
+  seq bigint not null default nextval('sync_records_seq'),
+  primary key (workspace_id, owner_key, kind, id)
+);
+create index if not exists sync_records_seq_idx on sync_records (workspace_id, owner_key, seq);
+
+create table if not exists sync_ops (
+  workspace_id text not null references workspaces(id) on delete cascade,
+  owner_key text not null,
+  op_id text not null,
+  kind text not null,
+  id text not null,
+  created_at timestamptz not null default now(),
+  primary key (workspace_id, owner_key, op_id)
+);
+`;
+
+export const MIGRATION_040_TASK_RUN_LIFECYCLE = `
+alter table task_runs drop constraint if exists task_runs_status_check;
+alter table task_runs
+  add constraint task_runs_status_check
+  check (status in ('running', 'completed', 'failed', 'needs_provider', 'awaiting_approval', 'cancelled'));
+
+alter table task_runs add column if not exists team_run_id text;
+create index if not exists task_runs_team_run_idx on task_runs(team_run_id) where team_run_id is not null;
+`;
+
 export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "001_core", sql: MIGRATION_001_CORE },
   { id: "002_conversations", sql: MIGRATION_002_CONVERSATIONS },
@@ -719,4 +771,8 @@ export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "034_connector_owner_employee", sql: MIGRATION_034_CONNECTOR_OWNER_EMPLOYEE },
   { id: "035_sealed_vault", sql: MIGRATION_035_SEALED_VAULT },
   { id: "036_agent_client_key", sql: MIGRATION_036_AGENT_CLIENT_KEY },
+  { id: "037_paid_invoice_ids", sql: MIGRATION_037_PAID_INVOICE_IDS },
+  { id: "038_account_sessions", sql: MIGRATION_038_ACCOUNT_SESSIONS },
+  { id: "039_sync_records", sql: MIGRATION_039_SYNC_RECORDS },
+  { id: "040_task_run_lifecycle", sql: MIGRATION_040_TASK_RUN_LIFECYCLE },
 ];

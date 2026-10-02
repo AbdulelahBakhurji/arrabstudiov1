@@ -1,4 +1,5 @@
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readdirSync,
@@ -39,10 +40,18 @@ function chatFileName(id: string): string {
   return `${id.replace(/[^A-Za-z0-9._-]/g, "_")}.json`;
 }
 
-function atomicWriteFile(filePath: string, contents: string): void {
+function atomicWriteFile(filePath: string, contents: string, keepBackup = false): void {
   mkdirSync(path.dirname(filePath), { recursive: true });
   const tmp = `${filePath}.${process.pid}.tmp`;
   writeFileSync(tmp, contents, "utf8");
+  if (keepBackup && existsSync(filePath)) {
+    // Last-known-good copy: if the next write is ever torn or damaged, this is what we recover from.
+    try {
+      copyFileSync(filePath, `${filePath}.bak`);
+    } catch {
+      // a missing backup must never block saving
+    }
+  }
   try {
     renameSync(tmp, filePath);
   } catch {
@@ -51,17 +60,69 @@ function atomicWriteFile(filePath: string, contents: string): void {
   }
 }
 
+function readJson(file: string): unknown {
+  try {
+    return JSON.parse(readFileSync(file, "utf8")) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+function isUsableSnapshot(raw: unknown): raw is Partial<MemorySnapshot> {
+  const s = raw as Partial<MemorySnapshot> | null | undefined;
+  return Boolean(
+    s &&
+      typeof s === "object" &&
+      s.version === 1 &&
+      s.context &&
+      Array.isArray(s.conversations) &&
+      Array.isArray(s.messages),
+  );
+}
+
+/** Rebuild conversations and messages from the per-chat files (a second copy of the user's history). */
+function rebuildFromChats(dir: string): MemorySnapshot {
+  const snapshot = normalizeMemorySnapshot(null);
+  const folder = chatsDir(dir);
+  if (!existsSync(folder)) return snapshot;
+  const seen = new Set<string>();
+  for (const name of readdirSync(folder)) {
+    if (!name.endsWith(".json")) continue;
+    const parsed = readJson(path.join(folder, name)) as
+      | { conversation?: Conversation; messages?: Message[] }
+      | undefined;
+    if (!parsed?.conversation?.id || !Array.isArray(parsed.messages) || seen.has(parsed.conversation.id)) continue;
+    seen.add(parsed.conversation.id);
+    snapshot.conversations.push(parsed.conversation);
+    snapshot.messages.push(...parsed.messages);
+  }
+  return snapshot;
+}
+
+/**
+ * Load the studio file without ever throwing user data away:
+ *  - a missing file is a fresh install;
+ *  - a damaged file is moved aside (`studio.json.corrupt-<time>`), never overwritten or deleted, and the
+ *    state is recovered from the last-known-good `.bak`, else rebuilt from the per-chat files.
+ */
 function loadSnapshot(dir: string): MemorySnapshot {
   const file = studioPath(dir);
   if (!existsSync(file)) {
-    return normalizeMemorySnapshot(null);
+    return existsSync(chatsDir(dir)) && readdirSync(chatsDir(dir)).some((n) => n.endsWith(".json"))
+      ? rebuildFromChats(dir)
+      : normalizeMemorySnapshot(null);
   }
+  const parsed = readJson(file);
+  if (isUsableSnapshot(parsed)) return normalizeMemorySnapshot(parsed);
+
   try {
-    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<MemorySnapshot>;
-    return normalizeMemorySnapshot(parsed);
+    renameSync(file, `${file}.corrupt-${new Date().toISOString().replace(/[:.]/g, "-")}`);
   } catch {
-    return normalizeMemorySnapshot(null);
+    // If it cannot be moved it will still not be deleted; the backup/chat recovery below runs either way.
   }
+  const backup = readJson(`${file}.bak`);
+  if (isUsableSnapshot(backup)) return normalizeMemorySnapshot(backup);
+  return rebuildFromChats(dir);
 }
 
 function writeChatFiles(dir: string, snapshot: MemorySnapshot): void {
@@ -95,7 +156,10 @@ function writeChatFiles(dir: string, snapshot: MemorySnapshot): void {
     if (!name.endsWith(".json") || keep.has(name)) {
       continue;
     }
-    rmSync(path.join(folder, name), { force: true });
+    // Only a readable chat that is no longer in the studio is a deleted chat. An unreadable file is
+    // someone's possibly-recoverable data: leave it.
+    const parsed = readJson(path.join(folder, name)) as { conversation?: { id?: string } } | undefined;
+    if (parsed?.conversation?.id) rmSync(path.join(folder, name), { force: true });
   }
 }
 
@@ -112,12 +176,16 @@ export async function createFilePersistence(dir: string): Promise<FilePersistenc
       clearTimeout(timer);
       timer = null;
     }
-    const pending = writing;
-    writing = pending.then(() => {
-      atomicWriteFile(studioPath(dataDir), JSON.stringify(snapshot, null, 2));
-      writeChatFiles(dataDir, snapshot);
-    });
-    await writing;
+    // A failed save is reported to the caller that asked for it, but must not poison the chain:
+    // the next flush starts clean (otherwise one full disk would break saving until restart).
+    const run = writing
+      .catch(() => undefined)
+      .then(() => {
+        writeChatFiles(dataDir, snapshot);
+        atomicWriteFile(studioPath(dataDir), JSON.stringify(snapshot, null, 2), true);
+      });
+    writing = run.catch(() => undefined);
+    await run;
   };
 
   const schedule = (): void => {
@@ -126,7 +194,10 @@ export async function createFilePersistence(dir: string): Promise<FilePersistenc
     }
     timer = setTimeout(() => {
       timer = null;
-      void flush();
+      flush().catch((error: unknown) => {
+        // Background saves have no caller to tell: log it (the next change retries).
+        console.error("[arrab] could not save studio data:", error instanceof Error ? error.message : error);
+      });
     }, 50);
   };
 

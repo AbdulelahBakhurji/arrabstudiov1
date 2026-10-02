@@ -18,6 +18,7 @@ import type {
   TaskRun,
   TaskStatus,
   Team,
+  TeamRun,
   TokenSpendTier,
   Workspace,
 } from "./entities.js";
@@ -77,6 +78,20 @@ export interface AiGatewayStatusResponse {
   region?: string | null;
   primaryProvider?: string | null;
   replyPath?: string | null;
+}
+
+/** One selectable model and its same-provider backup chain. */
+export interface AiModelRegistryEntry {
+  id: string;
+  providerId: string;
+  fallbacks: string[];
+}
+
+/** `GET /v1/ai/models` — catalog the UI may offer; chat accepts exactly these ids. */
+export interface AiModelsResponse {
+  defaultModel: string | null;
+  primaryProvider: string;
+  models: AiModelRegistryEntry[];
 }
 
 export interface ApiErrorBody {
@@ -621,8 +636,30 @@ export interface ConnectAccountResponse {
   entitlements: AccountEntitlements;
   /** Shown once — store on desktop for reconnect/auth */
   sessionToken: string;
+  /**
+   * Present only when the client asked for short-lived access tokens (`X-Arrab-Refresh: 1`).
+   * Exchange it at `POST /v1/account/refresh` for a new pair; each use rotates it.
+   */
+  refreshToken?: string;
+  /** When `sessionToken` stops working (ISO). Absent for classic long-lived sessions. */
+  accessExpiresAt?: string;
   /** True when this response created a brand-new account (not a returning sign-in). */
   accountCreated?: boolean;
+}
+
+export interface RefreshSessionRequest {
+  refreshToken: string;
+}
+
+export interface RefreshSessionResponse {
+  sessionToken: string;
+  refreshToken: string;
+  accessExpiresAt: string;
+}
+
+export interface ChangePasswordRequest {
+  currentPassword: string;
+  newPassword: string;
 }
 
 export interface StartWebAuthRequest {
@@ -819,6 +856,24 @@ export interface RunTaskResponse {
   assistantMessage: string | null;
   providerConfigured: boolean;
   approval?: Approval | null;
+}
+
+export interface CancelTaskRunResponse {
+  run: TaskRun;
+}
+
+export interface StartTeamRunRequest {
+  brief: string;
+}
+
+export interface StartTeamRunResponse {
+  teamRun: TeamRun;
+  runs: TaskRun[];
+}
+
+export interface CancelTeamRunResponse {
+  teamRun: TeamRun;
+  runs: TaskRun[];
 }
 
 export interface CreateSkillRequest {

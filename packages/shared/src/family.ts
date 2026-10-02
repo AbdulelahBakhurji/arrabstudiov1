@@ -101,6 +101,8 @@ export interface FamilyMemberSignInRequest {
 
 export interface FamilyMemberSignInResponse {
   sessionToken: string;
+  refreshToken?: string;
+  accessExpiresAt?: string;
   member: FamilyMemberPublic;
   account: AccountPublic;
   entitlements: AccountEntitlements;

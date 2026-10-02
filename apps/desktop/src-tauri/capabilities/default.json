@@ -12,7 +12,6 @@
     "core:window:allow-start-dragging",
     "core:window:allow-maximize",
     "core:window:allow-toggle-maximize",
-    "core:window:allow-create",
     "core:window:allow-show",
     "core:window:allow-hide",
     "core:window:allow-close",

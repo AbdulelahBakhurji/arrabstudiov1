@@ -15,7 +15,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const FEATURE_MARKER = "    // --- feature modules (pnpm new:feature) ---";
 const RESERVED = new Set([
   "studio",
   "board",

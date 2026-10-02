@@ -31,10 +31,17 @@ import type {
   WorkspaceId,
 } from "@arrab/shared";
 import { brandId } from "@arrab/shared";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { decryptField, encryptField } from "../../platform/crypto/field-crypto.js";
 import type { WorkspaceCommandService } from "../workspace/workspace-commands.js";
 import type { FamilyHouseholdService } from "../family/family-household-service.js";
+
+/** Constant-time string comparison for shared secrets. */
+function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
 
 /** Prevent accidental double-sends when a stream falls back mid-turn. */
 const RECENT_EMAIL_SENDS = new Map<string, { at: number; response: SendEmailResponse }>();
@@ -1260,7 +1267,14 @@ export class ConnectorService {
     const items = await this.list();
     return (
       items.find((item) => item.provider === "whatsapp" && item.status === "connected") ??
-      items.find((item) => item.provider === "openwa" && item.status === "connected") ??
+      items.find(
+        (item) =>
+          item.provider === "openwa" &&
+          item.status === "connected" &&
+          // startOpenWaLink saves the row before QR scan; skip until a phone is in the label.
+          Boolean(item.accountLabel) &&
+          !/linking/i.test(item.accountLabel ?? ""),
+      ) ??
       null
     );
   }
@@ -1290,8 +1304,20 @@ export class ConnectorService {
     if (connector.provider === "openwa") {
       const secret = parseOpenWaSecret(connector.secret);
       if (!secret) throw new ValidationError("Invalid OpenWA connector secret");
-      const key = `openwa:${secret.sessionId}`;
-      const items = this.whatsappInbound.get(key) ?? [];
+      // Webhooks key by OpenWA's UUID; also accept the human session name for older rows.
+      const keys = [
+        secret.gatewayId ? `openwa:${secret.gatewayId}` : null,
+        `openwa:${secret.sessionId}`,
+      ].filter((item): item is string => Boolean(item));
+      const merged = new Map<string, WhatsAppInboundStored>();
+      for (const key of keys) {
+        for (const message of this.whatsappInbound.get(key) ?? []) {
+          merged.set(message.id, message);
+        }
+      }
+      const items = [...merged.values()].sort((a, b) =>
+        (b.receivedAt || "").localeCompare(a.receivedAt || ""),
+      );
       const capped = Math.max(1, Math.min(100, limit));
       return { items: items.slice(0, capped) };
     }
@@ -1352,7 +1378,12 @@ export class ConnectorService {
     const companionId = route?.secret.replyCompanionId?.trim() || "general";
     const companionName = route?.secret.replyCompanionName?.trim() || "Arrab";
     const inbound = extractOpenWaInbound(input.payload, connectorId);
-    const key = sessionId ? `openwa:${sessionId}` : "openwa:unknown";
+    // Index under UUID (webhook sessionId) and human name so listWhatsAppMessages finds either.
+    const keys = new Set<string>();
+    if (sessionId) keys.add(`openwa:${sessionId}`);
+    if (route?.secret.sessionId) keys.add(`openwa:${route.secret.sessionId}`);
+    if (route?.secret.gatewayId) keys.add(`openwa:${route.secret.gatewayId}`);
+    if (keys.size === 0) keys.add("openwa:unknown");
     let accepted = 0;
     const deliveries: Array<{
       from: string;
@@ -1363,10 +1394,20 @@ export class ConnectorService {
       ownerEmployeeId: string | null;
     }> = [];
     for (const message of inbound) {
-      const list = this.whatsappInbound.get(key) ?? [];
-      if (list.some((item) => item.id === message.id)) continue;
-      list.unshift({ ...message, phoneNumberId: key });
-      this.whatsappInbound.set(key, list.slice(0, WHATSAPP_INBOUND_MAX));
+      let isNew = true;
+      for (const key of keys) {
+        const list = this.whatsappInbound.get(key) ?? [];
+        if (list.some((item) => item.id === message.id)) {
+          isNew = false;
+          break;
+        }
+      }
+      if (!isNew) continue;
+      for (const key of keys) {
+        const list = this.whatsappInbound.get(key) ?? [];
+        list.unshift({ ...message, phoneNumberId: key });
+        this.whatsappInbound.set(key, list.slice(0, WHATSAPP_INBOUND_MAX));
+      }
       accepted += 1;
       deliveries.push({
         from: message.from,
@@ -1411,26 +1452,41 @@ export class ConnectorService {
       baseUrl: this.openwaBaseUrl,
       apiKey,
       sessionId,
+      gatewayId: prior?.gatewayId,
       webhookSecret,
       replyCompanionId: input.companionId?.trim() || prior?.replyCompanionId,
       replyCompanionName: input.companionName?.trim() || prior?.replyCompanionName,
     });
-    await verifyOpenWaSecret(secret);
-    await ensureOpenWaWebhook(secret, this.openWaWebhookUrl()).catch(() => undefined);
-    const view = await fetchOpenWaSessionView(secret);
     const verified = await verifyOpenWaSecret(secret);
+    let linkedSecret = verified.secret;
+    let webhookError: string | null = null;
+    try {
+      linkedSecret = await ensureOpenWaWebhook(linkedSecret, this.openWaWebhookUrl());
+    } catch (error) {
+      // Keep QR linking usable; inbound stays broken until SSRF allowlist / URL is fixed.
+      const detail = error instanceof Error ? error.message : "webhook registration failed";
+      webhookError =
+        `Webhook not registered: ${detail}. Allow the Arrab API host in OpenWA SSRF_ALLOWED_HOSTS (see services/openwa/README.md).`;
+    }
+    const view = await fetchOpenWaSessionView(linkedSecret);
     const now = new Date().toISOString();
+    const phoneLinked =
+      Boolean(view.phone) ||
+      view.status === "connected" ||
+      view.status === "authenticated";
     const record: ConnectorSecretRecord = {
       id: existing?.id ?? randomUUID(),
       workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
       provider: "openwa",
       status: "connected",
-      accountLabel: verified.label,
+      accountLabel: phoneLinked
+        ? verified.label
+        : `WhatsApp · linking (${view.status || "pending"})`,
       scopes: verified.scopes,
       connectedAt: existing?.connectedAt ?? now,
       lastVerifiedAt: now,
-      error: null,
-      secret: JSON.stringify(verified.secret),
+      error: webhookError,
+      secret: JSON.stringify(linkedSecret),
       familyMemberId: seatId,
       ownerEmployeeId: this.ownerEmployeeFor(seatId),
     };
@@ -1477,24 +1533,25 @@ export class ConnectorService {
       Boolean(view.phone) ||
       view.status === "connected" ||
       view.status === "authenticated";
-    if (linked) {
-      try {
-        const verified = await verifyOpenWaSecret(secret);
-        const opened = this.openConnector(existing);
-        await this.saveConnector(
-          {
-            ...opened,
-            status: "connected",
-            accountLabel: verified.label,
-            lastVerifiedAt: new Date().toISOString(),
-            error: null,
-            secret: JSON.stringify(verified.secret),
-          },
-          "update",
-        );
-      } catch {
-        /* keep last label */
-      }
+    try {
+      const verified = await verifyOpenWaSecret(secret);
+      const opened = this.openConnector(existing);
+      await this.saveConnector(
+        {
+          ...opened,
+          status: "connected",
+          accountLabel: linked
+            ? verified.label
+            : `WhatsApp · linking (${view.status || "pending"})`,
+          lastVerifiedAt: new Date().toISOString(),
+          error: null,
+          // Persist gateway UUID even before phone link so send/webhook paths stay valid.
+          secret: JSON.stringify(verified.secret),
+        },
+        "update",
+      );
+    } catch {
+      /* keep last label */
     }
     return {
       status: view.status,
@@ -1517,7 +1574,7 @@ export class ConnectorService {
     if (!expected) {
       throw new ValidationError("WHATSAPP_WEBHOOK_VERIFY_TOKEN is not configured on the API");
     }
-    if (mode !== "subscribe" || token !== expected || !challenge) {
+    if (mode !== "subscribe" || !token || !safeEqual(token, expected) || !challenge) {
       throw new ValidationError("WhatsApp webhook verification failed");
     }
     return challenge;
@@ -1528,12 +1585,14 @@ export class ConnectorService {
     signatureHeader: string | undefined;
     payload: unknown;
   }): Promise<{ ok: true; accepted: number }> {
+    // Fail closed: this endpoint is public, so without the app secret anyone could forge
+    // inbound messages that the desk would answer (and spend model tokens on).
     const appSecret = this.whatsappAppSecret?.trim();
-    if (appSecret) {
-      const ok = verifyWhatsAppWebhookSignature(input.rawBody, input.signatureHeader, appSecret);
-      if (!ok) {
-        throw new ValidationError("Invalid WhatsApp webhook signature");
-      }
+    if (!appSecret) {
+      throw new ValidationError("WhatsApp webhook is not configured (WHATSAPP_APP_SECRET)");
+    }
+    if (!verifyWhatsAppWebhookSignature(input.rawBody, input.signatureHeader, appSecret)) {
+      throw new ValidationError("Invalid WhatsApp webhook signature");
     }
 
     const phoneIds = new Set(
@@ -1826,13 +1885,16 @@ export class ConnectorService {
         webhookSecret,
       });
       const verified = await verifyOpenWaSecret(secret);
-      if (verified.secret.webhookSecret) {
-        await ensureOpenWaWebhook(verified.secret, this.openWaWebhookUrl()).catch(() => undefined);
+      let linkedSecret = verified.secret;
+      if (linkedSecret.webhookSecret) {
+        linkedSecret = await ensureOpenWaWebhook(linkedSecret, this.openWaWebhookUrl()).catch(
+          () => linkedSecret,
+        );
       }
       return {
         login: input.label?.trim() || verified.label,
         scopes: verified.scopes,
-        secret: JSON.stringify(verified.secret),
+        secret: JSON.stringify(linkedSecret),
       };
     }
 

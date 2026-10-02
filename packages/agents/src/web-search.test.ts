@@ -14,6 +14,19 @@ describe("web-search SSRF guards", () => {
   it("rejects loopback fetch_url without contacting the network", async () => {
     const result = await fetchUrl("http://127.0.0.1:8787/secret");
     expect(result).toMatch(/ERROR: fetch_url blocked/i);
-    expect(result).toMatch(/private or metadata/i);
+    expect(result).toMatch(/not allowed/i);
+  });
+
+  it.each([
+    "http://[::ffff:127.0.0.1]:8787/",
+    "http://[::ffff:a9fe:a9fe]/latest/meta-data/",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://localhost./",
+    "http://metadata.google.internal/",
+    "http://user:pass@example.com/",
+    "file:///etc/passwd",
+    "ftp://example.com/",
+  ])("blocks %s", async (url) => {
+    expect(await fetchUrl(url)).toMatch(/ERROR: fetch_url blocked/i);
   });
 });

@@ -1,3 +1,4 @@
+import { normalizeBrowserAddress } from "@/shared/lib/safe-url";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { DeskJob, DeskPace } from "@arrab/shared";
@@ -616,9 +617,8 @@ export function CompanionComputer({
   }
 
   function normalizeUrl(raw: string): string {
-    const trimmed = raw.trim();
-    if (trimmed.length < 3) return "https://www.google.com";
-    return trimmed.startsWith("http") ? trimmed : `https://${trimmed}`;
+    // Only http(s): `javascript:` / `file:` / `data:` addresses fall back to the start page.
+    return normalizeBrowserAddress(raw) ?? "https://www.google.com";
   }
 
   async function openBrowser(nextUrl?: string) {
@@ -1046,7 +1046,7 @@ export function CompanionComputer({
             <iframe
               className="pro-os-browser-frame"
               title={text.browser}
-              src={browserUrl}
+              src={normalizeBrowserAddress(browserUrl) ?? "about:blank"}
               sandbox="allow-scripts allow-forms allow-popups allow-same-origin"
             />
           ) : null}

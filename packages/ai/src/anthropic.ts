@@ -4,6 +4,7 @@ import {
   type AiCompletionRequest,
   type ModelProviderAdapter,
 } from "./types.js";
+import { clientStatusForProvider, providerFetch, readProviderJson } from "./provider-http.js";
 
 export interface AnthropicMessagesConfig {
   id?: string;
@@ -58,28 +59,32 @@ export class AnthropicMessagesAdapter implements ModelProviderAdapter {
       throw new AiGatewayError("PROVIDER_ERROR", "Anthropic requires at least one user message", 400);
     }
 
-    const response = await fetch(`${this.baseUrl}/v1/messages`, {
-      method: "POST",
-      headers: {
-        "x-api-key": this.apiKey,
-        "anthropic-version": "2023-06-01",
-        "Content-Type": "application/json",
+    const response = await providerFetch(
+      `${this.baseUrl}/v1/messages`,
+      {
+        method: "POST",
+        headers: {
+          "x-api-key": this.apiKey,
+          "anthropic-version": "2023-06-01",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: request.model.model,
+          max_tokens: request.maxOutputTokens ?? 1200,
+          temperature: request.temperature,
+          system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
+          messages,
+        }),
       },
-      body: JSON.stringify({
-        model: request.model.model,
-        max_tokens: request.maxOutputTokens ?? 1200,
-        temperature: request.temperature,
-        system: systemParts.length > 0 ? systemParts.join("\n\n") : undefined,
-        messages,
-      }),
-    });
+      { signal: request.signal },
+    );
 
-    const payload = (await response.json()) as AnthropicResponse;
+    const payload = await readProviderJson<AnthropicResponse>(response);
     if (!response.ok) {
       throw new AiGatewayError(
         "PROVIDER_ERROR",
         payload.error?.message ?? `Anthropic request failed with ${response.status}`,
-        response.status >= 400 && response.status < 500 ? response.status : 502,
+        clientStatusForProvider(response.status),
       );
     }
 

@@ -56,6 +56,17 @@ export async function writeTextFile(
   return invoke("write_text_file", { root, relative, content });
 }
 
+export async function writeBinaryFile(
+  root: string,
+  relative: string,
+  base64Data: string,
+): Promise<{ path: string; size: number }> {
+  if (!isTauriRuntime()) {
+    throw new Error("Desktop app required");
+  }
+  return invoke("write_binary_file", { root, relative, base64Data });
+}
+
 export async function searchWorkspace(
   root: string,
   options: {

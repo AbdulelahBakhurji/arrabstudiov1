@@ -168,6 +168,8 @@ export const commonEn = {
     dashModel: "Model",
     dashProviders: "Providers",
     dashOnline: "Online",
+    connectivityOffline: "You're offline. What you do is saved on this device and syncs when you reconnect.",
+    connectivityBack: "Back online.",
     dashOffline: "Offline",
     dashNoProviders: "None",
     dashReviewApprovals: "Review pending approvals",

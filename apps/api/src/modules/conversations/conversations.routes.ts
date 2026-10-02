@@ -3,6 +3,7 @@ import type { CreateConversationRequest, CreateKnowledgeRequest, CreateMemoryReq
 import type { FastifyInstance } from "fastify";
 import { generateGeminiFlashPhoto } from "../workspace/image-service.js";
 import type { V1Deps } from "../../http/deps.js";
+import { buildModelCatalog, buildModelRegistry } from "../../platform/config/model-catalog.js";
 
 export function registerConversationsRoutes(app: FastifyInstance, deps: V1Deps): void {
   app.get("/v1/knowledge", async () => {
@@ -236,6 +237,8 @@ export function registerConversationsRoutes(app: FastifyInstance, deps: V1Deps):
         "X-Accel-Buffering": "no",
       });
       const write = (event: string, data: unknown) => {
+        // The peer may already be gone; a write to a closed socket must not crash the handler.
+        if (reply.raw.destroyed || reply.raw.writableEnded) return;
         reply.raw.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
         const flushable = reply.raw as { flush?: () => void };
         flushable.flush?.();
@@ -249,11 +252,17 @@ export function registerConversationsRoutes(app: FastifyInstance, deps: V1Deps):
           // closed
         }
       }, 15_000);
+      // Closing the tab / pressing stop must end the upstream model call, not let it run (and bill) to completion.
+      const upstream = new AbortController();
+      reply.raw.on("close", () => {
+        if (!reply.raw.writableFinished) upstream.abort();
+      });
       try {
         const response = await deps.conversations.sendMessage(
           request.params.id,
           request.body ?? { content: "" },
           {
+            signal: upstream.signal,
             onToken: (text) => write("token", { text }),
             onThinking: (text) => write("thinking", { text }),
             onToolStart: (name, detail) => write("tool_start", { name, detail }),
@@ -287,24 +296,15 @@ export function registerConversationsRoutes(app: FastifyInstance, deps: V1Deps):
 
   app.get("/v1/ai/status", async () => {
     const primary = deps.primaryProviderId ?? "bedrock";
-    const catalog =
-      primary === "openrouter"
-        ? (deps.openRouterModels ?? [])
-        : primary === "openai"
-          ? ["gpt-4o-mini", "gpt-4o", "gpt-4.1-mini"]
-          : primary === "anthropic"
-            ? ["claude-3-5-haiku-latest", "claude-sonnet-4-20250514", "claude-opus-4-20250514"]
-            : primary === "xai"
-              ? ["grok-3-mini", "grok-3"]
-              : (deps.bedrockModels ?? []);
     const defaultModel = deps.defaultModel ?? null;
-    const models = [
-      ...new Set(
-        [defaultModel, ...catalog]
-          .map((item) => item?.trim())
-          .filter((item): item is string => Boolean(item)),
-      ),
-    ];
+    const models =
+      deps.modelRegistry?.models.map((entry) => entry.id) ??
+      buildModelCatalog({
+        primaryProviderId: primary,
+        defaultModel,
+        openRouterModels: deps.openRouterModels,
+        bedrockModels: deps.bedrockModels,
+      });
     return {
       configured: deps.gateway.listProviders().length > 0,
       providers: deps.gateway.listProviders().map((provider) => provider.id),
@@ -322,6 +322,24 @@ export function registerConversationsRoutes(app: FastifyInstance, deps: V1Deps):
               : primary === "xai"
                 ? ("xai-chat" as const)
                 : ("bedrock-converse" as const),
+    };
+  });
+
+  app.get("/v1/ai/models", async () => {
+    const primary = deps.primaryProviderId ?? "bedrock";
+    const defaultModel = deps.defaultModel ?? null;
+    const registry =
+      deps.modelRegistry ??
+      buildModelRegistry({
+        primaryProviderId: primary,
+        defaultModel,
+        openRouterModels: deps.openRouterModels,
+        bedrockModels: deps.bedrockModels,
+      });
+    return {
+      defaultModel: registry.defaultModel,
+      primaryProvider: registry.primaryProviderId,
+      models: registry.models,
     };
   });
 }

@@ -1,9 +1,9 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { ControlMaintenance } from "@arrab/shared";
+import { SYNC_PROTOCOL_MIN_VERSION, SYNC_PROTOCOL_VERSION, type ControlMaintenance } from "@arrab/shared";
 import type { AccountService } from "../accounts/account-service.js";
 import {
-  ControlDeskService,
-  ControlNotificationService,
+  type ControlDeskService,
+  type ControlNotificationService,
   toClientNotification,
   type NotificationAckAction,
 } from "./control-notification-service.js";
@@ -52,6 +52,17 @@ export function registerClientRoutes(
   /** Notices go to signed-in people only (or to everyone on a single-user install). */
   const canReceiveNotices = async (request: FastifyRequest) =>
     Boolean(request.account || request.orgEmployee) || !(await deps.accounts.hasAccount());
+
+  /** Version handshake: lets any client (desktop, iOS, Android, Huawei) learn the server's protocol and minimum app version before signing in. */
+  app.get("/v1/client/hello", async () => {
+    const policy = await deps.desk.getPolicy();
+    return {
+      protocol: SYNC_PROTOCOL_VERSION,
+      minProtocol: SYNC_PROTOCOL_MIN_VERSION,
+      minClientVersion: policy.minVersion ?? null,
+      serverTime: new Date().toISOString(),
+    };
+  });
 
   app.post("/v1/client/sync", async (request) => {
     const body = record(request.body);

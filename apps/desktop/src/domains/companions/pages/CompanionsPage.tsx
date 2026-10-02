@@ -745,7 +745,7 @@ export function CompanionsPage() {
     const files =
       harvested.length > 0
         ? mergeStudioProject(companionId, harvested)
-        : /design|website|web|site|page|ui|layout|screen|mobile|phone|app|صم[مّ]|موقع|واجهة|شاشة|جوال/i.test(
+        : /design|website|web|site|page|ui|layout|screen|mobile|phone|app|صم(?:م|ّ)|موقع|واجهة|شاشة|جوال/i.test(
               prompt,
             )
           ? mergeStudioProject(companionId, localDesignFromPrompt(prompt))

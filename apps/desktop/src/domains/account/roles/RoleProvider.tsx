@@ -14,9 +14,13 @@ import {
   audienceFromAccountSignals,
   ROLE_PATH,
 } from "@/domains/account/roles/catalog";
-import { readAccountSessionToken } from "@/core/session/account-session";
 import { isGuestLocalMode, subscribeGuestMode } from "@/core/session/guest-mode";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
+import { hasStudioCloudSession } from "@/domains/account/studio-session";
+import {
+  readOrgEmployeeSession,
+  subscribeOrgEmployeeSession,
+} from "@/domains/organization/org-employee-session";
 
 const STORAGE_KEY = "arrab.studioRole";
 
@@ -33,7 +37,7 @@ type RoleContextValue = {
 const RoleContext = createContext<RoleContextValue | null>(null);
 
 function hasCloudSession(): boolean {
-  return Boolean(readAccountSessionToken()?.trim()) && !isGuestLocalMode();
+  return hasStudioCloudSession();
 }
 
 export function readStoredRole(): PlanAudience {
@@ -159,17 +163,25 @@ export function RoleFromPath() {
     isGuestLocalMode,
     () => false,
   );
-  const cloudSignedIn = signedIn && !guestLocal;
-  const entitlements = status?.entitlements;
-  const role = roleFromPlanOrPath(
-    pathname,
-    {
-      planId: entitlements?.planId ?? account?.planId ?? null,
-      planCategory: entitlements?.planCategory ?? account?.planCategory ?? null,
-      planName: entitlements?.planName ?? account?.planName ?? null,
-    },
-    cloudSignedIn,
+  const orgSeat = useSyncExternalStore(
+    subscribeOrgEmployeeSession,
+    readOrgEmployeeSession,
+    () => null,
   );
+  // Org employee seats open the organization shell even without an owner bearer.
+  const cloudSignedIn = (signedIn || Boolean(orgSeat)) && !guestLocal;
+  const entitlements = status?.entitlements;
+  const role = orgSeat && !signedIn
+    ? "organization"
+    : roleFromPlanOrPath(
+        pathname,
+        {
+          planId: entitlements?.planId ?? account?.planId ?? null,
+          planCategory: entitlements?.planCategory ?? account?.planCategory ?? null,
+          planName: entitlements?.planName ?? account?.planName ?? null,
+        },
+        cloudSignedIn,
+      );
   return (
     <RoleProvider role={role}>
       <Outlet />

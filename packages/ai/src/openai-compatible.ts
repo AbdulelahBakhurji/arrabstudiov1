@@ -9,6 +9,14 @@ import {
   type ModelProviderAdapter,
 } from "./types.js";
 import { stripThinkBlock, ThinkTagSplitter } from "./think-tags.js";
+import {
+  MAX_STREAM_LINE_BYTES,
+  STREAM_CONNECT_TIMEOUT_MS,
+  clientStatusForProvider,
+  providerFetch,
+  readProviderJson,
+  readStreamChunk,
+} from "./provider-http.js";
 
 export interface OpenAiCompatibleConfig {
   id?: string;
@@ -158,6 +166,7 @@ function buildChatBody(
   request: AiCompletionRequest,
   stream: boolean,
   unifiedReasoning = false,
+  askStreamUsage = false,
 ): Record<string, unknown> {
   const model = request.model.model;
   const gpt5 = isGpt5ChatModel(model);
@@ -210,6 +219,9 @@ function buildChatBody(
   }
   if (stream) {
     body.stream = true;
+    // OpenAI-style APIs only report token usage on a stream when asked; without it the
+    // reply would never be metered against the user's plan.
+    if (askStreamUsage) body.stream_options = { include_usage: true };
   }
   return body;
 }
@@ -356,7 +368,7 @@ function providerError(payload: { error?: { message?: string } }, status: number
   throw new AiGatewayError(
     "PROVIDER_ERROR",
     payload.error?.message ?? `Provider request failed with ${status}`,
-    status >= 400 && status < 500 ? status : 502,
+    clientStatusForProvider(status),
   );
 }
 
@@ -370,6 +382,11 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
   /** OpenRouter accepts `reasoning: { effort }` for any reasoning model. */
   private get unifiedReasoning(): boolean {
     return this.id === "openrouter";
+  }
+
+  /** Endpoints known to accept `stream_options.include_usage` (others may reject unknown fields). */
+  private get reportsStreamUsage(): boolean {
+    return /api\.openai\.com|api\.x\.ai|openrouter\.ai/i.test(this.baseUrl);
   }
 
   constructor(config: OpenAiCompatibleConfig) {
@@ -394,12 +411,16 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
   async complete(request: AiCompletionRequest): Promise<AiCompletion> {
     const gpt5 = isGpt5ChatModel(request.model.model);
     if (gpt5) {
-      const response = await fetch(`${this.baseUrl}/responses`, {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify(buildResponsesBody(request, false)),
-      });
-      const payload = (await response.json()) as ResponsesPayload & OpenAiChatResponse;
+      const response = await providerFetch(
+        `${this.baseUrl}/responses`,
+        {
+          method: "POST",
+          headers: this.headers(),
+          body: JSON.stringify(buildResponsesBody(request, false)),
+        },
+        { signal: request.signal },
+      );
+      const payload = await readProviderJson<ResponsesPayload & OpenAiChatResponse>(response);
       if (response.ok) {
         if (payload.output || payload.output_text) {
           return completionFromResponses(payload, request);
@@ -413,12 +434,16 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
       }
     }
 
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(buildChatBody(request, false, this.unifiedReasoning)),
-    });
-    const payload = (await response.json()) as OpenAiChatResponse;
+    const response = await providerFetch(
+      `${this.baseUrl}/chat/completions`,
+      {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(buildChatBody(request, false, this.unifiedReasoning)),
+      },
+      { signal: request.signal },
+    );
+    const payload = await readProviderJson<OpenAiChatResponse>(response);
     if (!response.ok) {
       providerError(payload, response.status);
     }
@@ -430,24 +455,28 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
     const url = gpt5 ? `${this.baseUrl}/responses` : `${this.baseUrl}/chat/completions`;
     const body = gpt5
       ? buildResponsesBody(request, true)
-      : buildChatBody(request, true, this.unifiedReasoning);
-    let response = await fetch(url, {
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(body),
-    });
+      : buildChatBody(request, true, this.unifiedReasoning, this.reportsStreamUsage);
+    const connect = { signal: request.signal, timeoutMs: STREAM_CONNECT_TIMEOUT_MS };
+    let response = await providerFetch(
+      url,
+      { method: "POST", headers: this.headers(), body: JSON.stringify(body) },
+      connect,
+    );
 
     if ((!response.ok || !response.body) && gpt5 && (response.status === 404 || response.status === 405)) {
-      response = await fetch(`${this.baseUrl}/chat/completions`, {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify(buildChatBody(request, true, this.unifiedReasoning)),
-      });
+      response = await providerFetch(
+        `${this.baseUrl}/chat/completions`,
+        {
+          method: "POST",
+          headers: this.headers(),
+          body: JSON.stringify(buildChatBody(request, true, this.unifiedReasoning, this.reportsStreamUsage)),
+        },
+        connect,
+      );
     }
 
     if (!response.ok || !response.body) {
-      const payload = (await response.json().catch(() => ({}))) as OpenAiChatResponse;
-      providerError(payload, response.status);
+      providerError(await readProviderJson<OpenAiChatResponse>(response), response.status);
     }
 
     const reader = response.body.getReader();
@@ -473,9 +502,13 @@ export class OpenAiCompatibleAdapter implements ModelProviderAdapter {
     };
 
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readStreamChunk(reader, { signal: request.signal });
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
+      if (buffer.length > MAX_STREAM_LINE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw new AiGatewayError("PROVIDER_ERROR", "The model provider sent an oversized stream event", 502);
+      }
       const parts = buffer.split("\n");
       buffer = parts.pop() ?? "";
       for (const line of parts) {

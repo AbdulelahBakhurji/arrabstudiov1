@@ -1,4 +1,5 @@
 import { randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { currentRequestActor } from "../../platform/context/request-actor.js";
 import {
   AppError,
   ForbiddenError,
@@ -254,13 +255,14 @@ export class FamilyHouseholdService {
       throw new ForbiddenError("Only a parent or partner can manage the household");
     }
 
-    const lockedId = await this.persistence.familyHouseholdMeta.getLockedMemberId();
-    if (lockedId) {
-      const locked = await this.persistence.familyMembers.getById(lockedId);
-      if (!locked || !isManagerRole(locked.role)) {
+    // A seat session is authoritative: the acting member is the one the session is bound to.
+    const boundSeat = currentRequestActor().seatMemberId ?? null;
+    if (boundSeat) {
+      const seat = await this.persistence.familyMembers.getById(boundSeat);
+      if (!seat || !isManagerRole(seat.role)) {
         throw new ForbiddenError("Only a parent or partner can manage the household");
       }
-      return locked;
+      return seat;
     }
 
     // Unlocked parent-device session: even if a child profile is selected for chat,
@@ -369,7 +371,9 @@ export class FamilyHouseholdService {
     const allocated = members.reduce((sum, m) => sum + m.tokenAllowance, 0);
     const memberUsed = members.reduce((sum, m) => sum + m.tokensUsed, 0);
     const unallocatedTokens = Math.max(0, pool - allocated);
+    const boundSeat = currentRequestActor().seatMemberId ?? null;
     const activeId =
+      boundSeat ??
       this.activeMemberByWorkspace.get(this.persistence.workspaceId) ??
       (await this.persistence.familyHouseholdMeta.getActiveMemberId());
     const activeMemberId =
@@ -379,7 +383,8 @@ export class FamilyHouseholdService {
     const recentGuidance = (await this.persistence.familyGuidance.listRecent(20)).map(
       toGuidancePublic,
     );
-    const lockedMemberId = await this.persistence.familyHouseholdMeta.getLockedMemberId();
+    // "Locked" now means: this request's session is bound to a seat (it cannot be a parent device by default).
+    const lockedMemberId = boundSeat;
     const activeSeat =
       activeMemberId != null
         ? members.find((m) => m.id === activeMemberId) ?? null
@@ -468,9 +473,16 @@ export class FamilyHouseholdService {
     const pool = entitlements.tokenLimit ?? 0;
     const allocated = members.reduce((sum, m) => sum + m.tokenAllowance, 0);
     const unallocated = Math.max(0, pool - allocated);
+    // The owner starts out holding the whole pool, so a new seat's share comes from the
+    // unallocated tokens first and then from the owner's unspent allowance.
+    const ownerSeat = members.find((m) => m.isOwner);
+    const ownerSpare = ownerSeat ? Math.max(0, ownerSeat.tokenAllowance - ownerSeat.tokensUsed) : 0;
     const requested = Math.max(0, Math.floor(body.tokenAllowance ?? 0));
     const defaultShare = role === "child" ? Math.floor(pool * 0.15) : Math.floor(pool * 0.2);
-    const tokenAllowance = Math.min(unallocated, requested > 0 ? requested : defaultShare);
+    const tokenAllowance = Math.min(
+      unallocated + ownerSpare,
+      requested > 0 ? requested : defaultShare,
+    );
 
     const now = this.clock.isoNow();
     const color =
@@ -496,12 +508,12 @@ export class FamilyHouseholdService {
     };
     await this.persistence.familyMembers.create(created);
 
-    // Reduce owner allowance when carving out a share for a new member.
-    const owner = members.find((m) => m.isOwner);
-    if (owner && tokenAllowance > 0 && owner.tokenAllowance >= tokenAllowance) {
+    // Reduce owner allowance by whatever the unallocated pool could not cover.
+    const fromOwner = Math.max(0, tokenAllowance - unallocated);
+    if (ownerSeat && fromOwner > 0) {
       await this.persistence.familyMembers.update({
-        ...owner,
-        tokenAllowance: owner.tokenAllowance - tokenAllowance,
+        ...ownerSeat,
+        tokenAllowance: ownerSeat.tokenAllowance - fromOwner,
         updatedAt: now,
       });
     }
@@ -596,7 +608,10 @@ export class FamilyHouseholdService {
   }
 
   /** Kid / partner seat login — issues the household account session and activates this seat. */
-  async signInMember(body: FamilyMemberSignInRequest): Promise<FamilyMemberSignInResponse> {
+  async signInMember(
+    body: FamilyMemberSignInRequest,
+    meta?: { deviceName?: string; platform?: string; appVersion?: string; refresh?: boolean },
+  ): Promise<FamilyMemberSignInResponse> {
     const email = normalizeEmail(body.email);
     if (!email) throw new ValidationError("Email is required");
     const password = body.password ?? "";
@@ -617,22 +632,16 @@ export class FamilyHouseholdService {
     }
 
     const now = this.clock.isoNow();
-    const sessionToken = randomBytes(32).toString("hex");
-    await this.persistence.accounts.upsert({
-      ...account,
-      sessionTokenHash: hashSessionToken(sessionToken),
-      connectedAt: now,
-      updatedAt: now,
-    });
+    // The seat gets its *own* session, bound to this member. It never replaces the owner's session and
+    // never changes household-wide state, so a child signing in cannot sign the parent out, lock the
+    // parent into the child's profile, or inherit the parent's rights when the parent signs in.
+    const issued = await this.accounts.issueSeatSession(member.id, meta);
+    const sessionToken = issued.sessionToken;
     await this.persistence.familyMembers.update({
       ...member,
       lastActiveAt: now,
       updatedAt: now,
     });
-    this.activeMemberByWorkspace.set(this.persistence.workspaceId, member.id);
-    await this.persistence.familyHouseholdMeta.setActiveMemberId(member.id);
-    // Member email/password login locks the session to this seat.
-    await this.persistence.familyHouseholdMeta.setLockedMemberId(member.id);
 
     const entitlements = await this.accounts.buildEntitlements(
       await this.persistence.accounts.get(),
@@ -651,6 +660,7 @@ export class FamilyHouseholdService {
 
     return {
       sessionToken,
+      ...(issued.refreshToken ? { refreshToken: issued.refreshToken, accessExpiresAt: issued.accessExpiresAt } : {}),
       member: toPublic({ ...member, lastActiveAt: now, updatedAt: now }),
       account: publicAccount,
       entitlements,
@@ -673,6 +683,8 @@ export class FamilyHouseholdService {
       });
     }
     await this.persistence.familyMembers.delete(id);
+    // The removed seat's devices are signed out at once.
+    await this.accounts.revokeSeatSessions(id);
     if (this.activeMemberByWorkspace.get(this.persistence.workspaceId) === id) {
       const members = await this.persistence.familyMembers.list();
       const nextOwner = members.find((m) => m.isOwner);
@@ -690,11 +702,15 @@ export class FamilyHouseholdService {
       throw new ForbiddenError("This profile is paused by a parent");
     }
 
-    const lockedId = await this.persistence.familyHouseholdMeta.getLockedMemberId();
-    if (lockedId && lockedId !== member.id) {
+    const boundSeat = currentRequestActor().seatMemberId ?? null;
+    if (boundSeat && boundSeat !== member.id) {
       throw new ForbiddenError(
         "This seat is signed in with its own login and cannot switch to another profile",
       );
+    }
+    if (boundSeat) {
+      // Already this seat: nothing global to change.
+      return { member: toPublic(member), switchedAt: this.clock.isoNow() };
     }
 
     const now = this.clock.isoNow();
@@ -817,11 +833,11 @@ export class FamilyHouseholdService {
   /** Attribute token spend to the active family member (best-effort). */
   async recordUsage(tokens: number, _memberIdHint?: string | null): Promise<void> {
     if (tokens <= 0) return;
-    // Ignore client seat hints — only the locked/active server seat is billed.
+    // Ignore client seat hints — only the server-side acting seat (the session's seat, else the owner device's active profile) is billed.
     const activeId =
+      (await this.getActiveMemberId()) ||
       this.activeMemberByWorkspace.get(this.persistence.workspaceId) ||
-      (await this.persistence.familyHouseholdMeta.getActiveMemberId()) ||
-      (await this.persistence.familyHouseholdMeta.getLockedMemberId());
+      (await this.persistence.familyHouseholdMeta.getActiveMemberId());
     if (!activeId) return;
     const member = await this.persistence.familyMembers.getById(activeId);
     if (!member) return;
@@ -1001,13 +1017,8 @@ export class FamilyHouseholdService {
   }
 
   async setActiveMember(memberId: string | null): Promise<void> {
-    const lockedId = await this.persistence.familyHouseholdMeta.getLockedMemberId();
-    if (lockedId) {
-      // Locked seat sessions ignore spoofed family-member headers.
-      this.activeMemberByWorkspace.set(this.persistence.workspaceId, lockedId);
-      await this.persistence.familyHouseholdMeta.setActiveMemberId(lockedId);
-      return;
-    }
+    // Seat sessions ignore the family-member header entirely: their identity comes from the session.
+    if (currentRequestActor().seatMemberId) return;
     if (!memberId) {
       this.activeMemberByWorkspace.delete(this.persistence.workspaceId);
       await this.persistence.familyHouseholdMeta.setActiveMemberId(null);
@@ -1028,8 +1039,8 @@ export class FamilyHouseholdService {
   async getActiveMemberId(): Promise<string | null> {
     const account = await this.persistence.accounts.get();
     if (!account || !isFamilyPlanId(account.planId)) return null;
-    const lockedId = await this.persistence.familyHouseholdMeta.getLockedMemberId();
-    if (lockedId) return lockedId;
+    const boundSeat = currentRequestActor().seatMemberId ?? null;
+    if (boundSeat) return boundSeat;
     return (
       this.activeMemberByWorkspace.get(this.persistence.workspaceId) ||
       (await this.persistence.familyHouseholdMeta.getActiveMemberId())

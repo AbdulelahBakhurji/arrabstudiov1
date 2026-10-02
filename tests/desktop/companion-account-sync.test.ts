@@ -22,10 +22,7 @@ vi.mock("@/core/session/guest-mode", () => ({
 }));
 
 import { arrabApi } from "@/core/api/api";
-import {
-  clearAccountSession,
-  writeAccountSession,
-} from "@/core/session/account-session";
+import { clearAccountSession, writeAccountSession } from "@/core/session/account-session";
 import { resolveAssistantChatTabs } from "@/domains/chat/assistant-chat-tabs";
 import {
   addCompanion,

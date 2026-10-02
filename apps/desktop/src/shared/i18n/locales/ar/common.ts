@@ -165,6 +165,8 @@ export const commonAr = {
     dashModel: "النموذج",
     dashProviders: "المزوّدون",
     dashOnline: "متصل",
+    connectivityOffline: "أنت غير متصل بالإنترنت. ما تفعله محفوظ على هذا الجهاز وسيُزامَن عند عودة الاتصال.",
+    connectivityBack: "عاد الاتصال.",
     dashOffline: "غير متصل",
     dashNoProviders: "لا يوجد",
     dashReviewApprovals: "راجع الموافقات المعلّقة",

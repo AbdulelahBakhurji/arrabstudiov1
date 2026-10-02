@@ -7,17 +7,30 @@ async function main(): Promise<void> {
   const context = await createApiContext(env);
   const app = await buildApp(context);
 
-  const shutdown = async () => {
-    await context.flushPersistence?.();
-    await app.close();
-    await context.postgres?.close();
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    app.log.info({ signal }, "shutting down");
+    // A stuck connection or database must not keep the process alive past the orchestrator's kill timeout.
+    const forceExit = setTimeout(() => process.exit(1), 15_000);
+    forceExit.unref();
+    try {
+      await app.close();
+      await context.flushPersistence?.();
+      await context.postgres?.close();
+      process.exit(0);
+    } catch (error) {
+      console.error("shutdown failed", error);
+      process.exit(1);
+    }
   };
 
-  process.on("SIGINT", () => {
-    void shutdown().then(() => process.exit(0));
-  });
-  process.on("SIGTERM", () => {
-    void shutdown().then(() => process.exit(0));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  // Last-resort logging: an unhandled rejection in one request path must be visible, not silent.
+  process.on("unhandledRejection", (reason) => {
+    app.log.error({ err: reason }, "unhandled promise rejection");
   });
 
   await app.listen({ host: env.host, port: env.port });

@@ -61,18 +61,37 @@ export async function deviceStoreSet(
   key: string,
   value: string,
 ): Promise<void> {
-  try {
-    localStorage.setItem(memoryKey(namespace, key), value);
-  } catch {
-    // Quota or private mode — still try the native store.
+  // Key material never gets a second, plaintext home in the webview's localStorage unless the
+  // native store is unavailable (browser / dev) — mirroring it would defeat the point of the vault.
+  const keepWebviewCopy = namespace !== "secure" || !isTauriRuntime();
+  if (keepWebviewCopy) {
+    try {
+      localStorage.setItem(memoryKey(namespace, key), value);
+    } catch {
+      // Quota or private mode — still try the native store.
+    }
   }
   if (!isTauriRuntime()) {
     return;
   }
   try {
     await invokeWithTimeout("device_store_set", { namespace, key, value });
+    if (!keepWebviewCopy) {
+      try {
+        localStorage.removeItem(memoryKey(namespace, key));
+      } catch {
+        // ignore
+      }
+    }
   } catch {
-    // Native store is best-effort; localStorage still holds a copy.
+    if (!keepWebviewCopy) {
+      // Native write failed: keep the value rather than lose the key (and every chat sealed with it).
+      try {
+        localStorage.setItem(memoryKey(namespace, key), value);
+      } catch {
+        // ignore
+      }
+    }
   }
 }
 

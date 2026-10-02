@@ -19,17 +19,38 @@ export type OrgEmployeeSession = {
   };
 };
 
+/**
+ * React's `useSyncExternalStore` requires `getSnapshot` to return the *same value* while nothing
+ * changed. Parsing JSON on every call produced a new object each time, so any component using
+ * `useOrgSeatCapabilities` re-rendered forever ("Maximum update depth exceeded") and the whole app
+ * crashed for every organization seat. The parsed session is cached against the raw stored string.
+ */
+let cache: { raw: string; session: OrgEmployeeSession | null } | null = null;
+
 export function readOrgEmployeeSession(): OrgEmployeeSession | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as OrgEmployeeSession;
-    if (!parsed?.sessionToken || !parsed?.employee?.id) return null;
-    if (parsed.expiresAt && Date.parse(parsed.expiresAt) <= Date.now()) {
-      localStorage.removeItem(STORAGE_KEY);
+    if (!raw) {
+      cache = null;
       return null;
     }
-    return parsed;
+    if (cache && cache.raw === raw) {
+      if (cache.session && cache.session.expiresAt && Date.parse(cache.session.expiresAt) <= Date.now()) {
+        localStorage.removeItem(STORAGE_KEY);
+        cache = null;
+        return null;
+      }
+      return cache.session;
+    }
+    const parsed = JSON.parse(raw) as OrgEmployeeSession;
+    const valid = Boolean(parsed?.sessionToken && parsed?.employee?.id);
+    if (valid && parsed.expiresAt && Date.parse(parsed.expiresAt) <= Date.now()) {
+      localStorage.removeItem(STORAGE_KEY);
+      cache = null;
+      return null;
+    }
+    cache = { raw, session: valid ? parsed : null };
+    return cache.session;
   } catch {
     return null;
   }
