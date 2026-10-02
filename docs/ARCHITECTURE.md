@@ -47,27 +47,34 @@ Copy lives with its domain: `shared/i18n/locales/{en,ar}/<domain>.ts`, keys shar
 ### API — `apps/api/src`
 
 ```text
-platform/    config/ (env) · http/ (security, error handler) · crypto/ (field encryption) · context/ (per-request actor)
-modules/     One folder per domain: service, repository helpers, <domain>.routes.ts, tests next to the code.
-  accounts · billing · connectors · conversations · desk · encryption · erp · family · organization · workspace · control
-http/        v1.ts (global hooks + registers each module's routes) and deps.ts (the shared dependency contract)
-app.ts       Composition root: builds services and wires them into the Fastify app.
-index.ts     Process entry.
+platform/    config/ (env) · http/ (security, error handler, request-id) · crypto/ · context/ · observability/
+modules/     One folder per domain: *-service.ts, <domain>.routes.ts, tests beside the code.
+  accounts · billing · connectors · conversations · desk · encryption · erp
+  family · organization · workspace · control · sync
+http/        v1.ts · deps.ts · route-policy.ts (owner/manager) · hardening + authz tests
+app.ts       Composition root: builds services and wires them into Fastify.
+index.ts     Process entry → dist/index.js under systemd in production.
 ```
 
 A feature adds `modules/<name>/{<name>-service.ts,<name>.routes.ts}` and registers it in `http/v1.ts`.
+Owner/manager routes also need a row in `http/route-policy.ts`.
 
 ## Packages
 
-- **shared** — serializable domain types and the public HTTP contract
-- **core** — application errors, ports, env helpers
-- **ai** — `AiGateway`, `OpenAiCompatibleAdapter`, `AnthropicMessagesAdapter`
-- **agents** — `GatewayChatRuntime` for chat; code execution remains unconfigured
-- **database** — persistence ports including memberships, connectors, bindings, usage, operator, tasks, knowledge, memories, task runs
+- **shared** — HTTP contract, plans, `entitlementsForPlan`, sync protocol, family/org types
+- **core** — application errors, ports, net-safety helpers
+- **ai** — `AiGateway` + provider adapters (keys stay on the API)
+- **agents** — `GatewayChatRuntime`, tool approval loop
+- **database** — persistence ports + migrations (`001`…`041+`)
 
 ## Persistence
 
-Local workspace is seeded on boot. With `DATABASE_URL`, migrations `001`–`006` apply automatically.
+With `DATABASE_URL`, Postgres + field encryption (`DATA_ENCRYPTION_KEY` or `ARRAB_DATA_ENCRYPTION_KEY`).
+Without it, file persistence under `ARRAB_DATA_DIR` / `~/.arrab-studio`.
+In-memory is for tests / emergency only.
+
+Production host: `/root/arrab/platform`, service `arrab-api` — see [DEPLOY.md](./DEPLOY.md).
+Core API is **not** Dockerized; `services/openwa` Docker is optional WhatsApp only.
 
 ## Conversations
 

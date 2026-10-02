@@ -33,12 +33,15 @@ describe.skipIf(!LIVE)("live Arrab API contract", () => {
 
   it("unauthenticated account surface does not leak secrets", async () => {
     const res = await fetch(`${LIVE}/v1/account`);
-    expect(res.status).toBe(200);
+    // 0.15.1+ default-deny → 401. Older hosts returned 200 with connected:false.
+    expect([200, 401]).toContain(res.status);
     const text = await res.text();
     expect(text).not.toMatch(/passwordHash|sessionTokenHash|DATA_ENCRYPTION|OPENROUTER_API_KEY|sk-/i);
-    const body = JSON.parse(text) as { connected?: boolean; account?: unknown };
-    expect(body.connected).toBe(false);
-    expect(body.account).toBeNull();
+    if (res.status === 200) {
+      const body = JSON.parse(text) as { connected?: boolean; account?: unknown };
+      expect(body.connected).toBe(false);
+      expect(body.account).toBeNull();
+    }
   });
 
   it("sign-in rejects invalid credentials without enumerating accounts", async () => {

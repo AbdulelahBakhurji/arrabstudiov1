@@ -28,9 +28,12 @@ Skip layers you do not need.
 | 2. Contract | `packages/shared/src/` | Types; export from `index.ts` |
 | 3. Persist | `packages/database/` | Migration only if data must survive restart |
 | 4. Service | `apps/api/src/modules/<domain>/` | Business rules (`*-service.ts`) |
-| 5. HTTP | `apps/api/src/modules/<domain>/<domain>.routes.ts` | Route that calls the service; register in `http/v1.ts` |
-| 6. Client | `apps/desktop/src/domains/<domain>/api.ts` | `arrabApi.*` only — no ad-hoc `fetch` |
-| 7. Settings | `apps/desktop/src/features/settings-tabs.ts` | Settings tab (not a page module) |
+| 5. Permissions | `http/route-policy.ts` and/or service `assert*` | Owner / manager / seat rules — **server authoritative** |
+| 6. Entitlements | `packages/shared/src/entitlements.ts` + account checks | Plan gates; never only in the UI |
+| 7. HTTP | `apps/api/src/modules/<domain>/<domain>.routes.ts` | Route that calls the service; register in `http/v1.ts` |
+| 8. Client | `apps/desktop/src/domains/<domain>/api.ts` | `arrabApi.*` only — no ad-hoc `fetch` |
+| 9. Settings | `apps/desktop/src/features/settings-tabs.ts` | Settings tab (not a page module) |
+| 10. Tests | next to service + `tests/` if cross-cutting | Happy path + negative authz |
 
 ## Rules
 

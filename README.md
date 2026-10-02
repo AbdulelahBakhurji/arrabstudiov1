@@ -64,12 +64,28 @@ pnpm ship:windows
 pnpm ship
 ```
 
-See [docs/FEATURE.md](./docs/FEATURE.md) for the agile checklist when adding features.
-See [docs/DESKTOP_RELEASE.md](./docs/DESKTOP_RELEASE.md) for packaging, signing, and CI.
+## Where is…?
+
+| Question | Answer |
+| --- | --- |
+| API server | `apps/api` — Fastify; prod at `api.arrabai.com` |
+| Authentication | `apps/api/src/modules/accounts` + desktop `core/session` |
+| Permissions / roles | `apps/api/src/http/route-policy.ts` + org/family services |
+| Subscriptions / entitlements | `packages/shared/src/entitlements.ts` + account/billing modules |
+| AI / models | `packages/ai` + `apps/api` conversations module |
+| Agents / tools | `packages/agents` + workspace module |
+| Database | `packages/database` (Postgres when `DATABASE_URL` set) |
+| Desktop UI | `apps/desktop` |
+| Add a feature | [docs/FEATURE.md](./docs/FEATURE.md) · `pnpm new:feature` |
+| Tests | [docs/TESTING.md](./docs/TESTING.md) |
+| Deploy API | [docs/DEPLOY.md](./docs/DEPLOY.md) |
+| Security | [docs/SECURITY.md](./docs/SECURITY.md) |
+| Engineering status | [docs/ENGINEERING_STATUS.md](./docs/ENGINEERING_STATUS.md) |
+
+Agents (Cursor / Claude) start at [AGENTS.md](./AGENTS.md).  
+Contributing: [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md) · Dev setup: [docs/DEVELOPMENT.md](./docs/DEVELOPMENT.md).
 
 ## Monorepo layout
-
-Agents (Cursor / Claude) start at [AGENTS.md](./AGENTS.md).
 
 ```text
 AGENTS.md             # Map for Cursor and Claude
@@ -77,21 +93,23 @@ CLAUDE.md             # Claude Code entry (points at AGENTS.md)
 .cursor/rules/        # Persistent Cursor rules
 apps/
   desktop/            # Tauri + React — Studio UI
-  api/                # Fastify Arrab API
+  api/                # Fastify Arrab API (authoritative backend)
   ios/                # Native SwiftUI client
   android/            # Managed Android client
   agents-office/      # Internal agents office
   testingworkspace/   # Internal testing workspace
 packages/
-  shared/             # Domain types + HTTP contract
+  shared/             # Domain types + HTTP contract + entitlements + sync
   core/               # Errors, ports, helpers
   ai/                 # AI gateway + providers
   agents/             # Chat runtime
   database/           # Persistence + migrations
+services/
+  openwa/             # Optional WhatsApp gateway (Docker) — not core API
 brand/                # Canonical logo, symbol, app icon
-docs/                 # Architecture, security, design, release
+docs/                 # Architecture, security, QA, deploy, feature guide
 skills/               # Project agent skills
-scripts/              # Dev + ship scripts
-tests/                # Cross-package / desktop UI tests
+scripts/              # Dev + ship + deploy
+tests/                # Cross-package / desktop UI / e2e tests
 release/              # Local / CI installers (gitignored output)
 ```

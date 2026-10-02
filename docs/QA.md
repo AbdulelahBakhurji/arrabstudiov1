@@ -61,13 +61,15 @@ Family Plus, Team, Business, Enterprise, Scale (legacy id `unlimited`).
 | Check | Result |
 | --- | --- |
 | `GET …/health` | PASS — `arrab-api` ok |
-| `GET …/v1/meta` | PASS — version **0.14.0**, persistence `postgres` |
+| `GET …/v1/meta` | PASS — version **0.15.1**, persistence `postgres` |
 | Auth validation / non-enumeration | PASS (live contract suite) |
-| Plan catalog on host | **DRIFT** — host serves `starter` / `max` / `family-plus` (hyphen); this repo's catalog is Solo/Studio/Team/… (0.15) |
-| `GET …/v1/client/hello` | **MISSING on host** (404) — present in this repo |
+| Plan catalog on host | PASS — free/pro/solo/studio/family_*/team/business/enterprise/unlimited |
+| `GET …/v1/client/hello` | PASS — 200 |
+| Anon `GET …/v1/billing/confirm` | PASS — 401 (owner-only) |
 | Desktop release `VITE_ARRAB_*` | Points at `https://api.arrabai.com` + Coolify prefix |
+| Host path | `/root/arrab/platform` (not `/opt/arrab-studio`) |
 
-**Certification implication:** this tree (0.15) is tested against its own API in CI. The public host must be redeployed from this tree before claiming end-to-end production parity. Optional live probe:
+Optional live probe:
 
 ```bash
 ARRAB_LIVE_API_URL=https://api.arrabai.com/r/nmpi6uidtpkh1bdf pnpm exec vitest run apps/api/src/http/live-api.contract.test.ts
