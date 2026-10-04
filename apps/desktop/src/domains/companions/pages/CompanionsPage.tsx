@@ -7,6 +7,7 @@ import {
   Copy,
   Ellipsis,
   EyeOff,
+  Info,
   Maximize2,
   Minimize2,
   PanelRight,
@@ -23,6 +24,21 @@ import {
 import { Link, useNavigate } from "react-router-dom";
 import { QueuedQueryBar } from "@/domains/chat/ui/QueuedQueryBar";
 import { ChatMarkdown, copyChatText } from "@/domains/chat/ui/ChatMarkdown";
+import {
+  ChatPreviewPanel,
+  ChatSourceChip,
+  readPreviewWidth,
+  type PreviewTarget,
+} from "@/domains/chat/ui/ChatPreviewPanel";
+import {
+  collectSources,
+  extractLinks,
+  hostOf,
+  parseAttachments,
+  previewRequestUrl,
+  rememberAttachments,
+  stripAttachmentBlocks,
+} from "@/domains/chat/lib/chat-sources";
 import {
   ComposerPlusMenu,
   composerCreatePrompt,
@@ -378,6 +394,18 @@ export function CompanionsPage() {
   const listedPeople = useManagedCompanions(people);
   const companionPolicies = useCompanionPolicies();
   const sendGate = useSendGate(active);
+  // Preview side panel — web pages and attached files from this chat.
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewTarget, setPreviewTarget] = useState<PreviewTarget | null>(null);
+  const [previewWidth, setPreviewWidth] = useState(readPreviewWidth);
+  const chatSources = useMemo(() => collectSources(lines), [lines]);
+  const previewTargetId =
+    previewTarget?.kind === "link" ? `link:${previewTarget.url}` : previewTarget?.kind === "file" ? previewTarget.file.id : null;
+  // A different chat (or companion — each has its own tabs) starts with the panel closed.
+  useEffect(() => {
+    setPreviewTarget(null);
+    setPreviewOpen(false);
+  }, [activeTab.id]);
   const facePeople =
     active.domain !== "general" &&
     !listedPeople.slice(0, 8).some((person) => person.id === active.id)
@@ -865,6 +893,11 @@ export function CompanionsPage() {
       }
     }
 
+    if (showProfessionalDesk) {
+      const previewAddress = previewRequestUrl(text);
+      if (previewAddress) openPreview({ kind: "link", url: previewAddress });
+    }
+
     const family = detectConnectFamily(text, active);
     if (family) {
       const provider = detectConnectProvider(text, family);
@@ -1177,6 +1210,15 @@ export function CompanionsPage() {
 
   const { desk: proDesk, reload: reloadProDesk } = useProfessionalDesk(showProfessionalDesk);
   const [agentPanel, setAgentPanel] = useState(false);
+  function openPreview(target: PreviewTarget | null) {
+    setPreviewTarget(target);
+    setPreviewOpen(true);
+    setAgentPanel(false);
+  }
+  function closePreview() {
+    setPreviewOpen(false);
+    setPreviewTarget(null);
+  }
   const [sandboxMaximized, setSandboxMaximized] = useState(false);
   const [computerPowered, setComputerPowered] = useState(() => {
     try {
@@ -1441,6 +1483,7 @@ export function CompanionsPage() {
           activeGroupId={activeGroupId}
           people={people}
           desk={proDesk}
+          workingId={busy && !activeGroupId ? (active.id === general.id ? "general" : active.id) : null}
           assistantActive={!activeGroupId && active.id === general.id}
           assistantName={nameOf(general)}
           onOpenAssistant={() => {
@@ -1666,6 +1709,19 @@ export function CompanionsPage() {
                 <span>{t("proChatNew")}</span>
               </button>
             ) : null}
+            {showProfessionalDesk ? (
+              <button
+                type="button"
+                className="cp-button pro-room-action pro-preview-toggle"
+                aria-pressed={previewOpen}
+                aria-label={t("chatPreviewToggle")}
+                title={t("chatPreviewToggle")}
+                onClick={() => (previewOpen ? closePreview() : openPreview(previewTarget))}
+              >
+                <PanelRight size={15} strokeWidth={1.7} />
+                {chatSources.length ? <em className="pro-room-badge">{chatSources.length}</em> : null}
+              </button>
+            ) : null}
             {showProfessionalDesk && !activeGroup && active.domain !== "general" ? (
               <button
                 type="button"
@@ -1673,9 +1729,12 @@ export function CompanionsPage() {
                 aria-pressed={agentPanel}
                 aria-label={t("proChatDetails")}
                 title={t("proChatDetails")}
-                onClick={() => setAgentPanel((open) => !open)}
+                onClick={() => {
+                  if (!agentPanel) setPreviewOpen(false);
+                  setAgentPanel((open) => !open);
+                }}
               >
-                <PanelRight size={15} strokeWidth={1.7} />
+                <Info size={15} strokeWidth={1.7} />
               </button>
             ) : null}
             <button
@@ -1716,7 +1775,13 @@ export function CompanionsPage() {
               : "Tell them what to build — when they finish, we’ll take you to their Studio page."}
           </p>
         ) : null}
-        <div className={cn("cp-room-body", showProfessionalDesk && agentPanel && "is-agent-chat")}>
+        <div
+          className={cn(
+            "cp-room-body",
+            showProfessionalDesk && agentPanel && "is-agent-chat",
+            showProfessionalDesk && previewOpen && "has-preview",
+          )}
+        >
           {showProfessionalDesk ? null : (
             <CompanionChatRail
               tabs={chatTabs.tabs}
@@ -1887,9 +1952,42 @@ export function CompanionsPage() {
                       <ThinkingBlock trace={room.thoughts[line.id]!} className="cp-message-thought" />
                     ) : null}
                   </div>
-                  <div className="cp-message-text">
-                    {line.who === "companion" ? <ChatMarkdown content={line.text} /> : line.text}
-                  </div>
+                  {(() => {
+                    const shownText =
+                      line.who === "me" && showProfessionalDesk ? stripAttachmentBlocks(line.text) : line.text;
+                    return shownText || line.who === "companion" ? (
+                      <div className="cp-message-text">
+                        {line.who === "companion" ? <ChatMarkdown content={line.text} /> : shownText}
+                      </div>
+                    ) : null;
+                  })()}
+                  {showProfessionalDesk && !streaming
+                    ? (() => {
+                        const files = parseAttachments(line.text, line.id);
+                        const links = extractLinks(stripAttachmentBlocks(line.text));
+                        if (!files.length && !links.length) return null;
+                        return (
+                          <div className={cn("cp-source-chips", line.who === "me" && "is-mine")}>
+                            {files.map((file) => (
+                              <ChatSourceChip
+                                key={file.id}
+                                source={{ kind: "file", id: file.id, file }}
+                                active={previewOpen && previewTargetId === file.id}
+                                onOpen={openPreview}
+                              />
+                            ))}
+                            {links.map((link) => (
+                              <ChatSourceChip
+                                key={link}
+                                source={{ kind: "link", id: `link:${link}`, url: link, host: hostOf(link) }}
+                                active={previewOpen && previewTargetId === `link:${link}`}
+                                onOpen={openPreview}
+                              />
+                            ))}
+                          </div>
+                        );
+                      })()
+                    : null}
                   {line.who === "me" && showProfessionalDesk && !busy ? (
                     <div className="cp-message-actions pro-message-actions is-mine">
                       <button
@@ -2239,6 +2337,7 @@ export function CompanionsPage() {
               multiple
               hidden
               onChange={(event) => {
+                rememberAttachments(event.target.files);
                 void filesToDraftParts(event.target.files).then((parts) => {
                   if (!parts.length) return;
                   setDraft((current) =>
@@ -2255,6 +2354,7 @@ export function CompanionsPage() {
               multiple
               hidden
               onChange={(event) => {
+                rememberAttachments(event.target.files);
                 void filesToDraftParts(event.target.files).then((parts) => {
                   if (!parts.length) return;
                   setDraft((current) =>
@@ -2363,6 +2463,16 @@ export function CompanionsPage() {
           </div>
         </div>
         </div>
+        {showProfessionalDesk && previewOpen ? (
+          <ChatPreviewPanel
+            target={previewTarget}
+            sources={chatSources}
+            width={previewWidth}
+            onWidthChange={setPreviewWidth}
+            onSelect={openPreview}
+            onClose={closePreview}
+          />
+        ) : null}
         </div>
       </section>
       )}

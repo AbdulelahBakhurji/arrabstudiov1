@@ -445,6 +445,17 @@ export type ProfessionalChatList = {
 
 type RosterMenu = { kind: "person" | "group" | "chat"; id: string; x: number; y: number };
 
+type RosterView = "companions" | "chats";
+const ROSTER_VIEW_KEY = "arrab.proRoster.view";
+
+function readRosterView(): RosterView {
+  try {
+    return localStorage.getItem(ROSTER_VIEW_KEY) === "chats" ? "chats" : "companions";
+  } catch {
+    return "companions";
+  }
+}
+
 export function ProfessionalRoster({
   activeId,
   activeGroupId,
@@ -454,6 +465,7 @@ export function ProfessionalRoster({
   assistantName,
   onOpenAssistant,
   chats,
+  workingId = null,
   onOpenCompanion,
   onOpenGroup,
   onCreateCompanion,
@@ -470,6 +482,8 @@ export function ProfessionalRoster({
   onOpenAssistant?: () => void;
   /** Saved chats for the open room — titles, pins, and the chat menu. */
   chats?: ProfessionalChatList;
+  /** Who is replying right now (companion id, or "general" for the assistant). */
+  workingId?: string | null;
   onOpenCompanion: (person: CompanionProfile) => void;
   onOpenGroup: (group: ProfessionalGroup) => void;
   onCreateCompanion: () => void;
@@ -485,7 +499,19 @@ export function ProfessionalRoster({
   const [picked, setPicked] = useState<string[]>([]);
   const [menu, setMenu] = useState<RosterMenu | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
+  const [view, setView] = useState<RosterView>(readRosterView);
   const needle = query.trim().toLowerCase();
+  const chatsView = view === "chats" && Boolean(chats);
+
+  function switchView(next: RosterView) {
+    setView(next);
+    setQuery("");
+    try {
+      localStorage.setItem(ROSTER_VIEW_KEY, next);
+    } catch {
+      /* storage unavailable */
+    }
+  }
 
   const companions = people.filter((person) => {
     if (!needle) return true;
@@ -507,8 +533,8 @@ export function ProfessionalRoster({
       `${assistantLabel} ${t("proChatAssistant")} ${t("proChatAssistantHint")} general`
         .toLowerCase()
         .includes(needle));
-  const nothingFound =
-    Boolean(needle) && !showAssistant && visibleChats.length === 0 && companions.length === 0 && visibleGroups.length === 0;
+  const nothingFound = Boolean(needle) && !showAssistant && companions.length === 0 && visibleGroups.length === 0;
+  const arabic = locale === "ar";
 
   useEffect(() => {
     if (!menu && !createOpen) return;
@@ -636,8 +662,8 @@ export function ProfessionalRoster({
           <input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            placeholder={text.search}
-            aria-label={text.search}
+            placeholder={chatsView ? t("proChatSearch") : text.search}
+            aria-label={chatsView ? t("proChatSearch") : text.search}
           />
           {query ? (
             <button type="button" className="pro-search-clear" aria-label={text.close} onClick={() => setQuery("")}>
@@ -692,26 +718,32 @@ export function ProfessionalRoster({
         </div>
       </div>
 
-      <div className="pro-roster-list">
-        {showAssistant ? (
+      <div className="pro-roster-tabs" role="tablist" aria-label={text.companions}>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={!chatsView}
+          className={cn("pro-roster-tab", !chatsView && "is-active")}
+          onClick={() => switchView("companions")}
+        >
+          <span>{t("proRosterCompanions")}</span>
+        </button>
+        {chats ? (
           <button
             type="button"
-            className={cn("pro-row pro-row-assistant", assistantActive && "is-active")}
-            aria-pressed={assistantActive}
-            disabled={chats?.disabled}
-            onClick={() => onOpenAssistant?.()}
+            role="tab"
+            aria-selected={chatsView}
+            className={cn("pro-roster-tab", chatsView && "is-active")}
+            onClick={() => switchView("chats")}
           >
-            <span className="pro-assistant-face" aria-hidden>
-              <Sparkles size={16} strokeWidth={1.6} />
-            </span>
-            <span className="pro-row-copy">
-              <strong>{assistantLabel}</strong>
-              <small>{t("proChatAssistantHint")}</small>
-            </span>
+            <span>{t("proChatChats")}</span>
+            {chats.tabs.length ? <em>{chats.tabs.length}</em> : null}
           </button>
         ) : null}
+      </div>
 
-        {chats && visibleChats.length > 0 ? (
+      <div className="pro-roster-list" data-view={chatsView ? "chats" : "companions"}>
+        {chatsView && chats ? (
           <div className="pro-group pro-chats">
             <div className="pro-group-head">
               <p className="pro-group-title" title={chats.ownerName}>
@@ -736,104 +768,182 @@ export function ProfessionalRoster({
             ) : null}
             {orderedChats.recent.length > 0 ? (
               <>
-                {orderedChats.pinned.length > 0 ? <p className="pro-chat-sub">{t("proChatRecent")}</p> : null}
+                <p className="pro-chat-sub">{t("proChatRecent")}</p>
                 {orderedChats.recent.map(chatRow)}
               </>
             ) : null}
-          </div>
-        ) : null}
-
-        {!needle && people.length === 0 && groups.length === 0 ? (
-          <div className="pro-empty">
-            <p className="pro-empty-title">{text.emptyDesk}</p>
-            <p className="pro-empty-hint">{text.emptyDeskHint}</p>
-            <button type="button" className="pro-empty-add" onClick={() => setCreateOpen(true)}>
-              <Plus size={15} />
-              {text.newItem}
-            </button>
-          </div>
-        ) : null}
-
-        {nothingFound ? <p className="pro-empty-hint pro-no-results">{t("proChatNoResults")}</p> : null}
-
-        {companions.length > 0 ? (
-          <div className="pro-group">
-            <p className="pro-group-title">{text.companions}</p>
-            {companions.map((person) => {
-              const job = latestJob(desk, person.domain);
-              const active = !activeGroupId && activeId === person.id;
-              const when = relativeTime(job?.updatedAt ?? person.lastAt ?? null, locale);
-              const status =
-                job?.status === "needs_you" ? text.waiting : job?.status === "running" ? text.working : "";
-              return (
-                <button
-                  key={person.id}
-                  type="button"
-                  className={active ? "pro-row is-active" : "pro-row"}
-                  aria-pressed={active}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setMenu({ kind: "person", id: person.id, x: event.clientX, y: event.clientY });
-                  }}
-                  onClick={() => {
-                    onOpenCompanion(person);
-                    onInspect?.();
-                  }}
-                >
-                  <PersonAvatar person={person} active={active} size="sm" />
-                  <span className="pro-row-copy">
-                    <strong>{person.name}</strong>
-                    {status ? <small className="pro-row-status">{status}</small> : null}
+            {visibleChats.length === 0 ? (
+              needle ? (
+                <p className="pro-empty-hint pro-no-results">{t("proChatNoResults")}</p>
+              ) : (
+                <div className="pro-chats-empty">
+                  <span className="pro-chats-empty-icon" aria-hidden>
+                    <MessageSquare size={18} strokeWidth={1.6} />
                   </span>
-                  <span className="pro-row-meta">
-                    {job?.status === "needs_you" ? <i className="pro-dot" /> : null}
-                    {when ? <time>{when}</time> : null}
-                  </span>
-                </button>
-              );
-            })}
+                  <strong>{t("proChatEmpty")}</strong>
+                  <p>{t("proChatEmptyHint").replace("{name}", chats.ownerName)}</p>
+                  <button type="button" className="pro-chats-new" disabled={chats.disabled} onClick={chats.onNew}>
+                    <SquarePen size={14} />
+                    {t("proChatNew")}
+                  </button>
+                </div>
+              )
+            ) : null}
           </div>
-        ) : null}
-
-        {visibleGroups.length > 0 ? (
-          <div className="pro-group">
-            <p className="pro-group-title">{text.groups}</p>
-            {visibleGroups.map((group) => {
-              const members = group.memberIds
-                .map((id) => people.find((person) => person.id === id))
-                .filter((person): person is CompanionProfile => Boolean(person));
-              const active = activeGroupId === group.id;
-              const when = relativeTime(group.lastAt, locale);
-              return (
+        ) : (
+          <>
+            {showAssistant ? (
+              <div className="pro-group">
+                <p className="pro-group-title">{t("proRosterAssistant")}</p>
                 <button
-                  key={group.id}
                   type="button"
-                  className={active ? "pro-row is-active is-group" : "pro-row is-group"}
-                  aria-pressed={active}
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setMenu({ kind: "group", id: group.id, x: event.clientX, y: event.clientY });
-                  }}
-                  onClick={() => {
-                    onOpenGroup(group);
-                    onInspect?.();
-                  }}
+                  className={cn("pro-row pro-row-assistant", assistantActive && "is-active")}
+                  aria-pressed={assistantActive}
+                  disabled={chats?.disabled}
+                  onClick={() => onOpenAssistant?.()}
                 >
-                  <span className="pro-group-face" aria-hidden>
-                    <MessagesSquare size={16} strokeWidth={1.7} />
+                  <span className="pro-avatar-wrap">
+                    <span className="pro-assistant-face" aria-hidden>
+                      <Sparkles size={16} strokeWidth={1.6} />
+                    </span>
+                    <i className="pro-presence" data-state={workingId === "general" ? "working" : "ready"} />
                   </span>
                   <span className="pro-row-copy">
-                    <strong>{group.title}</strong>
-                    <small>
-                      {members.map((person) => person.name).join(" · ") || `${group.memberIds.length}`}
+                    <strong>{assistantLabel}</strong>
+                    <small className="pro-row-status" data-state={workingId === "general" ? "working" : "ready"}>
+                      {workingId === "general" ? text.working : t("proChatAssistantHint")}
                     </small>
                   </span>
-                  <span className="pro-row-meta">{when ? <time>{when}</time> : null}</span>
+                  {assistantActive && chats?.tabs.length ? (
+                    <span className="pro-row-meta">
+                      <span className="pro-row-count" title={t("proChatChats")}>
+                        {chats.tabs.length}
+                      </span>
+                    </span>
+                  ) : null}
                 </button>
-              );
-            })}
-          </div>
-        ) : null}
+              </div>
+            ) : null}
+
+            {nothingFound ? <p className="pro-empty-hint pro-no-results">{t("proChatNoResults")}</p> : null}
+
+            {companions.length > 0 ? (
+              <div className="pro-group">
+                <p className="pro-group-title">{text.companions}</p>
+                {companions.map((person) => {
+                  const job = latestJob(desk, person.domain);
+                  const active = !activeGroupId && activeId === person.id;
+                  const when = relativeTime(job?.updatedAt ?? person.lastAt ?? null, locale);
+                  const state =
+                    job?.status === "needs_you"
+                      ? "waiting"
+                      : job?.status === "running" || workingId === person.id
+                        ? "working"
+                        : "ready";
+                  const status =
+                    state === "waiting"
+                      ? text.waiting
+                      : state === "working"
+                        ? text.working
+                        : purposeLine(person.purposeId || person.domain, arabic);
+                  return (
+                    <button
+                      key={person.id}
+                      type="button"
+                      className={active ? "pro-row is-active" : "pro-row"}
+                      aria-pressed={active}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setMenu({ kind: "person", id: person.id, x: event.clientX, y: event.clientY });
+                      }}
+                      onClick={() => {
+                        onOpenCompanion(person);
+                        onInspect?.();
+                      }}
+                    >
+                      <span className="pro-avatar-wrap">
+                        <PersonAvatar person={person} active={active} size="sm" />
+                        <i className="pro-presence" data-state={state} />
+                      </span>
+                      <span className="pro-row-copy">
+                        <strong>{person.name}</strong>
+                        <small className="pro-row-status" data-state={state}>
+                          {status}
+                        </small>
+                      </span>
+                      <span className="pro-row-meta">
+                        {job?.status === "needs_you" ? <i className="pro-dot" /> : null}
+                        {when ? <time>{when}</time> : null}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+
+            {visibleGroups.length > 0 ? (
+              <div className="pro-group">
+                <p className="pro-group-title">{text.groups}</p>
+                {visibleGroups.map((group) => {
+                  const members = group.memberIds
+                    .map((id) => people.find((person) => person.id === id))
+                    .filter((person): person is CompanionProfile => Boolean(person));
+                  const active = activeGroupId === group.id;
+                  const when = relativeTime(group.lastAt, locale);
+                  return (
+                    <button
+                      key={group.id}
+                      type="button"
+                      className={active ? "pro-row is-active is-group" : "pro-row is-group"}
+                      aria-pressed={active}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setMenu({ kind: "group", id: group.id, x: event.clientX, y: event.clientY });
+                      }}
+                      onClick={() => {
+                        onOpenGroup(group);
+                        onInspect?.();
+                      }}
+                    >
+                      <span className="pro-group-face" aria-hidden>
+                        <MessagesSquare size={16} strokeWidth={1.7} />
+                      </span>
+                      <span className="pro-row-copy">
+                        <strong>{group.title}</strong>
+                        <small>
+                          {members.map((person) => person.name).join(" · ") || `${group.memberIds.length}`}
+                        </small>
+                      </span>
+                      <span className="pro-row-meta">{when ? <time>{when}</time> : null}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+
+            {!needle ? (
+              <div className="pro-add-rows">
+                <button type="button" className="pro-add-row" onClick={onCreateCompanion}>
+                  <span className="pro-add-face" aria-hidden>
+                    <Plus size={15} strokeWidth={1.8} />
+                  </span>
+                  <span className="pro-row-copy">
+                    <strong>{t("proAddCompanion")}</strong>
+                    {people.length === 0 ? <small>{t("proAddCompanionHint")}</small> : null}
+                  </span>
+                </button>
+                <button type="button" className="pro-add-row" onClick={openGroupDialog}>
+                  <span className="pro-add-face" aria-hidden>
+                    <Users size={15} strokeWidth={1.8} />
+                  </span>
+                  <span className="pro-row-copy">
+                    <strong>{t("proAddGroup")}</strong>
+                  </span>
+                </button>
+              </div>
+            ) : null}
+          </>
+        )}
       </div>
 
       {menu

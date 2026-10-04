@@ -77,6 +77,7 @@ vi.mock("@/core/api/api", () => ({
       throw new Error("offline in UI tests");
     }),
     setProfessionalCompanionStatus: vi.fn(async () => ({})),
+    unfurlUrl: vi.fn(async () => ({ error: "offline in UI tests" })),
     familyGuidanceForCompanion: vi.fn(async () => ({ items: [] })),
     createAgent: vi.fn(async () => ({ id: "mock-agent" })),
     updateAgent: vi.fn(async () => ({ id: "mock-agent" })),
@@ -244,6 +245,7 @@ describe("real companion chat interactions", () => {
   });
 
   it("professional chat page: no 24/7 Stay toggle, assistant + chat list, Esc stops, new chat", async () => {
+    localStorage.removeItem("arrab.proRoster.view");
     await mount();
     await click(".cp-chat-heading .cp-segment button:nth-child(2)");
     expect(host.querySelector(".pro-stay-toggle")).toBeNull();
@@ -251,7 +253,13 @@ describe("real companion chat interactions", () => {
     const assistant = host.querySelector<HTMLButtonElement>(".pro-row-assistant");
     expect(assistant).not.toBeNull();
     expect(assistant!.getAttribute("aria-pressed")).toBe("true");
-    // Chats now live in the sidebar list; the thin initials rail is gone on this page.
+    // The sidebar leads with companions; saved chats live in their own tab.
+    expect(host.querySelectorAll(".pro-roster-tab")).toHaveLength(2);
+    expect(host.querySelector(".pro-chats")).toBeNull();
+    expect(host.querySelector(".pro-empty")).toBeNull();
+    expect(host.querySelectorAll(".pro-add-row")).toHaveLength(2);
+    await click(".pro-roster-tab:nth-child(2)");
+    expect(host.querySelector(".pro-row-assistant")).toBeNull();
     expect(host.querySelectorAll(".pro-chats .pro-chat-row")).toHaveLength(1);
     expect(host.querySelector(".cp-chat-rail")).toBeNull();
     expect(host.querySelector('.pro-room-dot[data-state="ready"]')).not.toBeNull();
@@ -268,5 +276,33 @@ describe("real companion chat interactions", () => {
 
     await click(".cp-room-actions .pro-room-action");
     expect(host.querySelectorAll(".pro-chats .pro-chat-row")).toHaveLength(2);
+    await click(".pro-roster-tab:nth-child(1)");
+    expect(host.querySelector(".pro-row-assistant")).not.toBeNull();
   });
+
+  it("professional chat page: links under messages open the preview panel", async () => {
+    await mount();
+    await click(".cp-chat-heading .cp-segment button:nth-child(2)");
+    expect(host.querySelector(".cp-preview-panel")).toBeNull();
+    await typeDraft("Screenshot and preview this page for me: https://example.com/docs");
+    await click(".cp-send");
+    // A "preview this site" request opens the page right away.
+    let panel = host.querySelector(".cp-preview-panel");
+    expect(panel?.getAttribute("data-preview-kind")).toBe("link");
+    expect(panel?.querySelector("iframe")?.getAttribute("sandbox")).toBe("allow-scripts allow-forms allow-popups");
+    await act(async () => {
+      const stream = mocked.streams.at(-1)!;
+      stream.callbacks.onToken("Here is the page.");
+      stream.callbacks.onDone({ assistantMessage: { content: "Here is the page." } });
+      stream.resolve();
+    });
+    await click('.cp-preview-panel [aria-label="Close preview"]');
+    expect(host.querySelector(".cp-preview-panel")).toBeNull();
+    await click('.cp-message-me .cp-source-chip[data-source-kind="link"]');
+    panel = host.querySelector(".cp-preview-panel");
+    expect(panel?.querySelector("iframe")?.getAttribute("src")).toBe("https://example.com/docs");
+    // Header toggle closes it again.
+    await click(".pro-preview-toggle");
+    expect(host.querySelector(".cp-preview-panel")).toBeNull();
+  }, 20_000);
 });
