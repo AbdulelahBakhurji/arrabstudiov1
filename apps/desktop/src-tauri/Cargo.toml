@@ -1,6 +1,6 @@
 [package]
 name = "arrab-studio"
-version = "0.17.0"
+version = "0.17.1"
 description = "Arrab Studio"
 authors = ["Arrab"]
 edition = "2021"

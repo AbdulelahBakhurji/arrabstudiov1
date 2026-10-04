@@ -53,7 +53,7 @@ apps/desktop/src/
   app/        main.tsx, App.tsx (routes), shell/ (StudioFrame, AuthGate, TitleBar)
   entries/    Extra Tauri windows (agent-presence, companion-panel, updater)
   domains/    account chat companions connectors encryption family organization
-              managed notifications settings studio brain spaces
+              managed notifications settings studio brain
               convention: api.ts · model/ · lib/ · pages/ · ui/ (+ catalog/ for companions)
   core/       api/ (http.ts + composed arrabApi) · session/ · storage/ · platform/
   shared/     ui/ · lib/ · hooks/ · i18n/locales/{en,ar}/<domain>.ts · theme/ · styles/

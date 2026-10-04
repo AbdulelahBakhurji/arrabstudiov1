@@ -1261,8 +1261,6 @@ export const commonEn = {
     opsQueueEmpty: "Queue is clear. Dispatch the next move.",
     opsMetricOpen: "Open",
     opsMetricPriority: "Priority",
-  spacesTitle: "Spaces",
-  spacesBody: "Working documents for your companions — library, editor, and save-from-chat.",
   professionalDeskTitle: "Professional desk",
   professionalDeskBody: "Status, approvals, routines, skills, memory, reachability, boundaries, and audit for your organization workforce.",
 } as const;

@@ -93,7 +93,6 @@ import {
   syncCompanionMemory,
   ToneDetails,
 } from "@/domains/companions/ui/CompanionDetails";
-import { PageReviewCard } from "@/domains/spaces/ui/PageReviewCard";
 import { CompanionCatalog } from "@/domains/companions/ui/CompanionCatalog";
 import { ProfessionalRoster, ProfessionalScreen, professionalLabel, useProfessionalDesk } from "@/domains/companions/ui/ProfessionalWorkspace";
 import { MuseQuietRail } from "@/domains/companions/ui/MuseQuietRail";
@@ -1815,9 +1814,6 @@ export function CompanionsPage() {
                         {t("compCapture")}
                       </button>
                     </div>
-                  ) : null}
-                  {line.who === "companion" && !busy ? (
-                    <PageReviewCard text={line.text} companionId={speaker.id} />
                   ) : null}
                 </div>
               </article>

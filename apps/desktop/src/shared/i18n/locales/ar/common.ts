@@ -1252,8 +1252,6 @@ export const commonAr = {
     opsQueueEmpty: "الطابور فارغ. وجّه الخطوة التالية.",
     opsMetricOpen: "مفتوح",
     opsMetricPriority: "أولوية",
-  spacesTitle: "المساحات",
-  spacesBody: "مستندات عمل لرفاقك — مكتبة ومحرر وحفظ من المحادثة.",
   professionalDeskTitle: "المكتب المهني",
   professionalDeskBody: "الحالة والموافقات والروتين والمهارات والذاكرة والوصول والحدود والسجل لقوة عمل منظمتك.",
 } as const;
