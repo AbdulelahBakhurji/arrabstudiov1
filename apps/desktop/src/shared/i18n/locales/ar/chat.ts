@@ -187,4 +187,6 @@ export const chatAr = {
     composerPlusLocalModel: "نموذج محلي (بلا إنترنت)",
     composerPlusCloudModel: "اختيار النموذج",
     composerPlusMoreSettings: "المزيد في الإعدادات",
+    chatCodeBlock: "كود",
+    chatCodeCopy: "انسخ الكود",
 } as const;

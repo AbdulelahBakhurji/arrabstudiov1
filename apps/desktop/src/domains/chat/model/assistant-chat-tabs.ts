@@ -5,6 +5,8 @@ export type AssistantChatTab = {
   title: string;
   conversationId: string | null;
   createdAt: string;
+  /** Pinned chats sort first in the professional chat list. */
+  pinned?: boolean;
 };
 
 export type AssistantChatTabsState = {
@@ -60,6 +62,7 @@ function readRaw(
         title: String(item.title || "Chat").slice(0, 80),
         conversationId: item.conversationId ? String(item.conversationId) : null,
         createdAt: String(item.createdAt || new Date().toISOString()),
+        ...(item.pinned ? { pinned: true } : {}),
       }));
     if (!tabs.length) return null;
     const activeId =
@@ -137,6 +140,18 @@ export function scrubConversationFromChatTabs(companionId: string, conversationI
 
 export function createAssistantChatTab(title: string, conversationId: string | null = null) {
   return newTab(title, conversationId);
+}
+
+/** Pinned first, then newest first — the order the professional chat list shows. */
+export function orderChatTabs(tabs: AssistantChatTab[]): {
+  pinned: AssistantChatTab[];
+  recent: AssistantChatTab[];
+} {
+  const newest = [...tabs].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  return {
+    pinned: newest.filter((tab) => tab.pinned),
+    recent: newest.filter((tab) => !tab.pinned),
+  };
 }
 
 export function titleFromMessage(text: string, fallback: string) {

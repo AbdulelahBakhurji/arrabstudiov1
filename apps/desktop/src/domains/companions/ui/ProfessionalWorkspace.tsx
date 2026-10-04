@@ -1,7 +1,23 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import type { CompanionDeskView, DeskJob, DeskSchedule } from "@arrab/shared";
-import { MessagesSquare, Plus, Search, Trash2, Users, X } from "lucide-react";
+import {
+  Copy,
+  Ellipsis,
+  EyeOff,
+  MessageSquare,
+  MessagesSquare,
+  PenLine,
+  Pin,
+  PinOff,
+  Plus,
+  Search,
+  Sparkles,
+  SquarePen,
+  Trash2,
+  Users,
+  X,
+} from "lucide-react";
 import { arrabApi } from "@/core/api/api";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { type CompanionPreset } from "@/domains/companions/catalog/catalog";
@@ -16,6 +32,9 @@ import {
 import { relativeTime, removeCompanion, updateCompanion, type CompanionProfile } from "@/domains/companions/model/companions";
 import { PersonAvatar } from "@/domains/companions/ui/CompanionUI";
 import { CompanionComputer } from "@/domains/companions/ui/CompanionComputer";
+import type { ChatRailMenuAction } from "@/domains/companions/ui/CompanionChatRail";
+import { orderChatTabs, type AssistantChatTab } from "@/domains/chat/model/assistant-chat-tabs";
+import { cn } from "@/shared/lib/utils";
 
 const copy = {
   en: {
@@ -118,9 +137,6 @@ const copy = {
     emptyDeskHint: "Add a companion or start a group chat from the + button.",
     needCompanionsForGroup: "Create at least two companions before a group chat.",
     deleteGroup: "Delete group",
-    stayOn: "24/7 Stay on",
-    stayOff: "24/7 Stay off",
-    stayHint: "Companions keep sweeping routines and watches while you are away.",
   },
   ar: {
     search: "بحث",
@@ -222,9 +238,6 @@ const copy = {
     emptyDeskHint: "أضف رفيقاً أو ابدأ محادثة جماعية من زر +.",
     needCompanionsForGroup: "أنشئ رفيقين على الأقل قبل المحادثة الجماعية.",
     deleteGroup: "حذف المجموعة",
-    stayOn: "المكوث 24/7 يعمل",
-    stayOff: "المكوث 24/7 متوقف",
-    stayHint: "الرفاق يواصلون الروتين والمراقبة وأنت بعيد.",
   },
 } as const;
 
@@ -418,11 +431,29 @@ function useDossier(id: string): DossierFile {
 
 loadDossier();
 
+export type ProfessionalChatList = {
+  tabs: AssistantChatTab[];
+  activeTabId: string;
+  ownerName: string;
+  disabled?: boolean;
+  onSelect: (tabId: string) => void;
+  onNew: () => void;
+  onAction: (action: ChatRailMenuAction, tabId: string) => void;
+  onRename: (tabId: string, title: string) => void;
+  onTogglePin: (tabId: string) => void;
+};
+
+type RosterMenu = { kind: "person" | "group" | "chat"; id: string; x: number; y: number };
+
 export function ProfessionalRoster({
   activeId,
   activeGroupId,
   people,
   desk,
+  assistantActive = false,
+  assistantName,
+  onOpenAssistant,
+  chats,
   onOpenCompanion,
   onOpenGroup,
   onCreateCompanion,
@@ -432,12 +463,19 @@ export function ProfessionalRoster({
   activeGroupId: string | null;
   people: CompanionProfile[];
   desk: CompanionDeskView | null;
+  /** The General assistant is the open room (no companion or group picked). */
+  assistantActive?: boolean;
+  /** Display name of the General assistant (custom label or "General"). */
+  assistantName?: string;
+  onOpenAssistant?: () => void;
+  /** Saved chats for the open room — titles, pins, and the chat menu. */
+  chats?: ProfessionalChatList;
   onOpenCompanion: (person: CompanionProfile) => void;
   onOpenGroup: (group: ProfessionalGroup) => void;
   onCreateCompanion: () => void;
   onInspect?: () => void;
 }) {
-  const { locale } = useLanguage();
+  const { locale, t } = useLanguage();
   const text = copy[locale];
   const groups = useProfessionalGroups();
   const [query, setQuery] = useState("");
@@ -445,41 +483,9 @@ export function ProfessionalRoster({
   const [groupOpen, setGroupOpen] = useState(false);
   const [groupTitle, setGroupTitle] = useState("");
   const [picked, setPicked] = useState<string[]>([]);
-  const [menu, setMenu] = useState<{ kind: "person" | "group"; id: string; x: number; y: number } | null>(
-    null,
-  );
-  const [stayOn, setStayOn] = useState(true);
-  const [stayBusy, setStayBusy] = useState(false);
+  const [menu, setMenu] = useState<RosterMenu | null>(null);
+  const [renaming, setRenaming] = useState<{ id: string; title: string } | null>(null);
   const needle = query.trim().toLowerCase();
-
-  useEffect(() => {
-    let cancelled = false;
-    void arrabApi
-      .professionalWorkspace()
-      .then((view) => {
-        if (!cancelled) setStayOn(view.stayEnabled !== false);
-      })
-      .catch(() => {
-        /* desk stays usable offline */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  async function toggleStay() {
-    if (stayBusy) return;
-    setStayBusy(true);
-    try {
-      const next = !stayOn;
-      const view = await arrabApi.setProfessionalStay({ enabled: next });
-      setStayOn(view.stayEnabled);
-    } catch {
-      /* keep previous */
-    } finally {
-      setStayBusy(false);
-    }
-  }
 
   const companions = people.filter((person) => {
     if (!needle) return true;
@@ -489,6 +495,20 @@ export function ProfessionalRoster({
     if (!needle) return true;
     return group.title.toLowerCase().includes(needle);
   });
+  const chatLabel = (tab: AssistantChatTab) => tab.title || t("proChatChats");
+  const visibleChats = chats
+    ? chats.tabs.filter((tab) => !needle || chatLabel(tab).toLowerCase().includes(needle))
+    : [];
+  const orderedChats = orderChatTabs(visibleChats);
+  const assistantLabel = assistantName?.trim() || t("proChatAssistant");
+  const showAssistant =
+    Boolean(onOpenAssistant) &&
+    (!needle ||
+      `${assistantLabel} ${t("proChatAssistant")} ${t("proChatAssistantHint")} general`
+        .toLowerCase()
+        .includes(needle));
+  const nothingFound =
+    Boolean(needle) && !showAssistant && visibleChats.length === 0 && companions.length === 0 && visibleGroups.length === 0;
 
   useEffect(() => {
     if (!menu && !createOpen) return;
@@ -525,6 +545,89 @@ export function ProfessionalRoster({
     }
   }
 
+  function commitRename() {
+    if (!renaming || !chats) return;
+    const next = renaming.title.replace(/\s+/g, " ").trim().slice(0, 80);
+    if (next) chats.onRename(renaming.id, next);
+    setRenaming(null);
+  }
+
+  function chatRow(tab: AssistantChatTab) {
+    if (!chats) return null;
+    const active = tab.id === chats.activeTabId;
+    const label = chatLabel(tab);
+    if (renaming?.id === tab.id) {
+      return (
+        <form
+          key={tab.id}
+          className="pro-chat-rename"
+          onSubmit={(event) => {
+            event.preventDefault();
+            commitRename();
+          }}
+        >
+          <input
+            autoFocus
+            value={renaming.title}
+            maxLength={80}
+            aria-label={t("proChatRename")}
+            onFocus={(event) => event.currentTarget.select()}
+            onChange={(event) => setRenaming({ id: tab.id, title: event.target.value })}
+            onBlur={commitRename}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                setRenaming(null);
+              }
+            }}
+          />
+        </form>
+      );
+    }
+    return (
+      <div key={tab.id} className={cn("pro-chat-row", active && "is-active")}>
+        <button
+          type="button"
+          className="pro-chat-open"
+          aria-pressed={active}
+          disabled={chats.disabled}
+          title={label}
+          onClick={() => chats.onSelect(tab.id)}
+          onDoubleClick={(event) => {
+            event.preventDefault();
+            if (!chats.disabled) setRenaming({ id: tab.id, title: label });
+          }}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            setMenu({ kind: "chat", id: tab.id, x: event.clientX, y: event.clientY });
+          }}
+        >
+          {tab.pinned ? (
+            <Pin size={13} strokeWidth={1.8} aria-hidden />
+          ) : (
+            <MessageSquare size={13} strokeWidth={1.8} aria-hidden />
+          )}
+          <span className="pro-chat-title">{label}</span>
+          <time dateTime={tab.createdAt}>{relativeTime(tab.createdAt, locale)}</time>
+        </button>
+        <button
+          type="button"
+          className="pro-chat-more"
+          aria-label={t("proChatMore")}
+          title={t("proChatMore")}
+          onClick={(event) => {
+            const rect = event.currentTarget.getBoundingClientRect();
+            setMenu({ kind: "chat", id: tab.id, x: rect.left, y: rect.bottom + 4 });
+          }}
+        >
+          <Ellipsis size={14} />
+        </button>
+      </div>
+    );
+  }
+
+  const menuChat = menu?.kind === "chat" ? chats?.tabs.find((tab) => tab.id === menu.id) ?? null : null;
+
   return (
     <aside className="pro-roster" aria-label={text.companions}>
       <div className="pro-roster-top">
@@ -536,12 +639,18 @@ export function ProfessionalRoster({
             placeholder={text.search}
             aria-label={text.search}
           />
+          {query ? (
+            <button type="button" className="pro-search-clear" aria-label={text.close} onClick={() => setQuery("")}>
+              <X size={13} />
+            </button>
+          ) : null}
         </label>
         <div className="pro-create-wrap">
           <button
             type="button"
             className="pro-create-btn"
             aria-label={text.newItem}
+            title={text.newItem}
             aria-expanded={createOpen}
             onClick={() => setCreateOpen((open) => !open)}
           >
@@ -549,6 +658,20 @@ export function ProfessionalRoster({
           </button>
           {createOpen ? (
             <div className="pro-create-menu" role="menu">
+              {chats ? (
+                <button
+                  type="button"
+                  role="menuitem"
+                  disabled={chats.disabled}
+                  onClick={() => {
+                    setCreateOpen(false);
+                    chats.onNew();
+                  }}
+                >
+                  <SquarePen size={15} />
+                  {t("proChatNew")}
+                </button>
+              ) : null}
               <button
                 type="button"
                 role="menuitem"
@@ -569,20 +692,58 @@ export function ProfessionalRoster({
         </div>
       </div>
 
-      <button
-        type="button"
-        className={stayOn ? "pro-stay-toggle is-on" : "pro-stay-toggle"}
-        aria-pressed={stayOn}
-        title={text.stayHint}
-        disabled={stayBusy}
-        onClick={() => void toggleStay()}
-      >
-        <span className="pro-stay-dot" aria-hidden />
-        {stayOn ? text.stayOn : text.stayOff}
-      </button>
-
       <div className="pro-roster-list">
-        {companions.length === 0 && visibleGroups.length === 0 ? (
+        {showAssistant ? (
+          <button
+            type="button"
+            className={cn("pro-row pro-row-assistant", assistantActive && "is-active")}
+            aria-pressed={assistantActive}
+            disabled={chats?.disabled}
+            onClick={() => onOpenAssistant?.()}
+          >
+            <span className="pro-assistant-face" aria-hidden>
+              <Sparkles size={16} strokeWidth={1.6} />
+            </span>
+            <span className="pro-row-copy">
+              <strong>{assistantLabel}</strong>
+              <small>{t("proChatAssistantHint")}</small>
+            </span>
+          </button>
+        ) : null}
+
+        {chats && visibleChats.length > 0 ? (
+          <div className="pro-group pro-chats">
+            <div className="pro-group-head">
+              <p className="pro-group-title" title={chats.ownerName}>
+                {t("proChatChatsWith").replace("{name}", chats.ownerName)}
+              </p>
+              <button
+                type="button"
+                className="pro-group-add"
+                aria-label={t("proChatNew")}
+                title={t("proChatNew")}
+                disabled={chats.disabled}
+                onClick={chats.onNew}
+              >
+                <SquarePen size={13} />
+              </button>
+            </div>
+            {orderedChats.pinned.length > 0 ? (
+              <>
+                <p className="pro-chat-sub">{t("proChatPinned")}</p>
+                {orderedChats.pinned.map(chatRow)}
+              </>
+            ) : null}
+            {orderedChats.recent.length > 0 ? (
+              <>
+                {orderedChats.pinned.length > 0 ? <p className="pro-chat-sub">{t("proChatRecent")}</p> : null}
+                {orderedChats.recent.map(chatRow)}
+              </>
+            ) : null}
+          </div>
+        ) : null}
+
+        {!needle && people.length === 0 && groups.length === 0 ? (
           <div className="pro-empty">
             <p className="pro-empty-title">{text.emptyDesk}</p>
             <p className="pro-empty-hint">{text.emptyDeskHint}</p>
@@ -593,6 +754,8 @@ export function ProfessionalRoster({
           </div>
         ) : null}
 
+        {nothingFound ? <p className="pro-empty-hint pro-no-results">{t("proChatNoResults")}</p> : null}
+
         {companions.length > 0 ? (
           <div className="pro-group">
             <p className="pro-group-title">{text.companions}</p>
@@ -600,6 +763,8 @@ export function ProfessionalRoster({
               const job = latestJob(desk, person.domain);
               const active = !activeGroupId && activeId === person.id;
               const when = relativeTime(job?.updatedAt ?? person.lastAt ?? null, locale);
+              const status =
+                job?.status === "needs_you" ? text.waiting : job?.status === "running" ? text.working : "";
               return (
                 <button
                   key={person.id}
@@ -618,6 +783,7 @@ export function ProfessionalRoster({
                   <PersonAvatar person={person} active={active} size="sm" />
                   <span className="pro-row-copy">
                     <strong>{person.name}</strong>
+                    {status ? <small className="pro-row-status">{status}</small> : null}
                   </span>
                   <span className="pro-row-meta">
                     {job?.status === "needs_you" ? <i className="pro-dot" /> : null}
@@ -677,12 +843,75 @@ export function ProfessionalRoster({
               <div
                 className="pro-menu"
                 style={{
-                  left: Math.min(menu.x, window.innerWidth - 240),
-                  top: Math.min(menu.y, window.innerHeight - 160),
+                  left: Math.max(8, Math.min(menu.x, window.innerWidth - 240)),
+                  top: Math.max(8, Math.min(menu.y, window.innerHeight - (menu.kind === "chat" ? 260 : 160))),
                 }}
                 role="menu"
               >
-                {menu.kind === "person" ? (
+                {menu.kind === "chat" && chats && menuChat ? (
+                  <>
+                    <p className="pro-menu-head">{chatLabel(menuChat)}</p>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        chats.onTogglePin(menuChat.id);
+                        setMenu(null);
+                      }}
+                    >
+                      {menuChat.pinned ? <PinOff size={15} /> : <Pin size={15} />}
+                      {menuChat.pinned ? t("proChatUnpin") : t("proChatPin")}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={chats.disabled}
+                      onClick={() => {
+                        setRenaming({ id: menuChat.id, title: chatLabel(menuChat) });
+                        setMenu(null);
+                      }}
+                    >
+                      <PenLine size={15} />
+                      {t("proChatRename")}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={chats.disabled}
+                      onClick={() => {
+                        chats.onAction("duplicate", menuChat.id);
+                        setMenu(null);
+                      }}
+                    >
+                      <Copy size={15} />
+                      {t("proChatDuplicate")}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        chats.onAction("sendIncognito", menuChat.id);
+                        setMenu(null);
+                      }}
+                    >
+                      <EyeOff size={15} />
+                      {t("proChatSendIncognito")}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      className="is-danger"
+                      disabled={chats.disabled}
+                      onClick={() => {
+                        chats.onAction("delete", menuChat.id);
+                        setMenu(null);
+                      }}
+                    >
+                      <Trash2 size={15} />
+                      {t("proChatDelete")}
+                    </button>
+                  </>
+                ) : menu.kind === "person" ? (
                   <button
                     type="button"
                     role="menuitem"

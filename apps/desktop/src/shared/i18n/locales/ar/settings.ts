@@ -185,4 +185,10 @@ export const settingsAr = {
     shortcutCowork: "فتح العمل المشترك",
     shortcutChat: "فتح المحادثة",
     shortcutWorkforce: "فتح القوى العاملة",
+    settingsStayCard: "المكتب المهني",
+    settingsStayCardBody: "كيف يتصرف رفاق العمل وأنت بعيد.",
+    settingsStayLabel: "البقاء في الخدمة",
+    settingsStayHint: "الرفاق يواصلون الروتين والمراقبة وأنت بعيد.",
+    settingsStaySignIn: "سجّل الدخول لإدارة البقاء في مكتبك المهني.",
+    settingsStayFailed: "تعذّر تحديث البقاء. حاول مرة ثانية.",
 } as const;

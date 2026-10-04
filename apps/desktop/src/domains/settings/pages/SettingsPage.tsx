@@ -136,6 +136,39 @@ export function SettingsPage() {
     writeChannelPrefs(next);
   };
   const [savedFlash, setSavedFlash] = useState(false);
+  /** Professional Stay (moved here from the Chat sidebar). `null` = not loaded / unavailable. */
+  const [stayOn, setStayOn] = useState<boolean | null>(null);
+  const [stayBusy, setStayBusy] = useState(false);
+  const [stayError, setStayError] = useState(false);
+  const stayAvailable = isSignedIn && !isFamilyChild;
+  useEffect(() => {
+    if (tab !== "general" || !stayAvailable) return;
+    let cancelled = false;
+    void arrabApi
+      .professionalWorkspace()
+      .then((view) => {
+        if (!cancelled) setStayOn(view.stayEnabled !== false);
+      })
+      .catch(() => {
+        if (!cancelled) setStayOn(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, stayAvailable]);
+  async function toggleStay(next: boolean) {
+    if (stayBusy) return;
+    setStayBusy(true);
+    setStayError(false);
+    try {
+      const view = await arrabApi.setProfessionalStay({ enabled: next });
+      setStayOn(view.stayEnabled);
+    } catch {
+      setStayError(true);
+    } finally {
+      setStayBusy(false);
+    }
+  }
   const [online, setOnline] = useState<boolean | null>(null);
   const [aiReady, setAiReady] = useState(false);
   const [aiStatus, setAiStatus] = useState<AiGatewayStatusResponse | null>(null);
@@ -1320,6 +1353,23 @@ export function SettingsPage() {
                   onChange={(value) => updatePref("aiExtendedThinking", value)}
                 />
               </SettingsCard>
+
+              {stayAvailable && stayOn !== null ? (
+                <SettingsCard title={t("settingsStayCard")} description={t("settingsStayCardBody")}>
+                  <Toggle
+                    label={t("settingsStayLabel")}
+                    description={t("settingsStayHint")}
+                    checked={stayOn}
+                    disabled={stayBusy}
+                    onChange={(value) => void toggleStay(value)}
+                  />
+                  {stayError ? <p className="st-error">{t("settingsStayFailed")}</p> : null}
+                </SettingsCard>
+              ) : !isSignedIn ? (
+                <SettingsCard title={t("settingsStayCard")} description={t("settingsStaySignIn")}>
+                  <SettingRow title={t("settingsStayLabel")} description={t("settingsStayHint")} />
+                </SettingsCard>
+              ) : null}
             </section>
           ) : null}
 

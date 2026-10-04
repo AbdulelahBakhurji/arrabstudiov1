@@ -1,10 +1,12 @@
 /**
- * Lightweight markdown renderer for chat — code fences, inline code, bold, italic,
- * links, images, lists, and website preview cards.
+ * Lightweight markdown renderer for chat — code fences (with copy), headings, quotes,
+ * rules, inline code, bold, italic, links, images, lists, and website preview cards.
  * No external deps; XSS-safe (text nodes only, no raw HTML passthrough).
  */
-import type { ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { Check, Copy } from "lucide-react";
 import { cn } from "@/shared/lib/utils";
+import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { LinkPreviewCard } from "@/domains/chat/ui/LinkPreviewCard";
 import { safeHttpUrl } from "@/shared/lib/safe-url";
 
@@ -23,7 +25,7 @@ function isSafeImageSrc(src: string): boolean {
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern =
-    /(!\[[^\]]*\]\([^)\s]+\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)\s]+\))|(https?:\/\/[^\s<>\]\)]+)/g;
+    /(!\[[^\]]*\]\([^)\s]+\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)\s]+\))|(https?:\/\/[^\s<>\])]+)/g;
   let last = 0;
   let match: RegExpExecArray | null;
   let i = 0;
@@ -94,7 +96,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
 function extractPreviewUrls(source: string): string[] {
   const urls: string[] = [];
   const seen = new Set<string>();
-  const re = /https?:\/\/[^\s<>\]\)]+/g;
+  const re = /https?:\/\/[^\s<>\])]+/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(source)) && urls.length < 3) {
     const href = match[0]!.replace(/[),.;]+$/, "");
@@ -112,7 +114,14 @@ type Block =
   | { type: "ul"; items: string[] }
   | { type: "ol"; items: string[] }
   | { type: "image"; alt: string; src: string }
+  | { type: "heading"; level: 1 | 2 | 3; text: string }
+  | { type: "quote"; text: string }
+  | { type: "hr" }
   | { type: "p"; text: string };
+
+const HEADING = /^(#{1,3})\s+(.+)$/;
+const QUOTE = /^>\s?/;
+const RULE = /^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/;
 
 function parseBlocks(source: string): Block[] {
   const lines = source.replace(/\r\n/g, "\n").split("\n");
@@ -130,6 +139,30 @@ function parseBlocks(source: string): Block[] {
       }
       i += 1;
       blocks.push({ type: "code", lang, body: body.join("\n") });
+      continue;
+    }
+    const heading = line.match(HEADING);
+    if (heading) {
+      blocks.push({
+        type: "heading",
+        level: heading[1]!.length as 1 | 2 | 3,
+        text: heading[2]!.replace(/\s+#+\s*$/, ""),
+      });
+      i += 1;
+      continue;
+    }
+    if (RULE.test(line)) {
+      blocks.push({ type: "hr" });
+      i += 1;
+      continue;
+    }
+    if (QUOTE.test(line)) {
+      const quoted: string[] = [];
+      while (i < lines.length && QUOTE.test(lines[i]!)) {
+        quoted.push(lines[i]!.replace(QUOTE, ""));
+        i += 1;
+      }
+      blocks.push({ type: "quote", text: quoted.join("\n") });
       continue;
     }
     const aloneImage = line.trim().match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/);
@@ -165,6 +198,9 @@ function parseBlocks(source: string): Block[] {
       i < lines.length &&
       lines[i]!.trim() &&
       !lines[i]!.startsWith("```") &&
+      !HEADING.test(lines[i]!) &&
+      !QUOTE.test(lines[i]!) &&
+      !RULE.test(lines[i]!) &&
       !/^[-*]\s+/.test(lines[i]!) &&
       !/^\d+\.\s+/.test(lines[i]!) &&
       !/^!\[[^\]]*\]\([^)\s]+\)$/.test(lines[i]!.trim())
@@ -193,11 +229,25 @@ export function ChatMarkdown({
     <div className={cn("chat-md", className)}>
       {blocks.map((block, index) => {
         if (block.type === "code") {
+          return <CodeBlock key={index} lang={block.lang} body={block.body} />;
+        }
+        if (block.type === "heading") {
+          const Tag = block.level === 1 ? "h3" : block.level === 2 ? "h4" : "h5";
           return (
-            <pre key={index} className="chat-md-pre" data-lang={block.lang || undefined}>
-              <code>{block.body}</code>
-            </pre>
+            <Tag key={index} className={cn("chat-md-heading", `is-h${block.level}`)}>
+              {renderInline(block.text, `h-${index}`)}
+            </Tag>
           );
+        }
+        if (block.type === "quote") {
+          return (
+            <blockquote key={index} className="chat-md-quote">
+              {renderInline(block.text, `q-${index}`)}
+            </blockquote>
+          );
+        }
+        if (block.type === "hr") {
+          return <hr key={index} className="chat-md-rule" />;
         }
         if (block.type === "image") {
           return (
@@ -238,6 +288,46 @@ export function ChatMarkdown({
       {previewUrls.map((url) => (
         <LinkPreviewCard key={url} url={url} />
       ))}
+    </div>
+  );
+}
+
+/** Fenced code with a language label and a one-tap copy button. */
+function CodeBlock({ lang, body }: { lang: string; body: string }) {
+  const { t } = useLanguage();
+  const [copied, setCopied] = useState(false);
+  const timer = useRef<number | null>(null);
+  useEffect(
+    () => () => {
+      if (timer.current) window.clearTimeout(timer.current);
+    },
+    [],
+  );
+  return (
+    <div className="chat-md-codeblock">
+      <div className="chat-md-codebar">
+        <span className="chat-md-codelang">{lang || t("chatCodeBlock")}</span>
+        <button
+          type="button"
+          className="chat-md-codecopy"
+          aria-label={t("chatCodeCopy")}
+          title={t("chatCodeCopy")}
+          onClick={() => {
+            void copyChatText(body).then((ok) => {
+              if (!ok) return;
+              setCopied(true);
+              if (timer.current) window.clearTimeout(timer.current);
+              timer.current = window.setTimeout(() => setCopied(false), 1600);
+            });
+          }}
+        >
+          {copied ? <Check size={13} strokeWidth={2} /> : <Copy size={13} strokeWidth={1.8} />}
+          <span>{copied ? t("copied") : t("copy")}</span>
+        </button>
+      </div>
+      <pre className="chat-md-pre" data-lang={lang || undefined} dir="ltr">
+        <code>{body}</code>
+      </pre>
     </div>
   );
 }

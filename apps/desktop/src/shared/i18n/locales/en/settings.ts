@@ -189,4 +189,10 @@ export const settingsEn = {
     shortcutCowork: "Open Cowork",
     shortcutChat: "Open Chat",
     shortcutWorkforce: "Open Workforce",
+    settingsStayCard: "Professional desk",
+    settingsStayCardBody: "How your work companions behave while you are away.",
+    settingsStayLabel: "Stay on duty",
+    settingsStayHint: "Companions keep sweeping routines and watches while you are away.",
+    settingsStaySignIn: "Sign in to manage Stay for your professional desk.",
+    settingsStayFailed: "Could not update Stay. Try again.",
 } as const;

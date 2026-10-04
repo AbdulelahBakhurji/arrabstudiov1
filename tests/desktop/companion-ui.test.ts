@@ -70,6 +70,13 @@ const mocked = vi.hoisted(() => ({
 vi.mock("@/core/api/api", () => ({
   arrabApi: {
     aiStatus: vi.fn(async () => ({ configured: true })),
+    professionalWorkspace: vi.fn(async () => {
+      throw new Error("offline in UI tests");
+    }),
+    companionDesk: vi.fn(async () => {
+      throw new Error("offline in UI tests");
+    }),
+    setProfessionalCompanionStatus: vi.fn(async () => ({})),
     familyGuidanceForCompanion: vi.fn(async () => ({ items: [] })),
     createAgent: vi.fn(async () => ({ id: "mock-agent" })),
     updateAgent: vi.fn(async () => ({ id: "mock-agent" })),
@@ -234,5 +241,32 @@ describe("real companion chat interactions", () => {
     expect(composer().value).toBe("Personal stays untouched");
     await click(".cp-chat-heading .cp-segment button:nth-child(2)");
     expect(composer().value).toBe("Existing work draft\n\nTopic from the board");
+  });
+
+  it("professional chat page: no 24/7 Stay toggle, assistant + chat list, Esc stops, new chat", async () => {
+    await mount();
+    await click(".cp-chat-heading .cp-segment button:nth-child(2)");
+    expect(host.querySelector(".pro-stay-toggle")).toBeNull();
+    expect(host.textContent).not.toContain("24/7");
+    const assistant = host.querySelector<HTMLButtonElement>(".pro-row-assistant");
+    expect(assistant).not.toBeNull();
+    expect(assistant!.getAttribute("aria-pressed")).toBe("true");
+    // Chats now live in the sidebar list; the thin initials rail is gone on this page.
+    expect(host.querySelectorAll(".pro-chats .pro-chat-row")).toHaveLength(1);
+    expect(host.querySelector(".cp-chat-rail")).toBeNull();
+    expect(host.querySelector('.pro-room-dot[data-state="ready"]')).not.toBeNull();
+
+    await typeDraft("Hello there");
+    await click(".cp-send");
+    expect(mocked.streams).toHaveLength(1);
+    expect(host.querySelector('.pro-room-dot[data-state="working"]')).not.toBeNull();
+    await act(async () => {
+      composer().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(mocked.streams[0]!.signal.aborted).toBe(true);
+    await act(async () => mocked.streams[0]!.resolve());
+
+    await click(".cp-room-actions .pro-room-action");
+    expect(host.querySelectorAll(".pro-chats .pro-chat-row")).toHaveLength(2);
   });
 });

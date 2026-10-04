@@ -1,22 +1,28 @@
 import { useEffect, useMemo, useRef, useState, Fragment } from "react";
 import {
+  ArrowDown,
   ArrowUp,
   ArrowUpRight,
   Check,
+  Copy,
   Ellipsis,
   EyeOff,
   Maximize2,
   Minimize2,
+  PanelRight,
+  PenLine,
   Plus,
+  RotateCcw,
   Search,
   Shield,
   Sparkles,
   Square,
+  SquarePen,
   X,
 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import { QueuedQueryBar } from "@/domains/chat/ui/QueuedQueryBar";
-import { ChatMarkdown } from "@/domains/chat/ui/ChatMarkdown";
+import { ChatMarkdown, copyChatText } from "@/domains/chat/ui/ChatMarkdown";
 import {
   ComposerPlusMenu,
   composerCreatePrompt,
@@ -441,16 +447,38 @@ export function CompanionsPage() {
   }, [roomFullscreen]);
 
   const followReplyRef = useRef(true);
+  const [awayFromLatest, setAwayFromLatest] = useState(false);
+  const [copiedLineId, setCopiedLineId] = useState<string | null>(null);
+  const copiedTimerRef = useRef<number | null>(null);
   useEffect(() => {
     if (followReplyRef.current) {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "instant" });
     }
   }, [lines, busy]);
+  useEffect(
+    () => () => {
+      if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
+    },
+    [],
+  );
+  function jumpToLatest() {
+    followReplyRef.current = true;
+    setAwayFromLatest(false);
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
+  }
+  function copyLine(lineId: string, value: string) {
+    void copyChatText(value).then((ok) => {
+      if (!ok) return;
+      setCopiedLineId(lineId);
+      if (copiedTimerRef.current) window.clearTimeout(copiedTimerRef.current);
+      copiedTimerRef.current = window.setTimeout(() => setCopiedLineId(null), 1600);
+    });
+  }
   useEffect(() => {
     const input = composerRef.current;
     if (input) {
       input.style.height = "auto";
-      input.style.height = `${Math.min(input.scrollHeight, 160)}px`;
+      input.style.height = `${Math.min(input.scrollHeight, 220)}px`;
     }
   }, [draft]);
 
@@ -675,6 +703,19 @@ export function CompanionsPage() {
     setChatTabs((current) => ({
       ...current,
       tabs: current.tabs.map((tab) => (tab.id === tabId ? { ...tab, title: next } : tab)),
+    }));
+  }
+
+  function togglePinChatTab(tabId: string) {
+    setChatTabs((current) => ({
+      ...current,
+      tabs: current.tabs.map((tab) => {
+        if (tab.id !== tabId) return tab;
+        if (!tab.pinned) return { ...tab, pinned: true };
+        const next = { ...tab };
+        delete next.pinned;
+        return next;
+      }),
     }));
   }
 
@@ -1400,6 +1441,23 @@ export function CompanionsPage() {
           activeGroupId={activeGroupId}
           people={people}
           desk={proDesk}
+          assistantActive={!activeGroupId && active.id === general.id}
+          assistantName={nameOf(general)}
+          onOpenAssistant={() => {
+            setAgentPanel(false);
+            openProfessionalCompanion(general);
+          }}
+          chats={{
+            tabs: chatTabs.tabs,
+            activeTabId: activeTab.id,
+            ownerName: activeGroup?.title ?? nameOf(active),
+            disabled: busy,
+            onSelect: selectChatTab,
+            onNew: addChatTab,
+            onAction: onChatRailAction,
+            onRename: renameChatTab,
+            onTogglePin: togglePinChatTab,
+          }}
           onOpenCompanion={openProfessionalCompanion}
           onOpenGroup={openProfessionalGroup}
           onCreateCompanion={() => {
@@ -1532,7 +1590,28 @@ export function CompanionsPage() {
               ) : (
                 <strong>{nameOf(active)}</strong>
               )}
-              {showProfessionalDesk ? null : (
+              {showProfessionalDesk ? (
+                <span className="pro-room-status" role="status" aria-live="polite">
+                  <i
+                    className="pro-room-dot"
+                    data-state={busy ? "working" : room.providerReady ? "ready" : "setup"}
+                    aria-hidden
+                  />
+                  <span>
+                    {busy
+                      ? t("proChatStatusWorking")
+                      : room.providerReady
+                        ? t("proChatStatusReady")
+                        : t("proChatStatusSetup")}
+                  </span>
+                  <span aria-hidden>·</span>
+                  <span className="pro-room-thread" title={activeTab.title}>
+                    {activeGroup
+                      ? t("proChatMembers").replace("{n}", String(activeGroup.memberIds.length))
+                      : activeTab.title || defaultChatTitle}
+                  </span>
+                </span>
+              ) : (
               <span className="cp-muted">
                 {studioKind
                   ? ar
@@ -1574,6 +1653,31 @@ export function CompanionsPage() {
               <ArrowUpRight size={15} />
             </button>
             )}
+            {showProfessionalDesk ? (
+              <button
+                type="button"
+                className="cp-button pro-room-action"
+                disabled={busy}
+                onClick={addChatTab}
+                aria-label={t("proChatNew")}
+                title={t("proChatNew")}
+              >
+                <SquarePen size={15} strokeWidth={1.7} />
+                <span>{t("proChatNew")}</span>
+              </button>
+            ) : null}
+            {showProfessionalDesk && !activeGroup && active.domain !== "general" ? (
+              <button
+                type="button"
+                className="cp-button pro-room-action"
+                aria-pressed={agentPanel}
+                aria-label={t("proChatDetails")}
+                title={t("proChatDetails")}
+                onClick={() => setAgentPanel((open) => !open)}
+              >
+                <PanelRight size={15} strokeWidth={1.7} />
+              </button>
+            ) : null}
             <button
               type="button"
               className="cp-button"
@@ -1613,7 +1717,7 @@ export function CompanionsPage() {
           </p>
         ) : null}
         <div className={cn("cp-room-body", showProfessionalDesk && agentPanel && "is-agent-chat")}>
-          {showProfessionalDesk && agentPanel ? null : (
+          {showProfessionalDesk ? null : (
             <CompanionChatRail
               tabs={chatTabs.tabs}
               activeId={activeTab.id}
@@ -1636,8 +1740,9 @@ export function CompanionsPage() {
             aria-busy={busy || loading}
             onScroll={(event) => {
               const element = event.currentTarget;
-              followReplyRef.current =
-                element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+              const nearEnd = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+              followReplyRef.current = nearEnd;
+              if (nearEnd === awayFromLatest) setAwayFromLatest(!nearEnd);
             }}
           >
           {loading ? <p className="cp-muted">{t("loading")}</p> : null}
@@ -1739,6 +1844,12 @@ export function CompanionsPage() {
               line.who === "companion" &&
               index === lines.length - 1 &&
               agentSteps.length > 0;
+            const isLastLine = index === lines.length - 1;
+            const streaming = busy && isLastLine && line.who === "companion";
+            const askAgainText =
+              showProfessionalDesk && isLastLine && line.who === "companion"
+                ? [...lines.slice(0, index)].reverse().find((item) => item.who === "me")?.text ?? null
+                : null;
             return (
               <Fragment key={line.id}>
                 {isLastCompanion ? (
@@ -1754,7 +1865,11 @@ export function CompanionsPage() {
                   </div>
                 ) : null}
               <article
-                className={`cp-message ${line.who === "me" ? "cp-message-me" : ""}`}
+                className={cn(
+                  "cp-message",
+                  line.who === "me" && "cp-message-me",
+                  streaming && "is-streaming",
+                )}
               >
                 {line.who === "companion" ? <PersonAvatar person={speaker} size="sm" /> : null}
                 <div>
@@ -1775,8 +1890,53 @@ export function CompanionsPage() {
                   <div className="cp-message-text">
                     {line.who === "companion" ? <ChatMarkdown content={line.text} /> : line.text}
                   </div>
+                  {line.who === "me" && showProfessionalDesk && !busy ? (
+                    <div className="cp-message-actions pro-message-actions is-mine">
+                      <button
+                        type="button"
+                        onClick={() => copyLine(line.id, line.text)}
+                        aria-label={copiedLineId === line.id ? t("copied") : t("copy")}
+                      >
+                        {copiedLineId === line.id ? <Check size={13} /> : <Copy size={13} />}
+                        <span>{copiedLineId === line.id ? t("copied") : t("copy")}</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDraft(line.text);
+                          requestAnimationFrame(() => composerRef.current?.focus());
+                        }}
+                      >
+                        <PenLine size={13} />
+                        <span>{t("edit")}</span>
+                      </button>
+                    </div>
+                  ) : null}
                   {line.who === "companion" && !busy ? (
-                    <div className="cp-message-actions">
+                    <div className={cn("cp-message-actions", showProfessionalDesk && "pro-message-actions")}>
+                      {showProfessionalDesk ? (
+                        <button
+                          type="button"
+                          onClick={() => copyLine(line.id, line.text)}
+                          aria-label={copiedLineId === line.id ? t("copied") : t("copy")}
+                        >
+                          {copiedLineId === line.id ? <Check size={13} /> : <Copy size={13} />}
+                          <span>{copiedLineId === line.id ? t("copied") : t("copy")}</span>
+                        </button>
+                      ) : null}
+                      {askAgainText ? (
+                        <button
+                          type="button"
+                          disabled={sendGate.blocked || Boolean(modeApprove)}
+                          onClick={() => {
+                            followReplyRef.current = true;
+                            void send(askAgainText, { skipModeCheck: true });
+                          }}
+                        >
+                          <RotateCcw size={13} />
+                          <span>{t("proChatAskAgain")}</span>
+                        </button>
+                      ) : null}
                       <button
                         onClick={() => {
                           addFact({
@@ -1844,6 +2004,12 @@ export function CompanionsPage() {
           ) : null}
           </div>
           <div className="cp-composer-area">
+          {awayFromLatest && lines.length > 0 ? (
+            <button type="button" className="pro-jump-latest" onClick={jumpToLatest}>
+              <ArrowDown size={14} strokeWidth={1.8} />
+              {t("proChatJumpLatest")}
+            </button>
+          ) : null}
           <MuseQuietRail enabled={showProfessionalDesk && signedIn} arabic={ar} />
           {!room.providerReady ? (
             <div className="cp-provider-setup" role="status">
@@ -2106,6 +2272,11 @@ export function CompanionsPage() {
               aria-label={ar ? "رسالتك" : "Your message"}
               onChange={(event) => setDraft(event.target.value)}
               onKeyDown={(event) => {
+                if (event.key === "Escape" && busy && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  room.stop();
+                  return;
+                }
                 if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                   event.preventDefault();
                   void send();
@@ -2139,6 +2310,18 @@ export function CompanionsPage() {
                 {t("chatPause")}
               </button>
             ) : (
+              <>
+              {busy && showProfessionalDesk ? (
+                <button
+                  type="button"
+                  className="cp-icon pro-stop-icon"
+                  onClick={() => room.stop()}
+                  aria-label={t("proChatStopping")}
+                  title={`${t("proChatStopping")} · Esc`}
+                >
+                  <Square size={13} fill="currentColor" />
+                </button>
+              ) : null}
               <button
                 className="cp-send"
                 onClick={() => void send()}
@@ -2147,14 +2330,17 @@ export function CompanionsPage() {
               >
                 <ArrowUp size={20} />
               </button>
+              </>
             )}
           </div>
           <div className="cp-composer-foot">
             <span>
               {busy
-                ? ar
-                  ? "يمكنك الكتابة الآن والإرسال بعد الرد أو إيقافه."
-                  : "Write now. Send when the reply ends or you stop it."
+                ? `${
+                    ar
+                      ? "يمكنك الكتابة الآن والإرسال بعد الرد أو إيقافه."
+                      : "Write now. Send when the reply ends or you stop it."
+                  } · ${t("proChatEscStop")}`
                 : mode === "vent"
                   ? t("compVentReply")
                   : ar

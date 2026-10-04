@@ -1094,6 +1094,7 @@ function normalizeTabLane(raw: unknown): AssistantChatTabsState | null {
       title: String(item.title || "Chat").slice(0, 80),
       conversationId: item.conversationId ? String(item.conversationId) : null,
       createdAt: String(item.createdAt || nowIso()),
+      ...(item.pinned ? { pinned: true } : {}),
     }));
   if (!tabs.length) return null;
   const activeId =

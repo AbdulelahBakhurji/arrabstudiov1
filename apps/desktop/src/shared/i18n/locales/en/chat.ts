@@ -189,4 +189,6 @@ export const chatEn = {
     composerPlusLocalModel: "Local model (offline)",
     composerPlusCloudModel: "Choose model",
     composerPlusMoreSettings: "More in Settings",
+    chatCodeBlock: "Code",
+    chatCodeCopy: "Copy code",
 } as const;
