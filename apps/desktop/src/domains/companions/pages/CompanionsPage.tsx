@@ -1864,6 +1864,8 @@ export function CompanionsPage() {
                       ? "ابدأ بفكرة، سؤال، أو حتى يوم طويل."
                       : "A thought, a question, or just a long day."}
               </p>
+              {/* Suggestions belong to Personal; Professional keeps a clean, prompt-first start. */}
+              {showProfessionalDesk ? null : (
               <div className="cp-starters">
                 {(parentCoachMode
                   ? [
@@ -1901,6 +1903,7 @@ export function CompanionsPage() {
                   </button>
                 ))}
               </div>
+              )}
             </div>
           ) : null}
           {lines.map((line, index) => {
@@ -2222,6 +2225,7 @@ export function CompanionsPage() {
             </div>
           ) : null}
           <CompanionNotice availability={sendGate.availability} />
+          {showProfessionalDesk ? null : (
           <div className="cp-composer-toolbar">
             <div className="cp-actions">
               {composerSuggestions.map((suggestion) => (
@@ -2246,6 +2250,7 @@ export function CompanionsPage() {
               {ar ? `${nameOf(active)} سيردّ عليك` : `${nameOf(active)} will answer`}
             </span>
           </div>
+          )}
           {queuedQuery !== null ? (
             <QueuedQueryBar
               className="mb-2"

@@ -280,6 +280,26 @@ describe("real companion chat interactions", () => {
     expect(host.querySelector(".pro-row-assistant")).not.toBeNull();
   });
 
+  it("suggestions show only in Personal; Professional keeps a clean start", async () => {
+    await mount();
+    await click(".cp-chat-heading .cp-segment button:nth-child(1)");
+    expect(host.querySelectorAll(".cp-composer-toolbar .cp-mode").length).toBeGreaterThan(0);
+    expect(host.querySelector(".cp-sender-label")).not.toBeNull();
+    expect(host.querySelectorAll(".cp-starters button").length).toBeGreaterThan(0);
+
+    await click(".cp-chat-heading .cp-segment button:nth-child(2)");
+    expect(host.querySelector(".cp-composer-toolbar")).toBeNull();
+    expect(host.querySelector(".cp-sender-label")).toBeNull();
+    expect(host.querySelector(".cp-starters")).toBeNull();
+    expect(host.textContent).not.toContain("Draft a brief");
+    expect(host.textContent).not.toContain("will answer");
+    // The empty-state heading stays.
+    expect(host.textContent).toContain("What are you working on?");
+
+    await click(".cp-chat-heading .cp-segment button:nth-child(1)");
+    expect(host.querySelectorAll(".cp-composer-toolbar .cp-mode").length).toBeGreaterThan(0);
+  });
+
   it("professional chat page: links under messages open the preview panel", async () => {
     await mount();
     await click(".cp-chat-heading .cp-segment button:nth-child(2)");
