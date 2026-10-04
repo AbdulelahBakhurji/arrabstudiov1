@@ -6,6 +6,8 @@ import { registerWorkspaceRoutes } from "../modules/workspace/workspace.routes.j
 import { registerAccountsRoutes } from "../modules/accounts/accounts.routes.js";
 import { registerBillingRoutes } from "../modules/billing/billing.routes.js";
 import { registerDeskRoutes } from "../modules/desk/desk.routes.js";
+import { registerProfessionalRoutes } from "../modules/professional/professional.routes.js";
+import { registerSpacesRoutes } from "../modules/spaces/spaces.routes.js";
 import { registerOrganizationRoutes } from "../modules/organization/organization.routes.js";
 import { registerFamilyRoutes } from "../modules/family/family.routes.js";
 import { registerConversationsRoutes } from "../modules/conversations/conversations.routes.js";
@@ -101,6 +103,8 @@ export function registerV1Routes(app: FastifyInstance, deps: V1Deps): void {
   registerAccountsRoutes(app, deps, helpers);
   registerBillingRoutes(app, deps, helpers);
   registerDeskRoutes(app, deps);
+  registerProfessionalRoutes(app, deps);
+  registerSpacesRoutes(app, deps);
   registerOrganizationRoutes(app, deps, helpers);
   registerFamilyRoutes(app, deps);
   registerConversationsRoutes(app, deps);

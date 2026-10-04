@@ -8,7 +8,11 @@ import {
   writePendingWebAuth,
 } from "@/core/session/account-session";
 import { focusMainWindow } from "@/core/platform/desktop";
-import { markPostAuthPlanSetup } from "@/domains/account/post-auth-setup";
+import {
+  markPostAuthPlanSetup,
+  type PlanHandoff,
+} from "@/domains/account/post-auth-setup";
+import { refreshAccountStatus } from "@/domains/account/use-signed-in-account";
 
 export type WebAuthPollResult =
   | { kind: "completed"; response: PollWebAuthResponse }
@@ -30,6 +34,42 @@ export function cancelAllWebAuthPolls(): void {
   }
   activePolls.clear();
   clearPendingWebAuth();
+}
+
+function handoffFromSearchParams(params: URLSearchParams): PlanHandoff | undefined {
+  const planId = params.get("planId")?.trim() || params.get("plan")?.trim() || undefined;
+  const planName = params.get("planName")?.trim() || undefined;
+  const tokenLimitRaw = params.get("tokenLimit")?.trim();
+  const deepseekRaw = params.get("deepseekCredit")?.trim();
+  const otherRaw = params.get("otherCredit")?.trim();
+  const tokenLimit = tokenLimitRaw ? Number(tokenLimitRaw) : undefined;
+  const deepseekCredit = deepseekRaw ? Number(deepseekRaw) : undefined;
+  const otherCredit = otherRaw ? Number(otherRaw) : undefined;
+  const setup = params.get("setup")?.trim();
+  const registered = params.get("registered")?.trim();
+  if (!planId && !planName && tokenLimit == null && setup !== "plan" && registered !== "1") {
+    return undefined;
+  }
+  return {
+    planId,
+    planName,
+    tokenLimit: Number.isFinite(tokenLimit) ? tokenLimit : undefined,
+    deepseekCredit: Number.isFinite(deepseekCredit) ? deepseekCredit : undefined,
+    otherCredit: Number.isFinite(otherCredit) ? otherCredit : undefined,
+    section: setup === "plan" || registered === "1" ? "plan" : "usage",
+  };
+}
+
+async function afterSessionSaved(opts?: {
+  accountCreated?: boolean;
+  handoff?: PlanHandoff;
+  forcePlanSetup?: boolean;
+}): Promise<void> {
+  if (opts?.forcePlanSetup || opts?.accountCreated || opts?.handoff) {
+    markPostAuthPlanSetup(opts.handoff);
+  }
+  await refreshAccountStatus({ silent: true }).catch(() => undefined);
+  await focusMainWindow();
 }
 
 /**
@@ -59,10 +99,17 @@ export async function pollWebAuthUntilDone(input: {
       if (polled.status === "completed" && polled.sessionToken) {
         writeAccountSession(polled.sessionToken, polled.account?.id);
         clearPendingWebAuth();
-        if (polled.accountCreated) {
-          markPostAuthPlanSetup();
-        }
-        await focusMainWindow();
+        await afterSessionSaved({
+          accountCreated: polled.accountCreated,
+          handoff: polled.account
+            ? {
+                planId: polled.account.planId,
+                planName: polled.account.planName,
+                section: polled.accountCreated ? "plan" : undefined,
+              }
+            : undefined,
+          forcePlanSetup: Boolean(polled.accountCreated),
+        });
         return { kind: "completed", response: polled };
       }
       if (polled.status === "expired") {
@@ -99,7 +146,10 @@ export async function resumePendingWebAuth(opts?: {
   });
 }
 
-/** Apply a session token delivered via `arrab://auth/complete?session=…&state=…`. */
+/**
+ * Apply a session token delivered via
+ * `arrab://auth/complete?session=…&state=…&setup=plan&planId=…&tokenLimit=…`.
+ */
 export function applySessionFromDeepLink(url: string): boolean {
   try {
     const parsed = new URL(url);
@@ -107,7 +157,6 @@ export function applySessionFromDeepLink(url: string): boolean {
     const host = parsed.hostname || parsed.host || "";
     const path = `${host}${parsed.pathname}`.replace(/^\/*/, "");
     if (!path.startsWith("auth/complete") && path !== "auth/complete") {
-      // Also accept arrab://auth/complete
       if (!url.includes("auth/complete")) return false;
     }
     const session =
@@ -116,6 +165,7 @@ export function applySessionFromDeepLink(url: string): boolean {
       "";
     const state = parsed.searchParams.get("state")?.trim() || "";
     const pending = readPendingWebAuth();
+    const handoff = handoffFromSearchParams(parsed.searchParams);
     // Reject unbound session plants from other local apps — require matching pending web-auth.
     if (!pending || !state || state !== pending.state) {
       window.dispatchEvent(
@@ -126,16 +176,17 @@ export function applySessionFromDeepLink(url: string): boolean {
     if (session.length >= 20) {
       writeAccountSession(session);
       clearPendingWebAuth();
-      if (parsed.searchParams.get("setup") === "plan") {
-        markPostAuthPlanSetup();
-      }
+      void afterSessionSaved({
+        handoff,
+        forcePlanSetup: parsed.searchParams.get("setup") === "plan" || Boolean(handoff),
+      });
       window.dispatchEvent(
         new CustomEvent(AUTH_DEEP_LINK_EVENT, { detail: { url, applied: true } }),
       );
       return true;
     }
-    if (parsed.searchParams.get("setup") === "plan") {
-      markPostAuthPlanSetup();
+    if (parsed.searchParams.get("setup") === "plan" || handoff) {
+      markPostAuthPlanSetup(handoff);
     }
     window.dispatchEvent(
       new CustomEvent(AUTH_DEEP_LINK_EVENT, { detail: { url, applied: false } }),

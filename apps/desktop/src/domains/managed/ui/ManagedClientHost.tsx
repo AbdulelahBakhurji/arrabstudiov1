@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { COMPANION_FOCUS_KEY, getCompanionState } from "@/domains/companions/companions";
+import { COMPANION_FOCUS_KEY, getCompanionState } from "@/domains/companions/model/companions";
 import type { DeepLinkRoute } from "@/domains/managed/client/allowlist";
 import { APP_VERSION, startManagedClient } from "@/domains/managed/client/client";
 import {

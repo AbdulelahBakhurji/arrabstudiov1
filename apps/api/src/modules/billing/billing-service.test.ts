@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { BillingService } from "./billing-service.js";
 import { createApiContext } from "../../app.js";
 import type { ApiEnv } from "../../platform/config/env.js";
-import type { MoyasarClient, MoyasarInvoice } from "./moyasar.js";
+import type { CreateTapChargeInput, TapCharge, TapClient } from "./tap.js";
 import { listStudioReleases } from "../workspace/releases.js";
 
 const testEnv: ApiEnv = {
@@ -28,8 +28,8 @@ const testEnv: ApiEnv = {
   publicBaseUrl: "http://127.0.0.1:8787",
   authWebUrl: undefined,
   siteUrl: "https://testingworkspace.arrabai.com",
-  moyasarSecretKey: undefined,
-  moyasarPublishableKey: undefined,
+  tapSecretKey: undefined,
+  tapPublicKey: undefined,
   dataEncryptionKey: undefined,
   releasesDir: "/tmp/arrab-releases-test",
   googleClientId: undefined,
@@ -63,50 +63,56 @@ const testEnv: ApiEnv = {
   finnhubWebhookSecret: undefined,
 };
 
-class FakeMoyasar implements MoyasarClient {
-  invoice: MoyasarInvoice = {
-    id: "inv_test",
-    status: "initiated",
-    amount: 4900,
+class FakeTap implements TapClient {
+  charge: TapCharge = {
+    id: "chg_test",
+    status: "INITIATED",
+    amount: 49,
+    amountHalalas: 4900,
     currency: "SAR",
     description: "Arrab Studio Pro (pro)",
-    url: "https://checkout.moyasar.com/invoices/inv_test",
+    url: "https://checkout.payments.tap.company/?token=test",
     metadata: { planId: "pro" },
   };
 
-  async createInvoice(input: {
-    amount?: number;
-    currency?: "SAR";
-    metadata?: Record<string, string>;
-  }): Promise<MoyasarInvoice> {
-    this.invoice = {
-      ...this.invoice,
-      amount: input.amount ?? this.invoice.amount,
-      currency: input.currency ?? this.invoice.currency,
-      metadata: input.metadata ? { ...this.invoice.metadata, ...input.metadata } : this.invoice.metadata,
+  async createCharge(input: CreateTapChargeInput): Promise<TapCharge> {
+    this.charge = {
+      ...this.charge,
+      id: this.charge.id,
+      amount: input.amountHalalas / 100,
+      amountHalalas: input.amountHalalas,
+      currency: input.currency,
+      description: input.description,
+      metadata: { ...input.metadata },
+      url: "https://checkout.payments.tap.company/?token=test",
+      status: "INITIATED",
     };
-    return this.invoice;
+    return this.charge;
   }
 
-  async getInvoice(): Promise<MoyasarInvoice> {
-    return { ...this.invoice, status: "paid" };
+  async getCharge(): Promise<TapCharge> {
+    return { ...this.charge, status: "CAPTURED" };
+  }
+
+  verifyWebhookHash(): boolean {
+    return true;
   }
 }
 
 describe("billing + releases", () => {
-  it("creates a Moyasar checkout and applies the plan once paid", async () => {
+  it("creates a Tap checkout and applies the plan once paid", async () => {
     const context = await createApiContext(testEnv);
     await context.accounts.connect({
       email: "pay@arrab.studio",
       password: "securepass",
       displayName: "Payer",
     });
-    const billing = new BillingService(context.accounts, new FakeMoyasar(), testEnv.siteUrl);
+    const billing = new BillingService(context.accounts, new FakeTap(), testEnv.publicBaseUrl, testEnv.siteUrl);
     const checkout = await billing.checkout("pro");
-    expect(checkout.checkoutUrl).toContain("checkout.moyasar.com");
+    expect(checkout.checkoutUrl).toContain("checkout.payments.tap.company");
     expect(checkout.amountHalalas).toBe(4900);
 
-    const confirmed = await billing.confirmInvoice("inv_test");
+    const confirmed = await billing.confirmInvoice("chg_test");
     expect(confirmed.account?.planId).toBe("pro");
     expect(confirmed.entitlements.tokenLimit).toBe(2_000_000);
   });
@@ -118,16 +124,16 @@ describe("billing + releases", () => {
       password: "securepass",
       displayName: "Replayer",
     });
-    const billing = new BillingService(context.accounts, new FakeMoyasar(), testEnv.siteUrl);
+    const billing = new BillingService(context.accounts, new FakeTap(), testEnv.publicBaseUrl, testEnv.siteUrl);
     await billing.checkout("pro");
-    expect((await billing.confirmInvoice("inv_test")).account?.planId).toBe("pro");
+    expect((await billing.confirmInvoice("chg_test")).account?.planId).toBe("pro");
 
     // Same invoice again (callback retry): harmless.
-    expect((await billing.confirmInvoice("inv_test")).account?.planId).toBe("pro");
+    expect((await billing.confirmInvoice("chg_test")).account?.planId).toBe("pro");
 
     // The customer drops to Free; replaying the old paid invoice must not bring Pro back.
     await context.accounts.applyPlan("free");
-    const replayed = await billing.confirmInvoice("inv_test");
+    const replayed = await billing.confirmInvoice("chg_test");
     expect(replayed.account?.planId).toBe("free");
   });
 
@@ -174,11 +180,11 @@ describe("billing + releases", () => {
 
     await expect(accounts.assertWithinQuota()).rejects.toThrow(/billing was due/i);
 
-    const billing = new BillingService(accounts, new FakeMoyasar(), testEnv.siteUrl);
+    const billing = new BillingService(accounts, new FakeTap(), testEnv.publicBaseUrl, testEnv.siteUrl);
     const renew = await billing.checkout("pro");
-    expect(renew.checkoutUrl).toContain("checkout.moyasar.com");
+    expect(renew.checkoutUrl).toContain("checkout.payments.tap.company");
 
-    const confirmed = await billing.confirmInvoice("inv_test");
+    const confirmed = await billing.confirmInvoice("chg_test");
     expect(confirmed.entitlements.pauseMode).toBeNull();
     expect(confirmed.entitlements.subscriptionStatus).toBe("active");
     expect(confirmed.account?.periodEnd > "2026-02-10T12:00:00.000Z").toBe(true);
@@ -220,12 +226,12 @@ describe("billing + releases", () => {
     expect(entitlements.planId).toBe("free");
     await expect(accounts.assertWithinQuota()).rejects.toThrow(/billing was due/i);
 
-    const billing = new BillingService(accounts, new FakeMoyasar(), testEnv.siteUrl);
+    const billing = new BillingService(accounts, new FakeTap(), testEnv.publicBaseUrl, testEnv.siteUrl);
     await expect(billing.checkout("free")).rejects.toThrow(/free month ended/i);
 
     const upgrade = await billing.checkout("pro");
-    expect(upgrade.checkoutUrl).toContain("checkout.moyasar.com");
-    const confirmed = await billing.confirmInvoice("inv_test");
+    expect(upgrade.checkoutUrl).toContain("checkout.payments.tap.company");
+    const confirmed = await billing.confirmInvoice("chg_test");
     expect(confirmed.account?.planId).toBe("pro");
     expect(confirmed.entitlements.pauseMode).toBeNull();
   });
@@ -262,9 +268,9 @@ describe("billing + releases", () => {
     expect(entitlements).toMatchObject({ overLimit: true, pauseMode: "upgrade_required", usageLevel: "exhausted", canTopUp: true });
     await expect(context.accounts.assertWithinQuota()).rejects.toThrow(/token limit reached.*Add usage/);
 
-    const moyasar = new FakeMoyasar();
-    moyasar.invoice = { ...moyasar.invoice, id: "inv_boost", amount: 4_500, description: "pack", metadata: {} };
-    const billing = new BillingService(context.accounts, moyasar, testEnv.siteUrl);
+    const tap = new FakeTap();
+    tap.charge = { ...tap.charge, id: "inv_boost", amount: 45, amountHalalas: 4_500, description: "pack", metadata: {} };
+    const billing = new BillingService(context.accounts, tap, testEnv.publicBaseUrl, testEnv.siteUrl);
     await expect(billing.checkoutTopUp("boost_999")).rejects.toThrow(/Unknown usage pack/);
     const checkout = await billing.checkoutTopUp("boost_2m");
     expect(checkout).toMatchObject({ packId: "boost_2m", tokens: 2_000_000, amountHalalas: 4_500 });
@@ -282,8 +288,7 @@ describe("billing + releases", () => {
     const again = await billing.confirmInvoice("inv_boost");
     expect(again.entitlements.topUpTokens).toBe(2_000_000);
 
-    moyasar.invoice = { ...moyasar.invoice, amount: 100 };
-    moyasar.invoice.id = "inv_cheap";
+    tap.charge = { ...tap.charge, id: "inv_cheap", amount: 1, amountHalalas: 100 };
     await expect(billing.confirmInvoice("inv_cheap")).rejects.toThrow(/does not match the usage pack/);
   });
 
@@ -293,7 +298,7 @@ describe("billing + releases", () => {
     await context.accounts.applyPlan("pro");
     const account = (await context.persistence.accounts.get())!;
     await context.persistence.accounts.upsert({ ...account, subscriptionStatus: "past_due" });
-    const billing = new BillingService(context.accounts, new FakeMoyasar(), testEnv.siteUrl);
+    const billing = new BillingService(context.accounts, new FakeTap(), testEnv.publicBaseUrl, testEnv.siteUrl);
     await expect(billing.checkoutTopUp("boost_500k")).rejects.toThrow(/Renew first/);
     const entitlements = await context.accounts.buildEntitlements(await context.persistence.accounts.get());
     expect(entitlements).toMatchObject({ pauseMode: "payment_required", canTopUp: false });
@@ -306,7 +311,7 @@ describe("billing + releases", () => {
       password: "securepass",
       displayName: "Credit",
     });
-    const billing = new BillingService(context.accounts, new FakeMoyasar(), testEnv.siteUrl);
+    const billing = new BillingService(context.accounts, new FakeTap(), testEnv.publicBaseUrl, testEnv.siteUrl);
     const checkout = await billing.checkoutCustomCredit(100);
     expect(checkout).toMatchObject({
       amountHalalas: 10_000,

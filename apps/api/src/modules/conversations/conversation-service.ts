@@ -45,6 +45,7 @@ import {
   type WorkspaceHint,
   type WorkspaceId,
 } from "@arrab/shared";
+import { currentRequestActor } from "../../platform/context/request-actor.js";
 import { decryptField, encryptField } from "../../platform/crypto/field-crypto.js";
 import {
   type ConnectorService,
@@ -357,20 +358,39 @@ export class ConversationService {
   }
 
   async listConversations(): Promise<Conversation[]> {
-    return (await this.persistence.conversations.list()).map((conversation) => ({
+    const items = (await this.persistence.conversations.list()).map((conversation) =>
+      this.normalizeConversation(conversation),
+    );
+    return items.filter((conversation) => this.visibleToCurrentAccount(conversation));
+  }
+
+  private normalizeConversation(conversation: Conversation): Conversation {
+    return {
       ...conversation,
       ownerEmployeeId: conversation.ownerEmployeeId ?? null,
       familyMemberId: conversation.familyMemberId ?? null,
+      ownerAccountId: conversation.ownerAccountId ?? null,
       visibility: conversation.visibility ?? "workspace",
       spendTier: conversation.spendTier ?? "low",
       sessionTokenBudget:
         conversation.sessionTokenBudget === undefined ? null : conversation.sessionTokenBudget,
-    }));
+    };
+  }
+
+  /** Co-tenant studio accounts only see their own chats (org/family filters stay elsewhere). */
+  private visibleToCurrentAccount(conversation: Conversation): boolean {
+    const actor = currentRequestActor();
+    if (actor.employeeId || actor.seatMemberId) return true;
+    const accountId = actor.accountId;
+    if (!accountId) return true;
+    if (conversation.ownerEmployeeId || conversation.familyMemberId) return true;
+    if (!conversation.ownerAccountId) return true; // legacy workspace-shared
+    return conversation.ownerAccountId === accountId;
   }
 
   async deleteConversation(id: string): Promise<{ ok: true }> {
     const conversation = await this.persistence.conversations.getById(id);
-    if (!conversation) {
+    if (!conversation || !this.visibleToCurrentAccount(this.normalizeConversation(conversation))) {
       throw new NotFoundError("Conversation", id);
     }
     await this.persistence.messages.deleteByConversation(id);
@@ -390,18 +410,11 @@ export class ConversationService {
     if (!conversation) {
       throw new NotFoundError("Conversation", id);
     }
+    const normalized = this.normalizeConversation(conversation);
+    if (!this.visibleToCurrentAccount(normalized)) {
+      throw new NotFoundError("Conversation", id);
+    }
     const messages = await this.loadPlainMessages(id);
-    const normalized: Conversation = {
-      ...conversation,
-      spendTier: conversation.spendTier ?? "low",
-      sessionTokenBudget:
-        conversation.sessionTokenBudget === undefined
-          ? null
-          : conversation.sessionTokenBudget,
-      ownerEmployeeId: conversation.ownerEmployeeId ?? null,
-      familyMemberId: conversation.familyMemberId ?? null,
-      visibility: conversation.visibility ?? "workspace",
-    };
     return {
       conversation: normalized,
       messages,
@@ -471,6 +484,7 @@ export class ConversationService {
     const familyMemberId =
       (await this.familyHousehold?.getActiveMemberId())?.trim() || null;
 
+    const actorAccountId = currentRequestActor().accountId ?? null;
     const conversation: Conversation = {
       id: brandId<ConversationId>(this.ids.next("conv")),
       workspaceId: brandId<WorkspaceId>(this.persistence.workspaceId),
@@ -484,6 +498,8 @@ export class ConversationService {
       sessionTokenBudget,
       ownerEmployeeId: actorEmployeeId?.trim() || null,
       familyMemberId,
+      ownerAccountId:
+        actorEmployeeId || familyMemberId ? null : actorAccountId,
       visibility: actorEmployeeId
         ? (input.visibility ?? "private")
         : (input.visibility ?? "workspace"),
@@ -946,9 +962,9 @@ export class ConversationService {
                       "A local folder is attached on the operator's PC.",
                       "You have real desk tools: search_code, list_files, read_file, apply_patch, write_file,",
                       "delete_file, rename_file, create_dir, run_terminal, git_status, git_diff, open_path,",
-                      "preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, export_csv, read_document, web_search, scrape_page, fetch_url.",
+                      "preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, screenshot_page, export_csv, read_document, web_search, scrape_page, fetch_url.",
                       "Workflow: search → read → edit → verify with run_terminal. Prefer apply_patch for surgical edits.",
-                      "Research: web_search → scrape_page (or fetch_url). Deliverables: pdf / Word / slides / image / html / csv; read with read_document.",
+                      "Research: web_search → scrape_page (or fetch_url). Visual preview: screenshot_page. Deliverables: pdf / Word / slides / image / html / csv; read with read_document.",
                       "Do not claim you lack shell or file access. Be precise and reproducible; skip fluff.",
                     ].join(" ")
                   : "The operator runs Commit / Push / Open PR from the workspace panel.",
@@ -1332,6 +1348,16 @@ export class ConversationService {
 
     const sessionUsage = await this.sessionUsageFor(conversation);
 
+    // Provider is up — never return a "success" turn with a blank assistant row.
+    // (Unconfigured gateways still return providerConfigured:false + null message.)
+    if (
+      providerConfigured &&
+      !approval &&
+      (!assistantMessage || !assistantMessage.content.trim())
+    ) {
+      throw new ValidationError("Employee did not return a reply");
+    }
+
     return {
       userMessage,
       assistantMessage,
@@ -1596,9 +1622,9 @@ export class ConversationService {
       ? [
           "Local desk TOOL_RESULT received. You still have full PC tools for this folder:",
           "list_files, search_code, read_file, apply_patch, write_file, delete_file, rename_file, create_dir,",
-          "run_terminal, git_status, git_diff, open_path, preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, export_csv, read_document, web_search, scrape_page, fetch_url.",
+          "run_terminal, git_status, git_diff, open_path, preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, screenshot_page, export_csv, read_document, web_search, scrape_page, fetch_url.",
           "Continue the coding loop until the operator's ask is done. Verify edits with run_terminal.",
-          "Research: web_search → scrape_page. Deliverables: pdf / Word / slides / image / html / csv; read with read_document.",
+          "Research: web_search → scrape_page. Visual preview: screenshot_page. Deliverables: pdf / Word / slides / image / html / csv; read with read_document.",
           "Be brief and precise — prefer exact paths and commands.",
         ].join(" ")
       : isEmailMutating

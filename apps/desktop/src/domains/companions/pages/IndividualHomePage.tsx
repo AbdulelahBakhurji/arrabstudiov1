@@ -5,7 +5,7 @@ import { ArrowUpRight, MessageSquare, Plus, Sparkles, UsersRound, X } from "luci
 import { Link, useNavigate } from "react-router-dom";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { useRole } from "@/domains/account/roles/RoleProvider";
-import { workDestination } from "@/domains/chat/work-navigation";
+import { workDestination } from "@/domains/chat/lib/work-navigation";
 import {
   boardCards,
   boardDueWork,
@@ -25,8 +25,8 @@ import {
   useCompanionState,
   WEEKLY_NUDGE_CEILING,
   type CompanionProfile,
-} from "@/domains/companions/companions";
-import { kidBoardSuggestions } from "@/domains/companions/companion-suggestions";
+} from "@/domains/companions/model/companions";
+import { kidBoardSuggestions } from "@/domains/companions/catalog/suggestions";
 import {
   CompanionEmpty,
   CompanionPageHeader,
@@ -43,7 +43,7 @@ import type { FamilyMemberPublic, FamilyMemberRole } from "@arrab/shared";
 import { cn } from "@/shared/lib/utils";
 import { FamilyCompanionWizard } from "@/domains/companions/ui/FamilyCompanionWizard";
 import { AddFamilyMemberWizard } from "@/domains/family/ui/AddFamilyMemberWizard";
-import { ensureCompanionCloudRoom } from "@/domains/companions/ui/useCompanionRoom";
+import { ensureCompanionCloudRoom } from "@/domains/companions/ui/hooks/useCompanionRoom";
 import { resolveMemberFaceUrl } from "@/domains/family/family-portraits";
 import { AudiencePulse, FaceStatusDot } from "@/shared/ui/AudiencePulse";
 import {

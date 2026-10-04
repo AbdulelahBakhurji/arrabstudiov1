@@ -5,7 +5,7 @@ import type { Agent, Team } from "@arrab/shared";
 import { Surface } from "@/shared/ui/Surface";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
 import { canShowLiveMap } from "@/domains/organization/live-map-gate";
-import { AgentsOfficeHost } from "@/domains/organization/ui/AgentsOfficeHost";
+import { LiveOfficeMap } from "@/domains/organization/ui/LiveOfficeMap";
 import { OrgAdministrationPanel } from "@/domains/organization/ui/OrgAdministrationPanel";
 import {
   WorkforceSetupWizard,
@@ -13,7 +13,7 @@ import {
   type WorkforceSetupResult,
 } from "@/domains/organization/ui/WorkforceSetupWizard";
 import type { WorkforceActions } from "@/domains/organization/ui/workforce/companion-row";
-import { WorkforceDepartments, UNASSIGNED_ID } from "@/domains/organization/ui/workforce/departments";
+import { WorkforceDepartments } from "@/domains/organization/ui/workforce/departments";
 import { WorkforceKnowledge } from "@/domains/organization/ui/workforce/knowledge";
 import { WorkforceOverview } from "@/domains/organization/ui/workforce/overview";
 import { WorkforceReports } from "@/domains/organization/ui/workforce/reports";
@@ -26,7 +26,6 @@ import {
 } from "@/domains/organization/ui/workforce/sheets";
 import { WorkforceTasks } from "@/domains/organization/ui/workforce/tasks";
 import {
-  MAX_DEPT_AGENTS,
   OPEN_HIRE_FLAG,
   OPEN_SETUP_FLAG,
   openAgentChat,
@@ -252,34 +251,24 @@ export function WorkforcePage() {
 
       {tab === "map" ? (
         <div className="relative min-h-0 flex-1">
-          <AgentsOfficeHost
+          <LiveOfficeMap
+            teams={data.teams}
+            membersByTeam={data.membersByTeam}
+            unassigned={data.unassigned}
+            tasks={data.tasks}
+            taskRuns={data.taskRuns}
+            approvals={data.approvals}
+            draftsNeedingRequest={data.draftsAwaitingRequest}
+            canAssignWork={caps.canAssignWork}
             onBack={() => setTab("overview")}
-            departments={[
-              ...data.departments.map((team) => ({
-                id: team.id,
-                name: team.name,
-                agents: (data.membersByTeam.get(team.id) ?? []).slice(0, MAX_DEPT_AGENTS).map((agent) => ({
-                  id: agent.id,
-                  name: agent.name,
-                  role: agent.role,
-                  specialty: agent.specialty,
-                })),
-              })),
-              ...(data.unassigned.length
-                ? [
-                    {
-                      id: UNASSIGNED_ID,
-                      name: t("mapUnassigned"),
-                      agents: data.unassigned.slice(0, MAX_DEPT_AGENTS).map((agent) => ({
-                        id: agent.id,
-                        name: agent.name,
-                        role: agent.role,
-                        specialty: agent.specialty,
-                      })),
-                    },
-                  ]
-                : []),
-            ]}
+            onOpenAgent={(agentId) => actions.desk(agentId)}
+            onOpenCompanionChat={(agentId) => actions.chat(agentId)}
+            onOpenTeamChat={(teamId) => actions.teamRoom(teamId)}
+            onOpenApprovals={() => setTab("overview")}
+            onOpenConnectors={() => navigate(href("/connectors"))}
+            onHire={() => setHire({ open: true })}
+            onComposeTeam={() => setDeptSheet({ open: true, team: null })}
+            onRefresh={() => void data.reload()}
           />
         </div>
       ) : (

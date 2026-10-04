@@ -1,5 +1,10 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { Outlet, useNavigate } from "react-router-dom";
+import {
+  isLiveCatalogPlanId,
+  normalizePlanId,
+  resolvePlanAudience,
+} from "@arrab/shared";
 import { FirstLaunchSetup } from "@/domains/account/ui/FirstLaunchSetup";
 import { SignInPage } from "@/domains/account/pages/SignInPage";
 import {
@@ -12,10 +17,20 @@ import {
   isGuestLocalMode,
   subscribeGuestMode,
 } from "@/core/session/guest-mode";
-import { consumePostAuthPlanSetup, peekPostAuthPlanSetup } from "@/domains/account/post-auth-setup";
-import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
+import {
+  clearPostAuthPlanHandoff,
+  consumePostAuthPlanSetup,
+  peekPostAuthPlanSetup,
+  readPostAuthPlanHandoff,
+} from "@/domains/account/post-auth-setup";
+import {
+  refreshAccountStatus,
+  useSignedInAccount,
+} from "@/domains/account/use-signed-in-account";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
+import { homePathForAudience } from "@/domains/account/roles/catalog";
 import { useRole } from "@/domains/account/roles/RoleProvider";
+import { arrabApi } from "@/core/api/api";
 import {
   readOrgEmployeeSession,
   subscribeOrgEmployeeSession,
@@ -29,7 +44,7 @@ export function AuthGate() {
     () => null,
   );
   const { dir } = useLanguage();
-  const { href } = useRole();
+  const { setRole } = useRole();
   const navigate = useNavigate();
   const [needsStartup, setNeedsStartup] = useState(() => shouldShowFirstLaunchSetup());
   const [guestLocal, setGuestLocal] = useState(() => isGuestLocalMode());
@@ -53,10 +68,60 @@ export function AuthGate() {
   useEffect(() => {
     if (!signedIn) return;
     if (!peekPostAuthPlanSetup()) return;
-    if (consumePostAuthPlanSetup()) {
-      navigate(href("/account?section=plan"), { replace: true });
-    }
-  }, [signedIn, navigate, href]);
+    if (!consumePostAuthPlanSetup()) return;
+    const handoff = readPostAuthPlanHandoff();
+    clearPostAuthPlanHandoff();
+    void (async () => {
+      await refreshAccountStatus({ silent: true }).catch(() => undefined);
+      refresh();
+
+      const handoffPlan = normalizePlanId(handoff?.planId ?? null);
+      let planId: string | null = handoffPlan;
+      let planName = handoff?.planName ?? null;
+      let planCategory: string | null = null;
+
+      try {
+        let status = await arrabApi.account();
+        const apiPlan = normalizePlanId(
+          status.entitlements?.planId ?? status.account?.planId ?? null,
+        );
+
+        // Selected live plan from website/code redeem wins over mistaken Scale (unlimited).
+        if (
+          handoffPlan &&
+          isLiveCatalogPlanId(handoffPlan) &&
+          apiPlan === "unlimited" &&
+          (handoffPlan === "max" || handoffPlan === "pro" || handoffPlan === "starter")
+        ) {
+          status = await arrabApi.correctAccountPlan({ planId: handoffPlan }).catch(() => status);
+          await refreshAccountStatus({ silent: true }).catch(() => undefined);
+        }
+
+        const nextApiPlan = normalizePlanId(
+          status.entitlements?.planId ?? status.account?.planId ?? null,
+        );
+        planId =
+          handoffPlan && isLiveCatalogPlanId(handoffPlan) && nextApiPlan === "unlimited"
+            ? handoffPlan
+            : (nextApiPlan ?? handoffPlan);
+        planName =
+          status.entitlements?.planName ?? status.account?.planName ?? planName;
+        planCategory =
+          status.entitlements?.planCategory ??
+          status.account?.planCategory ??
+          null;
+      } catch {
+        // Use handoff signals when status is not ready yet.
+      }
+
+      const audience = resolvePlanAudience({ planId, planCategory, planName });
+      setRole(audience);
+      const section = handoff?.section === "usage" ? "usage" : "plan";
+      navigate(`${homePathForAudience(audience)}/account?section=${section}`, {
+        replace: true,
+      });
+    })();
+  }, [signedIn, navigate, setRole, refresh]);
 
   // First install only. After setup: sign-in, or studio when already signed in.
   if (shouldShowFirstLaunchSetup() || (needsStartup && !readFirstLaunchSetup().completed)) {

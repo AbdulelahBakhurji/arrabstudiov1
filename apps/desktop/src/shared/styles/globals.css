@@ -2232,6 +2232,19 @@ html.theme-light .field:focus {
   color: var(--color-foreground);
 }
 
+/* Chats — force Cairo for messages + composer (EN + AR). */
+.chat-friendly,
+.chat-friendly textarea,
+.chat-friendly input,
+.chat-pro-composer,
+.chat-pro-composer textarea,
+.chat-pro-composer input,
+.chat-pro-composer-menu,
+.chat-pro-goal,
+.chat-pro-suggestion {
+  font-family: "Cairo Variable", "Cairo", "Noto Sans Arabic", "SF Arabic", sans-serif;
+}
+
 .chat-pro-composer {
   border-radius: 1.35rem;
   border: 1px solid var(--color-border);

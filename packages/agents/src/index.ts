@@ -19,3 +19,5 @@ export {
   type AgentSshTools,
   type AgentToolContext,
 } from "./runtime.js";
+
+export { scrapePage, searchWeb, fetchUrl, unfurlPage, type PageUnfurl } from "./web-search.js";

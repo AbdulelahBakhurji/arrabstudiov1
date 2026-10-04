@@ -470,6 +470,24 @@ const NATIVE_TOOLS: AiToolDefinition[] = [
     },
   },
   {
+    name: "screenshot_page",
+    description:
+      "Capture a visual screenshot of a public http(s) page (like a Grok-style preview). Returns markdown the model must paste into the reply so the operator sees the image in chat.",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "Public page URL to screenshot" },
+        href: { type: "string", description: "Alias for url" },
+        path: {
+          type: "string",
+          description: "Relative .png path (default: screenshot-<time>.png)",
+        },
+      },
+      required: ["url"],
+      additionalProperties: false,
+    },
+  },
+  {
     name: "read_document",
     description:
       "Read/extract text from a document in the open folder: PDF, Word (.docx), text/markdown/csv, or inspect an image. Prefer this over guessing file contents.",
@@ -777,7 +795,7 @@ const CHAT_HINT = [
   "Answer clearly and helpfully. Prefer short, direct replies unless standing instructions ask for more depth or a different tone.",
   "Language: match the operator's latest message — English in → English out; Arabic in → Arabic out.",
   "Live web is available via web_search, scrape_page, and fetch_url when facts may be outside your knowledge or need a current check.",
-  "Deliverables (generate_pdf, generate_docx, generate_presentation, generate_image, preview_html, export_csv, read_document) are available even without a project folder.",
+  "Deliverables (generate_pdf, generate_docx, generate_presentation, generate_image, preview_html, export_csv, screenshot_page, read_document) are available even without a project folder.",
   "Do not invent tool results or claim access to local files, shell, email, or SSH unless those tools are offered in this turn.",
 ].join("\n");
 
@@ -786,7 +804,9 @@ const TOOL_HINT_WEB = [
   "Use web_search for current facts, docs, errors, news, and research.",
   "Use scrape_page for structured page content (title, headings, links, body).",
   "Use fetch_url for raw/JSON/plain bodies when scrape is unnecessary.",
-  "Deliverables always available: preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, export_csv, read_document.",
+  "Deliverables always available: preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, screenshot_page, export_csv, read_document.",
+  "Use scrape_page for structured page content; use screenshot_page when the operator wants to see what the site looks like.",
+  "When screenshot_page returns ![Page screenshot](...), paste that markdown into your reply so it appears in chat.",
   'Example: CALL_TOOL web_search {"query":"..."} then CALL_TOOL scrape_page {"url":"https://..."}',
   'Example: CALL_TOOL generate_pdf {"path":"report.pdf","title":"Report","content":"<h1>Hello</h1>"}',
   'Example: CALL_TOOL generate_docx {"path":"brief.docx","title":"Brief","content":"Paragraph one.\\n\\nParagraph two."}',
@@ -834,7 +854,7 @@ const TOOL_HINT_NATIVE = [
   "2) Make concrete edits with apply_patch (preferred) or write_file.",
   "3) Verify with run_terminal (typecheck, lint, or tests). Fix from real output. Do not claim done until verified or blocked.",
   "4) Use web_search + scrape_page (or fetch_url) for docs, errors, or facts outside the repo.",
-  "5) Deliverables: preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, export_csv; read with read_document.",
+  "5) Deliverables: preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, screenshot_page, export_csv; read with read_document.",
   "Be precise and reproducible — prefer exact paths, commands, and outcomes over personality.",
   "Never claim you lack shell/file access when a local folder is open.",
   "State clearly what you fetched, changed, or what failed.",
@@ -891,6 +911,7 @@ const CLIENT_EXEC_TOOLS = new Set([
   "generate_docx",
   "generate_presentation",
   "generate_image",
+  "screenshot_page",
   "read_document",
 ]);
 
@@ -961,6 +982,7 @@ function runSafeTool(
     case "generate_docx":
     case "generate_presentation":
     case "generate_image":
+    case "screenshot_page":
     case "read_document":
       return (
         args._clientResult?.trim() ||
@@ -972,7 +994,7 @@ function runSafeTool(
       return `Operator approved: ${title}${detail ? `\n${detail}` : ""}`;
     }
     default:
-      return `Unknown tool '${name}'. Available: summarize_workspace, recall_goal, list_team, list_files, search_code, read_file, write_file, apply_patch, delete_file, rename_file, create_dir, git_status, git_diff, open_path, preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, read_document, export_csv, run_terminal, web_search, scrape_page, fetch_url, propose_action.`;
+      return `Unknown tool '${name}'. Available: summarize_workspace, recall_goal, list_team, list_files, search_code, read_file, write_file, apply_patch, delete_file, rename_file, create_dir, git_status, git_diff, open_path, preview_html, generate_pdf, generate_docx, generate_presentation, generate_image, screenshot_page, read_document, export_csv, run_terminal, web_search, scrape_page, fetch_url, propose_action.`;
   }
 }
 
@@ -1303,6 +1325,7 @@ export class GatewayChatRuntime implements AgentRuntime {
       "generate_docx",
       "generate_presentation",
       "generate_image",
+      "screenshot_page",
       "read_document",
     ]);
     const webTools = NATIVE_TOOLS.filter((tool) => webToolNames.has(tool.name));
@@ -1747,6 +1770,26 @@ export class GatewayChatRuntime implements AgentRuntime {
           pendingArgs.path = (pendingArgs.path || "").trim() || "arrab-image.svg";
           pendingArgs.title = `Image: ${pendingArgs.path}`;
           pendingArgs.detail = prompt.slice(0, 200);
+        } else if (pendingName === "screenshot_page") {
+          const url = (pendingArgs.url || pendingArgs.href || "").trim();
+          if (!/^https?:\/\//i.test(url)) {
+            const missing = "FAILED screenshot_page: requires an http(s) url.";
+            toolsUsed.push(pendingName);
+            yield { type: "tool", name: pendingName, result: missing };
+            working = [
+              ...working,
+              { role: "assistant", content: completion.message.content || "" },
+              {
+                role: "user",
+                content: `TOOL_RESULT ${pendingName}:\n${missing}\n\nContinue helping the operator.`,
+              },
+            ];
+            continue;
+          }
+          pendingArgs.url = url;
+          pendingArgs.path = (pendingArgs.path || "").trim() || `screenshot-${Date.now()}.png`;
+          pendingArgs.title = `Screenshot: ${url}`;
+          pendingArgs.detail = url;
         } else if (pendingName === "read_document") {
           const path = (pendingArgs.path || pendingArgs.relative || "").trim();
           if (!path) {

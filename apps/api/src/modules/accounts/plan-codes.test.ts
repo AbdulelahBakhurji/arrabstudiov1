@@ -75,6 +75,43 @@ describe("public plan codes", () => {
     expect((await subscribe("PRO-ARRAB")).statusCode).toBe(200);
     await app.close();
   });
+
+  it("selected live planId wins over SCALE alias when plan codes are enabled", async () => {
+    const { app, headers } = await signedIn(makeTestEnv({ allowPlanCodes: true }));
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/account/subscribe",
+      headers,
+      payload: { code: "SCALE-ARRAB", planId: "max" },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().account.planId).toBe("max");
+    expect(response.json().entitlements.planId).toBe("max");
+    expect(response.json().entitlements.tokenLimit).toBeGreaterThan(0);
+    await app.close();
+  });
+
+  it("browser sign-up applies selected planId over SCALE planCode", async () => {
+    const context = await createApiContext(makeTestEnv({ allowPlanCodes: true }));
+    const app = await buildApp(context);
+    const started = (
+      await app.inject({ method: "POST", url: "/v1/account/auth/web/start" })
+    ).json();
+    const response = await app.inject({
+      method: "POST",
+      url: "/v1/account/auth/web/complete",
+      payload: {
+        state: started.state,
+        email: "pick@arrab.studio",
+        password: "securepass",
+        planCode: "SCALE-ARRAB",
+        planId: "pro",
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().account.planId).toBe("pro");
+    await app.close();
+  });
 });
 
 describe("account sign-up and sign-in", () => {

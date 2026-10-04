@@ -1,6 +1,6 @@
 import type { Agent, Team, TeamMembership } from "@arrab/shared";
 import { arrabApi } from "@/core/api/api";
-import { companionDisplayName, isSecretCompanionBrief } from "@/domains/companions/companion-catalog";
+import { companionDisplayName, isSecretCompanionBrief } from "@/domains/companions/catalog/catalog";
 import {
   addCompanion,
   companionInstructions,
@@ -9,7 +9,7 @@ import {
   updateCompanion,
   visibleFacts,
   type CompanionProfile,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 
 export const COMPANION_SPECIALTY = "Companion";
 export const COMPANION_CIRCLE_PREFIX = "arrab.companion:";

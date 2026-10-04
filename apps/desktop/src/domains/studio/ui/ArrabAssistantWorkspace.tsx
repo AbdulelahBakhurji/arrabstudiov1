@@ -20,22 +20,22 @@ import {
 import type { ConnectorPublic } from "@arrab/shared";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { useRole } from "@/domains/account/roles/RoleProvider";
-import { useCompanionRoom } from "@/domains/companions/ui/useCompanionRoom";
+import { useCompanionRoom } from "@/domains/companions/ui/hooks/useCompanionRoom";
 import { PhotoAvatar } from "@/domains/companions/ui/CompanionFace";
 import { ComposerPlusMenu } from "@/domains/chat/ui/ComposerPlusMenu";
 import { ThinkingBlock } from "@/domains/chat/ui/ThinkingBlock";
-import type { LocalToolArtifact } from "@/domains/chat/agent-local-tools";
-import { filesToDraftParts } from "@/domains/chat/composer-attachments";
+import type { LocalToolArtifact } from "@/domains/chat/lib/agent-local-tools";
+import { filesToDraftParts } from "@/domains/chat/lib/composer-attachments";
 import { arrabApi } from "@/core/api/api";
-import { hasLocalModelSelected } from "@/domains/chat/ai-prefs";
-import { companionPortraitUrl } from "@/domains/companions/companion-portrait";
+import { hasLocalModelSelected } from "@/domains/chat/model/ai-prefs";
+import { companionPortraitUrl } from "@/domains/companions/catalog/portrait";
 import {
   createAssistantChatTab,
   resolveAssistantChatTabs,
   titleFromMessage,
   writeAssistantChatTabs,
   type AssistantChatTab,
-} from "@/domains/chat/assistant-chat-tabs";
+} from "@/domains/chat/model/assistant-chat-tabs";
 import {
   ARRAB_ASSISTANT_CONNECTORS,
   connectorIcon,
@@ -54,8 +54,8 @@ import {
   writeCompanionChatTabs,
   type CompanionProfile,
   type StudioCatalogEntry,
-} from "@/domains/companions/companions";
-import { purposeRegistryById } from "@/domains/companions/purpose-registry";
+} from "@/domains/companions/model/companions";
+import { purposeRegistryById } from "@/domains/companions/catalog/purpose-registry";
 import { WORKPLACE_TASK_KEY } from "@/domains/organization/workplace-handoff";
 import { cn } from "@/shared/lib/utils";
 

@@ -5,7 +5,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/shared/ui/primitives/
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { useRole } from "@/domains/account/roles/RoleProvider";
 import { arrabApi } from "@/core/api/api";
-import { liveCompanions, useCompanionState } from "@/domains/companions/companions";
+import { liveCompanions, useCompanionState } from "@/domains/companions/model/companions";
 import {
   isGettingStartedCollapsed,
   openGettingStarted,

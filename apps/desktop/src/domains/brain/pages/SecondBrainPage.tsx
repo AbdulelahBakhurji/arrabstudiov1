@@ -20,7 +20,7 @@ import { Link } from "react-router-dom";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { useRole } from "@/domains/account/roles/RoleProvider";
 import { SpaceSwitch, useCompanionSpace } from "@/domains/companions/ui/CompanionUI";
-import { getCompanionState, useCompanionState } from "@/domains/companions/companions";
+import { getCompanionState, useCompanionState } from "@/domains/companions/model/companions";
 import { arrabApi } from "@/core/api/api";
 import {
   BRAIN_KIND_COLOR,
@@ -39,7 +39,7 @@ import {
   type BrainNodeKind,
   type BrainScope,
 } from "@/domains/brain/second-brain";
-import { listCachedChats, loadChatHistory } from "@/domains/chat/chat-history";
+import { listCachedChats, loadChatHistory } from "@/domains/chat/model/chat-history";
 import { FAMILY_EVENT, isFamilyChild, readActiveFamilyMemberId } from "@/domains/family/family-session";
 import { useFamilyProfile } from "@/domains/family/use-family-profile";
 import { cn } from "@/shared/lib/utils";

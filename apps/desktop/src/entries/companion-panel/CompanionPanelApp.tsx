@@ -22,22 +22,22 @@ import { applyCompanionPolicy, companionAvailability } from "@/domains/managed/c
 import { limitStatus } from "@/domains/managed/client/limits";
 import { readCachedPolicy } from "@/domains/managed/client/store";
 import { maintenanceView } from "@/domains/managed/client/updates";
-import type { Activity, Agent, Approval, TaskRun } from "@arrab/shared";
+import type { Activity, Agent, Approval, ProfessionalWorkspaceView, TaskRun } from "@arrab/shared";
 import { PhotoAvatar } from "@/domains/companions/ui/CompanionFace";
 import {
   PRESENCE_RESOLVE_EVENT,
   type AgentPresencePayload,
   type PresenceResolveRequest,
 } from "@/domains/notifications/agent-presence";
-import { assignAgentTask, assignCompanionTask } from "@/domains/companions/companion-assign";
+import { assignAgentTask, assignCompanionTask } from "@/domains/companions/lib/assign";
 import {
   getCompanionState,
   syncCompanionsFromCloud,
   type CompanionProfile,
-} from "@/domains/companions/companions";
-import { companionPortraitUrl } from "@/domains/companions/companion-portrait";
+} from "@/domains/companions/model/companions";
+import { companionPortraitUrl } from "@/domains/companions/catalog/portrait";
 import { humanizeApprovalCopy } from "@/domains/notifications/approval-copy";
-import { purposeRegistryById } from "@/domains/companions/purpose-registry";
+import { purposeRegistryById } from "@/domains/companions/catalog/purpose-registry";
 import { readStoredRole } from "@/domains/account/roles/RoleProvider";
 
 type LiveRow = {
@@ -286,6 +286,7 @@ export function CompanionPanelApp() {
   const [assignNote, setAssignNote] = useState<string | null>(null);
   const [offline, setOffline] = useState(false);
   const [theme, setTheme] = useState(readPanelTheme);
+  const [proStay, setProStay] = useState<{ stay: boolean; onDuty: boolean } | null>(null);
   const stackRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const stripRef = useRef<HTMLDivElement | null>(null);
@@ -303,6 +304,20 @@ export function CompanionPanelApp() {
       setApprovals(pending.items);
     } catch {
       // A failed approvals poll is not the same as being offline.
+    }
+
+    if (!isOrg) {
+      try {
+        const view: ProfessionalWorkspaceView = await arrabApi.professionalWorkspace();
+        const onDuty = view.companionStatus.some(
+          (item) => item.status === "working" || item.status === "needs_you",
+        );
+        setProStay({ stay: view.stayEnabled !== false, onDuty });
+      } catch {
+        setProStay(null);
+      }
+    } else {
+      setProStay(null);
     }
 
     if (isOrg) {
@@ -587,6 +602,20 @@ export function CompanionPanelApp() {
               >
                 <span className="cp-offline-dot" aria-hidden />
                 Offline
+              </span>
+            ) : null}
+            {proStay && (proStay.stay || proStay.onDuty) ? (
+              <span
+                className={`cp-stay-badge${proStay.onDuty ? " is-duty" : ""}`}
+                data-tauri-drag-region
+                title={
+                  proStay.onDuty
+                    ? "A companion is working or needs you"
+                    : "Professional 24/7 Stay is on"
+                }
+              >
+                <span className="cp-stay-dot" aria-hidden />
+                {proStay.stay ? "24/7 Stay" : "On duty"}
               </span>
             ) : null}
             <span className="cp-head-space" data-tauri-drag-region />

@@ -10,7 +10,7 @@ import {
   type AgentPresencePayload,
 } from "@/domains/notifications/agent-presence";
 import { presenceDisplayCopy } from "@/domains/notifications/approval-copy";
-import { companionPortraitUrl } from "@/domains/companions/companion-portrait";
+import { companionPortraitUrl } from "@/domains/companions/catalog/portrait";
 import { isTauriRuntime } from "@/core/platform/terminal";
 import { cn } from "@/shared/lib/utils";
 import "@/entries/agent-presence/agent-presence.css";

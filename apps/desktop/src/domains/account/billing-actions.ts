@@ -12,7 +12,7 @@ import { refreshAccountStatus } from "@/domains/account/use-signed-in-account";
 export const TOP_UP_PACKS: readonly TokenTopUpPack[] = Object.values(TOKEN_TOP_UP_PACKS);
 
 export type CheckoutOpened = {
-  /** Present when the API created a Moyasar invoice we can confirm directly. */
+  /** Present when the API created a Tap charge we can confirm directly. */
   invoiceId: string | null;
   /** True when we fell back to the Arrab website instead of a direct checkout. */
   viaWebsite: boolean;
@@ -43,7 +43,7 @@ export function formatTokens(tokens: number, locale: string): string {
 
 /**
  * Renew (or upgrade from an ended Free month) on the website. Paid plans get a
- * direct Moyasar checkout for this month's renewal when billing is configured;
+ * direct Tap checkout for this month's renewal when billing is configured;
  * otherwise the Arrab website plans page takes over.
  */
 export async function openRenewal(entitlements: AccountEntitlements): Promise<CheckoutOpened> {
@@ -67,7 +67,7 @@ export async function openRenewal(entitlements: AccountEntitlements): Promise<Ch
 }
 
 export async function openUpgrade(): Promise<CheckoutOpened> {
-  await openExternalUrl(websiteUrl({ intent: "upgrade" }));
+  await openExternalUrl(ARRAB_PLANS_URL);
   return { invoiceId: null, viaWebsite: true };
 }
 

@@ -55,16 +55,16 @@ import { LAST_COWORK_AGENT_KEY } from "@/shared/lib/prefs";
 import { notifyStudio } from "@/domains/notifications/notify";
 import { showAgentPresence, subscribePresenceResolve } from "@/domains/notifications/agent-presence";
 import { arrabApi, ApiRequestError, isTransientApiError } from "@/core/api/api";
-import { buildResolveApprovalBody } from "@/domains/chat/resolve-approval";
+import { buildResolveApprovalBody } from "@/domains/chat/lib/resolve-approval";
 import {
   filterLiveWorkforceAgents,
   readAgentSessionPolicy,
   writeAgentSessionPolicy,
-} from "@/domains/chat/agent-session-policy";
+} from "@/domains/chat/lib/agent-session-policy";
 import {
   defaultSoloAgentBody,
   ensureDefaultSoloAgent,
-} from "@/domains/companions/agents-bootstrap";
+} from "@/domains/companions/lib/agents-bootstrap";
 import {
   executeLocalAgentTool,
   formatToolDiffPreview,
@@ -77,24 +77,24 @@ import {
   parseToolNameFromApproval,
   restoreEditCheckpoint,
   type EditCheckpoint,
-} from "@/domains/chat/agent-local-tools";
+} from "@/domains/chat/lib/agent-local-tools";
 import { listDir, readTextFile, type FsEntry } from "@/core/platform/fs";
 import { isTauriRuntime, pickFolder, runLocalCommand, type TerminalLine } from "@/core/platform/terminal";
-import { loadWorkspaceRules } from "@/domains/chat/workspace-rules";
-import { loadBestMessages, listCachedChats, usePersistedChat } from "@/domains/chat/chat-history";
+import { loadWorkspaceRules } from "@/domains/chat/lib/workspace-rules";
+import { loadBestMessages, listCachedChats, usePersistedChat } from "@/domains/chat/model/chat-history";
 import {
   accessLabel,
   readCompanionAccess,
   writeCompanionAccess,
   type RuntimeTarget,
-} from "@/domains/companions/cowork-companion-access";
-import { resolveAiRuntime, resolvePreferredModel } from "@/domains/chat/ai-prefs";
-import { streamOllamaChat } from "@/domains/chat/local-models";
+} from "@/domains/companions/lib/access";
+import { resolveAiRuntime, resolvePreferredModel } from "@/domains/chat/model/ai-prefs";
+import { streamOllamaChat } from "@/domains/chat/lib/local-models";
 import {
   liveCompanions,
   useCompanionState,
   type CompanionProfile,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import { syncWorkProfilesFromAgents } from "@/domains/organization/org-chat";
 import { prepareWorkplaceDesk, WORKPLACE_TASK_KEY } from "@/domains/organization/workplace-handoff";
 import { useOrgSeatCapabilities } from "@/domains/organization/org-seat";

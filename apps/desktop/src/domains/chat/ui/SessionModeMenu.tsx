@@ -16,7 +16,7 @@ import {
   subscribeSessionMode,
   writeSessionMode,
   type SessionMode,
-} from "@/domains/chat/session-mode";
+} from "@/domains/chat/model/session-mode";
 import { cn } from "@/shared/lib/utils";
 
 const MODE_ICON: Record<SessionMode, typeof InfinityIcon> = {

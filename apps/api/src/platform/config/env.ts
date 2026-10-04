@@ -61,10 +61,10 @@ export interface ApiEnv {
   logStream?: { write(chunk: string): void };
   /** Restrict who can create the studio account (comma-separated emails). Empty = open sign-up. */
   signupEmails?: string[];
-  /** Moyasar secret key (sk_test_… / sk_live_…). Empty = billing checkout disabled. */
-  moyasarSecretKey: string | undefined;
-  /** Moyasar publishable key for hosted forms (optional). */
-  moyasarPublishableKey: string | undefined;
+  /** Tap Payments secret key (sk_test_… / sk_live_…). Empty = billing checkout disabled. */
+  tapSecretKey: string | undefined;
+  /** Tap publishable key for hosted forms (optional). */
+  tapPublicKey: string | undefined;
   /**
    * AES-256 key for field encryption at rest (64 hex chars or 32-byte base64).
    * Required whenever DATABASE_URL is set (override with ARRAB_ALLOW_INSECURE_DATA_KEY=1).
@@ -308,8 +308,10 @@ export function loadApiEnv(): ApiEnv {
     allowPlanCodes: readOptionalEnv("ARRAB_ENABLE_PLAN_CODES") === "1",
     metricsToken: readOptionalEnv("ARRAB_METRICS_TOKEN"),
     signupEmails: parseCsv(readOptionalEnv("ARRAB_SIGNUP_EMAILS", "")).map((email) => email.trim().toLowerCase()).filter(Boolean),
-    moyasarSecretKey: readOptionalEnv("MOYASAR_SECRET_KEY"),
-    moyasarPublishableKey: readOptionalEnv("MOYASAR_PUBLISHABLE_KEY"),
+    tapSecretKey:
+      readOptionalEnv("TAP_SECRET_KEY") ?? readOptionalEnv("MOYASAR_SECRET_KEY"),
+    tapPublicKey:
+      readOptionalEnv("TAP_PUBLIC_KEY") ?? readOptionalEnv("MOYASAR_PUBLISHABLE_KEY"),
     // Production hosts historically used ARRAB_DATA_ENCRYPTION_KEY; accept either.
     dataEncryptionKey:
       readOptionalEnv("DATA_ENCRYPTION_KEY") ?? readOptionalEnv("ARRAB_DATA_ENCRYPTION_KEY"),

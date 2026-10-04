@@ -1,8 +1,8 @@
-import { loadChatHistory } from "@/domains/chat/chat-history";
+import { loadChatHistory } from "@/domains/chat/model/chat-history";
 import { isE2eeUnlocked, toPriorMessages } from "@/domains/encryption/e2ee";
 import type { Agent, AiGatewayStatusResponse, Approval, CollectionResponse, Conversation, ConversationDetailResponse, CreateApprovalRequest, CreateConversationRequest, CreateSkillRequest, CreateKnowledgeRequest, CreateMemoryRequest, Knowledge, Memory, ResolveApprovalRequest, RunTaskResponse, SendMessageRequest, IngestConversationMessagesRequest, IngestConversationMessagesResponse, SendMessageResponse, Skill, Task, UpdateKnowledgeRequest } from "@arrab/shared";
 import { readPrefs } from "@/shared/lib/prefs";
-import { applySkillsToSendBody, ensureSkillCatalogWarm } from "@/domains/chat/user-skills";
+import { applySkillsToSendBody, ensureSkillCatalogWarm } from "@/domains/chat/lib/user-skills";
 import { ApiRequestError, getApiRoot, request, openTextStream } from "@/core/api/http";
 import { arrabApi } from "@/core/api/api";
 
@@ -24,6 +24,15 @@ async function withE2ee(id: string, body: SendMessageRequest): Promise<SendMessa
 export const chatApi = {
 
   aiStatus: () => request<AiGatewayStatusResponse>("/v1/ai/status"),
+  unfurlUrl: (url: string) =>
+    request<{
+      url?: string;
+      title?: string;
+      description?: string;
+      image?: string | null;
+      siteName?: string;
+      error?: string;
+    }>("/v1/unfurl", { method: "POST", body: { url }, timeoutMs: 15_000 }),
   conversations: () => request<CollectionResponse<Conversation>>("/v1/conversations"),
   agentConversations: (agentId: string) =>
     request<CollectionResponse<Conversation>>(`/v1/agents/${agentId}/conversations`),
@@ -145,7 +154,17 @@ export const chatApi = {
               handlers.onApproval?.(parsed.approval);
             } else if (eventName === "done") {
               sawDone = true;
-              handlers.onDone?.(parsed as SendMessageResponse);
+              const done = parsed as SendMessageResponse;
+              const hasReply = Boolean(done.assistantMessage?.content?.trim());
+              if (!hasReply && !done.approval && done.providerConfigured === false) {
+                handlers.onError?.(
+                  "No model provider is configured on the Arrab API.",
+                );
+              } else if (!hasReply && !done.approval) {
+                handlers.onError?.("Employee did not return a reply");
+              } else {
+                handlers.onDone?.(done);
+              }
             } else if (eventName === "error") {
               handlers.onError?.(parsed.message ?? "Stream error");
             }

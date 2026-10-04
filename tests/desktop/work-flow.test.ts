@@ -10,11 +10,11 @@ import {
   setWorkState,
   suggestedWork,
   touchThread,
-} from "../../apps/desktop/src/domains/companions/companions";
+} from "../../apps/desktop/src/domains/companions/model/companions";
 import {
   resolveWorkTarget,
   workDestination,
-} from "../../apps/desktop/src/domains/chat/work-navigation";
+} from "../../apps/desktop/src/domains/chat/lib/work-navigation";
 
 beforeEach(async () => {
   const storage = new Map<string, string>();

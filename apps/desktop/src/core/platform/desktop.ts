@@ -3,7 +3,7 @@ import { isTauriRuntime } from "./terminal";
 import { getApiRoot } from "../api/api";
 
 /** Public plans page opened from in-app “Manage plans”. */
-export const ARRAB_PLANS_URL = "https://studio.arrabai.com/plans";
+export const ARRAB_PLANS_URL = "https://studio.arrabai.com/account?view=plans";
 
 /**
  * Server auth/OAuth links sometimes use host `0.0.0.0` / localhost when

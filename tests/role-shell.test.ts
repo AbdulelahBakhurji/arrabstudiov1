@@ -17,27 +17,46 @@ describe("plan → studio shell", () => {
     expect(homePathForAudience("organization")).toBe("/organizations");
   });
 
-  it("maps planCategory teams to organization even when planId looks free", () => {
+  it("lets known catalog plan ids win over a stale planCategory", () => {
+    // Studio / Solo must stay individual even if control-plane category says teams.
+    expect(
+      audienceFromAccountSignals({
+        planId: "studio",
+        planCategory: "teams",
+        planName: "Studio",
+      }),
+    ).toBe("individual");
     expect(
       audienceFromAccountSignals({
         planId: "free",
         planCategory: "teams",
         planName: "Platform Admin",
       }),
-    ).toBe("organization");
+    ).toBe("individual");
     expect(
       resolvePlanAudience({
         planId: "business",
-        planCategory: "teams",
+        planCategory: "individuals",
         planName: "Business",
       }),
     ).toBe("organization");
   });
 
-  it("keeps Free/Pro/Solo on the individuals shell", () => {
+  it("uses planCategory only when planId is unknown", () => {
+    expect(
+      resolvePlanAudience({
+        planId: "custom-control-plane",
+        planCategory: "teams",
+        planName: "Platform Admin",
+      }),
+    ).toBe("organization");
+  });
+
+  it("keeps Free/Pro/Solo/Studio on the individuals shell", () => {
     expect(audienceFromPlanId("free")).toBe("individual");
     expect(audienceFromPlanId("pro")).toBe("individual");
     expect(audienceFromPlanId("solo")).toBe("individual");
+    expect(audienceFromPlanId("studio")).toBe("individual");
     expect(studioModeFromAudience("individual")).toBe("individual");
   });
 

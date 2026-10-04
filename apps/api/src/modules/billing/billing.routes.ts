@@ -25,11 +25,16 @@ export function registerBillingRoutes(app: FastifyInstance, deps: V1Deps, { asse
     async (request) => {
       assertOwnerSession(request, "Only the account owner can confirm billing");
       await assertCap(request, "canAdminister", "Only admins can confirm organization billing");
-      return deps.billing.confirmInvoice(request.query.id ?? request.query.invoice ?? "");
+      return deps.billing.confirmInvoice(
+        request.query.id ?? request.query.invoice ?? "",
+        request.account?.id,
+      );
     },
   );
 
-  app.post("/v1/billing/moyasar/callback", async (request) =>
-    deps.billing.handleCallback(request.body),
-  );
+  app.post("/v1/billing/tap/callback", async (request) => {
+    const header = request.headers.hashstring;
+    const hashstring = Array.isArray(header) ? header[0] : header;
+    return deps.billing.handleCallback(request.body, hashstring);
+  });
 }

@@ -65,7 +65,7 @@ See [FEATURE.md](./FEATURE.md). Short path:
 3. Desktop sync migration onto SyncRecords for conversations/projects
 4. Giant UI files (`ChatPage.tsx`, `CoworkPage.tsx`, companions store) — split by responsibility over time
 5. Live Map production gate still false
-6. Moyasar callback = invoice re-fetch, not provider signature
+6. Tap callback = hashstring HMAC + charge re-fetch by accountId
 7. In-process rate limits (single VPS OK)
 8. No Ultra SKU — marketing must match Solo/Studio/catalog
 

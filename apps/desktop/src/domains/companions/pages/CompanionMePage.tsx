@@ -4,9 +4,9 @@ import { Link } from "react-router-dom";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { useRole } from "@/domains/account/roles/RoleProvider";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
-import { forgetEverything, updateCompanion, useCompanionState } from "@/domains/companions/companions";
-import { AvatarImageError, fileToAvatarDataUrl } from "@/domains/companions/avatar-image";
-import { setProfilePhoto, useProfilePhoto } from "@/domains/companions/profile-photo";
+import { forgetEverything, updateCompanion, useCompanionState } from "@/domains/companions/model/companions";
+import { AvatarImageError, fileToAvatarDataUrl } from "@/domains/companions/lib/avatar-image";
+import { setProfilePhoto, useProfilePhoto } from "@/domains/companions/lib/profile-photo";
 import {
   CompanionPageHeader,
   PersonAvatar,

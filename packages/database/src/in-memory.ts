@@ -2,8 +2,12 @@ import {
   brandId,
   emptyCompanionDesk,
   emptyCrewState,
+  emptyProfessionalWorkspace,
+  emptySpacesDocument,
   normalizeCompanionDesk,
   normalizeCrewState,
+  normalizeProfessionalWorkspace,
+  normalizeSpacesDocument,
   type Activity,
   type Agent,
   type Approval,
@@ -39,6 +43,8 @@ import {
   type ControlConnector,
   type ControlMaintenance,
   type CompanionDeskState,
+  type ProfessionalWorkspaceState,
+  type SpacesDocument,
   type CrewState,
   type WrappedChatKey,
   type SealedChat,
@@ -66,6 +72,8 @@ import {
   type TeamMembershipRepository,
   type UsageRepository,
   type CompanionDeskRepository,
+  type ProfessionalWorkspaceRepository,
+  type DocumentSpacesRepository,
   type CrewRepository,
   type SealedVaultRepository,
   type SyncRecordRepository,
@@ -347,19 +355,77 @@ class MemoryCompanionStateRepository implements CompanionStateRepository {
 }
 
 class MemoryAccountRepository implements AccountRepository {
-  constructor(private readonly holder: { account: StudioAccountRecord | null }) {}
+  constructor(
+    private readonly holder: {
+      account: StudioAccountRecord | null;
+      accounts?: StudioAccountRecord[];
+    },
+  ) {}
+
+  private all(): StudioAccountRecord[] {
+    if (Array.isArray(this.holder.accounts) && this.holder.accounts.length > 0) {
+      return [...this.holder.accounts];
+    }
+    return this.holder.account ? [this.holder.account] : [];
+  }
+
+  private sync(accounts: StudioAccountRecord[]): void {
+    this.holder.accounts = accounts;
+    this.holder.account = accounts[0] ?? null;
+  }
 
   async get(): Promise<StudioAccountRecord | null> {
-    return this.holder.account;
+    const all = this.all();
+    if (all.length === 0) return null;
+    // Prefer a real operator over @arrab.studio smoke fixtures (matches Postgres).
+    const ranked = [...all].sort((a, b) => {
+      const aSmoke = a.email.toLowerCase().endsWith("@arrab.studio") ? 1 : 0;
+      const bSmoke = b.email.toLowerCase().endsWith("@arrab.studio") ? 1 : 0;
+      return aSmoke - bSmoke;
+    });
+    return ranked[0] ?? null;
+  }
+
+  async getById(id: string): Promise<StudioAccountRecord | null> {
+    return this.all().find((item) => item.id === id) ?? null;
+  }
+
+  async getByEmail(email: string): Promise<StudioAccountRecord | null> {
+    const needle = email.trim().toLowerCase();
+    return this.all().find((item) => item.email.toLowerCase() === needle) ?? null;
+  }
+
+  async findBySessionTokenHash(tokenHash: string): Promise<StudioAccountRecord | null> {
+    const hash = tokenHash.trim();
+    if (!hash) return null;
+    return (
+      this.all().find(
+        (item) =>
+          item.sessionTokenHash === hash ||
+          (item.sessions ?? []).some((session) => session.tokenHash === hash),
+      ) ?? null
+    );
+  }
+
+  async list(): Promise<StudioAccountRecord[]> {
+    return this.all();
   }
 
   async upsert(account: StudioAccountRecord): Promise<StudioAccountRecord> {
-    this.holder.account = account;
+    const all = this.all();
+    const idx = all.findIndex((item) => item.id === account.id);
+    if (idx >= 0) all[idx] = account;
+    else all.push(account);
+    this.sync(all);
     return account;
   }
 
   async delete(): Promise<void> {
-    this.holder.account = null;
+    this.sync([]);
+  }
+
+  async deleteById(id: string): Promise<void> {
+    this.sync(this.all().filter((item) => item.id !== id));
   }
 }
 
@@ -576,6 +642,8 @@ export type MemorySnapshot = {
   operator: OperatorProfile | null;
   companionState: { updatedAt: string; state: unknown } | null;
   account: StudioAccountRecord | null;
+  /** Multi-account workspace store. When set, takes precedence over `account`. */
+  accounts?: StudioAccountRecord[];
   knowledge: Knowledge[];
   memories: Memory[];
   taskRuns: TaskRun[];
@@ -598,6 +666,8 @@ export type MemorySnapshot = {
     connectors?: ControlConnector[];
   };
   companionDesk: CompanionDeskState;
+  professionalWorkspace: ProfessionalWorkspaceState;
+  documentSpaces: SpacesDocument;
   crew: CrewState;
   sealedKeys: Record<string, WrappedChatKey>;
   sealedChats: Record<string, Record<string, SealedChat>>;
@@ -619,6 +689,9 @@ const READ_METHODS = new Set([
   "list",
   "get",
   "getById",
+  "getByEmail",
+  "findBySessionTokenHash",
+  "list",
   "getByExternalId",
   "listByAgent",
   "listByTeam",
@@ -682,6 +755,7 @@ export function emptyMemorySnapshot(now = new Date().toISOString()): MemorySnaps
     operator: null,
     companionState: null,
     account: null,
+    accounts: [],
     knowledge: [],
     memories: [],
     taskRuns: [],
@@ -700,6 +774,8 @@ export function emptyMemorySnapshot(now = new Date().toISOString()): MemorySnaps
     controlNotifications: [],
     controlDesk: { policy: null, clients: [] },
     companionDesk: emptyCompanionDesk(),
+    professionalWorkspace: emptyProfessionalWorkspace(),
+    documentSpaces: emptySpacesDocument(),
     crew: emptyCrewState(),
     sealedKeys: {},
     sealedChats: {},
@@ -769,6 +845,7 @@ export function normalizeMemorySnapshot(
     for (const connector of snapshot.connectors) {
       connector.familyMemberId = connector.familyMemberId ?? null;
       connector.ownerEmployeeId = connector.ownerEmployeeId ?? null;
+      connector.ownerAccountId = connector.ownerAccountId ?? null;
     }
     for (const conversation of snapshot.conversations) {
       conversation.familyMemberId = conversation.familyMemberId ?? null;
@@ -799,6 +876,11 @@ export function normalizeMemorySnapshot(
     operator: raw.operator ?? null,
     companionState: raw.companionState ?? null,
     account: raw.account ?? null,
+    accounts: Array.isArray(raw.accounts)
+      ? raw.accounts
+      : raw.account
+        ? [raw.account]
+        : [],
     knowledge: Array.isArray(raw.knowledge) ? raw.knowledge : [],
     memories: Array.isArray(raw.memories) ? raw.memories : [],
     taskRuns: Array.isArray(raw.taskRuns) ? raw.taskRuns : [],
@@ -828,6 +910,8 @@ export function normalizeMemorySnapshot(
         ? raw.controlDesk
         : { policy: null, clients: [] },
     companionDesk: normalizeCompanionDesk(raw.companionDesk),
+    professionalWorkspace: normalizeProfessionalWorkspace(raw.professionalWorkspace),
+    documentSpaces: normalizeSpacesDocument(raw.documentSpaces),
     crew: normalizeCrewState(raw.crew),
     sealedKeys: raw.sealedKeys && typeof raw.sealedKeys === "object" ? raw.sealedKeys : {},
     sealedChats: raw.sealedChats && typeof raw.sealedChats === "object" ? raw.sealedChats : {},
@@ -956,6 +1040,33 @@ class MemoryCompanionDeskRepository implements CompanionDeskRepository {
   async save(state: CompanionDeskState): Promise<CompanionDeskState> {
     this.snapshot.companionDesk = state;
     return state;
+  }
+}
+
+class MemoryProfessionalWorkspaceRepository implements ProfessionalWorkspaceRepository {
+  constructor(private readonly snapshot: MemorySnapshot) {}
+
+  async get(): Promise<ProfessionalWorkspaceState> {
+    return normalizeProfessionalWorkspace(this.snapshot.professionalWorkspace);
+  }
+
+  async save(state: ProfessionalWorkspaceState): Promise<ProfessionalWorkspaceState> {
+    this.snapshot.professionalWorkspace = state;
+    return state;
+  }
+}
+
+class MemoryDocumentSpacesRepository implements DocumentSpacesRepository {
+  constructor(private readonly snapshot: MemorySnapshot) {}
+
+  async get(): Promise<SpacesDocument> {
+    return normalizeSpacesDocument(this.snapshot.documentSpaces);
+  }
+
+  async save(state: SpacesDocument): Promise<SpacesDocument> {
+    const next = normalizeSpacesDocument(state);
+    this.snapshot.documentSpaces = next;
+    return next;
   }
 }
 
@@ -1382,6 +1493,8 @@ export function createInMemoryPersistence(
     controlNotifications: wrap(new MemoryControlNotificationRepository(snapshot)),
     controlDesk: wrap(new MemoryControlDeskRepository(snapshot)),
     companionDesk: wrap(new MemoryCompanionDeskRepository(snapshot)),
+    professionalWorkspace: wrap(new MemoryProfessionalWorkspaceRepository(snapshot)),
+    documentSpaces: wrap(new MemoryDocumentSpacesRepository(snapshot)),
     crew: wrap(new MemoryCrewRepository(snapshot)),
     sealedVault: wrap(new MemorySealedVaultRepository(snapshot)),
     syncRecords: wrap(new MemorySyncRecordRepository(snapshot)),

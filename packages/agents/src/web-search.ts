@@ -375,6 +375,37 @@ export async function scrapePage(rawUrl: string, options: ScrapeOptions = {}): P
           /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["'][^>]*>/i,
         )?.[1]
         ?.trim() || "";
+    const ogDescription =
+      body
+        .match(
+          /<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+        )?.[1]
+        ?.trim() ||
+      body
+        .match(
+          /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:description["'][^>]*>/i,
+        )?.[1]
+        ?.trim() ||
+      "";
+    let ogImage =
+      body
+        .match(
+          /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+        )?.[1]
+        ?.trim() ||
+      body
+        .match(
+          /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["'][^>]*>/i,
+        )?.[1]
+        ?.trim() ||
+      "";
+    if (ogImage) {
+      try {
+        ogImage = new URL(ogImage, finalUrl).toString();
+      } catch {
+        ogImage = "";
+      }
+    }
 
     const headings: string[] = [];
     const headingRe = /<h([1-3])[^>]*>([\s\S]*?)<\/h\1>/gi;
@@ -416,7 +447,9 @@ export async function scrapePage(rawUrl: string, options: ScrapeOptions = {}): P
       `SCRAPE ${finalUrl}`,
       `status: ${response.status}`,
       `title: ${ogTitle || title}`,
-      description ? `description: ${description}` : null,
+      (ogDescription || description) ? `description: ${ogDescription || description}` : null,
+      ogImage ? `image: ${ogImage}` : null,
+      ogImage ? `preview: ![${(ogTitle || title).slice(0, 80)}](${ogImage})` : null,
       headings.length ? `headings:\n${headings.join("\n")}` : null,
       links.length ? `links:\n${links.join("\n")}` : null,
       "-----",
@@ -428,5 +461,91 @@ export async function scrapePage(rawUrl: string, options: ScrapeOptions = {}): P
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     return `ERROR: scrape_page failed — ${message}`;
+  }
+}
+
+export type PageUnfurl = {
+  url: string;
+  title: string;
+  description: string;
+  image: string | null;
+  siteName: string;
+};
+
+/** Structured link preview for chat cards (SSRF-safe fetch). */
+export async function unfurlPage(rawUrl: string): Promise<PageUnfurl | { error: string }> {
+  const value = rawUrl.trim();
+  if (!value) return { error: "url required" };
+  let parsed: URL;
+  try {
+    parsed = (await assertSafePublicUrl(value)).url;
+  } catch (err: unknown) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  }
+  try {
+    const response = await fetchPublicUrl(
+      parsed.toString(),
+      {
+        Accept: "text/html,application/xhtml+xml;q=0.9,*/*;q=0.8",
+        "User-Agent": UA,
+      },
+      12_000,
+    );
+    const body = response.body.slice(0, 400_000);
+    const finalUrl = response.url || parsed.toString();
+    const title =
+      body
+        .match(
+          /<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+        )?.[1]
+        ?.trim() ||
+      body.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]?.replace(/\s+/g, " ").trim() ||
+      finalUrl;
+    const description =
+      body
+        .match(
+          /<meta[^>]+property=["']og:description["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+        )?.[1]
+        ?.trim() ||
+      body
+        .match(
+          /<meta[^>]+name=["']description["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+        )?.[1]
+        ?.trim() ||
+      "";
+    let image =
+      body
+        .match(
+          /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+        )?.[1]
+        ?.trim() ||
+      body
+        .match(
+          /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+        )?.[1]
+        ?.trim() ||
+      "";
+    if (image) {
+      try {
+        image = new URL(image, finalUrl).toString();
+      } catch {
+        image = "";
+      }
+    }
+    const siteName =
+      body
+        .match(
+          /<meta[^>]+property=["']og:site_name["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+        )?.[1]
+        ?.trim() || new URL(finalUrl).hostname.replace(/^www\./, "");
+    return {
+      url: finalUrl,
+      title: stripTags(title).slice(0, 160),
+      description: stripTags(description).slice(0, 280),
+      image: image.startsWith("http") ? image.slice(0, 500) : null,
+      siteName: siteName.slice(0, 80),
+    };
+  } catch (err: unknown) {
+    return { error: err instanceof Error ? err.message : String(err) };
   }
 }

@@ -6,6 +6,7 @@ import type {
   ControlConnector,
   ControlMaintenance,
   CompanionDeskState,
+  SpacesDocument,
 } from "@arrab/shared";
 import type {
   Activity,
@@ -135,9 +136,17 @@ export interface CompanionStateRepository {
 }
 
 export interface AccountRepository {
+  /** Primary operator for the workspace (legacy single-account callers). */
   get(): Promise<StudioAccountRecord | null>;
+  getById(id: string): Promise<StudioAccountRecord | null>;
+  getByEmail(email: string): Promise<StudioAccountRecord | null>;
+  /** Account that owns this hashed session token (device session or legacy hash). */
+  findBySessionTokenHash(tokenHash: string): Promise<StudioAccountRecord | null>;
+  list(): Promise<StudioAccountRecord[]>;
   upsert(account: StudioAccountRecord): Promise<StudioAccountRecord>;
+  /** Remove every account in the workspace (destructive reset). */
   delete(): Promise<void>;
+  deleteById(id: string): Promise<void>;
 }
 
 export interface KnowledgeRepository extends EntityRepository<Knowledge> {
@@ -197,6 +206,18 @@ export interface ControlNotificationRepository {
 export interface CompanionDeskRepository {
   get(): Promise<CompanionDeskState>;
   save(state: CompanionDeskState): Promise<CompanionDeskState>;
+}
+
+export interface ProfessionalWorkspaceRepository {
+  get(): Promise<import("@arrab/shared").ProfessionalWorkspaceState>;
+  save(
+    state: import("@arrab/shared").ProfessionalWorkspaceState,
+  ): Promise<import("@arrab/shared").ProfessionalWorkspaceState>;
+}
+
+export interface DocumentSpacesRepository {
+  get(): Promise<SpacesDocument>;
+  save(state: SpacesDocument): Promise<SpacesDocument>;
 }
 
 export interface CrewRepository {
@@ -293,6 +314,8 @@ export interface Persistence {
   controlNotifications: ControlNotificationRepository;
   controlDesk: ControlDeskRepository;
   companionDesk: CompanionDeskRepository;
+  professionalWorkspace: ProfessionalWorkspaceRepository;
+  documentSpaces: DocumentSpacesRepository;
   crew: CrewRepository;
   sealedVault: SealedVaultRepository;
   syncRecords: SyncRecordRepository;

@@ -67,7 +67,7 @@ import {
   type SkillMode,
   type SkillResource,
   type UserSkill,
-} from "@/domains/chat/user-skills";
+} from "@/domains/chat/lib/user-skills";
 
 type Filter = "all" | SkillMode | "off";
 type Dialog =

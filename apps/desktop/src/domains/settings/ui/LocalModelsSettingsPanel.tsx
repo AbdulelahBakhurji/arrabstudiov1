@@ -20,7 +20,7 @@ import {
   type LocalModelCatalogEntry,
   type LocalModelTier,
   type OllamaStatus,
-} from "@/domains/chat/local-models";
+} from "@/domains/chat/lib/local-models";
 import { openExternalUrl } from "@/core/platform/desktop";
 import { pushToast } from "@/domains/notifications/notify";
 import { readPrefs, updatePrefs } from "@/shared/lib/prefs";

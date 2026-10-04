@@ -490,6 +490,31 @@ export interface SendWhatsAppResponse {
   to: string;
 }
 
+/** POST /v1/connectors/:id/slack/send */
+export interface SendSlackRequest {
+  channelId: string;
+  text: string;
+}
+
+export interface SendSlackResponse {
+  ok: true;
+  messageId: string | null;
+  channelId: string;
+}
+
+export interface SlackMentionMessage {
+  id: string;
+  channelId: string;
+  channelName: string | null;
+  user: string | null;
+  text: string;
+  timestamp: string;
+}
+
+export interface ListSlackMentionsResponse {
+  items: SlackMentionMessage[];
+}
+
 export interface WhatsAppInboundMessage {
   id: string;
   connectorId: string | null;
@@ -620,11 +645,18 @@ export interface ConnectAccountRequest {
 export interface SignInAccountRequest {
   email: string;
   password: string;
+  /** Required when the account has TOTP MFA enabled. */
+  mfaCode?: string;
 }
 
 export interface ActivateSubscriptionRequest {
-  /** Redeem code such as PRO-ARRAB, TEAM-ARRAB, SCALE-ARRAB */
+  /** Redeem / private access code. */
   code: string;
+  /**
+   * Selected catalog plan. When set to a live SKU, it wins over code aliases
+   * (e.g. SCALE-ARRAB must not override a selected Max / Pro / Family plan).
+   */
+  planId?: SubscriptionPlanId | string | null;
 }
 
 export interface UpdateAccountProfileRequest {
@@ -694,6 +726,11 @@ export interface CompleteWebAuthRequest {
   displayName?: string;
   /** Optional plan redeem code applied on first web sign-in. */
   planCode?: string | null;
+  /**
+   * Plan the user selected (or private access code unlocked). Live catalog ids win
+   * over planCode aliases — never force Scale when Max/Pro/Family was selected.
+   */
+  planId?: SubscriptionPlanId | string | null;
 }
 
 export interface VerifyAccountSessionRequest {
@@ -701,6 +738,11 @@ export interface VerifyAccountSessionRequest {
 }
 
 export interface BillingCheckoutRequest {
+  planId: SubscriptionPlanId;
+}
+
+/** Fix mistaken Scale (org) → Solo / Studio / Pro (individual). */
+export interface CorrectAccountPlanRequest {
   planId: SubscriptionPlanId;
 }
 

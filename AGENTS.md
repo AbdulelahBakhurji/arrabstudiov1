@@ -6,6 +6,8 @@ This file is the map for Cursor and Claude. Read it before editing. Product trut
 
 pnpm monorepo. Desktop never holds provider keys or connector secrets. The API owns persistence, billing, and model calls.
 
+Full map: [STRUCTURE.md](./STRUCTURE.md).
+
 | Path | Role |
 | --- | --- |
 | `apps/desktop` | Tauri 2 + React — Studio for solo, family, and organization |
@@ -23,6 +25,7 @@ pnpm monorepo. Desktop never holds provider keys or connector secrets. The API o
 | `tests` | Cross-package and desktop tests |
 | `scripts` | Dev and ship |
 | `brand` | Canonical logo and icon |
+| `vendor/` | Research-only dumps (not product) |
 | `.cursor/rules` | Persistent Cursor rules |
 
 ## Audiences
@@ -50,12 +53,16 @@ apps/desktop/src/
   app/        main.tsx, App.tsx (routes), shell/ (StudioFrame, AuthGate, TitleBar)
   entries/    Extra Tauri windows (agent-presence, companion-panel, updater)
   domains/    account chat companions connectors encryption family organization
-              managed notifications settings studio brain
-              each: api.ts · pages/ · ui/ · domain logic
+              managed notifications settings studio brain spaces
+              convention: api.ts · model/ · lib/ · pages/ · ui/ (+ catalog/ for companions)
   core/       api/ (http.ts + composed arrabApi) · session/ · storage/ · platform/
   shared/     ui/ · lib/ · hooks/ · i18n/locales/{en,ar}/<domain>.ts · theme/ · styles/
   features/   Plug-in page registry (modules/)
+  legacy/     Retired screens — do not import
 ```
+
+Companions: `domains/companions/{model,catalog,lib,pages,ui}`.  
+Chat: `domains/chat/{model,lib,pages,ui}`.
 
 Imports point down: `shared → core → domains → app/entries`. `tests/architecture.test.ts` fails the build on a violation.
 

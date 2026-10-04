@@ -83,11 +83,11 @@ import {
   noteTopics,
   useCompanionState,
   type CompanionProfile,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import {
   companionDisplayBlurb,
   companionDisplayName,
-} from "@/domains/companions/companion-catalog";
+} from "@/domains/companions/catalog/catalog";
 import {
   clientSearchWeb,
   formatWebSearchForModel,
@@ -96,8 +96,8 @@ import {
 } from "@/core/platform/web-search";
 import { PersonAvatar } from "@/domains/companions/ui/CompanionUI";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
-import { resolveAiRuntime, resolvePreferredModel } from "@/domains/chat/ai-prefs";
-import { streamOllamaChat } from "@/domains/chat/local-models";
+import { resolveAiRuntime, resolvePreferredModel } from "@/domains/chat/model/ai-prefs";
+import { streamOllamaChat } from "@/domains/chat/lib/local-models";
 
 import { AgentSteps, friendlyToolTitle, type AgentStep } from "@/domains/chat/ui/AgentSteps";
 import { ThinkingBlock, useThoughtTraces, type ThoughtTrace } from "@/domains/chat/ui/ThinkingBlock";
@@ -105,7 +105,7 @@ import { humanizeApprovalCopy } from "@/domains/notifications/approval-copy";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { useStudioPrefs } from "@/shared/hooks/useStudioPrefs";
 import { arrabApi, ApiRequestError, isTransientApiError } from "@/core/api/api";
-import { buildResolveApprovalBody } from "@/domains/chat/resolve-approval";
+import { buildResolveApprovalBody } from "@/domains/chat/lib/resolve-approval";
 import {
   assertTokensAvailable,
   enforceTokenGuard,
@@ -115,11 +115,11 @@ import {
   filterLiveWorkforceAgents,
   readAgentSessionPolicy,
   writeAgentSessionPolicy,
-} from "@/domains/chat/agent-session-policy";
+} from "@/domains/chat/lib/agent-session-policy";
 import {
   defaultSoloAgentBody,
   ensureDefaultSoloAgent,
-} from "@/domains/companions/agents-bootstrap";
+} from "@/domains/companions/lib/agents-bootstrap";
 import { LAST_CHAT_AGENT_KEY, readPrefs, updatePrefs } from "@/shared/lib/prefs";
 import {
   executeLocalAgentTool,
@@ -129,9 +129,9 @@ import {
   isPolicyClientTool,
   parseToolArgsFromApproval,
   parseToolNameFromApproval,
-} from "@/domains/chat/agent-local-tools";
+} from "@/domains/chat/lib/agent-local-tools";
 import { isTauriRuntime, pickFolder, runLocalCommand, type TerminalLine } from "@/core/platform/terminal";
-import { loadWorkspaceRules } from "@/domains/chat/workspace-rules";
+import { loadWorkspaceRules } from "@/domains/chat/lib/workspace-rules";
 import {
   deleteChatHistory,
   listCachedChats,
@@ -139,7 +139,7 @@ import {
   loadChatHistory,
   mergeRemoteConversations,
   usePersistedChat,
-} from "@/domains/chat/chat-history";
+} from "@/domains/chat/model/chat-history";
 import { ingestBrainMessages, brainContextSnippet } from "@/domains/brain/second-brain";
 import {
   createIncognitoVault,
@@ -1948,7 +1948,7 @@ export function ChatPage() {
 
   async function onUploadFiles(fileList: FileList | null) {
     if (!fileList?.length) return;
-    const { notifyUploadAttached } = await import("@/domains/chat/composer-attachments");
+    const { notifyUploadAttached } = await import("@/domains/chat/lib/composer-attachments");
     const parts: string[] = [];
     const attachedNames: string[] = [];
     const skippedNames: string[] = [];

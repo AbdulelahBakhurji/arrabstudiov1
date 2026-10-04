@@ -7,7 +7,7 @@ import {
   type CompanionProfile,
   type CompanionSpace,
   type CompanionToneName,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import { GUEST_COMPANION_LIMIT } from "@/core/session/guest-mode";
 import { pushToast } from "@/domains/notifications/notify";
 import { CompanionModal } from "./CompanionUI";

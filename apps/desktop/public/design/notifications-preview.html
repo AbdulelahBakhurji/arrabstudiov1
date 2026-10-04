@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Arrab · Device notifications preview</title>
+    <style>
+      :root {
+        --bg: #0f0f16;
+        --text: #f3f1f8;
+        --muted: #9b96a8;
+        --lavender: #a08ade;
+        --card: rgba(40, 38, 54, 0.94);
+        --line: rgba(255, 255, 255, 0.1);
+        --shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
+        font-family: "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--text);
+        background:
+          radial-gradient(800px 420px at 15% 0%, rgba(160, 138, 222, 0.2), transparent 55%),
+          var(--bg);
+      }
+      .wrap { max-width: 520px; margin: 0 auto; padding: 36px 20px 64px; }
+      h1 { margin: 0 0 8px; font-size: 24px; letter-spacing: -0.02em; }
+      .lede { margin: 0 0 10px; color: var(--muted); line-height: 1.5; font-size: 14px; }
+      .badge {
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+        margin: 0 0 22px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid color-mix(in srgb, var(--lavender) 40%, var(--line));
+        background: color-mix(in srgb, var(--lavender) 14%, transparent);
+        color: #d8d0ef;
+        font-size: 12px;
+      }
+      .stack { display: flex; flex-direction: column; gap: 12px; }
+      .os-banner {
+        display: grid;
+        grid-template-columns: 48px 1fr auto;
+        gap: 12px;
+        align-items: center;
+        padding: 12px 14px;
+        border-radius: 18px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        box-shadow: var(--shadow);
+      }
+      .photo {
+        width: 48px;
+        height: 48px;
+        border-radius: 50%;
+        object-fit: cover;
+        border: 1px solid color-mix(in srgb, var(--lavender) 35%, transparent);
+        background: #1a1624;
+      }
+      .kind {
+        font-size: 10px;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: color-mix(in srgb, var(--lavender) 85%, white);
+        margin-bottom: 3px;
+      }
+      strong { display: block; font-size: 13.5px; margin-bottom: 2px; }
+      p { margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.4; }
+      time { font-size: 11px; color: var(--muted); align-self: start; padding-top: 2px; }
+      .note { margin-top: 20px; color: var(--muted); font-size: 12.5px; line-height: 1.5; }
+      .actions { margin-top: 14px; }
+      .btn {
+        border: 1px solid color-mix(in srgb, var(--lavender) 45%, var(--line));
+        background: color-mix(in srgb, var(--lavender) 28%, #262334);
+        color: var(--text);
+        border-radius: 999px;
+        padding: 9px 14px;
+        font: inherit;
+        font-size: 12.5px;
+        cursor: pointer;
+      }
+      #live { margin-top: 14px; min-height: 64px; }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Device notifications</h1>
+      <p class="lede">
+        Companion photo on the left. These are <strong>OS banners only</strong> — macOS Notification Center
+        and Windows Action Center. No in-app inbox.
+      </p>
+      <div class="badge">Mac · Windows · device-only</div>
+
+      <div class="stack" id="banners">
+        <article class="os-banner">
+          <img class="photo" src="/companions/portraits/generated/gen-gulf-f-01.jpg" alt="Hessa" />
+          <div>
+            <div class="kind">Approvals</div>
+            <strong>Approval needed · Hessa</strong>
+            <p>Shell command waiting: open Chrome on the sealed desk.</p>
+          </div>
+          <time>now</time>
+        </article>
+        <article class="os-banner">
+          <img class="photo" src="/companions/portraits/generated/gen-arab-m-01.jpg" alt="Omar" />
+          <div>
+            <div class="kind">Team launch</div>
+            <strong>Omar started a run</strong>
+            <p>Research squad began work on “Q3 brief”.</p>
+          </div>
+          <time>2m</time>
+        </article>
+        <article class="os-banner">
+          <img class="photo" src="/companions/portraits/generated/gen-eu-f-01.jpg" alt="Lina" />
+          <div>
+            <div class="kind">Connector</div>
+            <strong>Lina · Slack needs attention</strong>
+            <p>Workspace reconnect required for #ops.</p>
+          </div>
+          <time>8m</time>
+        </article>
+        <article class="os-banner">
+          <img class="photo" src="/companions/portraits/generated/gen-gulf-m-02.jpg" alt="Fahad" />
+          <div>
+            <div class="kind">Cowork</div>
+            <strong>Open session · Fahad</strong>
+            <p>Gentle nudge: continue where you left off.</p>
+          </div>
+          <time>20m</time>
+        </article>
+        <article class="os-banner">
+          <img class="photo" src="/companions/portraits/generated/gen-gulf-f-02.jpg" alt="Noura" />
+          <div>
+            <div class="kind">Agent</div>
+            <strong>Noura is working</strong>
+            <p>Watch the floating agent card — progress, then done.</p>
+          </div>
+          <time>now</time>
+        </article>
+      </div>
+
+      <div class="actions">
+        <button class="btn" type="button" id="demo">Preview test banner</button>
+      </div>
+      <div id="live" aria-live="polite"></div>
+      <p class="note">
+        In Arrab Studio: Settings → Notifications → Send test notification.
+        Delivery is native on macOS and Windows only.
+      </p>
+    </div>
+    <script>
+      document.getElementById("demo").addEventListener("click", () => {
+        document.getElementById("live").innerHTML = `
+          <article class="os-banner">
+            <img class="photo" src="/companions/portraits/generated/gen-gulf-f-01.jpg" alt="Hessa" />
+            <div>
+              <div class="kind">Test · device</div>
+              <strong>Hessa</strong>
+              <p>Arrab agent presence — floating card, then done.</p>
+            </div>
+            <time>now</time>
+          </article>`;
+      });
+    </script>
+  </body>
+</html>

@@ -1,7 +1,7 @@
 import type { FamilyAgeTier, FamilyMemberRole } from "@arrab/shared";
-import { portraitFileUrl } from "@/domains/companions/companion-portrait";
+import { portraitFileUrl } from "@/domains/companions/catalog/portrait";
 import { getChildSeatPrefs } from "@/domains/family/guardian-store";
-import { getProfilePhoto } from "@/domains/companions/profile-photo";
+import { getProfilePhoto } from "@/domains/companions/lib/profile-photo";
 
 /** Gender used to filter family seat portraits. */
 export type FamilyPortraitGender = "boy" | "girl" | "man" | "woman";

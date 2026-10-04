@@ -18,16 +18,16 @@ import {
 } from "lucide-react";
 import type { FamilyMemberPublic } from "@arrab/shared";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { COMPANION_PRESETS } from "@/domains/companions/companion-catalog";
+import { COMPANION_PRESETS } from "@/domains/companions/catalog/catalog";
 import {
   addCompanion,
   addParentGuidanceFact,
   type CompanionProfile,
   type CompanionSpace,
   type CompanionToneName,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import { arrabApi } from "@/core/api/api";
-import { companionPortraitUrl, presetPortraitSeed } from "@/domains/companions/companion-portrait";
+import { companionPortraitUrl, presetPortraitSeed } from "@/domains/companions/catalog/portrait";
 import { getChildSeatPrefs } from "@/domains/family/guardian-store";
 import { PhotoAvatar } from "./CompanionFace";
 import { cn } from "@/shared/lib/utils";

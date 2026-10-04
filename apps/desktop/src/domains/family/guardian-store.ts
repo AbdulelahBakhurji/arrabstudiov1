@@ -3,7 +3,7 @@
  * Lives on-device (same privacy model as Second Brain partitions).
  */
 import { useSyncExternalStore } from "react";
-import type { CompanionSpace } from "@/domains/companions/companions";
+import type { CompanionSpace } from "@/domains/companions/model/companions";
 import type { GuardianRuleKind } from "@/domains/family/guardian";
 
 const STORE_KEY = "arrab.guardian.v1";

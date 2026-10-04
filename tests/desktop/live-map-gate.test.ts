@@ -3,10 +3,12 @@ import { ALL_PLAN_IDS, entitlementsForPlan } from "@arrab/shared";
 import { LIVE_MAP_PRODUCTION_READY, canShowLiveMap } from "@/domains/organization/live-map-gate";
 
 describe("Live Map availability", () => {
-  it("a shipped build never offers a tab that cannot work", () => {
-    expect(LIVE_MAP_PRODUCTION_READY).toBe(false);
+  it("a shipped build offers Live Map only for plans that include it", () => {
+    expect(LIVE_MAP_PRODUCTION_READY).toBe(true);
     for (const planId of ALL_PLAN_IDS) {
-      expect(canShowLiveMap({ seatAllows: true, planId, development: false }), planId).toBe(false);
+      expect(canShowLiveMap({ seatAllows: true, planId, development: false }), planId).toBe(
+        entitlementsForPlan(planId).liveMap,
+      );
     }
   });
 

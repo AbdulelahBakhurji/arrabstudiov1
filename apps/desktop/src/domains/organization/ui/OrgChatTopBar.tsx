@@ -1,10 +1,10 @@
 import { ArrowUpRight, Ellipsis, EyeOff, Maximize2, Minimize2, Plus } from "lucide-react";
 import type { Agent } from "@arrab/shared";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { companionDisplayBlurb, companionDisplayName } from "@/domains/companions/companion-catalog";
+import { companionDisplayBlurb, companionDisplayName } from "@/domains/companions/catalog/catalog";
 import { isCompanionAgent } from "@/domains/organization/org-chat";
 import { isIncognitoUnlocked } from "@/domains/encryption/incognito-vault";
-import type { CompanionProfile } from "@/domains/companions/companions";
+import type { CompanionProfile } from "@/domains/companions/model/companions";
 import { PersonAvatar } from "@/domains/companions/ui/CompanionUI";
 import { cn } from "@/shared/lib/utils";
 

@@ -82,21 +82,33 @@ export function enforceTokenGuard(error: unknown): string | null {
   return null;
 }
 
-/** Throw before starting cloud AI when the cached plan is already over limit. */
+/** Throw before starting cloud AI when the cached plan is already over limit or paused. */
 export function assertTokensAvailable(): void {
   try {
     const raw = localStorage.getItem("arrab.account.status.cache");
     if (!raw) return;
     const parsed = JSON.parse(raw) as {
-      status?: { entitlements?: { overLimit?: boolean; tokensUsed?: number; tokenLimit?: number | null } };
+      status?: {
+        entitlements?: {
+          overLimit?: boolean;
+          pauseMode?: string | null;
+          tokensUsed?: number;
+          tokenLimit?: number | null;
+        };
+      };
     };
     const entitlements = parsed?.status?.entitlements;
-    if (!entitlements?.overLimit) return;
+    if (!entitlements) return;
+    if (!entitlements.overLimit && !entitlements.pauseMode) return;
     const used = entitlements.tokensUsed?.toLocaleString?.() ?? "?";
     const limit =
-      entitlements.tokenLimit == null ? "unlimited" : entitlements.tokenLimit.toLocaleString();
+      entitlements.tokenLimit == null || entitlements.tokenLimit <= 0
+        ? "cap"
+        : entitlements.tokenLimit.toLocaleString();
     throw new ApiRequestError(
-      `Paused — token limit reached (${used} / ${limit}). Add usage or upgrade to keep working.`,
+      entitlements.pauseMode === "payment_required"
+        ? "Paused — billing is due. Renew or upgrade on the Arrab website to keep working."
+        : `Paused — token limit reached (${used} / ${limit}). Add usage or upgrade to keep working.`,
       402,
       "QUOTA_EXCEEDED",
     );

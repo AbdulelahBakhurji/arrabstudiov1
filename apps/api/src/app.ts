@@ -50,11 +50,13 @@ import { ConversationService } from "./modules/conversations/conversation-servic
 import { ConnectorService } from "./modules/connectors/connector-service.js";
 import { AccountService } from "./modules/accounts/account-service.js";
 import { BillingService } from "./modules/billing/billing-service.js";
-import { createMoyasarClient } from "./modules/billing/moyasar.js";
+import { createTapClient } from "./modules/billing/tap.js";
 import { GoalService } from "./modules/workspace/goal-service.js";
 import { TaskExecutionService } from "./modules/workspace/task-execution-service.js";
 import { TeamRunService } from "./modules/workspace/team-run-service.js";
 import { DeskService } from "./modules/desk/desk-service.js";
+import { ProfessionalService } from "./modules/professional/professional-service.js";
+import { SpacesService } from "./modules/spaces/spaces-service.js";
 import { CrewService } from "./modules/organization/crew-service.js";
 import { OrgWorkforceService } from "./modules/organization/org-workforce-service.js";
 import { WorkforceBlueprintService } from "./modules/organization/workforce-blueprint-service.js";
@@ -89,6 +91,8 @@ export interface ApiContext {
   familyHousehold: FamilyHouseholdService;
   sealedVault: SealedVaultService;
   desk: DeskService;
+  professional: ProfessionalService;
+  spaces: SpacesService;
   crew: CrewService;
   workforceBlueprint: WorkforceBlueprintService;
   sync: SyncService;
@@ -388,7 +392,8 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
   );
   const billing = new BillingService(
     accounts,
-    createMoyasarClient(env.moyasarSecretKey),
+    createTapClient(env.tapSecretKey),
+    env.publicBaseUrl,
     env.siteUrl,
   );
   const familyHousehold = new FamilyHouseholdService(persistence, accounts);
@@ -406,6 +411,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     openRouterModels: env.openRouterModels,
     bedrockModels: env.bedrockModels,
   });
+  const allowedModels = new Set(modelRegistry.models.map((entry) => entry.id));
   const conversations = new ConversationService(
     persistence,
     aiGateway,
@@ -416,7 +422,7 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     familyHousehold,
     undefined,
     undefined,
-    new Set(modelRegistry.models.map((entry) => entry.id)),
+    allowedModels,
     (model) => fallbackChainFor(modelRegistry, model).slice(1),
     metrics,
   );
@@ -443,6 +449,8 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
       return { messageId: sent.messageId };
     },
   );
+  const professional = new ProfessionalService(persistence, accounts, familyHousehold);
+  const spaces = new SpacesService(persistence);
   const crew = new CrewService(
     persistence,
     aiGateway,
@@ -488,6 +496,8 @@ export async function createApiContext(env: ApiEnv): Promise<ApiContext> {
     familyHousehold,
     sealedVault,
     desk,
+    professional,
+    spaces,
     crew,
     workforceBlueprint,
     sync,
@@ -701,6 +711,8 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
     familyHousehold: context.familyHousehold,
     sealedVault: context.sealedVault,
     desk: context.desk,
+    professional: context.professional,
+    spaces: context.spaces,
     crew: context.crew,
     workforceBlueprint: context.workforceBlueprint,
     sync: context.sync,
@@ -729,6 +741,20 @@ export async function buildApp(context: ApiContext): Promise<FastifyInstance> {
   );
   app.addHook("onClose", async () => {
     await controlNotifications.flushAcks();
+  });
+
+  const { startProfessionalStayWorker } = await import(
+    "./modules/professional/professional-stay.js"
+  );
+  const stopStay = startProfessionalStayWorker({
+    professional: context.professional,
+    deskSweep: async () => {
+      await context.desk.get();
+    },
+    log: app.log,
+  });
+  app.addHook("onClose", async () => {
+    stopStay();
   });
 
   const registerCoreRoutes = async (instance: FastifyInstance) => {

@@ -7,7 +7,7 @@ import {
 } from "@arrab/shared";
 import { bootWorld, PLAN_CODE, startChat, type World } from "../../test-support/world.js";
 import { BillingService } from "../billing/billing-service.js";
-import type { MoyasarClient, MoyasarInvoice } from "../billing/moyasar.js";
+import type { CreateTapChargeInput, TapCharge, TapClient } from "../billing/tap.js";
 
 async function withWorld<T>(
   plan: string,
@@ -179,30 +179,38 @@ describe("expired, cancelled and past-due subscriptions", () => {
       await expire(w);
       expect((await chat.send("x")).status).toBe(402);
 
-      let invoice: MoyasarInvoice = {
+      let charge: TapCharge = {
         id: "inv_renew_1",
-        status: "paid",
-        amount: SUBSCRIPTION_PLANS.pro.monthlyPriceHalalas,
+        status: "CAPTURED",
+        amount: SUBSCRIPTION_PLANS.pro.monthlyPriceHalalas / 100,
+        amountHalalas: SUBSCRIPTION_PLANS.pro.monthlyPriceHalalas,
         currency: "SAR",
         description: "Arrab Studio Pro renewal (pro)",
-        url: "https://pay.test/1",
+        url: "https://checkout.payments.tap.company/?token=1",
         metadata: {},
       };
-      const moyasar: MoyasarClient = {
-        createInvoice: async (input) => {
-          invoice = { ...invoice, metadata: input.metadata };
-          return invoice;
+      const tap: TapClient = {
+        createCharge: async (input: CreateTapChargeInput) => {
+          charge = {
+            ...charge,
+            amount: input.amountHalalas / 100,
+            amountHalalas: input.amountHalalas,
+            metadata: input.metadata,
+            status: "INITIATED",
+          };
+          return charge;
         },
-        getInvoice: async () => invoice,
+        getCharge: async () => ({ ...charge, status: "CAPTURED" }),
+        verifyWebhookHash: () => true,
       };
-      const billing = new BillingService(w.context.accounts, moyasar, "https://site.test");
+      const billing = new BillingService(w.context.accounts, tap, "https://api.test", "https://site.test");
       const checkout = await billing.checkout("pro");
       expect(checkout.invoiceId).toBe("inv_renew_1");
       await billing.confirmInvoice("inv_renew_1");
       expect((await status(w)).entitlements.pauseMode).toBeNull();
       expect((await chat.send("back")).status).toBe(200);
 
-      // Next month the same (already consumed) invoice must not renew again.
+      // Next month the same (already consumed) charge must not renew again.
       await expire(w);
       await billing.confirmInvoice("inv_renew_1");
       expect((await status(w)).entitlements.pauseMode).toBe("payment_required");
@@ -211,42 +219,54 @@ describe("expired, cancelled and past-due subscriptions", () => {
 
   it("a payment for the wrong amount, wrong state or another account never changes the plan", async () => {
     await withWorld("free", async (w) => {
-      const base: MoyasarInvoice = {
+      const base: TapCharge = {
         id: "inv_x",
-        status: "paid",
-        amount: 100,
+        status: "CAPTURED",
+        amount: 1,
+        amountHalalas: 100,
         currency: "SAR",
         description: "Arrab (pro)",
         url: null,
         metadata: { planId: "pro", accountId: "someone-else" },
       };
-      const make = (over: Partial<MoyasarInvoice>) =>
-        new BillingService(
+      const make = (over: Partial<TapCharge>) => {
+        const charge = { ...base, ...over };
+        if (over.amountHalalas != null && over.amount == null) {
+          charge.amount = over.amountHalalas / 100;
+        }
+        return new BillingService(
           w.context.accounts,
-          { createInvoice: async () => base, getInvoice: async () => ({ ...base, ...over }) },
+          {
+            createCharge: async () => charge,
+            getCharge: async () => charge,
+            verifyWebhookHash: () => true,
+          },
+          "https://api.test",
           "https://s.test",
         );
+      };
       const account = (await w.context.persistence.accounts.get())!;
-      await expect(make({}).confirmInvoice("inv_x")).rejects.toThrow(/does not belong/);
+      await expect(make({}).confirmInvoice("inv_x")).rejects.toThrow(/does not belong|known account/);
       await expect(
-        make({ metadata: { planId: "pro", accountId: account.id }, amount: 100 }).confirmInvoice(
-          "inv_x",
-        ),
+        make({
+          metadata: { planId: "pro", accountId: account.id },
+          amountHalalas: 100,
+        }).confirmInvoice("inv_x"),
       ).rejects.toThrow(/amount/);
       await expect(
         make({
-          status: "initiated",
+          status: "INITIATED",
           metadata: { planId: "pro", accountId: account.id },
-          amount: 4900,
+          amountHalalas: 4900,
         }).confirmInvoice("inv_x"),
       ).rejects.toThrow(/in progress/);
       await expect(
         make({
-          status: "failed",
+          status: "FAILED",
           metadata: { planId: "pro", accountId: account.id },
-          amount: 4900,
+          amountHalalas: 4900,
         }).confirmInvoice("inv_x"),
-      ).rejects.toThrow(/not paid/);
+      ).rejects.toThrow(/not captured/);
       expect((await status(w)).account.planId).toBe("free");
     });
   });

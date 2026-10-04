@@ -2,6 +2,9 @@ import {
   brandId,
   normalizeCompanionDesk,
   normalizeCrewState,
+  normalizeProfessionalWorkspace,
+  normalizeSpacesDocument,
+  emptySpacesDocument,
   type Activity,
   type ActivityActorType,
   type ActivityId,
@@ -70,6 +73,8 @@ import {
   type ControlConnector,
   type ControlMaintenance,
   type CompanionDeskState,
+  type ProfessionalWorkspaceState,
+  type SpacesDocument,
   type CrewState,
   type WrappedChatKey,
   type SealedChat,
@@ -166,6 +171,7 @@ type ConversationRow = {
   session_token_budget?: number | null;
   owner_employee_id?: string | null;
   family_member_id?: string | null;
+  owner_account_id?: string | null;
   visibility?: string | null;
   created_at: Date;
   updated_at: Date;
@@ -264,6 +270,7 @@ function mapConversation(row: ConversationRow): Conversation {
         : Number(row.session_token_budget),
     ownerEmployeeId: row.owner_employee_id ?? null,
     familyMemberId: row.family_member_id ?? null,
+    ownerAccountId: row.owner_account_id ?? null,
     visibility,
     createdAt: iso(row.created_at),
     updatedAt: iso(row.updated_at),
@@ -553,8 +560,8 @@ class PostgresConversationRepository implements ConversationRepository {
     await this.pool.query(
       `insert into conversations
        (id, workspace_id, project_id, agent_id, team_id, title, spend_tier, session_token_budget,
-        owner_employee_id, family_member_id, visibility, created_at, updated_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+        owner_employee_id, family_member_id, owner_account_id, visibility, created_at, updated_at)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
       [
         entity.id,
         entity.workspaceId,
@@ -566,6 +573,7 @@ class PostgresConversationRepository implements ConversationRepository {
         entity.sessionTokenBudget,
         entity.ownerEmployeeId,
         entity.familyMemberId,
+        entity.ownerAccountId ?? null,
         entity.visibility,
         entity.createdAt,
         entity.updatedAt,
@@ -579,8 +587,9 @@ class PostgresConversationRepository implements ConversationRepository {
       `update conversations
        set project_id = $1, agent_id = $2, team_id = $3, title = $4,
            spend_tier = $5, session_token_budget = $6,
-           owner_employee_id = $7, family_member_id = $8, visibility = $9, updated_at = $10
-       where id = $11 and workspace_id = $12`,
+           owner_employee_id = $7, family_member_id = $8, owner_account_id = $9,
+           visibility = $10, updated_at = $11
+       where id = $12 and workspace_id = $13`,
       [
         entity.projectId,
         entity.agentId,
@@ -590,6 +599,7 @@ class PostgresConversationRepository implements ConversationRepository {
         entity.sessionTokenBudget,
         entity.ownerEmployeeId,
         entity.familyMemberId,
+        entity.ownerAccountId ?? null,
         entity.visibility,
         entity.updatedAt,
         entity.id,
@@ -705,8 +715,8 @@ class PostgresConnectorRepository implements ConnectorRepository {
   async create(record: ConnectorSecretRecord): Promise<ConnectorSecretRecord> {
     await this.pool.query(
       `insert into connectors
-       (id, workspace_id, provider, status, account_label, scopes, connected_at, last_verified_at, error, secret, family_member_id, owner_employee_id)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+       (id, workspace_id, provider, status, account_label, scopes, connected_at, last_verified_at, error, secret, family_member_id, owner_employee_id, owner_account_id)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
       [
         record.id,
         record.workspaceId,
@@ -720,6 +730,7 @@ class PostgresConnectorRepository implements ConnectorRepository {
         record.secret,
         record.familyMemberId,
         record.ownerEmployeeId ?? null,
+        record.ownerAccountId ?? null,
       ],
     );
     return record;
@@ -728,8 +739,9 @@ class PostgresConnectorRepository implements ConnectorRepository {
   async update(record: ConnectorSecretRecord): Promise<ConnectorSecretRecord> {
     await this.pool.query(
       `update connectors set provider = $1, status = $2, account_label = $3, scopes = $4,
-       connected_at = $5, last_verified_at = $6, error = $7, secret = $8, family_member_id = $9, owner_employee_id = $10
-       where id = $11 and workspace_id = $12`,
+       connected_at = $5, last_verified_at = $6, error = $7, secret = $8, family_member_id = $9,
+       owner_employee_id = $10, owner_account_id = $11
+       where id = $12 and workspace_id = $13`,
       [
         record.provider,
         record.status,
@@ -741,6 +753,7 @@ class PostgresConnectorRepository implements ConnectorRepository {
         record.secret,
         record.familyMemberId,
         record.ownerEmployeeId ?? null,
+        record.ownerAccountId ?? null,
         record.id,
         record.workspaceId,
       ],
@@ -866,6 +879,7 @@ type ConnectorRow = {
   secret: string;
   family_member_id: string | null;
   owner_employee_id: string | null;
+  owner_account_id?: string | null;
 };
 
 type BindingRow = {
@@ -903,6 +917,7 @@ function mapConnector(row: ConnectorRow): ConnectorSecretRecord {
     secret: row.secret,
     familyMemberId: row.family_member_id ?? null,
     ownerEmployeeId: row.owner_employee_id ?? null,
+    ownerAccountId: row.owner_account_id ?? null,
   };
 }
 
@@ -1163,6 +1178,8 @@ type AccountRow = {
   model_credit?: ModelCreditBalance | null;
   paid_invoice_ids?: string[] | null;
   sessions?: AccountSession[] | null;
+  mfa_enabled?: boolean | null;
+  mfa_secret?: string | null;
 };
 
 function mapAccount(row: AccountRow): StudioAccountRecord {
@@ -1183,6 +1200,8 @@ function mapAccount(row: AccountRow): StudioAccountRecord {
     tokenTopUps: Array.isArray(row.token_top_ups) ? row.token_top_ups : [],
     paidInvoiceIds: Array.isArray(row.paid_invoice_ids) ? row.paid_invoice_ids : [],
     sessions: Array.isArray(row.sessions) ? row.sessions : [],
+    mfaEnabled: Boolean(row.mfa_enabled),
+    mfaSecret: row.mfa_secret ?? null,
     modelCredit: row.model_credit?.deepseekHalalas != null || row.model_credit?.otherHalalas != null
       ? {
           deepseekHalalas: row.model_credit.deepseekHalalas ?? 0,
@@ -1227,13 +1246,62 @@ class PostgresAccountRepository implements AccountRepository {
     return row ? mapAccount(row) : null;
   }
 
+  async getById(id: string): Promise<StudioAccountRecord | null> {
+    const result = await this.pool.query<AccountRow>(
+      `select * from studio_accounts where workspace_id = $1 and id = $2 limit 1`,
+      [this.workspaceId, id],
+    );
+    const row = result.rows[0];
+    return row ? mapAccount(row) : null;
+  }
+
+  async getByEmail(email: string): Promise<StudioAccountRecord | null> {
+    const result = await this.pool.query<AccountRow>(
+      `select * from studio_accounts
+       where workspace_id = $1 and lower(email) = lower($2)
+       limit 1`,
+      [this.workspaceId, email.trim()],
+    );
+    const row = result.rows[0];
+    return row ? mapAccount(row) : null;
+  }
+
+  async findBySessionTokenHash(tokenHash: string): Promise<StudioAccountRecord | null> {
+    const hash = tokenHash.trim();
+    if (!hash) return null;
+    const result = await this.pool.query<AccountRow>(
+      `select * from studio_accounts
+       where workspace_id = $1
+         and (
+           session_token_hash = $2
+           or exists (
+             select 1 from jsonb_array_elements(coalesce(sessions, '[]'::jsonb)) s
+             where s->>'tokenHash' = $2
+           )
+         )
+       limit 1`,
+      [this.workspaceId, hash],
+    );
+    const row = result.rows[0];
+    return row ? mapAccount(row) : null;
+  }
+
+  async list(): Promise<StudioAccountRecord[]> {
+    const result = await this.pool.query<AccountRow>(
+      `select * from studio_accounts where workspace_id = $1 order by created_at asc`,
+      [this.workspaceId],
+    );
+    return result.rows.map(mapAccount);
+  }
+
   async upsert(account: StudioAccountRecord): Promise<StudioAccountRecord> {
     await this.pool.query(
       `insert into studio_accounts (
          workspace_id, id, email, display_name, password_hash, plan_id, subscription_status,
          period_start, period_end, session_token_hash, connected_at, created_at, updated_at,
-         token_top_ups, model_credit, paid_invoice_ids, sessions
-       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb,$16::jsonb,$17::jsonb)
+         token_top_ups, model_credit, paid_invoice_ids, sessions,
+         mfa_enabled, mfa_secret
+       ) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15::jsonb,$16::jsonb,$17::jsonb,$18,$19)
        on conflict (id) do update set
          workspace_id = excluded.workspace_id,
          token_top_ups = excluded.token_top_ups,
@@ -1249,7 +1317,9 @@ class PostgresAccountRepository implements AccountRepository {
          period_end = excluded.period_end,
          session_token_hash = excluded.session_token_hash,
          connected_at = excluded.connected_at,
-         updated_at = excluded.updated_at`,
+         updated_at = excluded.updated_at,
+         mfa_enabled = excluded.mfa_enabled,
+         mfa_secret = excluded.mfa_secret`,
       [
         account.workspaceId,
         account.id,
@@ -1268,6 +1338,8 @@ class PostgresAccountRepository implements AccountRepository {
         JSON.stringify(account.modelCredit ?? {}),
         JSON.stringify(account.paidInvoiceIds ?? []),
         JSON.stringify(account.sessions ?? []),
+        Boolean(account.mfaEnabled),
+        account.mfaSecret ?? null,
       ],
     );
     return account;
@@ -1276,6 +1348,13 @@ class PostgresAccountRepository implements AccountRepository {
   async delete(): Promise<void> {
     await this.pool.query(`delete from studio_accounts where workspace_id = $1`, [
       this.workspaceId,
+    ]);
+  }
+
+  async deleteById(id: string): Promise<void> {
+    await this.pool.query(`delete from studio_accounts where workspace_id = $1 and id = $2`, [
+      this.workspaceId,
+      id,
     ]);
   }
 }
@@ -1960,6 +2039,8 @@ export async function createPostgresPersistence(pool: Pool): Promise<Persistence
     controlNotifications: new PostgresControlNotificationRepository(pool),
     controlDesk: new PostgresControlDeskRepository(pool),
     companionDesk: new PostgresCompanionDeskRepository(pool, context.workspace.id),
+    professionalWorkspace: new PostgresProfessionalWorkspaceRepository(pool, context.workspace.id),
+    documentSpaces: new PostgresDocumentSpacesRepository(pool, context.workspace.id),
     crew: new PostgresCrewRepository(pool, context.workspace.id),
     sealedVault: new PostgresSealedVaultRepository(pool, context.workspace.id),
     syncRecords: new PostgresSyncRecordRepository(pool, context.workspace.id),
@@ -2337,6 +2418,61 @@ class PostgresCompanionDeskRepository {
       [this.workspaceId, JSON.stringify(state)],
     );
     return state;
+  }
+}
+
+class PostgresProfessionalWorkspaceRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async get(): Promise<ProfessionalWorkspaceState> {
+    const result = await this.pool.query<{ document: ProfessionalWorkspaceState }>(
+      `select document from professional_workspace where workspace_id = $1`,
+      [this.workspaceId],
+    );
+    return normalizeProfessionalWorkspace(result.rows[0]?.document);
+  }
+
+  async save(state: ProfessionalWorkspaceState): Promise<ProfessionalWorkspaceState> {
+    await this.pool.query(
+      `insert into professional_workspace (workspace_id, updated_at, document)
+       values ($1, now(), $2::jsonb)
+       on conflict (workspace_id) do update set
+         updated_at = now(),
+         document = excluded.document`,
+      [this.workspaceId, JSON.stringify(state)],
+    );
+    return state;
+  }
+}
+
+class PostgresDocumentSpacesRepository {
+  constructor(
+    private readonly pool: Pool,
+    private readonly workspaceId: string,
+  ) {}
+
+  async get(): Promise<SpacesDocument> {
+    const result = await this.pool.query<{ document: SpacesDocument }>(
+      `select document from document_spaces where workspace_id = $1`,
+      [this.workspaceId],
+    );
+    return normalizeSpacesDocument(result.rows[0]?.document ?? emptySpacesDocument());
+  }
+
+  async save(state: SpacesDocument): Promise<SpacesDocument> {
+    const next = normalizeSpacesDocument(state);
+    await this.pool.query(
+      `insert into document_spaces (workspace_id, updated_at, document)
+       values ($1, now(), $2::jsonb)
+       on conflict (workspace_id) do update set
+         updated_at = now(),
+         document = excluded.document`,
+      [this.workspaceId, JSON.stringify(next)],
+    );
+    return next;
   }
 }
 

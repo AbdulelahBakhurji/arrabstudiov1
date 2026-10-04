@@ -73,14 +73,19 @@ export type {
 
 export {
   SUBSCRIPTION_PLANS,
+  LIVE_CATALOG_PLAN_IDS,
   SUBSCRIPTION_REDEEM_CODES,
   LOCAL_UNCONNECTED_TOKEN_LIMIT,
+  entitlementsBlockAi,
   TOKEN_TOP_UP_PACKS,
   CUSTOM_CREDIT_TOKENS_PER_HALALA,
   tokensForCredit,
   quoteCredit,
   isFamilyPlanId,
+  isLiveCatalogPlanId,
+  normalizePlanId,
   resolvePlanAudience,
+  planCategoryForAudience,
   type TokenTopUpPack,
   type TokenTopUpPackId,
   type TokenTopUpRecord,
@@ -130,6 +135,7 @@ export {
   type UpsertCompanionStateRequest,
   type SignInAccountRequest,
   type ActivateSubscriptionRequest,
+  type CorrectAccountPlanRequest,
   type UpdateAccountProfileRequest,
   type StartWebAuthRequest,
   type StartWebAuthResponse,
@@ -190,6 +196,10 @@ export {
   type SendEmailResponse,
   type SendWhatsAppRequest,
   type SendWhatsAppResponse,
+  type SendSlackRequest,
+  type SendSlackResponse,
+  type SlackMentionMessage,
+  type ListSlackMentionsResponse,
   type WhatsAppInboundMessage,
   type ListWhatsAppMessagesResponse,
   type SshExecRequest,
@@ -309,6 +319,45 @@ export type {
 export { emptyCompanionDesk, normalizeCompanionDesk } from "./desk.js";
 
 export type {
+  AppendActivityRequest,
+  ImportMuseFinanceRequest,
+  MuseFinanceSummary,
+  MuseGoal,
+  MuseIdea,
+  MuseWatch,
+  ObserveMuseWatchRequest,
+  ProfessionalActivityEvent,
+  ProfessionalAuditEvent,
+  ProfessionalAuditVerdict,
+  ProfessionalBoundaryRule,
+  ProfessionalCompanionStatus,
+  ProfessionalMcpPlugin,
+  ProfessionalPace,
+  ProfessionalReachabilityBinding,
+  ProfessionalResponsibility,
+  ProfessionalSection,
+  ProfessionalSkillGrant,
+  ProfessionalToolKind,
+  ProfessionalWorkspaceState,
+  ProfessionalWorkspaceView,
+  RecordProfessionalActionRequest,
+  RecordProfessionalActionResponse,
+  SetCompanionStatusRequest,
+  SetSkillGrantRequest,
+  TakeControlRequest,
+  UpsertBoundaryRequest,
+  UpsertMcpPluginRequest,
+  UpsertMuseGoalRequest,
+  UpsertMuseIdeaRequest,
+  UpsertMuseWatchRequest,
+  UpsertReachabilityRequest,
+  UpsertResponsibilityRequest,
+  SetProfessionalStayRequest,
+} from "./professional.js";
+
+export { emptyProfessionalWorkspace, normalizeProfessionalWorkspace } from "./professional.js";
+
+export type {
   AddCrewPassRequest,
   AddCrewWatchRequest,
   CrewAction,
@@ -389,6 +438,22 @@ export type {
   WorkforceBlueprintSkill,
 } from "./workforce-blueprint.js";
 export { orgSeatLimitForPlan } from "./account.js";
+
+export {
+  emptySpacesDocument,
+  normalizeSpacesDocument,
+  type ApproveSpacePageDraftRequest,
+  type CreateDocumentSpaceRequest,
+  type CreateSpacePageRequest,
+  type DocumentSpace,
+  type DocumentSpaceId,
+  type SpacePage,
+  type SpacePageId,
+  type SpacesDocument,
+  type SpacesView,
+  type UpdateDocumentSpaceRequest,
+  type UpdateSpacePageRequest,
+} from "./spaces.js";
 
 export * from "./sync/index.js";
 export {

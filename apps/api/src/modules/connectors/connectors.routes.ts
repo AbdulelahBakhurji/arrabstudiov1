@@ -321,6 +321,25 @@ export function registerConnectorsRoutes(app: FastifyInstance, deps: V1Deps): vo
       deps.connectors.sendWhatsApp(request.params.id, request.body ?? { to: "", text: "" }),
   );
 
+  app.post<{
+    Params: { id: string };
+    Body: import("@arrab/shared").SendSlackRequest;
+  }>("/v1/connectors/:id/slack/send", async (request) =>
+    deps.connectors.sendSlack(request.params.id, request.body ?? { channelId: "", text: "" }),
+  );
+
+  app.get<{
+    Params: { id: string };
+    Querystring: { channelId?: string; q?: string; limit?: string };
+  }>("/v1/connectors/:id/slack/mentions", async (request) => {
+    const limit = Number(request.query.limit || "20");
+    return deps.connectors.listSlackMentions(request.params.id, {
+      channelId: request.query.channelId,
+      query: request.query.q,
+      limit: Number.isFinite(limit) ? limit : 20,
+    });
+  });
+
 
   app.get<{
     Params: { id: string };

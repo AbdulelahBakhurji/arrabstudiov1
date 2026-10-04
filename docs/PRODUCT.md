@@ -294,7 +294,7 @@ Without a signed-in cloud account, a soft local allowance applies (`LOCAL_UNCONN
 
 ### 5.4 Payment
 
-Checkout is handled via **Moyasar** invoices in SAR. Plans are also redeemable via studio codes (see Appendix).
+Checkout is handled via **Tap** invoices in SAR. Plans are also redeemable via studio codes (see Appendix).
 
 ---
 
@@ -409,7 +409,7 @@ Pro includes access to the Arrab **testing workspace** (`testingworkspace.arraba
 ### 6.12 Settings (Individual)
 
 Usage · Account · General · Appearance · Models · Notifications · Privacy · Desktop · Connection · Shortcuts · About  
-(Account page also hosts plan catalog, Moyasar checkout, redeem codes.)
+(Account page also hosts plan catalog, Tap checkout, redeem codes.)
 
 ---
 
@@ -960,7 +960,7 @@ Sensitive tool actions can require human approval; presence hosts surface agent 
 ### 14.2 Account management
 
 - Plan catalog with audience filtering  
-- Moyasar checkout  
+- Tap checkout  
 - Redeem codes  
 - Session via account token headers  
 

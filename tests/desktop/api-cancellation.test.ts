@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { arrabApi } from "../../apps/desktop/src/core/api/api";
 
-vi.mock("../../apps/desktop/src/domains/chat/user-skills", () => ({
+vi.mock("../../apps/desktop/src/domains/chat/lib/user-skills", () => ({
   ensureSkillCatalogWarm: async () => [],
   applySkillsToSendBody: <T>(body: T) => body,
 }));

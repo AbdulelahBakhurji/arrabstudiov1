@@ -107,15 +107,15 @@ export async function clearLocalStudioData(_options?: { keepAppearance?: boolean
 
   await Promise.all([
     import("@/core/storage/device-cache").then(({ clearDeviceCache }) => clearDeviceCache()),
-    import("@/domains/chat/chat-history").then(({ clearChatHistory }) => clearChatHistory()),
+    import("@/domains/chat/model/chat-history").then(({ clearChatHistory }) => clearChatHistory()),
     import("@/domains/encryption/incognito-vault").then(({ wipeAllIncognitoVaults }) => wipeAllIncognitoVaults()),
   ]);
 
   const [{ clearAllBrainPartitions }, { clearProfessionalGroups }, { forgetEverything }] =
     await Promise.all([
       import("@/domains/brain/second-brain"),
-      import("@/domains/companions/professional-groups"),
-      import("@/domains/companions/companions"),
+      import("@/domains/companions/model/groups"),
+      import("@/domains/companions/model/companions"),
     ]);
 
   clearAllBrainPartitions();

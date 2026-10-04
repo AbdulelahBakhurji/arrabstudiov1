@@ -1,9 +1,45 @@
-import { useEffect, useRef, useState } from "react";
-import { Archive, Camera, Download, ImageUp, RotateCcw, Trash2, X as XIcon } from "lucide-react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import {
+  Archive,
+  BellRing,
+  Brain,
+  Camera,
+  Check,
+  ChevronDown,
+  Download,
+  ImageUp,
+  Languages,
+  Lock,
+  NotebookPen,
+  Pencil,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Share2,
+  SlidersHorizontal,
+  Sparkles,
+  Target,
+  Trash2,
+  Volume2,
+  Wand2,
+  X as XIcon,
+} from "lucide-react";
+import {
+  arabicAccentById,
+  type ArabicAccentId,
+} from "@/domains/companions/catalog/accent";
+import {
+  allocateUniquePortrait,
+  catalogPortraitFiles,
+  portraitFileFromUrl,
+  portraitGenderForDomain,
+  portraitGenderForFile,
+  resolveCompanionPortraitSrc,
+} from "@/domains/companions/catalog/portrait";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { arrabApi } from "@/core/api/api";
-import { AvatarImageError, fileToAvatarDataUrl, videoFrameToAvatarDataUrl } from "@/domains/companions/avatar-image";
-import { companionDisplayName, isSecretCompanionBrief } from "@/domains/companions/companion-catalog";
+import { AvatarImageError, fileToAvatarDataUrl, videoFrameToAvatarDataUrl } from "@/domains/companions/lib/avatar-image";
+import { companionDisplayName, isSecretCompanionBrief } from "@/domains/companions/catalog/catalog";
 import {
   addFact,
   applyCompanionToneStyle,
@@ -34,7 +70,7 @@ import {
   type CompanionProfile,
   type CompanionSpace,
   type CompanionTone,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import { CompanionModal, PersonAvatar } from "./CompanionUI";
 
 export async function syncCompanionMemory() {
@@ -139,195 +175,292 @@ export function MemoryDetails({
     return match.domain === "general" ? t("compGeneral") : match.name;
   }
 
+  const briefValue = person && !isSecretCompanionBrief(person.brief) ? (person.brief ?? "") : "";
+  const [briefDraft, setBriefDraft] = useState(briefValue);
+  useEffect(() => {
+    setBriefDraft(briefValue);
+  }, [person?.id, briefValue]);
+
+  function saveBrief() {
+    if (!person) return;
+    const next = briefDraft.trim();
+    if (next === briefValue.trim()) return;
+    const target = person.createdAt ? person : ensureGeneralCompanion(person.space);
+    updateCompanion(target.id, { brief: next || null });
+    setNotice(ar ? "حُفظ الغرض." : "Purpose saved.");
+    sync();
+  }
+
   return (
-    <div className="cp-stack">
-      <p className="cp-muted">
-        {ar
-          ? "كل معلومة ومصدرها تحت سيطرتك. اختر ما يُشارك مع الرفاق."
-          : "Every fact and its source. You choose what companions can share."}
-      </p>
+    <div className="cpx-panel">
       {person ? (
-        <label className="cp-label">
-          {t("compBrief")}
+        <section className="cpx-card">
+          <header className="cpx-card-head">
+            <span className="cpx-card-icon">
+              <Target size={15} strokeWidth={1.8} />
+            </span>
+            <div>
+              <h4>{t("compBrief")}</h4>
+              <p>{t("compBriefHint")}</p>
+            </div>
+            <span className="cpx-count">{briefDraft.length}/8000</span>
+          </header>
           <textarea
-            className="cp-input cp-catalog-purpose"
-            rows={6}
-            defaultValue={isSecretCompanionBrief(person.brief) ? "" : (person.brief ?? "")}
-            key={person.id + String(person.brief ?? "")}
+            className="cp-input cpx-textarea"
+            rows={5}
+            maxLength={8000}
+            value={briefDraft}
             disabled={!ready}
-            onBlur={(event) => {
-              const next = event.target.value.trim();
-              const previous = isSecretCompanionBrief(person.brief) ? "" : (person.brief ?? "");
-              if (next === previous) return;
-              const target = person.createdAt ? person : ensureGeneralCompanion(person.space);
-              updateCompanion(target.id, { brief: next || null });
-              sync();
-            }}
+            onChange={(event) => setBriefDraft(event.target.value)}
+            onBlur={saveBrief}
             placeholder={t("compBriefPlaceholder")}
           />
-          <span className="cp-field-hint">{t("compBriefHint")}</span>
-        </label>
+        </section>
       ) : null}
-      <form className="cp-memory-form" onSubmit={(event) => void submitFact(event)}>
-        <label className="cp-sr-only" htmlFor="companion-memory-input">
-          {t("compKnows")}
-        </label>
-        <input
-          id="companion-memory-input"
-          className="cp-input"
-          value={draft}
-          disabled={!ready}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder={
-            ar ? "معلومة أحب أن تتذكرها…" : "Something I want you to remember…"
-          }
-        />
-        {!person ? (
-          <label className="cp-memory-assign">
-            <span className="cp-sr-only">{ar ? "تعيين لرفيق" : "Assign to companion"}</span>
-            <select
-              className="cp-input"
-              value={assignId}
-              disabled={!ready}
-              onChange={(event) => setAssignId(event.target.value)}
-            >
-              <option value="">{ar ? "لكل الرفاق" : "All companions"}</option>
-              {people.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.domain === "general" ? t("compGeneral") : item.name}
-                </option>
-              ))}
-            </select>
+
+      <section className="cpx-card">
+        <header className="cpx-card-head">
+          <span className="cpx-card-icon">
+            <Brain size={15} strokeWidth={1.8} />
+          </span>
+          <div>
+            <h4>{t("compKnows")}</h4>
+            <p>
+              {ar
+                ? "كل معلومة ومصدرها تحت سيطرتك. اختر ما يُشارك مع الرفاق."
+                : "Every fact and its source. You choose what companions can share."}
+            </p>
+          </div>
+          <span className="cpx-count">{facts.length}</span>
+        </header>
+
+        <form className="cpx-composer" onSubmit={(event) => void submitFact(event)}>
+          <label className="cp-sr-only" htmlFor="companion-memory-input">
+            {t("compKnows")}
           </label>
+          <textarea
+            id="companion-memory-input"
+            className="cp-input cpx-composer-input"
+            rows={2}
+            maxLength={600}
+            value={draft}
+            disabled={!ready}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                void submitFact(event);
+              }
+            }}
+            placeholder={ar ? "معلومة أحب أن تتذكرها…" : "Something I want you to remember…"}
+          />
+          <div className="cpx-composer-bar">
+            {!person ? (
+              <label className="cpx-select-wrap cpx-select-compact">
+                <span className="cp-sr-only">{ar ? "تعيين لرفيق" : "Assign to companion"}</span>
+                <select
+                  className="cpx-select"
+                  value={assignId}
+                  disabled={!ready}
+                  onChange={(event) => setAssignId(event.target.value)}
+                >
+                  <option value="">{ar ? "لكل الرفاق" : "All companions"}</option>
+                  {people.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.domain === "general" ? t("compGeneral") : item.name}
+                    </option>
+                  ))}
+                </select>
+                <ChevronDown size={14} aria-hidden />
+              </label>
+            ) : (
+              <span className="cpx-hint">
+                {ar ? "Enter للحفظ · Shift+Enter لسطر جديد" : "Enter to save · Shift+Enter for a new line"}
+              </span>
+            )}
+            <button className="cp-button cp-primary cpx-add" disabled={!ready || !draft.trim()} type="submit">
+              <Plus size={14} />
+              {t("compAdd")}
+            </button>
+          </div>
+        </form>
+
+        {!ready ? (
+          <p className="cp-muted" role="status">
+            {ar ? "جارٍ فتح الذاكرة…" : "Opening memory…"}
+          </p>
         ) : null}
-        <button className="cp-button cp-primary" disabled={!ready || !draft.trim()} type="submit">
-          {t("compAdd")}
-        </button>
-      </form>
-      {!ready ? (
-        <p className="cp-muted" role="status">
-          {ar ? "جارٍ فتح الذاكرة…" : "Opening memory…"}
-        </p>
-      ) : null}
-      {notice ? (
-        <p className="cp-memory-notice" role="status">
-          {notice}
-        </p>
-      ) : null}
-      {error ? (
-        <div className="cp-notice" role="alert">
-          {error}
-          <button type="button" className="cp-button" onClick={sync}>
-            {ar ? "إعادة المحاولة" : "Retry"}
-          </button>
-        </div>
-      ) : null}
-      {ready && facts.length === 0 ? (
-        <div className="cp-quiet-box">{t("compKnowsEmpty")}</div>
-      ) : null}
-      {facts.length > 0 ? (
-        <ul className="cp-stack">
-          {facts.map((fact) => (
-            <li className="cp-fact" key={fact.id}>
-              {editingId === fact.id ? (
-                <form
-                  className="cp-fact-edit"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    if (!editText.trim()) return;
-                    updateFact(fact.id, editText);
-                    setEditingId(null);
-                    setEditText("");
-                    setNotice(ar ? "تم التعديل." : "Updated.");
-                    sync();
-                  }}
-                >
-                  <textarea
-                    className="cp-input"
-                    rows={3}
-                    value={editText}
-                    onChange={(event) => setEditText(event.target.value)}
-                    autoFocus
-                  />
-                  <div className="cp-actions">
-                    <button type="submit" className="cp-button cp-primary" disabled={!editText.trim()}>
-                      {ar ? "حفظ" : "Save"}
-                    </button>
-                    <button
-                      type="button"
-                      className="cp-button"
-                      onClick={() => {
-                        setEditingId(null);
-                        setEditText("");
-                      }}
-                    >
-                      {ar ? "إلغاء" : "Cancel"}
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <p>{fact.text}</p>
-              )}
-              <div className="cp-meta">
-                <span className="cp-tag">
-                  {t(fact.kind === "explicit" ? "compFactExplicit" : "compFactInferred")}
-                </span>
-                <span>{fact.source}</span>
-                <span className="cp-tag">{companionLabel(fact.companionId)}</span>
-                <time dateTime={fact.createdAt}>
-                  {new Date(fact.createdAt).toLocaleDateString(locale, {
-                    day: "numeric",
-                    month: "short",
-                  })}
-                </time>
-              </div>
-              <div className="cp-actions">
-                {editingId === fact.id ? null : (
-                  <button
-                    type="button"
-                    className="cp-text-button"
-                    onClick={() => {
-                      setEditingId(fact.id);
-                      setEditText(fact.text);
-                    }}
-                  >
-                    {ar ? "تعديل" : "Edit"}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="cp-text-button"
-                  aria-pressed={fact.shared}
-                  onClick={() => {
-                    setFactShared(fact.id, !fact.shared);
-                    sync();
-                  }}
-                >
-                  {t(fact.shared ? "compDontShare" : "compShared")}
-                </button>
-                <button
-                  type="button"
-                  className="cp-text-button cp-delete"
-                  onClick={() => {
-                    deleteFact(fact.id);
-                    if (editingId === fact.id) {
+        {notice ? (
+          <p className="cpx-toast" role="status">
+            <Check size={13} />
+            {notice}
+          </p>
+        ) : null}
+        {error ? (
+          <div className="cp-notice" role="alert">
+            {error}
+            <button type="button" className="cp-button" onClick={sync}>
+              {ar ? "إعادة المحاولة" : "Retry"}
+            </button>
+          </div>
+        ) : null}
+
+        {ready && facts.length === 0 ? (
+          <div className="cpx-empty">
+            <Sparkles size={18} strokeWidth={1.6} />
+            <strong>{ar ? "لا توجد ذكريات بعد" : "No memories yet"}</strong>
+            <span>{t("compKnowsEmpty")}</span>
+          </div>
+        ) : null}
+
+        {facts.length > 0 ? (
+          <ul className="cpx-facts">
+            {facts.map((fact) => (
+              <li className="cpx-fact" key={fact.id}>
+                {editingId === fact.id ? (
+                  <form
+                    className="cp-fact-edit"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (!editText.trim()) return;
+                      updateFact(fact.id, editText);
                       setEditingId(null);
                       setEditText("");
-                    }
-                    setNotice(ar ? "حُذفت." : "Deleted.");
-                    sync();
-                  }}
-                >
-                  <Trash2 size={13} />
-                  {t("delete")}
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
-      ) : null}
+                      setNotice(ar ? "تم التعديل." : "Updated.");
+                      sync();
+                    }}
+                  >
+                    <textarea
+                      className="cp-input cpx-textarea"
+                      rows={3}
+                      value={editText}
+                      onChange={(event) => setEditText(event.target.value)}
+                      autoFocus
+                    />
+                    <div className="cp-actions">
+                      <button type="submit" className="cp-button cp-primary" disabled={!editText.trim()}>
+                        {ar ? "حفظ" : "Save"}
+                      </button>
+                      <button
+                        type="button"
+                        className="cp-button"
+                        onClick={() => {
+                          setEditingId(null);
+                          setEditText("");
+                        }}
+                      >
+                        {ar ? "إلغاء" : "Cancel"}
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <p className="cpx-fact-text">{fact.text}</p>
+                )}
+                <div className="cpx-fact-foot">
+                  <div className="cpx-fact-meta">
+                    <span className="cpx-chip" data-kind={fact.kind}>
+                      {t(fact.kind === "explicit" ? "compFactExplicit" : "compFactInferred")}
+                    </span>
+                    <span className="cpx-chip">{companionLabel(fact.companionId)}</span>
+                    {fact.source ? <span className="cpx-meta-text">{fact.source}</span> : null}
+                    <time className="cpx-meta-text" dateTime={fact.createdAt}>
+                      {new Date(fact.createdAt).toLocaleDateString(locale, {
+                        day: "numeric",
+                        month: "short",
+                      })}
+                    </time>
+                  </div>
+                  {editingId === fact.id ? null : (
+                    <div className="cpx-fact-actions">
+                      <button
+                        type="button"
+                        className="cpx-icon-btn"
+                        title={ar ? "تعديل" : "Edit"}
+                        aria-label={ar ? "تعديل" : "Edit"}
+                        onClick={() => {
+                          setEditingId(fact.id);
+                          setEditText(fact.text);
+                        }}
+                      >
+                        <Pencil size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        className="cpx-icon-btn"
+                        aria-pressed={fact.shared}
+                        title={t(fact.shared ? "compDontShare" : "compShared")}
+                        aria-label={t(fact.shared ? "compDontShare" : "compShared")}
+                        onClick={() => {
+                          setFactShared(fact.id, !fact.shared);
+                          sync();
+                        }}
+                      >
+                        {fact.shared ? <Share2 size={13} /> : <Lock size={13} />}
+                      </button>
+                      <button
+                        type="button"
+                        className="cpx-icon-btn cpx-danger"
+                        title={t("delete")}
+                        aria-label={t("delete")}
+                        onClick={() => {
+                          deleteFact(fact.id);
+                          setNotice(ar ? "حُذفت." : "Deleted.");
+                          sync();
+                        }}
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
     </div>
   );
+}
+
+const ACCENT_GROUPS: { en: string; ar: string; ids: ArabicAccentId[] }[] = [
+  { en: "General", ar: "عام", ids: ["auto", "msa"] },
+  {
+    en: "Saudi & Gulf",
+    ar: "السعودية والخليج",
+    ids: ["najdi", "hijazi", "gulf", "emirati", "kuwaiti", "qatari", "bahraini", "omani", "yemeni"],
+  },
+  {
+    en: "Levant & Iraq",
+    ar: "الشام والعراق",
+    ids: ["levantine", "jordanian", "palestinian", "lebanese", "syrian", "iraqi"],
+  },
+  { en: "Nile Valley", ar: "وادي النيل", ids: ["egyptian", "sudanese"] },
+  { en: "Maghreb", ar: "المغرب العربي", ids: ["libyan", "tunisian", "algerian", "moroccan"] },
+];
+
+function speakAccentSample(text: string, lang: string, gender: "female" | "male" = "female") {
+  if (typeof window === "undefined" || !window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(text);
+  utterance.lang = lang;
+  const voices = window.speechSynthesis.getVoices();
+  const preferFemale = gender === "female";
+  const scored = [...voices]
+    .map((voice) => {
+      let score = 0;
+      const vl = voice.lang.toLowerCase();
+      if (vl === lang.toLowerCase()) score += 100;
+      else if (vl.startsWith("ar") && lang.startsWith("ar")) score += 50;
+      if (/saudi|ar-sa|نورة|فاطمة|magpie/i.test(`${voice.name} ${voice.lang}`)) score += 40;
+      if (preferFemale && /female|woman|sara|susan|noura|salma|laila|fatima|sofia|ava/i.test(voice.name))
+        score += 30;
+      if (!preferFemale && /male|man|omar|hassan|david|daniel|reed/i.test(voice.name)) score += 30;
+      return { voice, score };
+    })
+    .sort((a, b) => b.score - a.score);
+  utterance.voice = scored[0]?.voice ?? null;
+  utterance.pitch = preferFemale ? 1.1 : 0.9;
+  window.speechSynthesis.speak(utterance);
 }
 
 export function ExportMemories() {
@@ -468,40 +601,98 @@ export function ToneDetails({ person, onFold }: { person: CompanionProfile; onFo
     ? TONE_STYLE_CHIPS.find((chip) => chip.id === activeChip)
     : null;
 
-  return (
-    <div className="cp-stack cp-tone-panel">
-      <p className="cp-muted">
-        {ar
-          ? "اختر أسلوبًا جاهزًا أو عدّل كل محور. يمكنك أيضًا طلب تغيير الأسلوب أثناء المحادثة («كن أصرح»، «اختصر»)."
-          : "Pick a style or fine-tune each axis. You can also ask in chat (“be blunter”, “keep it short”)."}
-      </p>
+  const accent = arabicAccentById(live.accent);
 
-      <div className="cp-tone-active" aria-live="polite">
-        <span className="cp-tone-active-label">
-          {ar ? "الأسلوب الحالي" : "Current style"}
-        </span>
-        <strong className="cp-tone-active-value">
-          {activeStyle
-            ? ar
-              ? activeStyle.labelAr
-              : activeStyle.labelEn
-            : ar
-              ? "مخصص"
-              : "Custom"}
+  return (
+    <div className="cpx-panel">
+      <div className="cpx-statusbar" aria-live="polite">
+        <span className="cpx-status-label">{ar ? "الأسلوب الحالي" : "Current style"}</span>
+        <strong>
+          {activeStyle ? (ar ? activeStyle.labelAr : activeStyle.labelEn) : ar ? "مخصص" : "Custom"}
         </strong>
-        <span className="cp-tone-sync">
-          {syncing
-            ? ar
-              ? "يحفظ…"
-              : "Saving…"
-            : syncedAt
-              ? ar
-                ? "محفوظ"
-                : "Saved"
-              : null}
+        <span className="cpx-dot" />
+        <span className="cpx-status-label">{ar ? "اللهجة" : "Accent"}</span>
+        <strong>{ar ? accent.labelAr : accent.labelEn}</strong>
+        <span className="cpx-sync" data-state={syncing ? "saving" : syncedAt ? "saved" : "idle"}>
+          {syncing ? (ar ? "يحفظ…" : "Saving…") : syncedAt ? (ar ? "محفوظ" : "Saved") : null}
         </span>
       </div>
 
+      <section className="cpx-card">
+        <header className="cpx-card-head">
+          <span className="cpx-card-icon">
+            <Languages size={15} strokeWidth={1.8} />
+          </span>
+          <div>
+            <h4>{ar ? "اللهجة العربية" : "Arabic accent"}</h4>
+            <p>
+              {ar
+                ? "اللهجة التي يتحدث بها الرفيق عندما يرد بالعربية."
+                : "The dialect this companion speaks when replying in Arabic."}
+            </p>
+          </div>
+        </header>
+        <label className="cpx-select-wrap">
+          <span className="cp-sr-only">{ar ? "اختر اللهجة" : "Choose accent"}</span>
+          <select
+            className="cpx-select"
+            value={accent.id}
+            onChange={(event) => {
+              const ready = readyPerson();
+              const next = event.target.value as ArabicAccentId;
+              updateCompanion(ready.id, { accent: next === "auto" ? null : next });
+              sync(true);
+            }}
+          >
+            {ACCENT_GROUPS.map((group) => (
+              <optgroup key={group.en} label={ar ? group.ar : group.en}>
+                {group.ids.map((id) => {
+                  const item = arabicAccentById(id);
+                  return (
+                    <option key={id} value={id}>
+                      {ar ? `${item.labelAr} — ${item.regionAr}` : `${item.labelEn} — ${item.regionEn}`}
+                    </option>
+                  );
+                })}
+              </optgroup>
+            ))}
+          </select>
+          <ChevronDown size={15} aria-hidden />
+        </label>
+        <div className="cpx-accent-sample" dir="rtl">
+          <p lang="ar">“{accent.sample}”</p>
+          <button
+            type="button"
+            className="cpx-icon-btn"
+            title={ar ? "استمع للمثال" : "Hear sample"}
+            aria-label={ar ? "استمع للمثال" : "Hear sample"}
+            onClick={() =>
+              speakAccentSample(
+                accent.sample,
+                accent.speechLang,
+                portraitGenderForDomain(live.domain) ?? "female",
+              )
+            }
+          >
+            <Volume2 size={14} />
+          </button>
+        </div>
+      </section>
+
+      <section className="cpx-card">
+        <header className="cpx-card-head">
+          <span className="cpx-card-icon">
+            <Wand2 size={15} strokeWidth={1.8} />
+          </span>
+          <div>
+            <h4>{ar ? "أسلوب الرد" : "Reply style"}</h4>
+            <p>
+              {ar
+                ? "اختر أسلوبًا جاهزًا أو عدّل المحاور. يمكنك أيضًا الطلب أثناء المحادثة («كن أصرح»، «اختصر»)."
+                : "Pick a preset or fine-tune below. You can also ask in chat (“be blunter”, “keep it short”)."}
+            </p>
+          </div>
+        </header>
       <div className="cp-tone-styles" role="group" aria-label={t("compTone")}>
         {TONE_STYLE_CHIPS.map((chip) => (
           <button
@@ -533,43 +724,68 @@ export function ToneDetails({ person, onFold }: { person: CompanionProfile; onFo
         </div>
       </div>
 
-      <div className="cp-tone-preview" aria-live="polite">
-        <span className="cp-tone-preview-label">
-          {ar ? "معاينة الرد" : "Reply preview"}
-        </span>
-        <p className="cp-tone-preview-sample">“{preview}”</p>
+      <div className="cpx-bubble" aria-live="polite">
+        <span className="cpx-bubble-label">{ar ? "معاينة الرد" : "Reply preview"}</span>
+        <p>{preview}</p>
       </div>
+      </section>
 
-      {toneAxes.map((axis) => (
-        <label className="cp-tone-range" key={axis.key}>
-          <span>
-            {axis.label}
-            <output>{tone[axis.key]}</output>
+      <section className="cpx-card">
+        <header className="cpx-card-head">
+          <span className="cpx-card-icon">
+            <SlidersHorizontal size={15} strokeWidth={1.8} />
           </span>
-          <input
-            type="range"
-            min="0"
-            max="100"
-            value={tone[axis.key]}
-            onChange={(event) => {
-              const ready = readyPerson();
-              setCompanionTone(ready.id, { [axis.key]: Number(event.target.value) });
-              sync();
-            }}
-            onPointerUp={() => sync(true)}
-            onBlur={() => sync(true)}
-          />
-          <span className="cp-tone-ends">
-            <small>{axis.low}</small>
-            <small>{axis.high}</small>
-          </span>
-        </label>
-      ))}
+          <div>
+            <h4>{ar ? "ضبط دقيق" : "Fine-tune"}</h4>
+            <p>{ar ? "كل محور من 0 إلى 100." : "Each axis from 0 to 100."}</p>
+          </div>
+        </header>
+        <div className="cpx-sliders">
+          {toneAxes.map((axis) => (
+            <label className="cpx-slider" key={axis.key}>
+              <span className="cpx-slider-head">
+                <span>{axis.label}</span>
+                <output>{tone[axis.key]}</output>
+              </span>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={tone[axis.key]}
+                style={{ "--cpx-fill": `${tone[axis.key]}%` } as CSSProperties}
+                onChange={(event) => {
+                  const ready = readyPerson();
+                  setCompanionTone(ready.id, { [axis.key]: Number(event.target.value) });
+                  sync();
+                }}
+                onPointerUp={() => sync(true)}
+                onBlur={() => sync(true)}
+              />
+              <span className="cpx-slider-ends">
+                <small>{axis.low}</small>
+                <small>{axis.high}</small>
+              </span>
+            </label>
+          ))}
+        </div>
+      </section>
 
-      <label className="cp-label">
-        {ar ? "ملاحظات الأسلوب" : "Style notes"}
+      <section className="cpx-card">
+        <header className="cpx-card-head">
+          <span className="cpx-card-icon">
+            <NotebookPen size={15} strokeWidth={1.8} />
+          </span>
+          <div>
+            <h4>{ar ? "ملاحظات الأسلوب" : "Style notes"}</h4>
+            <p>
+              {ar
+                ? "أعلى أولوية من المنزلقات — اكتب كيف تريد أن يرد."
+                : "Highest priority over the sliders — write how they should sound."}
+            </p>
+          </div>
+        </header>
         <textarea
-          className="cp-input"
+          className="cp-input cpx-textarea"
           rows={3}
           key={live.id + String(live.toneNote ?? "")}
           defaultValue={live.toneNote ?? ""}
@@ -587,21 +803,28 @@ export function ToneDetails({ person, onFold }: { person: CompanionProfile; onFo
             sync(true);
           }}
         />
-        <span className="cp-field-hint">
-          {ar
-            ? "أعلى أولوية من المنزلقات — اكتب كيف تريد أن يرد."
-            : "Highest priority over the sliders — write how they should sound."}
-        </span>
-      </label>
+      </section>
 
-      <fieldset className="cp-tone-callouts">
-        <legend>{t("compCallOut")}</legend>
-        <div className="cp-actions cp-tone-callout-chips">
+      <section className="cpx-card">
+        <header className="cpx-card-head">
+          <span className="cpx-card-icon">
+            <BellRing size={15} strokeWidth={1.8} />
+          </span>
+          <div>
+            <h4>{t("compCallOut")}</h4>
+            <p>
+              {ar
+                ? "مواضيع يُسمح للرفيق أن ينبّهك عليها بسبب واضح."
+                : "Topics this companion may flag, always with a visible reason."}
+            </p>
+          </div>
+        </header>
+        <div className="cpx-chips">
           {CALL_OUT_TOPICS.map((topic) => (
             <button
               key={topic}
               type="button"
-              className="cp-button"
+              className="cpx-toggle-chip"
               aria-pressed={live.callOut.includes(topic)}
               onClick={() => {
                 const ready = readyPerson();
@@ -609,13 +832,14 @@ export function ToneDetails({ person, onFold }: { person: CompanionProfile; onFo
                 sync(true);
               }}
             >
+              {live.callOut.includes(topic) ? <Check size={12} /> : null}
               {callOutLabels[topic]}
             </button>
           ))}
         </div>
-      </fieldset>
+      </section>
 
-      <div className="cp-actions">
+      <div className="cp-actions cpx-footer">
         <button
           type="button"
           className="cp-button"
@@ -748,6 +972,27 @@ export function AvatarEditor({ person }: { person: CompanionProfile }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
+  const state = useCompanionState();
+
+  function generateNewFace() {
+    const current = resolveCompanionPortraitSrc(person);
+    const currentFile = portraitFileFromUrl(current);
+    const gender =
+      (currentFile ? portraitGenderForFile(currentFile) : null) ??
+      portraitGenderForDomain(person.domain);
+    const taken = [
+      ...liveCompanions(state).map((item) => resolveCompanionPortraitSrc(item)),
+      ...catalogPortraitFiles(),
+    ];
+    const next = allocateUniquePortrait({
+      domain: `custom-${person.id}`,
+      name: person.name,
+      gender,
+      taken,
+    });
+    updateCompanion(person.id, { faceSeed: next.faceSeed, avatarPhoto: next.avatarPhoto });
+  }
+
   async function applyFile(file: File) {
     setBusy(true);
     setError("");
@@ -787,22 +1032,14 @@ export function AvatarEditor({ person }: { person: CompanionProfile }) {
             <Camera size={15} />
             {locale === "ar" ? "استخدام الكاميرا" : "Use camera"}
           </button>
-          {person.avatarPhoto ? (
+          {person.avatarPhoto?.startsWith("data:") ? (
             <button type="button" className="cp-text-button" onClick={() => setCompanionAvatar(person.id, null)}>
               <XIcon size={13} />
               {locale === "ar" ? "الرجوع إلى الصورة المولَّدة" : "Revert to AI portrait"}
             </button>
           ) : (
-            <button
-              type="button"
-              className="cp-text-button"
-              onClick={() => {
-                updateCompanion(person.id, {
-                  faceSeed: Math.floor(Math.random() * 4096),
-                  avatarPhoto: null,
-                });
-              }}
-            >
+            <button type="button" className="cp-text-button" onClick={generateNewFace}>
+              <RefreshCw size={13} />
               {locale === "ar" ? "توليد وجه جديد" : "Generate new face"}
             </button>
           )}

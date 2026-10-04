@@ -9,7 +9,7 @@ import {
   loadChatHistory,
   mergeRemoteConversations,
   usePersistedChat,
-} from "@/domains/chat/chat-history";
+} from "@/domains/chat/model/chat-history";
 import { cn } from "@/shared/lib/utils";
 
 export function ConversationsPage() {

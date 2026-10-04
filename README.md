@@ -66,8 +66,11 @@ pnpm ship
 
 ## Where is…?
 
+Full map: **[STRUCTURE.md](./STRUCTURE.md)**.
+
 | Question | Answer |
 | --- | --- |
+| Repo map | [STRUCTURE.md](./STRUCTURE.md) |
 | API server | `apps/api` — Fastify; prod at `api.arrabai.com` |
 | Authentication | `apps/api/src/modules/accounts` + desktop `core/session` |
 | Permissions / roles | `apps/api/src/http/route-policy.ts` + org/family services |
@@ -75,7 +78,8 @@ pnpm ship
 | AI / models | `packages/ai` + `apps/api` conversations module |
 | Agents / tools | `packages/agents` + workspace module |
 | Database | `packages/database` (Postgres when `DATABASE_URL` set) |
-| Desktop UI | `apps/desktop` |
+| Desktop UI | `apps/desktop` — layers in STRUCTURE.md |
+| Companions / chat code | `apps/desktop/src/domains/{companions,chat}/` (`model` · `lib` · `pages` · `ui`) |
 | Add a feature | [docs/FEATURE.md](./docs/FEATURE.md) · `pnpm new:feature` |
 | Tests | [docs/TESTING.md](./docs/TESTING.md) |
 | Deploy API | [docs/DEPLOY.md](./docs/DEPLOY.md) |
@@ -88,28 +92,10 @@ Contributing: [docs/CONTRIBUTING.md](./docs/CONTRIBUTING.md) · Dev setup: [docs
 ## Monorepo layout
 
 ```text
+STRUCTURE.md          # One-page repository map
 AGENTS.md             # Map for Cursor and Claude
-CLAUDE.md             # Claude Code entry (points at AGENTS.md)
-.cursor/rules/        # Persistent Cursor rules
-apps/
-  desktop/            # Tauri + React — Studio UI
-  api/                # Fastify Arrab API (authoritative backend)
-  ios/                # Native SwiftUI client
-  android/            # Managed Android client
-  agents-office/      # Internal agents office
-  testingworkspace/   # Internal testing workspace
-packages/
-  shared/             # Domain types + HTTP contract + entitlements + sync
-  core/               # Errors, ports, helpers
-  ai/                 # AI gateway + providers
-  agents/             # Chat runtime
-  database/           # Persistence + migrations
-services/
-  openwa/             # Optional WhatsApp gateway (Docker) — not core API
-brand/                # Canonical logo, symbol, app icon
-docs/                 # Architecture, security, QA, deploy, feature guide
-skills/               # Project agent skills
-scripts/              # Dev + ship + deploy
-tests/                # Cross-package / desktop UI / e2e tests
-release/              # Local / CI installers (gitignored output)
+apps/desktop|api|ios|android
+packages/shared|core|ai|agents|database
+docs/  scripts/  brand/  tests/  release/
+vendor/               # Research-only (not product)
 ```

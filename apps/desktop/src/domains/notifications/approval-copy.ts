@@ -6,7 +6,7 @@ import { friendlyToolTitle } from "@/domains/chat/ui/AgentSteps";
 import {
   parseToolArgsFromApproval,
   parseToolNameFromApproval,
-} from "@/domains/chat/agent-local-tools";
+} from "@/domains/chat/lib/agent-local-tools";
 
 function looksLikeJson(text: string): boolean {
   const value = text.trim();

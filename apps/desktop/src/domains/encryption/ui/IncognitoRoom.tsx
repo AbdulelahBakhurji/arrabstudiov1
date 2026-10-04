@@ -4,9 +4,9 @@ import type { AiGatewayStatusResponse } from "@arrab/shared";
 import { ComposerPlusMenu } from "@/domains/chat/ui/ComposerPlusMenu";
 import { ThinkingBlock, useThoughtTraces } from "@/domains/chat/ui/ThinkingBlock";
 import { arrabApi } from "@/core/api/api";
-import { resolveAiRuntime, resolvePreferredModel } from "@/domains/chat/ai-prefs";
-import { streamOllamaChat } from "@/domains/chat/local-models";
-import { filesToDraftParts } from "@/domains/chat/composer-attachments";
+import { resolveAiRuntime, resolvePreferredModel } from "@/domains/chat/model/ai-prefs";
+import { streamOllamaChat } from "@/domains/chat/lib/local-models";
+import { filesToDraftParts } from "@/domains/chat/lib/composer-attachments";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { readPrefs } from "@/shared/lib/prefs";
 import {

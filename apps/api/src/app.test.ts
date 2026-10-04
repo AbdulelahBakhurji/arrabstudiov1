@@ -27,8 +27,8 @@ const testEnv: ApiEnv = {
   publicBaseUrl: "http://127.0.0.1:8787",
   authWebUrl: undefined,
   siteUrl: "http://127.0.0.1:8787",
-  moyasarSecretKey: undefined,
-  moyasarPublishableKey: undefined,
+  tapSecretKey: undefined,
+  tapPublicKey: undefined,
   dataEncryptionKey: undefined,
   releasesDir: "/tmp/arrab-releases-test",
   googleClientId: undefined,
@@ -930,7 +930,7 @@ describe("arrab api", () => {
     await app.close();
   });
 
-  it("lists paid plans and refuses checkout without Moyasar", async () => {
+  it("lists paid plans and refuses checkout without Tap", async () => {
     const context = await createApiContext(testEnv);
     const app = await buildApp(context);
     const catalog = await app.inject({ method: "GET", url: "/v1/billing/plans" });
@@ -940,7 +940,7 @@ describe("arrab api", () => {
       configured: boolean;
       plans: Array<{ id: string; monthlyPriceHalalas: number }>;
     };
-    expect(body.provider).toBe("moyasar");
+    expect(body.provider).toBe("tap");
     expect(body.configured).toBe(false);
     expect(body.plans.some((plan) => plan.id === "pro" && plan.monthlyPriceHalalas === 4900)).toBe(
       true,

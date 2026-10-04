@@ -30,8 +30,8 @@ import {
   suggestedWork,
   useCompanionState,
   type WorkItem,
-} from "@/domains/companions/companions";
-import { resolveWorkTarget } from "@/domains/chat/work-navigation";
+} from "@/domains/companions/model/companions";
+import { resolveWorkTarget } from "@/domains/chat/lib/work-navigation";
 import {
   CompanionEmpty,
   CompanionPageHeader,

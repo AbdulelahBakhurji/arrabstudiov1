@@ -224,6 +224,30 @@ a {
   background: var(--cp-warn);
 }
 
+.cp-stay-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--cp-border);
+  color: var(--cp-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.cp-stay-badge.is-duty {
+  color: var(--cp-accent);
+  border-color: color-mix(in srgb, var(--cp-accent) 35%, var(--cp-border));
+}
+
+.cp-stay-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--cp-accent);
+}
+
 .cp-head-space {
   flex: 1;
   align-self: stretch;

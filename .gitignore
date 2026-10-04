@@ -26,6 +26,11 @@ secrets/
 # OpenWA clone (pnpm openwa:setup)
 services/openwa/vendor/
 
+# Research-only third-party dumps (not part of the product)
+# vendor/opendots is kept in-tree for reference but ignored by default if huge.
+# Uncomment to stop tracking:
+# vendor/
+
 # Logs & OS
 *.log
 .DS_Store

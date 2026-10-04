@@ -13,7 +13,11 @@ import {
   UserRound,
   UsersRound,
 } from "lucide-react";
-import type { AccountSessionPublic, AccountStatusResponse, SubscriptionPlanId } from "@arrab/shared";
+import type {
+  AccountSessionPublic,
+  AccountStatusResponse,
+  SubscriptionPlanId,
+} from "@arrab/shared";
 import { SUBSCRIPTION_PLANS } from "@arrab/shared";
 import { FamilyHouseholdPanel } from "@/domains/family/ui/FamilyHouseholdPanel";
 import { Surface } from "@/shared/ui/Surface";
@@ -27,7 +31,7 @@ import {
   subscribeAccountSession,
 } from "@/core/session/account-session";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
-import { liveCompanions, useCompanionState } from "@/domains/companions/companions";
+import { liveCompanions, useCompanionState } from "@/domains/companions/model/companions";
 import { openPlansPage } from "@/core/platform/desktop";
 import { pushToast } from "@/domains/notifications/notify";
 import { useOrgSeatCapabilities } from "@/domains/organization/org-seat";
@@ -583,52 +587,61 @@ export function AccountManagementPage() {
                     <div className="grid gap-3 sm:grid-cols-3">
                       <Metric
                         label={t("usageInputTokens")}
-                        value={formatTokens(ownUsage.inputTokens, t("unlimitedTokens"))}
+                        value={formatTokens(ownUsage.inputTokens, "0")}
                       />
                       <Metric
                         label={t("usageOutputTokens")}
-                        value={formatTokens(ownUsage.outputTokens, t("unlimitedTokens"))}
+                        value={formatTokens(ownUsage.outputTokens, "0")}
                       />
                       <Metric
                         label={t("usageCompletions")}
-                        value={formatTokens(ownUsage.events, t("unlimitedTokens"))}
+                        value={formatTokens(ownUsage.events, "0")}
                       />
                     </div>
                   ) : (
                     <>
                   <UsageMeter
                     pct={pct}
-                    overLimit={overLimit}
-                    unlimited={limit === null}
-                    unlimitedLabel={t("unlimitedTokens")}
+                    overLimit={overLimit || Boolean(entitlements?.pauseMode)}
+                    unlimited={false}
+                    unlimitedLabel="—"
                   />
 
                   <div className="mt-4 flex items-end justify-between gap-3">
                     <div>
                       <p className="text-[11px] text-neutral-500">{t("periodTokens")}</p>
                       <p className="mt-1 text-sm tabular-nums text-white">
-                        {limit === null
-                          ? t("unlimitedTokens")
-                          : `${pct}% ${t("usageTokensUsed").toLowerCase()}`}
+                        {limit == null || limit <= 0
+                          ? formatTokens(used, "0")
+                          : `${formatTokens(used, "0")} / ${formatTokens(limit, "0")}`}
                       </p>
                     </div>
                     <p className="text-xs text-neutral-500">
-                      {limit === null
-                        ? t("unlimitedTokens")
-                        : `${Math.max(0, 100 - pct)}% ${t("amRemaining")}`}
+                      {limit == null || limit <= 0
+                        ? "—"
+                        : `${formatTokens(Math.max(0, limit - used), "0")} ${t("amRemaining")}`}
                     </p>
                   </div>
 
                   {overLimit ||
+                  Boolean(entitlements?.pauseMode) ||
                   (isSignedIn &&
                     (planId === "free" || planId === "family_free") &&
                     pct >= 80) ? (
                     <button
                       type="button"
-                      onClick={() => selectSection("plan")}
+                      onClick={() => {
+                        if (overLimit || entitlements?.pauseMode) {
+                          void openPlansPage();
+                          return;
+                        }
+                        selectSection("plan");
+                      }}
                       className="mt-4 h-9 w-full rounded-lg border border-amber-400/25 bg-amber-500/10 text-sm text-amber-100 transition hover:bg-amber-500/15"
                     >
-                      {t("amUpgradeCta")}
+                      {overLimit || entitlements?.pauseMode
+                        ? t("amPausedUpgradeCta")
+                        : t("amUpgradeCta")}
                     </button>
                   ) : null}
                     </>
@@ -821,6 +834,10 @@ export function AccountManagementPage() {
                   <span className="rounded-md border border-white/10 px-2.5 py-1 text-xs capitalize text-neutral-400">
                     {statusLabel(entitlements?.subscriptionStatus ?? account?.subscriptionStatus)}
                   </span>
+                  <span className="inline-flex items-center gap-1.5 rounded-md border border-white/10 px-2.5 py-1 text-xs text-neutral-400">
+                    <CreditCard className="size-3.5" strokeWidth={1.8} />
+                    {t("amBilledViaTap")}
+                  </span>
                 </div>
 
                 {entitlements ? (
@@ -831,14 +848,10 @@ export function AccountManagementPage() {
                     />
                     <Fact
                       label={t("amTokenLimit")}
-                      value={
-                        entitlements.tokenLimit === null
-                          ? t("unlimitedTokens")
-                          : t("plansUsageTier").replace(
-                              "{n}",
-                              planUsageTier(account?.planId ?? entitlements.planId),
-                            )
-                      }
+                      value={t("plansUsageTier").replace(
+                        "{n}",
+                        planUsageTier(account?.planId ?? entitlements.planId),
+                      )}
                     />
                     <Fact
                       label={t("amDaysLeft")}
@@ -847,14 +860,53 @@ export function AccountManagementPage() {
                   </div>
                 ) : null}
 
-                <button
-                  type="button"
-                  onClick={() => void openPlansPage()}
-                  className="inline-flex h-9 items-center gap-2 rounded-lg bg-white px-4 text-sm font-medium text-black"
-                >
-                  {t("managePlansOnWebsite")}
-                  <ArrowUpRight className="size-3.5" strokeWidth={1.8} />
-                </button>
+                <p className="mb-4 text-sm leading-relaxed text-neutral-400">
+                  {t("amManagePlansWebsiteOnly")}
+                </p>
+
+                <div className="flex flex-wrap gap-2">
+                  {planId === "unlimited" ? (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setBusy(true);
+                        void arrabApi
+                          .correctAccountPlan({ planId: "max" })
+                          .then((next) => {
+                            setStatus(next);
+                            window.dispatchEvent(new CustomEvent(ACCOUNT_EVENT));
+                            pushToast({
+                              title: t("subscriptionActivated"),
+                              body: next.account?.planName ?? "Max",
+                              tone: "success",
+                            });
+                          })
+                          .catch((err: unknown) => {
+                            pushToast({
+                              title:
+                                err instanceof ApiRequestError
+                                  ? err.message
+                                  : t("apiUnavailable"),
+                              tone: "warn",
+                            });
+                          })
+                          .finally(() => setBusy(false));
+                      }}
+                      className="inline-flex h-9 items-center gap-2 rounded-lg bg-white px-4 text-sm font-medium text-black disabled:opacity-40"
+                    >
+                      {t("amFixStudioPlan")}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => void openPlansPage()}
+                    className="inline-flex h-9 items-center gap-2 rounded-lg bg-white px-4 text-sm font-medium text-black"
+                  >
+                    {t("managePlansOnWebsite")}
+                    <ArrowUpRight className="size-3.5" strokeWidth={1.8} />
+                  </button>
+                </div>
               </Panel>
             </div>
           ) : null}
@@ -872,19 +924,42 @@ export function AccountManagementPage() {
                 subtitle={canViewOwnUsageOnly ? t("usageOwnTokensHint") : t("amUsageBody")}
               />
 
+              {isSignedIn && entitlements ? (
+                <div className="mb-5 flex flex-wrap items-center gap-2">
+                  <span className="rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs text-white">
+                    {entitlements.planName}
+                  </span>
+                  {entitlements.seatLimit ? (
+                    <span className="rounded-md border border-white/10 px-2.5 py-1 text-xs text-neutral-400">
+                      {t("amSeatsIncluded")}: {entitlements.seatLimit}
+                    </span>
+                  ) : null}
+                  {entitlements.pauseMode || overLimit ? (
+                    <button
+                      type="button"
+                      onClick={() => void openPlansPage()}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-amber-200 px-3 text-xs font-medium text-[#1a1408]"
+                    >
+                      {t("amPausedUpgradeCta")}
+                      <ArrowUpRight className="size-3.5" strokeWidth={1.8} />
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
               {canViewOwnUsageOnly ? (
                 <div className="grid gap-3 sm:grid-cols-3">
                   <Metric
                     label={t("usageInputTokens")}
-                    value={formatTokens(ownUsage.inputTokens, t("unlimitedTokens"))}
+                    value={formatTokens(ownUsage.inputTokens, "0")}
                   />
                   <Metric
                     label={t("usageOutputTokens")}
-                    value={formatTokens(ownUsage.outputTokens, t("unlimitedTokens"))}
+                    value={formatTokens(ownUsage.outputTokens, "0")}
                   />
                   <Metric
                     label={t("usageCompletions")}
-                    value={formatTokens(ownUsage.events, t("unlimitedTokens"))}
+                    value={formatTokens(ownUsage.events, "0")}
                   />
                 </div>
               ) : (
@@ -893,37 +968,52 @@ export function AccountManagementPage() {
                 <div className="flex flex-col items-center justify-center rounded-xl border border-white/10 bg-black/40 p-5">
                   <UsageRing
                     pct={pct}
-                    overLimit={overLimit}
-                    unlimited={limit === null}
-                    unlimitedLabel="∞"
+                    overLimit={overLimit || Boolean(entitlements?.pauseMode)}
+                    unlimited={false}
+                    unlimitedLabel="—"
                   />
                   <p className="mt-3 text-center text-xs text-neutral-500">
-                    {overLimit ? t("amOverLimit") : t("amWithinQuota")}
+                    {overLimit || entitlements?.pauseMode ? t("amOverLimit") : t("amWithinQuota")}
                   </p>
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-3">
                   <Metric
                     label={t("usageTokensUsed")}
-                    value={limit === null ? t("unlimitedTokens") : `${pct}%`}
+                    value={
+                      limit == null || limit <= 0
+                        ? formatTokens(used, "0")
+                        : `${formatTokens(used, "0")} / ${formatTokens(limit, "0")}`
+                    }
                   />
                   <Metric
                     label={t("amTokenLimit")}
                     value={
-                      limit === null
-                        ? t("unlimitedTokens")
+                      limit == null || limit <= 0
+                        ? "—"
                         : t("plansUsageTier").replace("{n}", planUsageTier(planId))
                     }
                   />
                   <Metric
                     label={t("amRemaining")}
                     value={
-                      limit === null
-                        ? t("unlimitedTokens")
-                        : `${Math.max(0, 100 - pct)}%`
+                      limit == null || limit <= 0
+                        ? "—"
+                        : formatTokens(Math.max(0, limit - used), "0")
                     }
                   />
                 </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <Fact
+                  label={t("amDeepseekCredit")}
+                  value={`${((entitlements?.deepseekCreditHalalas ?? 0) / 100).toLocaleString(locale === "ar" ? "ar-SA" : "en-US")} SAR`}
+                />
+                <Fact
+                  label={t("amOtherCredit")}
+                  value={`${((entitlements?.otherCreditHalalas ?? 0) / 100).toLocaleString(locale === "ar" ? "ar-SA" : "en-US")} SAR`}
+                />
               </div>
 
               <div className="mt-5 grid gap-3 sm:grid-cols-2">
@@ -941,13 +1031,27 @@ export function AccountManagementPage() {
                 />
               </div>
 
-              {(overLimit || planId === "free" || planId === "family_free") && (
+              {(overLimit ||
+                Boolean(entitlements?.pauseMode) ||
+                planId === "free" ||
+                planId === "family_free") && (
                 <button
                   type="button"
-                  onClick={() => selectSection("plan")}
-                  className="mt-5 h-9 rounded-lg bg-white px-4 text-sm font-medium text-black"
+                  onClick={() => {
+                    if (overLimit || entitlements?.pauseMode) {
+                      void openPlansPage();
+                      return;
+                    }
+                    selectSection("plan");
+                  }}
+                  className="mt-5 inline-flex h-9 items-center gap-1.5 rounded-lg bg-white px-4 text-sm font-medium text-black"
                 >
-                  {t("amUpgradeCta")}
+                  {overLimit || entitlements?.pauseMode
+                    ? t("amPausedUpgradeCta")
+                    : t("amUpgradeCta")}
+                  {overLimit || entitlements?.pauseMode ? (
+                    <ArrowUpRight className="size-3.5" strokeWidth={1.8} />
+                  ) : null}
                 </button>
               )}
                 </>

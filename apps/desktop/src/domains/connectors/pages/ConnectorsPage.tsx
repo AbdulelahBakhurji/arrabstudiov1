@@ -22,6 +22,7 @@ import { clearGuestLocalMode } from "@/core/session/guest-mode";
 import { applyControlCatalog, useControlConnectors } from "@/domains/connectors/control-connectors";
 import { cn } from "@/shared/lib/utils";
 import { WhatsAppConnectSheet } from "@/domains/connectors/ui/WhatsAppConnectSheet";
+import { SlackCompanionRoute } from "@/domains/connectors/ui/SlackCompanionRoute";
 
 function isOAuthBrowserProvider(provider: ConnectorProvider | null | undefined): boolean {
   return (
@@ -1209,6 +1210,13 @@ export function ConnectorsPage() {
             </form>
           </section>
         ) : null}
+
+        {(() => {
+          const slack = items.find(
+            (entry) => entry.provider === "slack" && entry.status === "connected",
+          );
+          return slack ? <SlackCompanionRoute connectorId={slack.id} /> : null;
+        })()}
 
         {visibleCatalog.length > 0 ? (
           <div className="fls-connect-grid">

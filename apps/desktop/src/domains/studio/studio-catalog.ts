@@ -2,26 +2,26 @@ import type {
   CompanionToneName,
   StudioCatalogEntry,
   StudioPurposeDef,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import {
   claimStudioAdminAccount,
   getCompanionState,
   getStudioAdminAccountId,
   getStudioCatalogEntries,
   getStudioPurposeEntries,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import { resolveOrgSeatCapabilities } from "@/domains/organization/org-seat";
 import {
   purposeRegistryById,
   studioSelectablePurposes,
-} from "@/domains/companions/purpose-registry";
+} from "@/domains/companions/catalog/purpose-registry";
 import {
   companionPortraitUrl,
   presetPortraitSeed,
   allocateStudioCatalogPortrait,
   collectTakenPortraitFiles,
   portraitFileFromUrl,
-} from "@/domains/companions/companion-portrait";
+} from "@/domains/companions/catalog/portrait";
 
 /**
  * Built-in Studio-selectable purposes — sourced from the Purpose Registry.

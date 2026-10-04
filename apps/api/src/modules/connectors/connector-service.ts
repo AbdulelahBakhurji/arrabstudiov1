@@ -25,6 +25,9 @@ import type {
   SendEmailResponse,
   SendWhatsAppRequest,
   SendWhatsAppResponse,
+  SendSlackRequest,
+  SendSlackResponse,
+  ListSlackMentionsResponse,
   SshExecRequest,
   SshExecResponse,
   StartGmailOAuthResponse,
@@ -306,17 +309,25 @@ export class ConnectorService {
   }
 
   /**
-   * Connector ownership: family seat, else org employee, else the account owner.
-   * Employees never see the owner's connectors or each other's.
+   * Connector ownership: family seat, else org employee, else the signed-in studio account.
+   * Employees never see the owner's connectors or each other's; co-tenant accounts stay isolated.
    */
   private ownedBy(
-    item: { familyMemberId: string | null; ownerEmployeeId?: string | null },
+    item: {
+      familyMemberId: string | null;
+      ownerEmployeeId?: string | null;
+      ownerAccountId?: string | null;
+    },
     seatId: string | null,
   ): boolean {
     if (seatId) return item.familyMemberId === seatId;
     const employeeId = this.activeEmployeeId();
     if (employeeId) return item.ownerEmployeeId === employeeId;
-    return !item.ownerEmployeeId;
+    if (item.ownerEmployeeId) return false;
+    const accountId = currentRequestActor().accountId ?? null;
+    if (accountId && item.ownerAccountId) return item.ownerAccountId === accountId;
+    // Legacy unstamped rows: only the primary owner path sees them (no account stamp yet).
+    return !item.ownerAccountId;
   }
 
   /** Owner stamp for new connector rows (family seat wins; otherwise the signed-in employee). */
@@ -324,9 +335,20 @@ export class ConnectorService {
     return seatId ? null : this.activeEmployeeId();
   }
 
+  private ownerAccountFor(seatId: string | null): string | null {
+    if (seatId || this.activeEmployeeId()) return null;
+    return currentRequestActor().accountId ?? null;
+  }
+
   private async assertSeatCanAccess(record: ConnectorSecretRecord): Promise<void> {
-    const account = await this.persistence.accounts.get();
-    if (account && record.connectedAt < account.createdAt) {
+    const actorAccountId = currentRequestActor().accountId;
+    if (actorAccountId && record.ownerAccountId && record.ownerAccountId !== actorAccountId) {
+      throw new ForbiddenError("This connector belongs to another account");
+    }
+    const account = actorAccountId
+      ? await this.persistence.accounts.getById(actorAccountId)
+      : await this.persistence.accounts.get();
+    if (account && !record.ownerAccountId && record.connectedAt < account.createdAt) {
       throw new ForbiddenError("This connector belongs to a previous account");
     }
     if (!this.familyHousehold || !(await this.familyHousehold.isFamilyPlanActive())) {
@@ -397,6 +419,7 @@ export class ConnectorService {
           id: existing.id,
           familyMemberId: seatId ?? existing.familyMemberId ?? null,
           ownerEmployeeId: this.ownerEmployeeFor(seatId),
+          ownerAccountId: this.ownerAccountFor(seatId),
           connectedAt: existing.connectedAt || record.connectedAt,
         },
         "update",
@@ -409,6 +432,7 @@ export class ConnectorService {
         id: record.id ?? randomUUID(),
         familyMemberId: seatId,
         ownerEmployeeId: this.ownerEmployeeFor(seatId),
+        ownerAccountId: this.ownerAccountFor(seatId),
       } as ConnectorSecretRecord,
       "create",
     );
@@ -417,7 +441,19 @@ export class ConnectorService {
   async list(): Promise<ConnectorPublic[]> {
     const items = await this.visibleRows();
     if (!this.familyHousehold || !(await this.familyHousehold.isFamilyPlanActive())) {
-      return items.filter((item) => this.ownedBy(item, null)).map(toPublic);
+      const accountId = currentRequestActor().accountId;
+      const account = accountId
+        ? await this.persistence.accounts.getById(accountId)
+        : await this.persistence.accounts.get();
+      return items
+        .filter((item) => this.ownedBy(item, null))
+        .filter(
+          (item) =>
+            Boolean(item.ownerAccountId) ||
+            !account ||
+            item.connectedAt >= account.createdAt,
+        )
+        .map(toPublic);
     }
     const seatId = await this.familyHousehold.getActiveMemberId();
     // No active seat → never leak workspace-wide / other-seat connectors.
@@ -893,6 +929,7 @@ export class ConnectorService {
       secret: verified.secret,
       familyMemberId: seatId,
       ownerEmployeeId: this.ownerEmployeeFor(seatId),
+      ownerAccountId: this.ownerAccountFor(seatId),
     };
     await this.saveConnector(record, existing ? "update" : "create");
     return toPublic(record);
@@ -1295,6 +1332,84 @@ export class ConnectorService {
     return sendWhatsAppText(secret, body);
   }
 
+  async sendSlack(id: string, body: SendSlackRequest): Promise<SendSlackResponse> {
+    const connector = await this.loadConnector(id);
+    if (!connector) throw new NotFoundError("Connector", id);
+    if (connector.provider !== "slack") throw new ValidationError("Connector is not Slack");
+    const token = genericAccessTokenFromSecret("slack", connector.secret);
+    const channelId = body.channelId?.trim() ?? "";
+    const text = body.text?.trim() ?? "";
+    if (!channelId || !text) throw new ValidationError("Channel and message text are required");
+    if (text.length > 4000) throw new ValidationError("Slack message is too long");
+    const response = await fetch("https://slack.com/api/chat.postMessage", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=utf-8",
+        "User-Agent": "Arrab-Studio",
+      },
+      body: JSON.stringify({ channel: channelId, text }),
+    });
+    const payload = (await response.json()) as { ok?: boolean; ts?: string; error?: string };
+    if (!payload.ok) throw new ValidationError(payload.error || "Could not send Slack message");
+    return { ok: true, messageId: payload.ts ?? null, channelId };
+  }
+
+  async listSlackMentions(
+    id: string,
+    opts: { channelId?: string; query?: string; limit?: number } = {},
+  ): Promise<ListSlackMentionsResponse> {
+    const connector = await this.loadConnector(id);
+    if (!connector) throw new NotFoundError("Connector", id);
+    if (connector.provider !== "slack") throw new ValidationError("Connector is not Slack");
+    const token = genericAccessTokenFromSecret("slack", connector.secret);
+    const limit = Math.min(40, Math.max(1, opts.limit ?? 20));
+    const channels = opts.channelId
+      ? [{ id: opts.channelId, name: opts.channelId }]
+      : (await listSlackChannels(token)).slice(0, 8);
+    const needle = (opts.query ?? "").trim().toLowerCase();
+    const items: ListSlackMentionsResponse["items"] = [];
+    for (const channel of channels) {
+      const response = await fetch(
+        `https://slack.com/api/conversations.history?channel=${encodeURIComponent(channel.id)}&limit=30`,
+        {
+          headers: { Authorization: `Bearer ${token}`, "User-Agent": "Arrab-Studio" },
+        },
+      );
+      const payload = (await response.json()) as {
+        ok?: boolean;
+        messages?: Array<{ ts?: string; user?: string; text?: string; type?: string }>;
+      };
+      if (!payload.ok) continue;
+      for (const message of payload.messages ?? []) {
+        const text = message.text?.trim() ?? "";
+        if (!text) continue;
+        const looksMention =
+          text.includes("<@") ||
+          /\b(arrab|companion|@)\b/i.test(text) ||
+          (needle ? text.toLowerCase().includes(needle) : false);
+        if (!looksMention && needle) continue;
+        if (!looksMention && !needle) {
+          // Without a query, keep messages that @mention anyone or say Arrab/companion.
+          if (!text.includes("<@") && !/\barrab\b/i.test(text)) continue;
+        }
+        items.push({
+          id: message.ts || `${channel.id}-${items.length}`,
+          channelId: channel.id,
+          channelName: channel.name ?? null,
+          user: message.user ?? null,
+          text: text.slice(0, 2000),
+          timestamp: message.ts
+            ? new Date(Number(message.ts) * 1000).toISOString()
+            : new Date().toISOString(),
+        });
+        if (items.length >= limit) break;
+      }
+      if (items.length >= limit) break;
+    }
+    return { items: items.slice(0, limit) };
+  }
+
   async listWhatsAppMessages(
     id: string,
     limit = 40,
@@ -1489,6 +1604,7 @@ export class ConnectorService {
       secret: JSON.stringify(linkedSecret),
       familyMemberId: seatId,
       ownerEmployeeId: this.ownerEmployeeFor(seatId),
+      ownerAccountId: this.ownerAccountFor(seatId),
     };
     await this.saveConnector(record, existing ? "update" : "create");
     return {

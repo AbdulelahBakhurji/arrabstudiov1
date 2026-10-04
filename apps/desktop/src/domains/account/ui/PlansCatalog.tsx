@@ -2,8 +2,8 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Building2, Check, Home, UserRound } from "lucide-react";
 import {
+  LIVE_CATALOG_PLAN_IDS,
   SUBSCRIPTION_PLANS,
-  SUBSCRIPTION_REDEEM_CODES,
   type AccountStatusResponse,
   type PlanAudience,
   type SubscriptionPlan,
@@ -11,19 +11,17 @@ import {
 } from "@arrab/shared";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
+import { openExternalUrl } from "@/core/platform/desktop";
 import { pushToast } from "@/domains/notifications/notify";
 import { useRole } from "@/domains/account/roles/RoleProvider";
 import { cn } from "@/shared/lib/utils";
 
-const PLAN_CODE: Record<SubscriptionPlanId, string> = Object.fromEntries(
-  Object.entries(SUBSCRIPTION_REDEEM_CODES).map(([code, planId]) => [planId, code]),
-) as Record<SubscriptionPlanId, string>;
-
 function priceLabel(plan: SubscriptionPlan, locale: string): string {
-  if (plan.monthlyPriceHalalas === 0) {
+  const halalas = plan.pricePerSeatHalalas ?? plan.monthlyPriceHalalas;
+  if (halalas === 0) {
     return "0";
   }
-  return (plan.monthlyPriceHalalas / 100).toLocaleString(locale === "ar" ? "ar-SA" : "en-US");
+  return (halalas / 100).toLocaleString(locale === "ar" ? "ar-SA" : "en-US");
 }
 
 /** Cursor-style usage multiplier vs Free — never show raw token counts on plans. */
@@ -42,6 +40,7 @@ function badgeLabel(
   if (badge === "Household") return t("plansHousehold");
   if (badge === "Family pick") return t("plansFamilyPick");
   if (badge === "Trial") return t("plansTrial");
+  // Growth / Enterprise / Max — keep English product labels (shared catalog).
   return badge;
 }
 
@@ -103,7 +102,10 @@ export function PlansCatalog({
   const activeAudience = lockedAudience ?? audience;
 
   const plans = useMemo(
-    () => Object.values(SUBSCRIPTION_PLANS).filter((plan) => plan.audience === activeAudience),
+    () =>
+      LIVE_CATALOG_PLAN_IDS.map((id) => SUBSCRIPTION_PLANS[id]).filter(
+        (plan) => plan.audience === activeAudience,
+      ),
     [activeAudience],
   );
 
@@ -139,20 +141,65 @@ export function PlansCatalog({
       goSignIn();
       return;
     }
-    const code = PLAN_CODE[plan.id];
-    if (!code) {
-      return;
-    }
     setBusyId(plan.id);
     try {
-      const status = await arrabApi.activateSubscription({ code });
-      window.dispatchEvent(new CustomEvent("arrab:account"));
-      onAccountChanged?.(status);
+      // Mistaken legacy Scale (org) → live individual plan without a second charge.
+      if (
+        currentPlanId === "unlimited" &&
+        (plan.id === "max" || plan.id === "pro" || plan.id === "starter")
+      ) {
+        const status = await arrabApi.correctAccountPlan({ planId: plan.id });
+        window.dispatchEvent(new CustomEvent("arrab:account"));
+        onAccountChanged?.(status);
+        pushToast({
+          title: t("subscriptionActivated"),
+          body: status.account?.planName ?? plan.name,
+          tone: "success",
+        });
+        return;
+      }
+
+      // Always checkout by catalog plan id — never redeem-code shortcuts for paid SKUs.
+      const checkout = await arrabApi.billingCheckout({ planId: plan.id });
+      if (!checkout.checkoutUrl) {
+        const status = await arrabApi.account();
+        window.dispatchEvent(new CustomEvent("arrab:account"));
+        onAccountChanged?.(status);
+        pushToast({
+          title: t("subscriptionActivated"),
+          body: status.account?.planName ?? plan.name,
+          tone: "success",
+        });
+        return;
+      }
+      await openExternalUrl(checkout.checkoutUrl);
       pushToast({
-        title: t("subscriptionActivated"),
-        body: status.account?.planName ?? plan.name,
+        title: t("quotaCheckoutOpened"),
+        body: t("quotaCheckoutOpenedBody"),
         tone: "success",
       });
+      // Confirm + refresh until Tap applies this exact plan id (never a different SKU).
+      void (async () => {
+        const started = Date.now();
+        while (Date.now() - started < 15 * 60_000) {
+          await new Promise((r) => window.setTimeout(r, 4_000));
+          if (checkout.invoiceId) {
+            await arrabApi.billingConfirm(checkout.invoiceId).catch(() => undefined);
+          }
+          const status = await arrabApi.account().catch(() => null);
+          if (!status) continue;
+          if (status.account?.planId === plan.id || status.entitlements?.planId === plan.id) {
+            window.dispatchEvent(new CustomEvent("arrab:account"));
+            onAccountChanged?.(status);
+            pushToast({
+              title: t("subscriptionActivated"),
+              body: status.account?.planName ?? plan.name,
+              tone: "success",
+            });
+            return;
+          }
+        }
+      })();
     } catch (err: unknown) {
       pushToast({
         title: err instanceof ApiRequestError ? err.message : t("apiUnavailable"),
@@ -233,7 +280,9 @@ export function PlansCatalog({
               {SUBSCRIPTION_PLANS[currentPlanId]?.name ?? currentPlanId}
             </span>
           </p>
-          <p className="text-xs text-neutral-500">{t("plansBilledMonthly")}</p>
+          <p className="text-xs text-neutral-500">
+            {t("plansBilledMonthly")} · {t("amBilledViaTap")}
+          </p>
         </div>
       ) : null}
 
@@ -298,7 +347,12 @@ export function PlansCatalog({
                   {priceLabel(plan, locale)}
                 </span>
                 <span className="mb-1 text-sm text-neutral-500">
-                  {t("plansSar")} {t("plansPerMonth")}
+                  {t("plansSar")}{" "}
+                  {plan.pricePerSeatHalalas
+                    ? locale === "ar"
+                      ? "/ مقعد / شهر"
+                      : "/ seat / month"
+                    : t("plansPerMonth")}
                 </span>
               </div>
               <p className="mt-1 text-xs text-neutral-500">

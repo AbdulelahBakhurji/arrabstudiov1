@@ -125,6 +125,26 @@ export const connectorsApi = {
       body,
       timeoutMs: 45_000,
     }),
+  sendSlack: (id: string, body: import("@arrab/shared").SendSlackRequest) =>
+    request<import("@arrab/shared").SendSlackResponse>(`/v1/connectors/${id}/slack/send`, {
+      method: "POST",
+      body,
+      timeoutMs: 45_000,
+    }),
+  slackMentions: (
+    id: string,
+    opts: { channelId?: string; q?: string; limit?: number } = {},
+  ) => {
+    const params = new URLSearchParams();
+    if (opts.channelId) params.set("channelId", opts.channelId);
+    if (opts.q) params.set("q", opts.q);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return request<import("@arrab/shared").ListSlackMentionsResponse>(
+      `/v1/connectors/${id}/slack/mentions${qs ? `?${qs}` : ""}`,
+      { timeoutMs: 45_000 },
+    );
+  },
   openWaLinkStart: (body: OpenWaLinkStartRequest = {}) =>
     request<OpenWaLinkStartResponse>("/v1/connectors/openwa/link/start", {
       method: "POST",

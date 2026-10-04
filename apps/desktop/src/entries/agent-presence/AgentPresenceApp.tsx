@@ -9,7 +9,7 @@ import { PhotoAvatar } from "@/domains/companions/ui/CompanionFace";
 import type { AgentPresencePayload } from "@/domains/notifications/agent-presence";
 import { PRESENCE_RESOLVE_EVENT } from "@/domains/notifications/agent-presence";
 import { presenceDisplayCopy } from "@/domains/notifications/approval-copy";
-import { companionPortraitUrl } from "@/domains/companions/companion-portrait";
+import { companionPortraitUrl } from "@/domains/companions/catalog/portrait";
 
 function clampProgress(value: number | null | undefined): number {
   if (typeof value !== "number" || Number.isNaN(value)) return 0;

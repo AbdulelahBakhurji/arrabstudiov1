@@ -4,6 +4,7 @@ import type {
   AccountStatusResponse,
   AccountSessionPublic,
   ActivateSubscriptionRequest,
+  CorrectAccountPlanRequest,
   BillingCheckoutRequest,
   BillingCheckoutResponse,
   BillingTopUpRequest,
@@ -53,6 +54,9 @@ export const accountApi = {
     ),
   activateSubscription: (body: ActivateSubscriptionRequest) =>
     request<AccountStatusResponse>("/v1/account/subscribe", { method: "POST", body }),
+  /** Fix mistaken Scale (org) → Solo / Studio / Pro (individual). */
+  correctAccountPlan: (body: CorrectAccountPlanRequest) =>
+    request<AccountStatusResponse>("/v1/account/plan/correct", { method: "POST", body }),
   updateAccountProfile: (body: UpdateAccountProfileRequest) =>
     request<AccountStatusResponse>("/v1/account", { method: "PATCH", body }),
   verifyAccountSession: (body: VerifyAccountSessionRequest, timeoutMs = 12_000) =>

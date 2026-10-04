@@ -2,8 +2,8 @@
   "name": "arrab-studio",
   "private": true,
   "type": "module",
-  "version": "0.15.1",
-  "description": "Arrab Studio \u2014 build your AI workforce.",
+  "version": "0.17.0",
+  "description": "Arrab Studio — build your AI workforce.",
   "packageManager": "pnpm@10.15.1",
   "engines": {
     "node": ">=22"
@@ -25,6 +25,7 @@
     "ship:mac": "bash scripts/build-mac.sh",
     "ship:windows": "bash scripts/build-windows.sh",
     "ship:mac:universal": "ARRAB_UNIVERSAL=1 bash scripts/build-mac.sh",
+    "publish:release": "bash scripts/publish-github-release.sh",
     "test:e2e": "ARRAB_E2E=1 vitest run tests/e2e",
     "qa:matrix": "node scripts/qa-matrix.mjs"
   },

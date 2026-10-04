@@ -12,8 +12,8 @@ import {
   isFamilyChild,
   readActiveFamilyMemberId,
 } from "../family/family-session";
-import type { CompanionProfile, CompanionSpace, CompanionState } from "../companions/companions";
-import { findCompanion, getCompanionState } from "../companions/companions";
+import type { CompanionProfile, CompanionSpace, CompanionState } from "../companions/model/companions";
+import { findCompanion, getCompanionState } from "../companions/model/companions";
 
 const STORE_PREFIX = "arrab.secondBrain.v2";
 const LEGACY_STORE_KEY = "arrab.secondBrain.v1";

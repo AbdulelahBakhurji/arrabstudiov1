@@ -20,7 +20,7 @@ import { ConnectivityBanner } from "./ConnectivityBanner";
 import { useTheme } from "@/shared/theme/ThemeProvider";
 import { arrabApi } from "@/core/api/api";
 import { subscribeAccountSession } from "@/core/session/account-session";
-import { syncCompanionsFromCloud } from "@/domains/companions/companions";
+import { syncCompanionsFromCloud } from "@/domains/companions/model/companions";
 import { setAlwaysOnTop, openExternalUrl, syncNativeMenu } from "@/core/platform/desktop";
 import { appIssueReportUrl, appReleasesPageUrl } from "@/domains/managed/app-updates";
 import { notifyStudio } from "@/domains/notifications/notify";
@@ -129,7 +129,7 @@ export function StudioFrame() {
   const entitlements = status?.entitlements;
   const paused =
     signedIn &&
-    Boolean(entitlements?.overLimit) &&
+    (Boolean(entitlements?.overLimit) || entitlements?.pauseMode != null) &&
     !isQuotaEscapePath(location.pathname);
 
   const modes = useMemo(

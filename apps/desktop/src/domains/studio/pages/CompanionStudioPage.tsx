@@ -28,9 +28,9 @@ import {
 import type { ConnectorPublic } from "@arrab/shared";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { PhotoAvatar } from "@/domains/companions/ui/CompanionFace";
-import { useCompanionRoom } from "@/domains/companions/ui/useCompanionRoom";
-import { companionPortraitUrl } from "@/domains/companions/companion-portrait";
-import { fileToAvatarDataUrl } from "@/domains/companions/avatar-image";
+import { useCompanionRoom } from "@/domains/companions/ui/hooks/useCompanionRoom";
+import { companionPortraitUrl } from "@/domains/companions/catalog/portrait";
+import { fileToAvatarDataUrl } from "@/domains/companions/lib/avatar-image";
 import { arrabApi } from "@/core/api/api";
 import { useRole } from "@/domains/account/roles/RoleProvider";
 import {
@@ -44,7 +44,7 @@ import {
   useCompanionState,
   type CompanionProfile,
   type StudioCatalogEntry,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
 import { useFamilyProfile } from "@/domains/family/use-family-profile";
 import {
@@ -70,8 +70,8 @@ import {
   type StudioFile,
   type StudioTreeNode,
 } from "@/domains/studio/studio-catalog";
-import type { StudioPurposeDef } from "@/domains/companions/companions";
-import { purposeRegistryById } from "@/domains/companions/purpose-registry";
+import type { StudioPurposeDef } from "@/domains/companions/model/companions";
+import { purposeRegistryById } from "@/domains/companions/catalog/purpose-registry";
 import {
   phonePresetById,
   phonePreviewQrUrl,
@@ -904,7 +904,7 @@ function UiDesignerWorkspace({
   const ingestUploads = async (list: FileList | null) => {
     if (!list?.length) return;
     const { fileToStudioFile } = await import("@/domains/studio/studio-deploy");
-    const { notifyUploadAttached } = await import("@/domains/chat/composer-attachments");
+    const { notifyUploadAttached } = await import("@/domains/chat/lib/composer-attachments");
     const nextFiles: StudioFile[] = [];
     for (const file of [...list]) {
       nextFiles.push(await fileToStudioFile(file));
@@ -1703,7 +1703,7 @@ function DefaultStudioChat({
   }, [room.lines.length, room.busy]);
 
   const ingestUploads = async (list: FileList | null) => {
-    const { filesToDraftParts } = await import("@/domains/chat/composer-attachments");
+    const { filesToDraftParts } = await import("@/domains/chat/lib/composer-attachments");
     const parts = await filesToDraftParts(list);
     if (!parts.length) return;
     room.setDraft((current) =>

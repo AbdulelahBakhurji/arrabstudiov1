@@ -69,7 +69,7 @@ import {
   incognitoVaultExists,
   wipeIncognitoVault,
 } from "@/domains/encryption/incognito-vault";
-import { clearAccountChatHistory } from "@/domains/chat/chat-history";
+import { clearAccountChatHistory } from "@/domains/chat/model/chat-history";
 import { wipeWorkspaceVaultKey } from "@/core/storage/local-secure";
 import { pickFolder, isTauriRuntime } from "@/core/platform/terminal";
 import { cn } from "@/shared/lib/utils";
@@ -494,30 +494,9 @@ export function SettingsPage() {
   const planLabel = isSignedIn
     ? (billingAccount?.planName ?? accountEntitlements?.planName ?? t("accountNotConnected"))
     : t("accountNotConnected");
-  const unlimitedPlan = Boolean(accountEntitlements && accountEntitlements.tokenLimit === null);
+  // Every live plan is hard-capped — never treat a missing limit as unlimited usage.
+  const unlimitedPlan = false;
   const cloudOverLimit = Boolean(accountEntitlements?.overLimit);
-  const periodEndIso = accountEntitlements?.periodEnd ?? billingAccount?.periodEnd ?? null;
-  const periodStartIso = accountEntitlements?.periodStart ?? billingAccount?.periodStart ?? null;
-  const periodLabel = useMemo(() => {
-    if (!periodEndIso) return null;
-    const localeTag = locale === "ar" ? "ar-SA" : "en-US";
-    return new Date(periodEndIso).toLocaleDateString(localeTag, {
-      month: "short",
-      day: "numeric",
-      year: "numeric",
-    });
-  }, [periodEndIso, locale]);
-  const billingRangeLabel = useMemo(() => {
-    if (!periodStartIso || !periodEndIso) return null;
-    const localeTag = locale === "ar" ? "ar-SA" : "en-US";
-    const opts: Intl.DateTimeFormatOptions = { month: "short", day: "numeric", year: "numeric" };
-    return `${new Date(periodStartIso).toLocaleDateString(localeTag, opts)} → ${new Date(periodEndIso).toLocaleDateString(localeTag, opts)}`;
-  }, [periodStartIso, periodEndIso, locale]);
-  const daysLeftInPeriod = useMemo(() => {
-    if (!periodEndIso) return null;
-    const ms = new Date(periodEndIso).getTime() - Date.now();
-    return Math.max(0, Math.ceil(ms / 86_400_000));
-  }, [periodEndIso]);
   const memberSinceLabel = useMemo(() => {
     const connectedAt = accountStatus?.account?.connectedAt;
     if (!connectedAt) return null;
@@ -811,12 +790,19 @@ export function SettingsPage() {
   async function sendTestNotify() {
     await ensureNotificationPermission();
     updatePref("notifyAgentPresence", true);
+    const companionPhoto = "/companions/portraits/generated/gen-gulf-f-01.jpg";
     await demoAgentPresence({
-      agentName: "Arrab",
+      agentName: "Hessa",
+      agentPhoto: companionPhoto,
       hue: 210,
       faceSeed: 17,
     });
-    pushToast({ title: t("testNotifyTitle"), body: t("testNotifyBody"), tone: "success" });
+    pushToast({
+      title: t("testNotifyTitle"),
+      body: t("testNotifyBody"),
+      tone: "success",
+      photo: companionPhoto,
+    });
   }
 
   return (
@@ -905,11 +891,6 @@ export function SettingsPage() {
                       {(accountEntitlements?.subscriptionStatus ?? billingAccount?.subscriptionStatus) ? (
                         <span className="su-chip">
                           {accountEntitlements?.subscriptionStatus ?? billingAccount?.subscriptionStatus}
-                        </span>
-                      ) : null}
-                      {periodLabel ? (
-                        <span className="su-chip is-soft">
-                          {t("usageResets")} {periodLabel}
                         </span>
                       ) : null}
                       {cloudOverLimit ? (
@@ -1101,7 +1082,6 @@ export function SettingsPage() {
                               ? t("unlimitedTokens")
                               : `${agentPercent}% ${t("usageTokensUsed").toLowerCase()}`}
                           </span>
-                          {billingRangeLabel ? <span>{billingRangeLabel}</span> : null}
                         </div>
                         {cloudOverLimit ? (
                           <p className="sa-warn">{t("quotaExceededHint")}</p>
@@ -1126,12 +1106,8 @@ export function SettingsPage() {
                       </strong>
                     </div>
                     <div className="sa-stat">
-                      <span>{t("billingPeriod")}</span>
-                      <strong className="tabular-nums">
-                        {daysLeftInPeriod == null
-                          ? "—"
-                          : `${daysLeftInPeriod} ${t("amDaysLeft")}`}
-                      </strong>
+                      <span>{t("amPaymentLabel")}</span>
+                      <strong>{t("amBilledViaTap")}</strong>
                     </div>
                   </div>
 

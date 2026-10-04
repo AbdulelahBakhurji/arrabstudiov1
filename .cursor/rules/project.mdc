@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Arrab Studio
 
-Read `AGENTS.md` before large edits. Running product UI is `apps/desktop`. API owns secrets and persistence.
+Read `AGENTS.md` and `STRUCTURE.md` before large edits. Running product UI is `apps/desktop`. API owns secrets and persistence.
 
 - Solo / family / org are plan audiences. Gate with `audienceFromPlanId` and `navForRole`.
 - Contract lives in `packages/shared`. Desktop calls `arrabApi` only.

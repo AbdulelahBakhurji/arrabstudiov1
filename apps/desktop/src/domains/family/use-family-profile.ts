@@ -10,7 +10,7 @@ import {
 import { arrabApi, ApiRequestError } from "@/core/api/api";
 import { pushToast } from "@/domains/notifications/notify";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { COMPANION_FOCUS_KEY } from "@/domains/companions/companions";
+import { COMPANION_FOCUS_KEY } from "@/domains/companions/model/companions";
 import { LAST_CHAT_AGENT_KEY, LAST_COWORK_AGENT_KEY } from "@/shared/lib/prefs";
 
 /** Clear seat-local focus so the next profile never inherits another seat's room. */

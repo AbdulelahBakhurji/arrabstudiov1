@@ -9,7 +9,7 @@ import {
   companionDisplayBlurb,
   companionDisplayName,
   type CompanionPreset,
-} from "@/domains/companions/companion-catalog";
+} from "@/domains/companions/catalog/catalog";
 import {
   connectorLabel,
   resolveConnectorProviders,
@@ -26,12 +26,13 @@ import {
   type CompanionSpace,
   type CompanionTone,
   type CompanionToneName,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import { PhotoAvatar } from "./CompanionFace";
 import { syncCompanionMemory } from "./CompanionDetails";
 import { CompanionPageHeader, PersonAvatar } from "./CompanionUI";
-import { companionPortraitUrl, presetPortraitSeed } from "@/domains/companions/companion-portrait";
-import { useEnsureRealisticPortraits } from "@/domains/companions/ensure-companion-portraits";
+import { companionPortraitUrl, presetPortraitSeed } from "@/domains/companions/catalog/portrait";
+import { useEnsureRealisticPortraits } from "@/domains/companions/lib/ensure-portraits";
+import { CreateCompanionWizard } from "@/domains/companions/ui/CreateCompanionWizard";
 
 type CatalogView = "list" | "create" | "edit";
 type CatalogSelection =
@@ -91,6 +92,7 @@ export function CompanionCatalog({
   const [view, setView] = useState<CatalogView>(() => (initialDomain.trim() ? "create" : "list"));
   const [selection, setSelection] = useState<CatalogSelection>(null);
   const [erpItems, setErpItems] = useState<ErpCompanion[]>([]);
+
   useEffect(() => {
     if (!signedIn) {
       setErpItems([]);
@@ -265,7 +267,7 @@ export function CompanionCatalog({
   if (view === "create") {
     return (
       <div className="cp-ui cp-page cp-catalog-page cp-catalog-create-page">
-        <CompanionPageHeader title={t("compCreateCustom")} subtitle={t("compCatalogSubtitle")}>
+        <CompanionPageHeader title={t("compCreateCustom")} subtitle={t("ccwSubtitle")}>
           <button
             type="button"
             className="cp-button"
@@ -277,12 +279,11 @@ export function CompanionCatalog({
         <div className="cp-catalog-page-body cp-catalog-create-body">
           {assignPicker}
           {signedIn ? (
-            <CompanionEditorForm
+            <CreateCompanionWizard
               space={space}
-              initialDomain={initialDomain}
               familyMemberId={assignMember?.id ?? null}
               onCancel={() => (initialDomain.trim() ? onClose() : setView("list"))}
-              onSaved={(person) => {
+              onCreated={(person) => {
                 onCreated(person);
                 onClose();
               }}

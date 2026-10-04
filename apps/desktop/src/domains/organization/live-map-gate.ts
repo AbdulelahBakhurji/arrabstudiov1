@@ -1,12 +1,10 @@
 import { entitlementsForPlan, isKnownPlanId } from "@arrab/shared";
 
 /**
- * Today the Live Map tab hosts the Agents Office, a development tool that needs `node serve.mjs`
- * from a source checkout (the Rust side refuses to start it in a shipped build). The in-app
- * `LiveOfficeMap` component exists but is not wired yet. Until a production implementation is
- * mounted, a shipped build must not show a tab that can only fail. Flip this when it is wired.
+ * Live Map mounts the in-app `LiveOfficeMap` (workforce departments + agents). The separate
+ * Agents Office host (`node serve.mjs`) remains a development-only tool.
  */
-export const LIVE_MAP_PRODUCTION_READY = false;
+export const LIVE_MAP_PRODUCTION_READY = true;
 
 /**
  * Whether to offer the Live Map tab: the seat's role allows it, the *plan* includes it (Business and

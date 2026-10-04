@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
-import { assertWorkspaceRelative, shellQuote } from "@/domains/chat/shell-safety";
+import { assertWorkspaceRelative, shellQuote } from "@/domains/chat/lib/shell-safety";
 import { normalizeBrowserAddress, safeHttpUrl } from "@/shared/lib/safe-url";
 
 describe("shellQuote", () => {

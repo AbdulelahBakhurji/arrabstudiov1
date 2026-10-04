@@ -111,8 +111,17 @@ jobs:
       - name: Collect release files
         run: |
           mkdir -p release-upload
-          find dist -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.zip' -o -name '*.app.tar.gz' \) -print -exec cp {} release-upload/ \;
+          # Installers + signed updater payload (latest.json + .sig required by Tauri updater).
+          find dist -type f \( \
+            -name '*.dmg' -o -name '*.exe' -o -name '*.msi' -o -name '*.zip' \
+            -o -name '*.app.tar.gz' -o -name '*.app.tar.gz.sig' -o -name 'latest.json' \
+            -o -name '*.sig' \
+          \) -print -exec cp {} release-upload/ \;
+          # Prefer the collected artifacts tree copy of latest.json when present.
+          find dist -type f -path '*/release/artifacts/*/latest.json' -print -exec cp -f {} release-upload/latest.json \; || true
+          find dist -type f -name 'latest.json' -print -exec cp -f {} release-upload/latest.json \; || true
           ls -la release-upload || true
+          test -f release-upload/latest.json || echo "::warning::latest.json missing — in-app updater will not find this release"
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:

@@ -442,20 +442,23 @@ export class DeskService {
     const weekday = riyadhWeekday(now);
     let jobs = state.jobs;
     let changed = false;
+    const dueJobs: DeskJob[] = [];
     const schedules = state.schedules.map((schedule) => {
       if (schedule.paused || schedule.lastRunDay === day || hour < schedule.hour) return schedule;
       if (!repeatMatches(schedule.repeat, weekday)) return schedule;
+      const brief = schedule.brief || schedule.title;
+      const sensitive = deskBriefIsSensitive(`${schedule.title}\n${brief}`);
       const job: DeskJob = {
         id: this.ids.next("desk"),
         companionId: schedule.companionId || "general",
         companionName: schedule.companionName || "Arrab",
         title: schedule.title,
-        brief: schedule.brief,
+        brief,
         status: "needs_you",
         result: null,
         resultHash: null,
         approvedHash: null,
-        sensitive: true,
+        sensitive,
         channel: null,
         recipient: null,
         sentMessageId: null,
@@ -463,13 +466,41 @@ export class DeskService {
         createdAt: now,
         updatedAt: now,
       };
+      dueJobs.push(job);
       jobs = [job, ...jobs].slice(0, 30);
       changed = true;
       return { ...schedule, lastRunDay: day, paused: schedule.repeat === "once" ? true : schedule.paused };
     });
     if (!changed) return state;
-    const next: CompanionDeskState = { ...state, schedules, jobs };
+    let next: CompanionDeskState = { ...state, schedules, jobs };
     await this.persistence.companionDesk.save(next);
+    // When pace is allow, auto-run non-sensitive scheduled turns (OpenDots-style background work).
+    if (state.pace === "allow") {
+      for (const job of dueJobs) {
+        if (job.sensitive) continue;
+        try {
+          await this.run(job.id);
+          const refreshed = await this.load();
+          const live = refreshed.jobs.find((item) => item.id === job.id);
+          if (live?.result) {
+            const stamped: DeskJob = {
+              ...live,
+              result: `[Scheduled turn · ${now.slice(0, 16)}Z]\n${live.result}`,
+              updatedAt: this.clock.isoNow(),
+            };
+            next = {
+              ...refreshed,
+              jobs: refreshed.jobs.map((item) => (item.id === job.id ? stamped : item)),
+            };
+            await this.persistence.companionDesk.save(next);
+          } else {
+            next = refreshed;
+          }
+        } catch {
+          /* leave as needs_you */
+        }
+      }
+    }
     return next;
   }
 

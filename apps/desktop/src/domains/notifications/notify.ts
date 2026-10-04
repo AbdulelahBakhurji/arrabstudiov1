@@ -27,6 +27,8 @@ export type StudioToast = {
   /** Retained for caller compatibility; the OS controls banner duration. */
   durationMs?: number;
   kind?: "approvals" | "teamLaunch" | "connector" | "cowork" | "agent" | "system";
+  /** Companion portrait URL — shown as the OS notification icon when the platform allows. */
+  photo?: string | null;
 };
 
 /**
@@ -42,7 +44,21 @@ export function pushToast(toast: StudioToast): void {
     tag: toast.id ?? `arrab-${toast.kind ?? "system"}-${toast.title.slice(0, 40)}`,
     sticky: Boolean(toast.sticky),
     href: toast.href,
+    photo: toast.photo,
   });
+}
+
+/** Absolute URL for a companion portrait so macOS / Windows can load it as the banner icon. */
+function resolveNotificationPhoto(photo?: string | null): string | undefined {
+  const value = photo?.trim();
+  if (!value) return undefined;
+  if (/^(https?:|asset:|file:|data:)/i.test(value)) return value;
+  if (typeof window === "undefined") return value;
+  try {
+    return new URL(value, window.location.origin).href;
+  } catch {
+    return value;
+  }
 }
 
 async function pingCompanionPanel(): Promise<void> {
@@ -76,12 +92,14 @@ async function sendOsNotification(input: {
   tag?: string;
   sticky?: boolean;
   href?: string;
+  photo?: string | null;
 }): Promise<void> {
   const cleanTitle = sanitizePresenceText(input.title, "Arrab Studio");
   const cleanBody = sanitizePresenceText(input.body, "") || undefined;
   const tag = input.tag || `arrab-${cleanTitle.slice(0, 40)}`;
   if (!osThrottle.allow(tag)) return;
   pendingLink.set(input.href);
+  const icon = resolveNotificationPhoto(input.photo);
 
   if (isTauriRuntime()) {
     try {
@@ -93,6 +111,13 @@ async function sendOsNotification(input: {
         sendNotification({
           title: cleanTitle,
           body: cleanBody,
+          ...(icon
+            ? {
+                icon,
+                // macOS can show a companion attachment beside the banner when the URL is loadable.
+                attachments: [{ id: "companion", url: icon }],
+              }
+            : {}),
         });
         return;
       }
@@ -107,6 +132,7 @@ async function sendOsNotification(input: {
         body: cleanBody,
         tag,
         requireInteraction: Boolean(input.sticky),
+        ...(icon ? { icon } : {}),
       });
     } catch {
       // browser/OS may block silently
@@ -187,6 +213,7 @@ export async function notifyStudio(input: {
       tag: input.approvalId ? `approval-${input.approvalId}` : `arrab-${input.kind}-${copy.title.slice(0, 24)}`,
       sticky: isApproval,
       href: input.href,
+      photo: input.agentPhoto,
     });
   }
 

@@ -16,9 +16,9 @@ import {
 } from "lucide-react";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { PhotoAvatar } from "@/domains/companions/ui/CompanionFace";
-import { useCompanionRoom } from "@/domains/companions/ui/useCompanionRoom";
-import { companionPortraitUrl } from "@/domains/companions/companion-portrait";
-import type { CompanionProfile, StudioCatalogEntry } from "@/domains/companions/companions";
+import { useCompanionRoom } from "@/domains/companions/ui/hooks/useCompanionRoom";
+import { companionPortraitUrl } from "@/domains/companions/catalog/portrait";
+import type { CompanionProfile, StudioCatalogEntry } from "@/domains/companions/model/companions";
 import { MarketsFullChart, OpenFullChartButton } from "@/domains/studio/ui/MarketsFullChart";
 import { arrabApi } from "@/core/api/api";
 import {

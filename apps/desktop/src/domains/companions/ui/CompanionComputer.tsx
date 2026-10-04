@@ -5,7 +5,7 @@ import type { DeskJob, DeskPace } from "@arrab/shared";
 import { ArrowUpRight, ChevronLeft, FileText, Folder, Maximize2, Minimize2, Users, X } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { arrabApi } from "@/core/api/api";
-import { professionalPresets } from "@/domains/companions/professional-companions";
+import { professionalPresets } from "@/domains/companions/model/professional";
 import {
   closeCompanionPage,
   isTauriRuntime,
@@ -78,6 +78,10 @@ const copy = {
     minimize: "Exit full screen",
     agentWait: "Your companion wants to use this computer.",
     agentUsing: "is using this computer",
+    takeWheel: "Take control",
+    releaseWheel: "Hand back",
+    wheelTaken: "You are driving. Companion actions are paused.",
+    wheelFailed: "Could not change control.",
     agentApprove: "Allow",
     agentDismiss: "Not now",
     powerOff: "Computer is off",
@@ -146,6 +150,10 @@ const copy = {
     minimize: "خروج من ملء الشاشة",
     agentWait: "رفيقك يبي يستخدم هذا الكمبيوتر.",
     agentUsing: "يستخدم هذا الكمبيوتر",
+    takeWheel: "خذ المقود",
+    releaseWheel: "أعد التحكم",
+    wheelTaken: "أنت تقود. أعمال الرفيق متوقفة.",
+    wheelFailed: "تعذر تغيير التحكم.",
     agentApprove: "اسمح",
     agentDismiss: "مو الآن",
     powerOff: "الحاسوب مطفأ",
@@ -288,6 +296,7 @@ export function CompanionComputer({
   const [elapsed, setElapsed] = useState(0);
   const [teachBusy, setTeachBusy] = useState(false);
   const [activity, setActivity] = useState<string[]>([]);
+  const [driving, setDriving] = useState(false);
   const recordingRef = useRef(false);
   const stepsRef = useRef<string[]>([]);
   const pendingDriveRef = useRef<string | null>(null);
@@ -392,6 +401,27 @@ export function CompanionComputer({
     if (!canOperate) return;
     const line = command.trim();
     if (!line) return;
+    try {
+      const gate = await arrabApi.recordProfessionalAction({
+        companionId,
+        companionName: name,
+        tool: "shell",
+        action: line,
+        initiator: "person",
+      });
+      if (!gate.allowed) {
+        setLog((current) => [
+          ...current,
+          gate.verdict === "pending"
+            ? `${text.release}: ${line}`
+            : `refused: ${line}`,
+        ]);
+        if (gate.verdict === "pending") setPending(line);
+        return;
+      }
+    } catch {
+      /* Offline desk still runs locally. */
+    }
     setApp("terminal");
     setLog((current) => [...current, `$ ${line}`]);
     pushActivity(`${text.ran}: ${line}`);
@@ -399,6 +429,14 @@ export function CompanionComputer({
       const ran = await runSandboxCommand(line, companionId);
       const output = [ran.stdout.trim(), ran.stderr.trim()].filter(Boolean).join("\n");
       setLog((current) => [...current, output || `exit ${ran.code}`]);
+      void arrabApi
+        .appendProfessionalActivity({
+          companionId,
+          kind: "command",
+          title: line,
+          output: output || `exit ${ran.code}`,
+        })
+        .catch(() => undefined);
       await refresh();
     } catch (err) {
       setLog((current) => [...current, err instanceof Error ? err.message : text.mac]);
@@ -754,9 +792,32 @@ export function CompanionComputer({
     noteLesson(`${text.ran}: ${command}`);
     setLog((current) => [...current, `$ ${command}`]);
     try {
+      const gate = await arrabApi.recordProfessionalAction({
+        companionId,
+        companionName: name,
+        tool: "shell",
+        action: command,
+        initiator: "person",
+      });
+      if (!gate.allowed && gate.verdict === "refused") {
+        setLog((current) => [...current, `refused: ${command}`]);
+        return;
+      }
+      // Pending → person already approved this exact line by pressing release.
+      if (!gate.allowed && gate.verdict === "pending") {
+        // Continue — human release is the approval.
+      }
       const ran = await runSandboxCommand(command, companionId);
       const output = [ran.stdout.trim(), ran.stderr.trim()].filter(Boolean).join("\n");
       setLog((current) => [...current, output || `exit ${ran.code}`]);
+      void arrabApi
+        .appendProfessionalActivity({
+          companionId,
+          kind: "command",
+          title: command,
+          output: output || `exit ${ran.code}`,
+        })
+        .catch(() => undefined);
       await refresh();
     } catch (err) {
       setLog((current) => [...current, err instanceof Error ? err.message : text.mac]);
@@ -1109,6 +1170,28 @@ export function CompanionComputer({
               ) : null}
               <button type="button" className="pro-os-teach" onClick={() => startRecording(false)}>
                 {text.teachTask}
+              </button>
+              <button
+                type="button"
+                className={driving ? "pro-os-teach is-driving" : "pro-os-teach"}
+                disabled={!signedIn}
+                onClick={() => {
+                  void (async () => {
+                    const next = !driving;
+                    try {
+                      await arrabApi.takeProfessionalControl({
+                        companionId,
+                        taken: next,
+                      });
+                      setDriving(next);
+                      setNotice(next ? text.wheelTaken : text.releaseWheel);
+                    } catch {
+                      setError(text.wheelFailed);
+                    }
+                  })();
+                }}
+              >
+                {driving ? text.releaseWheel : text.takeWheel}
               </button>
               {onPowerOff ? (
                 <button type="button" className="pro-os-power-down" onClick={onPowerOff}>

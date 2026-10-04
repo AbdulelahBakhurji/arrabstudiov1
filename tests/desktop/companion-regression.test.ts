@@ -17,7 +17,7 @@ import {
   acceptedWork,
   touchThread,
   visibleFacts,
-} from "../../apps/desktop/src/domains/companions/companions";
+} from "../../apps/desktop/src/domains/companions/model/companions";
 
 beforeEach(async () => {
   const storage = new Map<string, string>();

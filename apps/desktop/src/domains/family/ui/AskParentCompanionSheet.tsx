@@ -3,7 +3,7 @@ import { ShieldPlus } from "lucide-react";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import { pushToast } from "@/domains/notifications/notify";
 import { requestCompanionApproval } from "@/domains/family/guardian-store";
-import type { CompanionSpace } from "@/domains/companions/companions";
+import type { CompanionSpace } from "@/domains/companions/model/companions";
 
 /** Kid asks a parent to approve a new companion — no silent create. */
 export function AskParentCompanionSheet({

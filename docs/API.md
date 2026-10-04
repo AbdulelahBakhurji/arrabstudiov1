@@ -27,7 +27,7 @@ Coolify/Traefik keeps the `/r/<id>` prefix; the API strips it internally.
 | Module | Responsibility |
 | --- | --- |
 | `accounts` | Connect, sign-in, sessions, password, profile, subscribe |
-| `billing` | Plans, Moyasar checkout/callback, confirm (owner-only) |
+| `billing` | Plans, Tap checkout/callback, confirm (owner-only) |
 | `workspace` | Agents, teams, tasks, skills, knowledge, usage, `/v1/meta` |
 | `conversations` | Chat + streaming + AI orchestration |
 | `connectors` | OAuth connectors, webhooks, catalog |

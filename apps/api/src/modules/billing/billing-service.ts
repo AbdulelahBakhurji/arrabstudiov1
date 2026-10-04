@@ -5,6 +5,7 @@ import {
 import {
   SUBSCRIPTION_PLANS,
   TOKEN_TOP_UP_PACKS,
+  normalizePlanId,
   quoteCredit,
   type AccountStatusResponse,
   type BillingCheckoutResponse,
@@ -15,34 +16,21 @@ import {
 } from "@arrab/shared";
 import type { AccountService } from "../accounts/account-service.js";
 import {
-  requireMoyasarClient,
-  type MoyasarClient,
-  type MoyasarInvoice,
-} from "./moyasar.js";
-
-const PLAN_IDS = new Set<SubscriptionPlanId>(
-  Object.keys(SUBSCRIPTION_PLANS) as SubscriptionPlanId[],
-);
-
-function isPlanId(value: string): value is SubscriptionPlanId {
-  return PLAN_IDS.has(value as SubscriptionPlanId);
-}
+  isTapChargePaid,
+  requireTapClient,
+  type TapCharge,
+  type TapClient,
+} from "./tap.js";
 
 function isTopUpPackId(value: string): value is TokenTopUpPackId {
   return Object.prototype.hasOwnProperty.call(TOKEN_TOP_UP_PACKS, value);
 }
 
-function planFromInvoice(invoice: MoyasarInvoice): SubscriptionPlanId | null {
-  const fromMeta = invoice.metadata?.planId?.trim();
-  if (fromMeta && isPlanId(fromMeta)) {
-    return fromMeta;
-  }
-  const fromDescription = invoice.description?.match(/\(([a-z_]+)\)\s*$/i);
-  const captured = fromDescription?.[1]?.toLowerCase();
-  if (captured && isPlanId(captured)) {
-    return captured;
-  }
-  return null;
+function planFromCharge(charge: TapCharge): SubscriptionPlanId | null {
+  const fromMeta = normalizePlanId(charge.metadata?.planId);
+  if (fromMeta) return fromMeta;
+  const fromDescription = charge.description?.match(/\(([a-z_]+)\)\s*$/i);
+  return normalizePlanId(fromDescription?.[1] ?? null);
 }
 
 function amountLabel(halalas: number, currency = "SAR"): string {
@@ -56,18 +44,42 @@ function amountLabel(halalas: number, currency = "SAR"): string {
   return `${sar} ${currency}`;
 }
 
+function extractChargeId(payload: unknown): string | null {
+  if (!payload || typeof payload !== "object") {
+    return null;
+  }
+  const record = payload as Record<string, unknown>;
+  if (typeof record.id === "string" && record.id.trim()) {
+    return record.id.trim();
+  }
+  if (typeof record.charge_id === "string" && record.charge_id.trim()) {
+    return record.charge_id.trim();
+  }
+  const data = record.data;
+  if (data && typeof data === "object") {
+    const nested = data as Record<string, unknown>;
+    if (typeof nested.id === "string" && nested.id.trim()) {
+      return nested.id.trim();
+    }
+  }
+  return null;
+}
+
 export class BillingService {
   constructor(
     private readonly accounts: AccountService,
-    private readonly moyasar: MoyasarClient | null,
+    private readonly tap: TapClient | null,
+    /** Public API origin used for Tap webhook `post.url`. */
     private readonly publicBaseUrl: string,
+    /** Website origin for browser redirects after payment. */
+    private readonly siteUrl: string = publicBaseUrl,
   ) {}
 
   catalog() {
     return {
       currency: "SAR" as const,
-      provider: "moyasar" as const,
-      configured: Boolean(this.moyasar),
+      provider: "tap" as const,
+      configured: Boolean(this.tap),
       plans: Object.values(SUBSCRIPTION_PLANS).map((plan) => ({
         ...plan,
         amountLabel: amountLabel(plan.monthlyPriceHalalas, plan.currency),
@@ -91,15 +103,16 @@ export class BillingService {
       );
     }
     const pack = TOKEN_TOP_UP_PACKS[packId];
-    const client = requireMoyasarClient(this.moyasar);
-    const origin = this.publicBaseUrl.replace(/\/$/, "");
-    const invoice = await client.createInvoice({
-      amount: pack.priceHalalas,
+    const client = requireTapClient(this.tap);
+    const apiOrigin = this.publicBaseUrl.replace(/\/$/, "");
+    const siteOrigin = this.siteUrl.replace(/\/$/, "");
+    const charge = await client.createCharge({
+      amountHalalas: pack.priceHalalas,
       currency: pack.currency,
       description: `Arrab Studio usage pack ${pack.tokens.toLocaleString("en-US")} tokens (${pack.id})`,
-      callbackUrl: `${origin}/v1/billing/moyasar/callback`,
-      successUrl: `${origin}/app?paid=1#usage`,
-      backUrl: `${origin}/app#usage`,
+      postUrl: `${apiOrigin}/v1/billing/tap/callback`,
+      redirectUrl: `${siteOrigin}/app?paid=1#usage`,
+      customer: { email: account.email, firstName: account.displayName },
       metadata: {
         kind: "top_up",
         packId: pack.id,
@@ -108,14 +121,14 @@ export class BillingService {
         periodEnd: account.periodEnd,
       },
     });
-    if (!invoice.url) {
-      throw new ServiceUnavailableError("Moyasar did not return a checkout URL");
+    if (!charge.url) {
+      throw new ServiceUnavailableError("Tap did not return a checkout URL");
     }
     return {
       packId: pack.id,
       tokens: pack.tokens,
-      invoiceId: invoice.id,
-      checkoutUrl: invoice.url,
+      invoiceId: charge.id,
+      checkoutUrl: charge.url,
       amountHalalas: pack.priceHalalas,
       currency: pack.currency,
       amountLabel: amountLabel(pack.priceHalalas, pack.currency),
@@ -136,15 +149,16 @@ export class BillingService {
         "Your subscription renewal is due. Renew first — credit adds to an active plan.",
       );
     }
-    const client = requireMoyasarClient(this.moyasar);
-    const origin = this.publicBaseUrl.replace(/\/$/, "");
-    const invoice = await client.createInvoice({
-      amount: quote.amountHalalas,
+    const client = requireTapClient(this.tap);
+    const apiOrigin = this.publicBaseUrl.replace(/\/$/, "");
+    const siteOrigin = this.siteUrl.replace(/\/$/, "");
+    const charge = await client.createCharge({
+      amountHalalas: quote.amountHalalas,
       currency: "SAR",
       description: `Arrab Studio credit ${quote.amountSar} SAR (VAT not included)`,
-      callbackUrl: `${origin}/v1/billing/moyasar/callback`,
-      successUrl: `${origin}/app?paid=1#usage`,
-      backUrl: `${origin}/app#usage`,
+      postUrl: `${apiOrigin}/v1/billing/tap/callback`,
+      redirectUrl: `${siteOrigin}/app?paid=1#usage`,
+      customer: { email: account.email, firstName: account.displayName },
       metadata: {
         kind: "custom_credit",
         amountHalalas: String(quote.amountHalalas),
@@ -155,19 +169,20 @@ export class BillingService {
         email: account.email,
       },
     });
-    if (!invoice.url) {
-      throw new ServiceUnavailableError("Moyasar did not return a checkout URL");
+    if (!charge.url) {
+      throw new ServiceUnavailableError("Tap did not return a checkout URL");
     }
     return {
       ...quote,
-      invoiceId: invoice.id,
-      checkoutUrl: invoice.url,
+      invoiceId: charge.id,
+      checkoutUrl: charge.url,
       amountLabel: amountLabel(quote.amountHalalas, "SAR"),
     };
   }
 
-  async checkout(planId: string): Promise<BillingCheckoutResponse> {
-    if (!isPlanId(planId)) {
+  async checkout(rawPlanId: string): Promise<BillingCheckoutResponse> {
+    const planId = normalizePlanId(rawPlanId);
+    if (!planId) {
       throw new ValidationError("Unknown plan");
     }
     const account = await this.accounts.requireConnectedAccount();
@@ -178,7 +193,6 @@ export class BillingService {
     if (account.planId === planId && !renewingPastDue) {
       throw new ValidationError(`You are already on ${plan.name}`);
     }
-    // Month ended on Free / Family Free — unlock only by paying for a paid plan.
     if (
       entitlements.pauseMode === "payment_required" &&
       plan.monthlyPriceHalalas <= 0
@@ -199,17 +213,18 @@ export class BillingService {
       };
     }
 
-    const client = requireMoyasarClient(this.moyasar);
-    const origin = this.publicBaseUrl.replace(/\/$/, "");
-    const invoice = await client.createInvoice({
-      amount: plan.monthlyPriceHalalas,
+    const client = requireTapClient(this.tap);
+    const apiOrigin = this.publicBaseUrl.replace(/\/$/, "");
+    const siteOrigin = this.siteUrl.replace(/\/$/, "");
+    const charge = await client.createCharge({
+      amountHalalas: plan.monthlyPriceHalalas,
       currency: plan.currency,
       description: renewingPastDue
         ? `Arrab Studio ${plan.name} renewal (${plan.id})`
         : `Arrab Studio ${plan.name} (${plan.id})`,
-      callbackUrl: `${origin}/v1/billing/moyasar/callback`,
-      successUrl: `${origin}/app?paid=1#plans`,
-      backUrl: `${origin}/app#plans`,
+      postUrl: `${apiOrigin}/v1/billing/tap/callback`,
+      redirectUrl: `${siteOrigin}/app?paid=1#plans`,
+      customer: { email: account.email, firstName: account.displayName },
       metadata: {
         planId: plan.id,
         accountId: account.id,
@@ -217,105 +232,133 @@ export class BillingService {
         renew: renewingPastDue ? "1" : "0",
       },
     });
-    if (!invoice.url) {
-      throw new ServiceUnavailableError("Moyasar did not return a checkout URL");
+    if (!charge.url) {
+      throw new ServiceUnavailableError("Tap did not return a checkout URL");
     }
     return {
       planId: plan.id,
-      invoiceId: invoice.id,
-      checkoutUrl: invoice.url,
+      invoiceId: charge.id,
+      checkoutUrl: charge.url,
       amountHalalas: plan.monthlyPriceHalalas,
       currency: plan.currency,
       amountLabel: amountLabel(plan.monthlyPriceHalalas, plan.currency),
     };
   }
 
-  async confirmInvoice(invoiceId: string): Promise<AccountStatusResponse> {
-    const client = requireMoyasarClient(this.moyasar);
-    const invoice = await client.getInvoice(invoiceId);
-    return this.applyPaidInvoice(invoice);
+  /**
+   * Confirm a paid Tap charge. Always re-fetches from Tap (never trusts the client body alone).
+   * When `expectedAccountId` is set (owner confirm route), metadata must match that account.
+   */
+  async confirmInvoice(
+    invoiceId: string,
+    expectedAccountId?: string | null,
+  ): Promise<AccountStatusResponse> {
+    const client = requireTapClient(this.tap);
+    const charge = await client.getCharge(invoiceId);
+    return this.applyPaidCharge(charge, expectedAccountId);
   }
 
-  async handleCallback(payload: unknown): Promise<{ ok: true; planId?: SubscriptionPlanId }> {
-    const invoiceId = extractInvoiceId(payload);
-    if (!invoiceId) {
-      throw new ValidationError("Moyasar callback is missing an invoice id");
+  async handleCallback(
+    payload: unknown,
+    hashstring?: string,
+  ): Promise<{ ok: true; planId?: SubscriptionPlanId }> {
+    const chargeId = extractChargeId(payload);
+    if (!chargeId) {
+      throw new ValidationError("Tap callback is missing a charge id");
     }
-    const status = await this.confirmInvoice(invoiceId);
+    const client = requireTapClient(this.tap);
+    // Authenticity: require Tap's hashstring HMAC, then re-fetch the charge with the secret key.
+    const posted =
+      payload && typeof payload === "object"
+        ? ({
+            id: chargeId,
+            amount:
+              typeof (payload as { amount?: unknown }).amount === "number"
+                ? (payload as { amount: number }).amount
+                : 0,
+            currency:
+              typeof (payload as { currency?: unknown }).currency === "string"
+                ? (payload as { currency: string }).currency
+                : "SAR",
+            status:
+              typeof (payload as { status?: unknown }).status === "string"
+                ? (payload as { status: string }).status
+                : "",
+            reference: (payload as { reference?: TapCharge["reference"] }).reference,
+            transactionCreated:
+              (payload as { transaction?: { created?: string | number } }).transaction?.created !=
+              null
+                ? String(
+                    (payload as { transaction: { created: string | number } }).transaction.created,
+                  )
+                : null,
+          } satisfies import("./tap.js").TapWebhookHashInput)
+        : null;
+    if (!posted || !client.verifyWebhookHash(posted, hashstring)) {
+      throw new ValidationError("Tap callback signature is invalid");
+    }
+    const status = await this.confirmInvoice(chargeId);
     return { ok: true, planId: status.account?.planId as SubscriptionPlanId | undefined };
   }
 
-  private async applyPaidInvoice(invoice: MoyasarInvoice): Promise<AccountStatusResponse> {
-    if (invoice.status !== "paid") {
+  private async applyPaidCharge(
+    charge: TapCharge,
+    expectedAccountId?: string | null,
+  ): Promise<AccountStatusResponse> {
+    if (!isTapChargePaid(charge.status)) {
       throw new ValidationError(
-        invoice.status === "initiated"
+        charge.status.toUpperCase() === "INITIATED"
           ? "Payment is still in progress"
-          : `Invoice is ${invoice.status}, not paid`,
+          : `Charge is ${charge.status}, not captured`,
       );
     }
-    const account = await this.accounts.requireConnectedAccount();
-    const metaAccountId = invoice.metadata?.accountId?.trim();
-    if (!metaAccountId || metaAccountId !== account.id) {
-      throw new ValidationError("Paid invoice does not belong to this workspace");
+    const metaAccountId = charge.metadata?.accountId?.trim();
+    if (!metaAccountId) {
+      throw new ValidationError("Paid charge is missing account binding");
     }
-    if (invoice.metadata?.kind === "custom_credit") {
-      const amountHalalas = Number(invoice.metadata.amountHalalas);
-      const deepseekHalalas = Number(invoice.metadata.deepseekHalalas);
-      const otherHalalas = Number(invoice.metadata.otherHalalas);
+    if (expectedAccountId && expectedAccountId !== metaAccountId) {
+      throw new ValidationError("Paid charge does not belong to this account");
+    }
+    const account = await this.accounts.requireAccountById(metaAccountId);
+
+    if (charge.metadata?.kind === "custom_credit") {
+      const amountHalalas = Number(charge.metadata.amountHalalas);
+      const deepseekHalalas = Number(charge.metadata.deepseekHalalas);
+      const otherHalalas = Number(charge.metadata.otherHalalas);
       if (
         !Number.isInteger(amountHalalas) ||
-        invoice.amount !== amountHalalas ||
-        invoice.currency !== "SAR" ||
+        charge.amountHalalas !== amountHalalas ||
+        charge.currency !== "SAR" ||
         !Number.isInteger(deepseekHalalas) ||
         !Number.isInteger(otherHalalas)
       ) {
         throw new ValidationError("Paid amount does not match the credit quote");
       }
-      return this.accounts.addModelCredit({ deepseekHalalas, otherHalalas, amountHalalas }, invoice.id);
+      return this.accounts.addModelCredit(
+        { deepseekHalalas, otherHalalas, amountHalalas },
+        charge.id,
+        account.id,
+      );
     }
-    if (invoice.metadata?.kind === "top_up") {
-      const packId = invoice.metadata.packId?.trim() ?? "";
+    if (charge.metadata?.kind === "top_up") {
+      const packId = charge.metadata.packId?.trim() ?? "";
       if (!isTopUpPackId(packId)) {
-        throw new ValidationError("Paid invoice is missing a usage pack");
+        throw new ValidationError("Paid charge is missing a usage pack");
       }
       const pack = TOKEN_TOP_UP_PACKS[packId];
-      if (invoice.amount !== pack.priceHalalas || invoice.currency !== pack.currency) {
+      if (charge.amountHalalas !== pack.priceHalalas || charge.currency !== pack.currency) {
         throw new ValidationError("Paid amount does not match the usage pack");
       }
-      return this.accounts.addTopUp(pack, invoice.id);
+      return this.accounts.addTopUp(pack, charge.id, account.id);
     }
-    const planId = planFromInvoice(invoice);
+    const planId = planFromCharge(charge);
     if (!planId) {
-      throw new ValidationError("Paid invoice is missing a plan");
+      throw new ValidationError("Paid charge is missing a plan");
     }
     const plan = SUBSCRIPTION_PLANS[planId];
-    if (invoice.amount !== plan.monthlyPriceHalalas || invoice.currency !== plan.currency) {
+    if (charge.amountHalalas !== plan.monthlyPriceHalalas || charge.currency !== plan.currency) {
       throw new ValidationError("Paid amount does not match the selected plan");
     }
-    return this.accounts.applyPaidPlan(planId, invoice.id);
+    return this.accounts.applyPaidPlan(planId, charge.id, account.id);
   }
-}
-
-function extractInvoiceId(payload: unknown): string | null {
-  if (!payload || typeof payload !== "object") {
-    return null;
-  }
-  const record = payload as Record<string, unknown>;
-  if (typeof record.id === "string" && record.id.trim()) {
-    return record.id.trim();
-  }
-  if (typeof record.invoice_id === "string" && record.invoice_id.trim()) {
-    return record.invoice_id.trim();
-  }
-  const data = record.data;
-  if (data && typeof data === "object") {
-    const nested = data as Record<string, unknown>;
-    if (typeof nested.id === "string" && nested.id.trim()) {
-      return nested.id.trim();
-    }
-    if (typeof nested.invoice_id === "string" && nested.invoice_id.trim()) {
-      return nested.invoice_id.trim();
-    }
-  }
-  return null;
 }

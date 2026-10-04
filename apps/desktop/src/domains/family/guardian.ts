@@ -12,7 +12,7 @@ import {
   getCompanionState,
   visibleFacts,
   type CompanionProfile,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import {
   brainNodesForScope,
   getSecondBrain,

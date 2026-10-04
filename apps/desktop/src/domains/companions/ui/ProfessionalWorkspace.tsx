@@ -4,16 +4,16 @@ import type { CompanionDeskView, DeskJob, DeskSchedule } from "@arrab/shared";
 import { MessagesSquare, Plus, Search, Trash2, Users, X } from "lucide-react";
 import { arrabApi } from "@/core/api/api";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { type CompanionPreset } from "@/domains/companions/companion-catalog";
-import { purposeLine, tasksForPurpose } from "@/domains/companions/purpose-registry";
-import { professionalDuty, professionalPresets, professionalSpec } from "@/domains/companions/professional-companions";
+import { type CompanionPreset } from "@/domains/companions/catalog/catalog";
+import { purposeLine, tasksForPurpose } from "@/domains/companions/catalog/purpose-registry";
+import { professionalDuty, professionalPresets, professionalSpec } from "@/domains/companions/model/professional";
 import {
   archiveProfessionalGroup,
   createProfessionalGroup,
   useProfessionalGroups,
   type ProfessionalGroup,
-} from "@/domains/companions/professional-groups";
-import { relativeTime, removeCompanion, updateCompanion, type CompanionProfile } from "@/domains/companions/companions";
+} from "@/domains/companions/model/groups";
+import { relativeTime, removeCompanion, updateCompanion, type CompanionProfile } from "@/domains/companions/model/companions";
 import { PersonAvatar } from "@/domains/companions/ui/CompanionUI";
 import { CompanionComputer } from "@/domains/companions/ui/CompanionComputer";
 
@@ -118,6 +118,9 @@ const copy = {
     emptyDeskHint: "Add a companion or start a group chat from the + button.",
     needCompanionsForGroup: "Create at least two companions before a group chat.",
     deleteGroup: "Delete group",
+    stayOn: "24/7 Stay on",
+    stayOff: "24/7 Stay off",
+    stayHint: "Companions keep sweeping routines and watches while you are away.",
   },
   ar: {
     search: "بحث",
@@ -219,6 +222,9 @@ const copy = {
     emptyDeskHint: "أضف رفيقاً أو ابدأ محادثة جماعية من زر +.",
     needCompanionsForGroup: "أنشئ رفيقين على الأقل قبل المحادثة الجماعية.",
     deleteGroup: "حذف المجموعة",
+    stayOn: "المكوث 24/7 يعمل",
+    stayOff: "المكوث 24/7 متوقف",
+    stayHint: "الرفاق يواصلون الروتين والمراقبة وأنت بعيد.",
   },
 } as const;
 
@@ -442,7 +448,38 @@ export function ProfessionalRoster({
   const [menu, setMenu] = useState<{ kind: "person" | "group"; id: string; x: number; y: number } | null>(
     null,
   );
+  const [stayOn, setStayOn] = useState(true);
+  const [stayBusy, setStayBusy] = useState(false);
   const needle = query.trim().toLowerCase();
+
+  useEffect(() => {
+    let cancelled = false;
+    void arrabApi
+      .professionalWorkspace()
+      .then((view) => {
+        if (!cancelled) setStayOn(view.stayEnabled !== false);
+      })
+      .catch(() => {
+        /* desk stays usable offline */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function toggleStay() {
+    if (stayBusy) return;
+    setStayBusy(true);
+    try {
+      const next = !stayOn;
+      const view = await arrabApi.setProfessionalStay({ enabled: next });
+      setStayOn(view.stayEnabled);
+    } catch {
+      /* keep previous */
+    } finally {
+      setStayBusy(false);
+    }
+  }
 
   const companions = people.filter((person) => {
     if (!needle) return true;
@@ -531,6 +568,18 @@ export function ProfessionalRoster({
           ) : null}
         </div>
       </div>
+
+      <button
+        type="button"
+        className={stayOn ? "pro-stay-toggle is-on" : "pro-stay-toggle"}
+        aria-pressed={stayOn}
+        title={text.stayHint}
+        disabled={stayBusy}
+        onClick={() => void toggleStay()}
+      >
+        <span className="pro-stay-dot" aria-hidden />
+        {stayOn ? text.stayOn : text.stayOff}
+      </button>
 
       <div className="pro-roster-list">
         {companions.length === 0 && visibleGroups.length === 0 ? (

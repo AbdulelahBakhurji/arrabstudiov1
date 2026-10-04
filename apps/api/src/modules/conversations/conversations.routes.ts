@@ -1,11 +1,29 @@
 import { ForbiddenError, ServiceUnavailableError } from "@arrab/core";
-import type { CreateConversationRequest, CreateKnowledgeRequest, CreateMemoryRequest, CreateSkillRequest, CreateApprovalRequest, ResolveApprovalRequest, SendMessageRequest, IngestConversationMessagesRequest, UpdateKnowledgeRequest } from "@arrab/shared";
+import {
+  type CreateConversationRequest,
+  type CreateKnowledgeRequest,
+  type CreateMemoryRequest,
+  type CreateSkillRequest,
+  type CreateApprovalRequest,
+  type ResolveApprovalRequest,
+  type SendMessageRequest,
+  type IngestConversationMessagesRequest,
+  type UpdateKnowledgeRequest,
+} from "@arrab/shared";
 import type { FastifyInstance } from "fastify";
 import { generateGeminiFlashPhoto } from "../workspace/image-service.js";
 import type { V1Deps } from "../../http/deps.js";
 import { buildModelCatalog, buildModelRegistry } from "../../platform/config/model-catalog.js";
 
 export function registerConversationsRoutes(app: FastifyInstance, deps: V1Deps): void {
+  app.post<{ Body: { url?: string } }>("/v1/unfurl", async (request) => {
+    if (await deps.familyHousehold.isActiveChildSeat()) {
+      throw new ForbiddenError("Children cannot unfurl links");
+    }
+    const { unfurlPage } = await import("@arrab/agents");
+    return unfurlPage(request.body?.url ?? "");
+  });
+
   app.get("/v1/knowledge", async () => {
     if (await deps.familyHousehold.isActiveChildSeat()) return { items: [] };
     return { items: await deps.queries.listKnowledge() };

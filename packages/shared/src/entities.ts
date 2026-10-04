@@ -108,6 +108,11 @@ export interface Conversation extends Timestamps {
    * (or legacy rows before seat isolation).
    */
   familyMemberId: string | null;
+  /**
+   * Studio account that owns this chat when multiple accounts share a workspace.
+   * Null = legacy / workspace-shared row.
+   */
+  ownerAccountId?: string | null;
   /** private = owner only; department = same dept; workspace = all humans. */
   visibility: "private" | "department" | "workspace";
 }
@@ -321,6 +326,11 @@ export interface ConnectorSecretRecord {
   familyMemberId: string | null;
   /** Organization employee who owns this connector; null for the account owner / non-org. */
   ownerEmployeeId?: string | null;
+  /**
+   * Studio account that owns this connector when multiple accounts share a workspace.
+   * Null = legacy row (visible to the primary owner path only via connectedAt heuristics).
+   */
+  ownerAccountId?: string | null;
 }
 
 export interface OperatorProfile extends Timestamps {

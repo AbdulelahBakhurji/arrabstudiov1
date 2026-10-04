@@ -2,6 +2,8 @@ import type { SealedVaultService } from "../modules/encryption/sealed-vault-serv
 import type { AiGateway } from "@arrab/ai";
 import type { SyncService } from "../modules/sync/sync-service.js";
 import type { DeskService } from "../modules/desk/desk-service.js";
+import type { ProfessionalService } from "../modules/professional/professional-service.js";
+import type { SpacesService } from "../modules/spaces/spaces-service.js";
 import type { CrewService } from "../modules/organization/crew-service.js";
 import type { WorkforceBlueprintService } from "../modules/organization/workforce-blueprint-service.js";
 import type { PersistenceMode } from "@arrab/shared";
@@ -32,6 +34,8 @@ export type V1Deps = {
     familyHousehold: FamilyHouseholdService;
     sealedVault: SealedVaultService;
     desk: DeskService;
+    professional: ProfessionalService;
+    spaces: SpacesService;
     crew: CrewService;
     workforceBlueprint: WorkforceBlueprintService;
     sync: SyncService;

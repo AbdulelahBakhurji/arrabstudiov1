@@ -52,7 +52,7 @@ const PUBLIC_PREFIXES = [
   "/v1/account/session",
   "/v1/account/refresh",
   "/v1/billing/plans",
-  "/v1/billing/moyasar/callback",
+  "/v1/billing/tap/callback",
   // /v1/billing/confirm is owner-only (SEC-01) — not public.
   "/v1/releases",
   "/v1/connectors/catalog",
@@ -178,7 +178,7 @@ export async function registerSecurity(
       path.startsWith("/v1/org/employees/sign-in") ||
       path.startsWith("/v1/family/members/sign-in") ||
       path.startsWith("/v1/billing/confirm") ||
-      path.startsWith("/v1/billing/moyasar/callback") ||
+      path.startsWith("/v1/billing/tap/callback") ||
       path.includes("/oauth/start")
     ) {
       const key = `${clientKey(request)}:${path}`;
@@ -233,7 +233,11 @@ export async function registerSecurity(
   // Callback-style so AsyncLocalStorage covers the route handler (async hooks can't guarantee it).
   app.addHook("preHandler", (request, _reply, done) => {
     runWithRequestActor(
-      { employeeId: request.orgEmployee?.id ?? null, seatMemberId: request.seatMemberId },
+      {
+        employeeId: request.orgEmployee?.id ?? null,
+        seatMemberId: request.seatMemberId,
+        accountId: request.account?.id ?? null,
+      },
       done,
     );
   });

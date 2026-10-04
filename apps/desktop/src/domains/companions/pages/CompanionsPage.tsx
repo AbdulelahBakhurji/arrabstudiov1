@@ -6,7 +6,6 @@ import {
   Ellipsis,
   EyeOff,
   Maximize2,
-  MessageCircle,
   Minimize2,
   Plus,
   Search,
@@ -27,7 +26,7 @@ import {
   SessionModeApproveBar,
   SessionModeMenu,
 } from "@/domains/chat/ui/SessionModeMenu";
-import { filesToDraftParts } from "@/domains/chat/composer-attachments";
+import { filesToDraftParts } from "@/domains/chat/lib/composer-attachments";
 import { listDir } from "@/core/platform/fs";
 import { isTauriRuntime, pickFolder } from "@/core/platform/terminal";
 import {
@@ -35,11 +34,11 @@ import {
   readSessionMode,
   writeSessionMode,
   type SessionMode,
-} from "@/domains/chat/session-mode";
+} from "@/domains/chat/model/session-mode";
 
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { userAskedForComputer } from "@/domains/companions/professional-companions";
-import { companionDisplayName } from "@/domains/companions/companion-catalog";
+import { userAskedForComputer } from "@/domains/companions/model/professional";
+import { companionDisplayName } from "@/domains/companions/catalog/catalog";
 import { useRole } from "@/domains/account/roles/RoleProvider";
 import { audienceFromPlanId } from "@/domains/account/roles/catalog";
 import { useFamilyProfile } from "@/domains/family/use-family-profile";
@@ -54,7 +53,7 @@ import {
   type CompanionSuggestion,
   type ConnectFamily,
   type ConnectProviderOption,
-} from "@/domains/companions/companion-suggestions";
+} from "@/domains/companions/catalog/suggestions";
 import {
   addFact,
   addCompanion,
@@ -81,7 +80,7 @@ import {
   readCompanionChatTabs,
   writeCompanionChatTabs,
   type CompanionProfile,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import {
   CompanionModal,
   PersonAvatar,
@@ -94,35 +93,36 @@ import {
   syncCompanionMemory,
   ToneDetails,
 } from "@/domains/companions/ui/CompanionDetails";
+import { PageReviewCard } from "@/domains/spaces/ui/PageReviewCard";
 import { CompanionCatalog } from "@/domains/companions/ui/CompanionCatalog";
 import { ProfessionalRoster, ProfessionalScreen, professionalLabel, useProfessionalDesk } from "@/domains/companions/ui/ProfessionalWorkspace";
+import { MuseQuietRail } from "@/domains/companions/ui/MuseQuietRail";
 import {
   clearProfessionalGroups,
   findProfessionalGroup,
   touchProfessionalGroup,
   type ProfessionalGroup,
-} from "@/domains/companions/professional-groups";
+} from "@/domains/companions/model/groups";
 import { FamilyCompanionWizard } from "@/domains/companions/ui/FamilyCompanionWizard";
 import { AskParentCompanionSheet } from "@/domains/family/ui/AskParentCompanionSheet";
-import { ensureCompanionCloudRoom } from "@/domains/companions/ui/useCompanionRoom";
+import { ensureCompanionCloudRoom } from "@/domains/companions/ui/hooks/useCompanionRoom";
 import { CompanionConnectSheet } from "@/domains/companions/ui/CompanionConnectSheet";
-import { WhatsAppConnectSheet } from "@/domains/connectors/ui/WhatsAppConnectSheet";
 import {
   CompanionChatRail,
   type ChatRailMenuAction,
 } from "@/domains/companions/ui/CompanionChatRail";
 import { IncognitoRoom } from "@/domains/encryption/ui/IncognitoRoom";
-import { useCompanionRoom } from "@/domains/companions/ui/useCompanionRoom";
-import { purposeLine } from "@/domains/companions/purpose-registry";
+import { useCompanionRoom } from "@/domains/companions/ui/hooks/useCompanionRoom";
+import { purposeLine } from "@/domains/companions/catalog/purpose-registry";
 import { AgentSteps } from "@/domains/chat/ui/AgentSteps";
 import { ThinkingBlock } from "@/domains/chat/ui/ThinkingBlock";
-import { companionRoomKey } from "@/domains/companions/companion-drafts";
+import { companionRoomKey } from "@/domains/companions/model/drafts";
 import {
   createAssistantChatTab,
   resolveAssistantChatTabs,
   titleFromMessage,
   writeAssistantChatTabs,
-} from "@/domains/chat/assistant-chat-tabs";
+} from "@/domains/chat/model/assistant-chat-tabs";
 import { stashIncognitoImport } from "@/domains/encryption/incognito-import";
 import {
   isIncognitoUnlocked,
@@ -141,7 +141,7 @@ import {
 } from "@/domains/studio/studio-catalog";
 import { notifyStudio, pushToast } from "@/domains/notifications/notify";
 import { cn } from "@/shared/lib/utils";
-import { useEnsureRealisticPortraits } from "@/domains/companions/ensure-companion-portraits";
+import { useEnsureRealisticPortraits } from "@/domains/companions/lib/ensure-portraits";
 import { useCompanionPolicies, useManagedCompanions, useSendGate } from "@/domains/managed/client/hooks";
 import { companionAvailability } from "@/domains/managed/client/companions";
 import { setManagedPresence } from "@/domains/managed/client/store";
@@ -181,6 +181,7 @@ export function CompanionsPage() {
   const state = useCompanionState();
   useEnsureRealisticPortraits();
   const [space, setSpace] = useCompanionSpace();
+  const showProfessionalDesk = space === "work" && !isFamilyChild;
   const [activeId, setActiveId] = useState<string | null>(null);
   const [allOpen, setAllOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -215,7 +216,6 @@ export function CompanionsPage() {
   const [connectFamily, setConnectFamily] = useState<ConnectFamily | null>(null);
   const [connectBusy, setConnectBusy] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
-  const [whatsappConnectOpen, setWhatsappConnectOpen] = useState(false);
   const [queuedQuery, setQueuedQuery] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
@@ -353,6 +353,8 @@ export function CompanionsPage() {
   const room = useCompanionRoom(roomCompanion, activeTab.id);
   const { lines, draft, setDraft, mode, setMode, busy, loading, agentSteps, thinkingLabel } =
     room;
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
   const studioKind = studioKindForCompanion(active, state);
   const nameOf = (person: CompanionProfile) => {
     const custom = professionalLabel(person.domain);
@@ -361,8 +363,12 @@ export function CompanionsPage() {
   };
   const birth = birthSuggestion(state);
   const sensitive = isSensitiveNow(state) || detectSensitive(draft);
-  const composerSuggestions = companionComposerSuggestions(active);
-  const welcomeSuggestions = companionWelcomeSuggestions(active);
+  const composerSuggestions = companionComposerSuggestions(
+    space === "work" ? { ...active, space: "work" } : active,
+  );
+  const welcomeSuggestions = companionWelcomeSuggestions(
+    space === "work" ? { ...active, space: "work" } : active,
+  );
   // Arrab Control decides which companions are listed and in what order.
   const listedPeople = useManagedCompanions(people);
   const companionPolicies = useCompanionPolicies();
@@ -573,6 +579,27 @@ export function CompanionsPage() {
     setAllOpen(false);
     setSearch("");
     setQueuedQuery(null);
+    try {
+      const raw = localStorage.getItem("arrab.slack.pendingMention");
+      if (raw) {
+        const pending = JSON.parse(raw) as { companionId?: string; text?: string; at?: number };
+        if (
+          pending.companionId === person.id &&
+          pending.text &&
+          typeof pending.at === "number" &&
+          Date.now() - pending.at < 30 * 60_000
+        ) {
+          setDraft(
+            ar
+              ? `إشارة من Slack:\n${pending.text}`
+              : `Slack mention:\n${pending.text}`,
+          );
+          localStorage.removeItem("arrab.slack.pendingMention");
+        }
+      }
+    } catch {
+      /* ignore */
+    }
     requestAnimationFrame(() => composerRef.current?.focus());
   }
 
@@ -765,18 +792,28 @@ export function CompanionsPage() {
     openStudioWorkspace(kind.id);
   };
 
-  const send = async (overrideText?: string, opts?: { skipModeCheck?: boolean }) => {
+  const send = async (
+    overrideText?: string,
+    opts?: { skipModeCheck?: boolean; model?: string },
+  ) => {
     const text = (overrideText ?? draft).trim();
     if (!text) return;
     // The current reply always finishes; a new send waits for maintenance, updates and limits.
     if (sendGate.blocked) return;
     if (modeApprove && !opts?.skipModeCheck) return;
 
-    if (busy) {
+    if (busy && !opts?.skipModeCheck) {
       setQueuedQuery(text);
       setDraft("");
       composerRef.current?.focus({ preventScroll: true });
       return;
+    }
+    if (opts?.skipModeCheck && busyRef.current) {
+      // Call turns wait for the in-flight reply instead of silently queuing.
+      for (let i = 0; i < 80 && busyRef.current; i += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 250));
+      }
+      if (busyRef.current) return;
     }
 
     if (!opts?.skipModeCheck) {
@@ -810,6 +847,72 @@ export function CompanionsPage() {
       }
       composerRef.current?.focus({ preventScroll: true });
       return;
+    }
+
+    if (showProfessionalDesk && signedIn) {
+      const watchMatch = text.match(
+        /(?:watch|track|راقب|تتبع)[^\n]*(https?:\/\/\S+)/i,
+      );
+      if (watchMatch?.[1]) {
+        followReplyRef.current = true;
+        setDraft("");
+        try {
+          await arrabApi.upsertMuseWatch({
+            url: watchMatch[1],
+            label: watchMatch[1].replace(/^https?:\/\//, "").slice(0, 60),
+            kind: "change",
+          });
+          room.setNotice(ar ? "تمت إضافة المراقبة." : "Watch added.");
+        } catch {
+          room.setNotice(ar ? "تعذر حفظ المراقبة." : "Could not save that watch.");
+        }
+        composerRef.current?.focus({ preventScroll: true });
+        return;
+      }
+      const csvBlock = text.match(
+        /(?:csv|spending|إنفاق|transactions?)[\s\S]*?\n([\s\S]{20,})/i,
+      );
+      if (csvBlock?.[1] && /,/.test(csvBlock[1]) && csvBlock[1].split("\n").length >= 2) {
+        followReplyRef.current = true;
+        setDraft("");
+        try {
+          await arrabApi.importMuseFinance({ csv: csvBlock[1].trim() });
+          room.setNotice(ar ? "تم تلخيص الإنفاق." : "Spending summarised.");
+        } catch {
+          room.setNotice(ar ? "تعذر استيراد CSV." : "Could not import that CSV.");
+        }
+        composerRef.current?.focus({ preventScroll: true });
+        return;
+      }
+      const goalMatch = text.match(/^(?:goal|هدف)[:\s]+(.+)$/i);
+      if (goalMatch?.[1]) {
+        followReplyRef.current = true;
+        setDraft("");
+        try {
+          await arrabApi.upsertMuseGoal({ title: goalMatch[1].trim() });
+          room.setNotice(ar ? "تم حفظ الهدف." : "Goal saved.");
+        } catch {
+          room.setNotice(ar ? "تعذر حفظ الهدف." : "Could not save that goal.");
+        }
+        composerRef.current?.focus({ preventScroll: true });
+        return;
+      }
+      const ideaMatch = text.match(/^(?:idea|فكرة)[:\s]+(.+)$/i);
+      if (ideaMatch?.[1]) {
+        followReplyRef.current = true;
+        setDraft("");
+        try {
+          await arrabApi.upsertMuseIdea({
+            title: ideaMatch[1].trim().slice(0, 160),
+            source: "chat",
+          });
+          room.setNotice(ar ? "تم حفظ الفكرة." : "Idea saved.");
+        } catch {
+          room.setNotice(ar ? "تعذر حفظ الفكرة." : "Could not save that idea.");
+        }
+        composerRef.current?.focus({ preventScroll: true });
+        return;
+      }
     }
 
     followReplyRef.current = true;
@@ -849,9 +952,10 @@ export function CompanionsPage() {
           ? "Their sealed computer is OFF unless they turn it on or clearly ask you to use Chrome, Finder, Terminal, Notes, or the computer. If they ask, emit [[desktop: …]] so it wakes. Do not pretend you used the computer otherwise."
           : null;
     const response = room.send(overrideText ? text : undefined, {
+      model: opts?.model?.trim() || undefined,
       workspaceHint: {
         ...folderHint,
-        ...((desktopDirective || groupDirective) && !coachKid
+        ...((desktopDirective || groupDirective || coachKid) && !coachKid
           ? {
               operatorDirectives: [groupDirective, desktopDirective].filter(Boolean).join(" "),
             }
@@ -864,12 +968,23 @@ export function CompanionsPage() {
                 `Listen, ask clarifying questions, and remember guidance about how ${coachKid} feels, what helps, and what to avoid.`,
                 `When ${coachKid} chats later, apply this coaching gently — never quote parent notes verbatim to the child.`,
                 `Speak as ${active.name}, the companion helping the parent support ${coachKid}.`,
-              ].join(" "),
+              ]
+                .filter(Boolean)
+                .join(" "),
               sessionNotes: `Parent coaching about ${coachKid}. Capture feelings, habits, and what the companion should do.`,
             }
           : {}),
       },
     });
+    if (showProfessionalDesk) {
+      void arrabApi
+        .setProfessionalCompanionStatus({
+          companionId: active.domain || active.id,
+          companionName: active.name,
+          status: "working",
+        })
+        .catch(() => undefined);
+    }
     composerRef.current?.focus({ preventScroll: true });
     const reply = await response;
     if (coachKid && coachMemberId && familyActive?.id) {
@@ -1020,11 +1135,16 @@ export function CompanionsPage() {
     }
   }
 
-  const showProfessionalDesk = space === "work" && !isFamilyChild;
   const { desk: proDesk, reload: reloadProDesk } = useProfessionalDesk(showProfessionalDesk);
   const [agentPanel, setAgentPanel] = useState(false);
   const [sandboxMaximized, setSandboxMaximized] = useState(false);
-  const [computerPowered, setComputerPowered] = useState(false);
+  const [computerPowered, setComputerPowered] = useState(() => {
+    try {
+      return localStorage.getItem("arrab.pro.computerStay") === "1";
+    } catch {
+      return false;
+    }
+  });
   const activeGroup = findProfessionalGroup(activeGroupId);
 
   // Professional desk starts empty — wipe leftover work companions once.
@@ -1041,7 +1161,6 @@ export function CompanionsPage() {
     setActiveGroupId(null);
     setActiveId(null);
     setAgentPanel(false);
-    setComputerPowered(false);
     setSandboxMaximized(false);
   }, [showProfessionalDesk]);
 
@@ -1049,11 +1168,21 @@ export function CompanionsPage() {
     if (!signedIn) return;
     setComputerPowered(true);
     setAgentPanel(true);
+    try {
+      localStorage.setItem("arrab.pro.computerStay", "1");
+    } catch {
+      /* ignore */
+    }
   }
 
   function powerComputerOff() {
     setComputerPowered(false);
     setSandboxMaximized(false);
+    try {
+      localStorage.removeItem("arrab.pro.computerStay");
+    } catch {
+      /* ignore */
+    }
   }
 
   function openProfessionalCompanion(person: CompanionProfile) {
@@ -1422,17 +1551,6 @@ export function CompanionsPage() {
             </div>
           </div>
           <div className="cp-room-actions">
-            {signedIn && !isFamilyChild ? (
-              <button
-                type="button"
-                className="cp-button"
-                disabled={busy}
-                onClick={() => setWhatsappConnectOpen(true)}
-              >
-                <MessageCircle size={15} aria-hidden />
-                {t("whatsappConnectButton")}
-              </button>
-            ) : null}
             {studioKind ? (
               <button
                 type="button"
@@ -1444,6 +1562,7 @@ export function CompanionsPage() {
                 <ArrowUpRight size={15} />
               </button>
             ) : null}
+            {showProfessionalDesk ? null : (
             <button
               className="cp-button"
               disabled={busy}
@@ -1455,6 +1574,7 @@ export function CompanionsPage() {
               {ar ? "الذاكرة والأسلوب" : "Memory & tone"}
               <ArrowUpRight size={15} />
             </button>
+            )}
             <button
               type="button"
               className="cp-button"
@@ -1537,27 +1657,43 @@ export function CompanionsPage() {
               <p className="cp-eyebrow">
                 {parentCoachMode
                   ? t("familyChatCoachEyebrow").toUpperCase()
-                  : ar
-                    ? "مساحتك، على راحتك"
-                    : "YOUR SPACE. YOUR PACE."}
+                  : showProfessionalDesk
+                    ? ar
+                      ? "مكتبك"
+                      : "PROFESSIONAL"
+                    : ar
+                      ? "مساحتك، على راحتك"
+                      : "YOUR SPACE. YOUR PACE."}
               </p>
               <h2>
                 {parentCoachMode
                   ? t("familyChatCoachPrompt")
-                  : active.domain === "general"
-                    ? ar
-                      ? "وش في بالك اليوم؟"
-                      : "What's on your mind?"
-                    : ar
-                      ? `أنا ${active.name}، أسمعك.`
-                      : `I'm ${active.name}. I'm listening.`}
+                  : showProfessionalDesk
+                    ? active.domain === "general"
+                      ? ar
+                        ? "وش تشتغل عليه؟"
+                        : "What are you working on?"
+                      : ar
+                        ? `${active.name} جاهز.`
+                        : `${active.name} is ready.`
+                    : active.domain === "general"
+                      ? ar
+                        ? "وش في بالك اليوم؟"
+                        : "What's on your mind?"
+                      : ar
+                        ? `أنا ${active.name}، أسمعك.`
+                        : `I'm ${active.name}. I'm listening.`}
               </h2>
               <p className="cp-muted">
                 {parentCoachMode
                   ? t("familyChatCoachBody")
-                  : ar
-                    ? "ابدأ بفكرة، سؤال، أو حتى يوم طويل."
-                    : "A thought, a question, or just a long day."}
+                  : showProfessionalDesk
+                    ? ar
+                      ? "اطلب نتيجة. راقب الخطة. خذ المقود عند الحاجة."
+                      : "Ask for an outcome. Watch the plan. Take the wheel when needed."
+                    : ar
+                      ? "ابدأ بفكرة، سؤال، أو حتى يوم طويل."
+                      : "A thought, a question, or just a long day."}
               </p>
               <div className="cp-starters">
                 {(parentCoachMode
@@ -1680,6 +1816,9 @@ export function CompanionsPage() {
                       </button>
                     </div>
                   ) : null}
+                  {line.who === "companion" && !busy ? (
+                    <PageReviewCard text={line.text} companionId={speaker.id} />
+                  ) : null}
                 </div>
               </article>
               </Fragment>
@@ -1709,6 +1848,7 @@ export function CompanionsPage() {
           ) : null}
           </div>
           <div className="cp-composer-area">
+          <MuseQuietRail enabled={showProfessionalDesk && signedIn} arabic={ar} />
           {!room.providerReady ? (
             <div className="cp-provider-setup" role="status">
               <span>
@@ -1984,9 +2124,13 @@ export function CompanionsPage() {
                     ? ar
                       ? `أخبر ${active.name} عن ${coachingKidName}…`
                       : `Tell ${active.name} about ${coachingKidName}…`
-                    : ar
-                      ? "اكتب اللي في بالك…"
-                      : "Say what's on your mind…"
+                    : showProfessionalDesk
+                      ? ar
+                        ? "اطلب نتيجة…"
+                        : "Ask for an outcome…"
+                      : ar
+                        ? "اكتب اللي في بالك…"
+                        : "Say what's on your mind…"
               }
             />
             {busy && !draft.trim() ? (
@@ -2155,19 +2299,6 @@ export function CompanionsPage() {
       </CompanionModal>
     </div>
       )}
-      {whatsappConnectOpen ? (
-        <WhatsAppConnectSheet
-          companionId={active.domain}
-          companionName={nameOf(active)}
-          onClose={() => setWhatsappConnectOpen(false)}
-          onConnected={() => {
-            pushToast({
-              title: t("whatsappConnectConnected"),
-              body: t("whatsappConnectBody"),
-            });
-          }}
-        />
-      ) : null}
       {connectFamily ? (
         <CompanionConnectSheet
           family={connectFamily}

@@ -2,8 +2,8 @@ import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Sparkles, X } from "lucide-react";
 import { PhotoAvatar, type FaceState } from "./CompanionFace";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import type { CompanionProfile, CompanionSpace } from "@/domains/companions/companions";
-import { resolveCompanionPortraitSrc } from "@/domains/companions/companion-portrait";
+import type { CompanionProfile, CompanionSpace } from "@/domains/companions/model/companions";
+import { resolveCompanionPortraitSrc } from "@/domains/companions/catalog/portrait";
 
 export function useCompanionSpace() {
   const [space, setSpaceState] = useState<CompanionSpace>(() =>

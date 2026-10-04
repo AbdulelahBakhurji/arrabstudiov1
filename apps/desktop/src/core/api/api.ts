@@ -8,6 +8,7 @@ import { studioApi } from "@/domains/studio/api";
 import { connectorsApi } from "@/domains/connectors/api";
 import { companionsApi } from "@/domains/companions/api";
 import { familyApi } from "@/domains/family/api";
+import { spacesApi } from "@/domains/spaces/api";
 import { bindE2eeApi } from "@/domains/encryption/e2ee";
 
 /** Composed client — each domain owns its endpoints in `domains/<name>/api.ts`. */
@@ -21,6 +22,7 @@ export const arrabApi = {
   ...connectorsApi,
   ...companionsApi,
   ...familyApi,
+  ...spacesApi,
 };
 
 // Late-bound so the e2ee module never imports the request layer.

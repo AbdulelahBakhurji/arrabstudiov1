@@ -23,13 +23,13 @@ vi.mock("@/core/session/guest-mode", () => ({
 
 import { arrabApi } from "@/core/api/api";
 import { clearAccountSession, writeAccountSession } from "@/core/session/account-session";
-import { resolveAssistantChatTabs } from "@/domains/chat/assistant-chat-tabs";
+import { resolveAssistantChatTabs } from "@/domains/chat/model/assistant-chat-tabs";
 import {
   addCompanion,
   forgetEverything,
   getCompanionState,
   syncCompanionsFromCloud,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 
 const TOKEN_A = "a".repeat(40);
 const TOKEN_B = "b".repeat(40);

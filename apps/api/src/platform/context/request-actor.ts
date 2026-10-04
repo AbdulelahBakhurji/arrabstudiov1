@@ -9,6 +9,8 @@ export type RequestActor = {
   employeeId: string | null;
   /** Family seat the session is bound to (seat login); null for the owner's own session. */
   seatMemberId?: string | null;
+  /** Studio account id for the current session (multi-tenant workspaces). */
+  accountId?: string | null;
 };
 
 const storage = new AsyncLocalStorage<RequestActor>();
@@ -19,7 +21,7 @@ export function runWithRequestActor(actor: RequestActor, next: () => void): void
 }
 
 export function currentRequestActor(): RequestActor {
-  return storage.getStore() ?? { employeeId: null, seatMemberId: null };
+  return storage.getStore() ?? { employeeId: null, seatMemberId: null, accountId: null };
 }
 
 /** Run async work (e.g. a webhook delivery) as a specific actor. */

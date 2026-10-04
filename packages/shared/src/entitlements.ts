@@ -19,10 +19,12 @@ export interface PlanFeatures {
 export interface PlanEntitlements extends PlanFeatures {
   planId: SubscriptionPlanId;
   audience: PlanAudience;
-  /** Monthly token pool (plan only; packs are added on top). */
+  /** Monthly token pool (plan only; packs are added on top). Always hard-capped. */
   monthlyTokens: number;
   /** Seats the plan includes for its audience (org employees / household members); 0 when n/a. */
   seats: number;
+  includedDeepseekHalalas: number;
+  includedOtherHalalas: number;
 }
 
 const INDIVIDUAL: PlanFeatures = {
@@ -47,17 +49,17 @@ const ORG: PlanFeatures = {
 /**
  * Keep in step with the plan descriptions ("Workforce ops & Live Map" = Business, Enterprise).
  *
- * `maxAgents` is `null` everywhere ON PURPOSE. The Free plan advertises "1 AI employee desk", but the
- * desktop creates one backing agent per companion / chat room / workspace (see `companion-assign.ts`,
- * `agents-bootstrap.ts`), so a hard server cap of 1 would break Free users' ordinary chats. The cap
- * is implemented and tested (`WorkspaceCommandService.setAgentLimit`); switching it on needs a product
- * decision on what an "AI employee" is (a server-side kind, not just any agent).
+ * `maxAgents` is `null` everywhere ON PURPOSE. The Free plan advertises a single desk, but the
+ * desktop creates one backing agent per companion / chat room / workspace, so a hard server cap of 1
+ * would break Free users' ordinary chats.
  */
 const FEATURES: Record<SubscriptionPlanId, PlanFeatures> = {
   free: INDIVIDUAL,
+  starter: INDIVIDUAL,
+  pro: INDIVIDUAL,
+  max: INDIVIDUAL,
   solo: INDIVIDUAL,
   studio: INDIVIDUAL,
-  pro: INDIVIDUAL,
   family_free: FAMILY,
   family: FAMILY,
   family_plus: FAMILY,
@@ -74,6 +76,8 @@ export function entitlementsForPlan(planId: SubscriptionPlanId): PlanEntitlement
     audience: plan.audience,
     monthlyTokens: plan.monthlyTokenLimit,
     seats: plan.seatLimit ?? 0,
+    includedDeepseekHalalas: plan.includedDeepseekHalalas ?? 0,
+    includedOtherHalalas: plan.includedOtherHalalas ?? 0,
     ...FEATURES[planId],
   };
 }
@@ -86,7 +90,11 @@ export function isKnownPlanId(value: string | null | undefined): value is Subscr
 
 /** Plan ids a plan change to `to` counts as a downgrade for (monthly price strictly lower). */
 export function isDowngrade(from: SubscriptionPlanId, to: SubscriptionPlanId): boolean {
-  return SUBSCRIPTION_PLANS[to].monthlyPriceHalalas < SUBSCRIPTION_PLANS[from].monthlyPriceHalalas;
+  const fromPrice =
+    SUBSCRIPTION_PLANS[from].pricePerSeatHalalas ?? SUBSCRIPTION_PLANS[from].monthlyPriceHalalas;
+  const toPrice =
+    SUBSCRIPTION_PLANS[to].pricePerSeatHalalas ?? SUBSCRIPTION_PLANS[to].monthlyPriceHalalas;
+  return toPrice < fromPrice;
 }
 
 export const ALL_PLAN_IDS = Object.keys(SUBSCRIPTION_PLANS) as SubscriptionPlanId[];

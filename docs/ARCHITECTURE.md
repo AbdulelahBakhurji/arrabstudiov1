@@ -32,17 +32,20 @@ core/        Platform plumbing. May not import app/, entries/ or domains/ (excep
   platform/  Tauri bridges: terminal, fs, desktop, web search
 domains/     One folder per product area. May not import app/ or entries/.
   account · chat · companions · connectors · encryption · family · organization
-  managed · notifications · settings · studio · brain
-    <domain>/api.ts     endpoints this domain owns (composed into `arrabApi`)
-    <domain>/pages/     routed screens        <domain>/ui/   components
-    <domain>/*.ts       domain logic and state
+  managed · notifications · settings · studio · brain · spaces
+    <domain>/api.ts       endpoints this domain owns (composed into `arrabApi`)
+    <domain>/model/       state, types, persistence (chat, companions)
+    <domain>/catalog/     product catalog data (companions)
+    <domain>/lib/         pure helpers / tools
+    <domain>/pages/       routed screens
+    <domain>/ui/          components (+ ui/hooks)
 features/    Plug-in page registry (`pnpm new:feature`) — mounted by the app shell.
 app/         Composition root: main.tsx, App.tsx (routes), shell/ (StudioFrame, AuthGate, TitleBar).
 entries/     Separate Tauri window entry points: agent-presence, companion-panel, updater.
 legacy/      Retired screens kept for reference. Not imported by new code.
 ```
 
-Copy lives with its domain: `shared/i18n/locales/{en,ar}/<domain>.ts`, keys shared across domains in `common.ts`.
+Repo map: [STRUCTURE.md](../STRUCTURE.md). Copy lives with its domain: `shared/i18n/locales/{en,ar}/<domain>.ts`, keys shared across domains in `common.ts`.
 
 ### API — `apps/api/src`
 

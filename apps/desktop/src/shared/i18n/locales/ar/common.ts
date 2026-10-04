@@ -61,7 +61,8 @@ export const commonAr = {
     amTokenUtilization: "الاستخدام",
     amApiEndpoint: "الاتصال",
     amConnectionManaged: "مُدار عبر Arrab",
-    amBilledViaMoyasar: "الدفع عبر Moyasar",
+    amPaymentLabel: "الدفع",
+    amBilledViaTap: "دفع آمن",
     amOpenCheckout: "فتح الدفع",
     amCheckoutOpening: "جارٍ فتح الدفع…",
     amCheckoutOpened: "تم فتح الدفع",
@@ -1251,4 +1252,8 @@ export const commonAr = {
     opsQueueEmpty: "الطابور فارغ. وجّه الخطوة التالية.",
     opsMetricOpen: "مفتوح",
     opsMetricPriority: "أولوية",
+  spacesTitle: "المساحات",
+  spacesBody: "مستندات عمل لرفاقك — مكتبة ومحرر وحفظ من المحادثة.",
+  professionalDeskTitle: "المكتب المهني",
+  professionalDeskBody: "الحالة والموافقات والروتين والمهارات والذاكرة والوصول والحدود والسجل لقوة عمل منظمتك.",
 } as const;

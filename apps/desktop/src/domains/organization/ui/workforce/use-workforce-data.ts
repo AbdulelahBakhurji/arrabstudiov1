@@ -18,11 +18,11 @@ import type {
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
 import type { MessageKey } from "@/shared/i18n/messages";
 import { arrabApi, ApiRequestError, isTransientApiError } from "@/core/api/api";
-import { collapseDefaultSoloDupes } from "@/domains/companions/agents-bootstrap";
-import { filterLiveWorkforceAgents, rememberRemovedAgent } from "@/domains/chat/agent-session-policy";
+import { collapseDefaultSoloDupes } from "@/domains/companions/lib/agents-bootstrap";
+import { filterLiveWorkforceAgents, rememberRemovedAgent } from "@/domains/chat/lib/agent-session-policy";
 import { pushToast } from "@/domains/notifications/notify";
 import { isCompanionAgent } from "@/domains/organization/org-chat";
-import { purposeRegistryById } from "@/domains/companions/purpose-registry";
+import { purposeRegistryById } from "@/domains/companions/catalog/purpose-registry";
 import { prepareWorkplaceStudio } from "@/domains/organization/workplace-handoff";
 
 export const ALL_HANDS_TEAM = "Studio All-Hands";

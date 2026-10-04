@@ -1,18 +1,29 @@
 /**
- * Lightweight markdown renderer for chat — code fences, inline code, bold, italic, links, lists.
+ * Lightweight markdown renderer for chat — code fences, inline code, bold, italic,
+ * links, images, lists, and website preview cards.
  * No external deps; XSS-safe (text nodes only, no raw HTML passthrough).
  */
 import type { ReactNode } from "react";
 import { cn } from "@/shared/lib/utils";
+import { LinkPreviewCard } from "@/domains/chat/ui/LinkPreviewCard";
+import { safeHttpUrl } from "@/shared/lib/safe-url";
 
 function escapeText(value: string): string {
   return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function isSafeImageSrc(src: string): boolean {
+  if (src.startsWith("data:image/")) return src.length < 2_500_000;
+  if (src.startsWith("asset:") || src.startsWith("http://") || src.startsWith("https://")) {
+    return src.length < 2_000;
+  }
+  return false;
+}
+
 function renderInline(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const pattern =
-    /(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)\s]+\))/g;
+    /(!\[[^\]]*\]\([^)\s]+\))|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^*]+\*)|(\[[^\]]+\]\([^)\s]+\))|(https?:\/\/[^\s<>\]\)]+)/g;
   let last = 0;
   let match: RegExpExecArray | null;
   let i = 0;
@@ -22,7 +33,23 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
     }
     const raw = match[0]!;
     const k = `${keyPrefix}-${i++}`;
-    if (raw.startsWith("`")) {
+    if (raw.startsWith("![")) {
+      const image = raw.match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/);
+      if (image && isSafeImageSrc(image[2]!)) {
+        nodes.push(
+          <img
+            key={k}
+            src={image[2]}
+            alt={image[1] || ""}
+            className="chat-md-image"
+            loading="lazy"
+            referrerPolicy="no-referrer"
+          />,
+        );
+      } else {
+        nodes.push(raw);
+      }
+    } else if (raw.startsWith("`")) {
       nodes.push(
         <code key={k} className="chat-md-code">
           {raw.slice(1, -1)}
@@ -32,7 +59,7 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       nodes.push(<strong key={k}>{raw.slice(2, -2)}</strong>);
     } else if (raw.startsWith("*")) {
       nodes.push(<em key={k}>{raw.slice(1, -1)}</em>);
-    } else {
+    } else if (raw.startsWith("[")) {
       const link = raw.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
       if (link) {
         nodes.push(
@@ -43,6 +70,20 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
       } else {
         nodes.push(raw);
       }
+    } else if (raw.startsWith("http")) {
+      const href = raw.replace(/[),.;]+$/, "");
+      const safe = safeHttpUrl(href);
+      if (safe) {
+        nodes.push(
+          <a key={k} href={safe} target="_blank" rel="noreferrer" className="chat-md-link">
+            {href}
+          </a>,
+        );
+      } else {
+        nodes.push(raw);
+      }
+    } else {
+      nodes.push(raw);
     }
     last = match.index + raw.length;
   }
@@ -50,10 +91,27 @@ function renderInline(text: string, keyPrefix: string): ReactNode[] {
   return nodes;
 }
 
+function extractPreviewUrls(source: string): string[] {
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  const re = /https?:\/\/[^\s<>\]\)]+/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(source)) && urls.length < 3) {
+    const href = match[0]!.replace(/[),.;]+$/, "");
+    const safe = safeHttpUrl(href);
+    if (!safe || seen.has(safe)) continue;
+    if (/\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(safe)) continue;
+    seen.add(safe);
+    urls.push(safe);
+  }
+  return urls;
+}
+
 type Block =
   | { type: "code"; lang: string; body: string }
   | { type: "ul"; items: string[] }
   | { type: "ol"; items: string[] }
+  | { type: "image"; alt: string; src: string }
   | { type: "p"; text: string };
 
 function parseBlocks(source: string): Block[] {
@@ -72,6 +130,12 @@ function parseBlocks(source: string): Block[] {
       }
       i += 1;
       blocks.push({ type: "code", lang, body: body.join("\n") });
+      continue;
+    }
+    const aloneImage = line.trim().match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/);
+    if (aloneImage && isSafeImageSrc(aloneImage[2]!)) {
+      blocks.push({ type: "image", alt: aloneImage[1] || "", src: aloneImage[2]! });
+      i += 1;
       continue;
     }
     if (/^[-*]\s+/.test(line)) {
@@ -97,7 +161,14 @@ function parseBlocks(source: string): Block[] {
       continue;
     }
     const para: string[] = [];
-    while (i < lines.length && lines[i]!.trim() && !lines[i]!.startsWith("```") && !/^[-*]\s+/.test(lines[i]!) && !/^\d+\.\s+/.test(lines[i]!)) {
+    while (
+      i < lines.length &&
+      lines[i]!.trim() &&
+      !lines[i]!.startsWith("```") &&
+      !/^[-*]\s+/.test(lines[i]!) &&
+      !/^\d+\.\s+/.test(lines[i]!) &&
+      !/^!\[[^\]]*\]\([^)\s]+\)$/.test(lines[i]!.trim())
+    ) {
       para.push(lines[i]!);
       i += 1;
     }
@@ -114,6 +185,7 @@ export function ChatMarkdown({
   className?: string;
 }) {
   const blocks = parseBlocks(content);
+  const previewUrls = extractPreviewUrls(content);
   if (blocks.length === 0) {
     return <p className={cn("chat-md", className)}>{content}</p>;
   }
@@ -125,6 +197,18 @@ export function ChatMarkdown({
             <pre key={index} className="chat-md-pre" data-lang={block.lang || undefined}>
               <code>{block.body}</code>
             </pre>
+          );
+        }
+        if (block.type === "image") {
+          return (
+            <img
+              key={index}
+              src={block.src}
+              alt={block.alt}
+              className="chat-md-image"
+              loading="lazy"
+              referrerPolicy="no-referrer"
+            />
           );
         }
         if (block.type === "ul") {
@@ -151,6 +235,9 @@ export function ChatMarkdown({
           </p>
         );
       })}
+      {previewUrls.map((url) => (
+        <LinkPreviewCard key={url} url={url} />
+      ))}
     </div>
   );
 }

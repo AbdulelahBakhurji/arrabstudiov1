@@ -15,6 +15,7 @@ export type {
   ControlNotificationRepository,
   ControlDeskRepository,
   CompanionDeskRepository,
+  ProfessionalWorkspaceRepository,
   CrewRepository,
   SealedVaultRepository,
   SyncRecordRepository,

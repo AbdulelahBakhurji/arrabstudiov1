@@ -42,6 +42,9 @@ export function UsageGuardWatcher() {
   const level: TokenUsageLevel | null = entitlements?.connected ? (entitlements.usageLevel ?? null) : null;
   const tight = level === "low" || level === "critical";
 
+  const pausedNow =
+    Boolean(entitlements?.overLimit) || entitlements?.pauseMode != null;
+
   useEffect(() => {
     if (!signedIn) return;
     let lastRefresh = Date.now();
@@ -49,20 +52,27 @@ export function UsageGuardWatcher() {
       lastRefresh = Date.now();
       void refreshAccountStatus({ silent: true });
     };
-    const interval = setInterval(refresh, tight ? 60_000 : 5 * 60_000);
+    // While paused / over limit, poll faster so website checkout applies immediately on return.
+    const interval = setInterval(refresh, pausedNow || tight ? 30_000 : 5 * 60_000);
     const onFocus = () => {
-      if (Date.now() - lastRefresh >= FOCUS_REFRESH_GAP_MS) refresh();
+      const gap = pausedNow ? 2_000 : FOCUS_REFRESH_GAP_MS;
+      if (Date.now() - lastRefresh >= gap) refresh();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") onFocus();
     };
     window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       clearInterval(interval);
       window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisible);
     };
-  }, [signedIn, tight]);
+  }, [signedIn, tight, pausedNow]);
 
   useEffect(() => {
     if (!signedIn || !entitlements?.connected || !level) return;
-    const paused = entitlements.overLimit;
+    const paused = Boolean(entitlements.overLimit) || entitlements.pauseMode != null;
 
     if (wasPaused.current === true && !paused) {
       pushToast({ title: t("quotaPaymentReceived"), body: t("quotaResumedBody"), tone: "success" });

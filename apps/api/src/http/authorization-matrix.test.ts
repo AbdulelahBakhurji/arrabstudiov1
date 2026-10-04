@@ -23,7 +23,7 @@ const PUBLIC = new Set([
   "POST /v1/account/auth/web/complete",
   "GET /v1/account/auth/web",
   "GET /v1/billing/plans",
-  "POST /v1/billing/moyasar/callback",
+  "POST /v1/billing/tap/callback",
   "GET /v1/meta",
   "POST /v1/org/employees/sign-in",
   "POST /v1/family/members/sign-in",

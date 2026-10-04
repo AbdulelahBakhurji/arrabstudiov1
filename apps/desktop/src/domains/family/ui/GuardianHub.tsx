@@ -19,7 +19,7 @@ import {
   addCompanion,
   liveCompanions,
   useCompanionState,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import { guardianDecisionsForMember, useSecondBrain } from "@/domains/brain/second-brain";
 import {
   addGuardianRule,

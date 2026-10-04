@@ -3,7 +3,7 @@ import {
   connectProvidersFor,
   type ConnectFamily,
   type ConnectProviderOption,
-} from "@/domains/companions/companion-suggestions";
+} from "@/domains/companions/catalog/suggestions";
 import { connectorIcon } from "@/domains/connectors/connector-catalog";
 
 export function CompanionConnectSheet({

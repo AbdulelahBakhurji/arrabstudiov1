@@ -49,13 +49,13 @@
     },
     {
       "id": "mfa-owner",
-      "status": "FAIL",
-      "note": "Not implemented"
+      "status": "PARTIAL",
+      "note": "TOTP + encrypted secret at rest; desktop MFA UI not shipped"
     },
     {
-      "id": "moyasar-callback-signature",
-      "status": "PARTIAL",
-      "note": "Secret-key invoice re-fetch, not provider signature"
+      "id": "tap-callback-signature",
+      "status": "PASS",
+      "note": "Tap hashstring HMAC + secret-key charge re-fetch bound to metadata.accountId"
     },
     {
       "id": "multi-instance-rate-limits",
@@ -64,8 +64,8 @@
     },
     {
       "id": "multi-tenant-accounts",
-      "status": "FAIL",
-      "note": "Single studio account model; legacy dual rows pick a primary"
+      "status": "PARTIAL",
+      "note": "Connectors, sealed vault, and chats stamped/filtered by ownerAccountId; agents/workforce still workspace-shared"
     }
   ]
 }

@@ -129,7 +129,16 @@ export const ORGANIZATION_NAV: RoleNavItem[] = [
 /** Organization destinations a seat role may open (the billing owner sees all). */
 const ORG_NAV_BY_SEAT_ROLE: Record<"admin" | "manager" | "member", ReadonlySet<string> | null> = {
   admin: null,
-  manager: new Set(["hq", "workplace", "chat", "brainNav", "connectors", "activity", "settings"]),
+  manager: new Set([
+    "hq",
+    "workplace",
+    "chat",
+    "brainNav",
+    "connectors",
+    "activity",
+    "settings",
+    "professionalDeskTitle",
+  ]),
   member: new Set(["hq", "workplace", "chat", "brainNav", "connectors", "settings"]),
 };
 

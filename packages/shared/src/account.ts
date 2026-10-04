@@ -2,17 +2,20 @@ import type { Brand } from "./ids.js";
 
 export type SubscriptionPlanId =
   | "free"
+  | "starter"
   | "pro"
+  | "max"
   | "family_free"
   | "family"
   | "family_plus"
-  | "team"
-  | "unlimited"
-  /** Production control-plane plan ids (teams category). */
   | "business"
   | "enterprise"
+  /** Legacy ids — still accepted for old accounts; always hard-capped. */
   | "solo"
-  | "studio";
+  | "studio"
+  | "team"
+  | "unlimited";
+
 export type PlanAudience = "individual" | "family" | "organization";
 /** Control-plane category — teams maps to the organization studio shell. */
 export type PlanCategory = "individuals" | "family" | "teams";
@@ -23,10 +26,14 @@ export interface SubscriptionPlan {
   id: SubscriptionPlanId;
   name: string;
   audience: PlanAudience;
-  /** Monthly token budget (input + output). Always a positive limit. */
+  /** Monthly token budget (input + output). Always a positive hard cap. */
   monthlyTokenLimit: number;
   description: string;
-  /** Price in halalas (1 SAR = 100). 0 = free. */
+  /**
+   * Price in halalas (1 SAR = 100). 0 = free.
+   * For seat-priced org plans this is the *per-seat* monthly price when
+   * `pricePerSeatHalalas` is set; otherwise the flat monthly price.
+   */
   monthlyPriceHalalas: number;
   currency: "SAR";
   interval: "month";
@@ -35,42 +42,85 @@ export interface SubscriptionPlan {
   features: string[];
   /** Optional household / team seat guidance shown in catalog. */
   seatLimit?: number | null;
+  /** Org plans: minimum billable seats. */
+  minSeats?: number | null;
+  /** When set, `monthlyPriceHalalas` is the per-seat price. */
+  pricePerSeatHalalas?: number | null;
+  /** Included DeepSeek model credit in SAR halalas (shared for family/org pools). */
+  includedDeepseekHalalas?: number;
+  /** Included other-model credit in SAR halalas. */
+  includedOtherHalalas?: number;
+  /** Hidden from the in-app catalog but still recognized for old accounts. */
+  legacy?: boolean;
 }
 
-/** Built-in Arrab Studio plans. Limits are total tokens per billing period. */
+/** Built-in Arrab Studio plans. Every plan is hard-capped — no unlimited SKU. */
 export const SUBSCRIPTION_PLANS: Record<SubscriptionPlanId, SubscriptionPlan> = {
   free: {
     id: "free",
     name: "Free",
     audience: "individual",
     monthlyTokenLimit: 100_000,
-    description: "Start a studio, hire your first employee, and feel the product.",
+    description: "Start a studio, hire your first companion, and feel the product.",
     monthlyPriceHalalas: 0,
     currency: "SAR",
     interval: "month",
     badge: null,
-    features: [
-      "1× included usage",
-      "1 AI employee desk",
-      "Web workspace + macOS Studio",
-    ],
+    includedDeepseekHalalas: 0,
+    includedOtherHalalas: 0,
+    features: ["1× included usage", "Desktop Studio", "Hard stop when tokens are used up"],
+  },
+  starter: {
+    id: "starter",
+    name: "Starter",
+    audience: "individual",
+    monthlyTokenLimit: 2_500_000,
+    description: "Daily companions for founders getting started.",
+    monthlyPriceHalalas: 8_000,
+    currency: "SAR",
+    interval: "month",
+    badge: null,
+    includedDeepseekHalalas: 500,
+    includedOtherHalalas: 2_000,
+    features: ["Hard-capped monthly tokens", "Included model credits", "Desktop Studio"],
   },
   pro: {
     id: "pro",
     name: "Pro",
     audience: "individual",
-    monthlyTokenLimit: 2_000_000,
+    monthlyTokenLimit: 10_000_000,
     description: "Daily cowork for founders who live in Arrab.",
-    monthlyPriceHalalas: 4_900,
+    monthlyPriceHalalas: 18_000,
     currency: "SAR",
     interval: "month",
     highlight: true,
     badge: "Most chosen",
+    includedDeepseekHalalas: 1_500,
+    includedOtherHalalas: 6_000,
     features: [
-      "20× included usage",
-      "Unlimited employees & projects",
+      "Larger monthly token pool",
+      "Included DeepSeek + other credits",
       "Priority model routing",
-      "Desktop Studio + testing workspace",
+      "Desktop Studio",
+    ],
+  },
+  max: {
+    id: "max",
+    name: "Max",
+    audience: "individual",
+    monthlyTokenLimit: 25_000_000,
+    description: "Highest individual monthly pool for heavy daily use.",
+    monthlyPriceHalalas: 39_500,
+    currency: "SAR",
+    interval: "month",
+    badge: "Max",
+    includedDeepseekHalalas: 3_000,
+    includedOtherHalalas: 12_000,
+    features: [
+      "Largest individual token pool",
+      "Included DeepSeek + other credits",
+      "Priority routing",
+      "Hard stop when the pool is full",
     ],
   },
   family_free: {
@@ -78,191 +128,208 @@ export const SUBSCRIPTION_PLANS: Record<SubscriptionPlanId, SubscriptionPlan> = 
     name: "Family Free",
     audience: "family",
     monthlyTokenLimit: 100_000,
-    description: "Free family trial — share seats at home and try household companions together.",
+    description: "Free family trial — share seats at home.",
     monthlyPriceHalalas: 0,
     currency: "SAR",
     interval: "month",
     badge: "Trial",
-    seatLimit: 6,
+    seatLimit: 3,
+    includedDeepseekHalalas: 0,
+    includedOtherHalalas: 0,
     features: [
-      "1× shared household usage",
-      "Up to 6 family seats",
-      "Add parents, partners, and kids",
+      "Shared household usage",
+      "Up to 3 family seats",
       "PIN profiles + parental pause",
-      "macOS Studio on every home Mac",
     ],
   },
   family: {
     id: "family",
-    name: "Family",
+    name: "Family 3",
     audience: "family",
-    monthlyTokenLimit: 4_000_000,
-    description: "One shared studio for the household — companions, chats, and desks together.",
-    monthlyPriceHalalas: 7_900,
+    monthlyTokenLimit: 8_000_000,
+    description: "One shared studio for a household of three.",
+    monthlyPriceHalalas: 20_000,
     currency: "SAR",
     interval: "month",
     badge: "Household",
-    seatLimit: 6,
+    seatLimit: 3,
+    includedDeepseekHalalas: 1_500,
+    includedOtherHalalas: 5_000,
     features: [
-      "40× shared household usage",
-      "Up to 6 family seats",
-      "Shared companions & chat history",
-      "Parental-friendly usage overview",
-      "macOS Studio on every home Mac",
+      "Shared tokens & credits across the household",
+      "Up to 3 family seats",
+      "15 SAR DeepSeek + 50 SAR other credits",
+      "Hard pause when the shared pool is full",
     ],
   },
   family_plus: {
     id: "family_plus",
-    name: "Family Plus",
+    name: "Family 5",
     audience: "family",
-    monthlyTokenLimit: 8_000_000,
-    description: "More room for larger households and heavier daily use.",
-    monthlyPriceHalalas: 12_900,
+    monthlyTokenLimit: 15_000_000,
+    description: "More room for larger households.",
+    monthlyPriceHalalas: 30_000,
     currency: "SAR",
     interval: "month",
     highlight: true,
     badge: "Family pick",
-    seatLimit: 10,
+    seatLimit: 5,
+    includedDeepseekHalalas: 2_500,
+    includedOtherHalalas: 8_000,
     features: [
-      "80× shared household usage",
-      "Up to 10 family seats",
-      "Priority routing for every member",
-      "Shared knowledge & memories",
-      "Priority household support",
+      "Shared tokens & credits across the household",
+      "Up to 5 family seats",
+      "25 SAR DeepSeek + 80 SAR other credits",
+      "Hard pause when the shared pool is full",
     ],
   },
-  team: {
-    id: "team",
-    seatLimit: 10,
-    name: "Team",
-    audience: "organization",
-    monthlyTokenLimit: 10_000_000,
-    description: "Multi-agent studios shipping together.",
-    monthlyPriceHalalas: 14_900,
-    currency: "SAR",
-    interval: "month",
-    badge: null,
-    features: [
-      "100× studio usage",
-      "Shared goals, tasks, and memory",
-      "Team chat & cowork rooms",
-      "Usage controls per session",
-      "Priority support",
-    ],
-  },
-  /** Production Business plan — organization shell (Workforce, Live Map, admin). */
   business: {
     id: "business",
-    seatLimit: 25,
     name: "Business",
     audience: "organization",
-    monthlyTokenLimit: 40_000_000,
-    description: "Higher throughput for growing companies.",
-    monthlyPriceHalalas: 74_900,
+    monthlyTokenLimit: 15_000_000,
+    description: "Pooled seats and credits for growing companies.",
+    monthlyPriceHalalas: 40_000,
+    pricePerSeatHalalas: 40_000,
+    minSeats: 10,
+    seatLimit: 10,
     currency: "SAR",
     interval: "month",
     badge: "Growth",
+    // Pooled: 10 SAR DeepSeek + 40 SAR other per seat × 10 seats.
+    includedDeepseekHalalas: 10_000,
+    includedOtherHalalas: 40_000,
     features: [
-      "400× studio usage",
-      "Usage controls & priority support",
-      "Team chat & cowork rooms",
+      "400 SAR per seat · 10 seats",
+      "15M shared monthly tokens",
+      "Pooled DeepSeek + other credits",
       "Workforce ops & Live Map",
+      "Hard stop when the pool is full",
     ],
   },
-  /** Production Enterprise plan — organization shell. */
   enterprise: {
     id: "enterprise",
-    seatLimit: 100,
     name: "Enterprise",
     audience: "organization",
     monthlyTokenLimit: 80_000_000,
-    description: "Largest monthly allowance for production teams.",
-    monthlyPriceHalalas: 129_900,
+    description: "Largest pooled allowance for production teams.",
+    monthlyPriceHalalas: 70_000,
+    pricePerSeatHalalas: 70_000,
+    minSeats: 50,
+    seatLimit: 50,
     currency: "SAR",
     interval: "month",
-    badge: "Scale",
+    badge: "Enterprise",
+    // Pooled: 12 SAR DeepSeek + 70 SAR other per seat × 50 seats.
+    includedDeepseekHalalas: 60_000,
+    includedOtherHalalas: 350_000,
     features: [
-      "800× studio usage",
-      "Dedicated onboarding",
+      "700 SAR per seat · 50 seats",
+      "80M shared monthly tokens",
+      "Pooled DeepSeek + other credits",
       "Workforce ops & Live Map",
-      "Usage controls per session",
+      "Hard stop when the pool is full",
     ],
   },
-  /** Production Solo — individual shell (alias of Pro-class). */
+  /** Legacy — capped individual. */
   solo: {
     id: "solo",
     name: "Solo",
     audience: "individual",
     monthlyTokenLimit: 5_000_000,
-    description: "Best for founders working alone every day.",
+    description: "Legacy individual plan (capped).",
     monthlyPriceHalalas: 11_900,
     currency: "SAR",
     interval: "month",
-    highlight: true,
-    badge: "Best",
-    features: [
-      "Daily companions & studio",
-      "Unlimited employees & projects",
-      "Priority model routing",
-    ],
+    legacy: true,
+    includedDeepseekHalalas: 0,
+    includedOtherHalalas: 0,
+    features: ["Hard-capped monthly tokens", "Desktop Studio"],
   },
-  /** Production Studio — individual shell. */
+  /** Legacy — capped individual. */
   studio: {
     id: "studio",
     name: "Studio",
     audience: "individual",
     monthlyTokenLimit: 12_000_000,
-    description: "More room for multi-project studios.",
+    description: "Legacy individual plan (capped).",
     monthlyPriceHalalas: 24_900,
     currency: "SAR",
     interval: "month",
-    badge: null,
-    features: [
-      "Larger monthly pool",
-      "Priority model routing",
-      "Desktop Studio",
-    ],
+    legacy: true,
+    includedDeepseekHalalas: 0,
+    includedOtherHalalas: 0,
+    features: ["Hard-capped monthly tokens", "Desktop Studio"],
   },
-  /** Legacy plan id kept for existing accounts — always capped (no unlimited SKUs). */
+  /** Legacy — capped organization. */
+  team: {
+    id: "team",
+    seatLimit: 10,
+    minSeats: 1,
+    name: "Team",
+    audience: "organization",
+    monthlyTokenLimit: 10_000_000,
+    description: "Legacy organization plan (capped).",
+    monthlyPriceHalalas: 14_900,
+    currency: "SAR",
+    interval: "month",
+    legacy: true,
+    includedDeepseekHalalas: 0,
+    includedOtherHalalas: 0,
+    features: ["Hard-capped monthly tokens", "Team chat & cowork"],
+  },
+  /** Legacy Scale — capped organization (never unlimited). */
   unlimited: {
     id: "unlimited",
-    seatLimit: 250,
+    seatLimit: 25,
+    minSeats: 1,
     name: "Scale",
     audience: "organization",
     monthlyTokenLimit: 50_000_000,
-    description: "Highest monthly pool for production studios shipping at volume.",
+    description: "Legacy organization plan (hard-capped).",
     monthlyPriceHalalas: 39_900,
     currency: "SAR",
     interval: "month",
-    highlight: true,
-    badge: "Scale",
-    features: [
-      "500× studio usage",
-      "Highest throughput routing",
-      "Dedicated onboarding",
-      "Custom workforce playbooks",
-      "Usage controls per session",
-    ],
+    legacy: true,
+    badge: "Legacy",
+    includedDeepseekHalalas: 0,
+    includedOtherHalalas: 0,
+    features: ["Hard-capped monthly tokens — not unlimited", "Workforce ops"],
   },
 };
 
-/** Redeem codes map to plans (studio billing stub until Stripe). */
+/** Plans shown in the desktop catalog (excludes legacy SKUs). */
+export const LIVE_CATALOG_PLAN_IDS: readonly SubscriptionPlanId[] = [
+  "free",
+  "starter",
+  "pro",
+  "max",
+  "family_free",
+  "family",
+  "family_plus",
+  "business",
+  "enterprise",
+] as const;
+
+/** Redeem codes map to plans (dev / internal builds). */
 export const SUBSCRIPTION_REDEEM_CODES: Record<string, SubscriptionPlanId> = {
   "FREE-ARRAB": "free",
+  "STARTER-ARRAB": "starter",
   "PRO-ARRAB": "pro",
+  "MAX-ARRAB": "max",
   "FAMILY-FREE-ARRAB": "family_free",
   "FAMILY-ARRAB": "family",
   "FAMILY-PLUS-ARRAB": "family_plus",
-  "TEAM-ARRAB": "team",
   "BUSINESS-ARRAB": "business",
   "ENTERPRISE-ARRAB": "enterprise",
+  "TEAM-ARRAB": "team",
   "SOLO-ARRAB": "solo",
   "STUDIO-ARRAB": "studio",
-  "UNLIMITED-ARRAB": "unlimited", // legacy alias → capped Scale
+  "UNLIMITED-ARRAB": "unlimited",
   "SCALE-ARRAB": "unlimited",
 };
 
-/** True for any household plan (Family Free trial, Family, Family Plus). */
+/** True for any household plan (Family Free trial, Family 3, Family 5). */
 export function isFamilyPlanId(
   planId: string | null | undefined,
 ): planId is "family_free" | "family" | "family_plus" {
@@ -271,14 +338,51 @@ export function isFamilyPlanId(
 }
 
 /**
+ * Normalize website / Tap / control-plane plan ids onto the catalog.
+ * `scale` → legacy capped `unlimited`. Never alias individual `studio`/`max` to org.
+ */
+export function normalizePlanId(raw: string | null | undefined): SubscriptionPlanId | null {
+  const id = (raw ?? "").trim().toLowerCase().replace(/-/g, "_");
+  if (!id) return null;
+  if (id === "scale") return "unlimited";
+  if (Object.prototype.hasOwnProperty.call(SUBSCRIPTION_PLANS, id)) {
+    return id as SubscriptionPlanId;
+  }
+  return null;
+}
+
+/** True for live production SKUs (never legacy solo/studio/team/unlimited). */
+export function isLiveCatalogPlanId(
+  planId: string | null | undefined,
+): planId is (typeof LIVE_CATALOG_PLAN_IDS)[number] {
+  const normalized = normalizePlanId(planId);
+  return Boolean(
+    normalized && (LIVE_CATALOG_PLAN_IDS as readonly string[]).includes(normalized),
+  );
+}
+
+/** Control-plane category for a catalog audience (teams → organization shell). */
+export function planCategoryForAudience(audience: PlanAudience): PlanCategory {
+  if (audience === "organization") return "teams";
+  if (audience === "family") return "family";
+  return "individuals";
+}
+
+/**
  * Resolve studio audience from control-plane signals.
- * Prefer planCategory (teams → organization); then known plan ids / names.
+ * Known catalog plan ids are authoritative. Category only fills gaps for unknown ids.
  */
 export function resolvePlanAudience(input: {
   planId?: string | null;
   planCategory?: string | null;
   planName?: string | null;
 }): PlanAudience {
+  const rawId = (input.planId ?? "").trim();
+  const normalized = normalizePlanId(rawId);
+  if (normalized) {
+    return SUBSCRIPTION_PLANS[normalized].audience;
+  }
+
   const cat = (input.planCategory ?? "").trim().toLowerCase();
   if (cat === "teams" || cat === "organization" || cat === "business") {
     return "organization";
@@ -290,11 +394,6 @@ export function resolvePlanAudience(input: {
     return "individual";
   }
 
-  const rawId = (input.planId ?? "").trim();
-  if (rawId && Object.prototype.hasOwnProperty.call(SUBSCRIPTION_PLANS, rawId)) {
-    return SUBSCRIPTION_PLANS[rawId as SubscriptionPlanId].audience;
-  }
-
   const id = rawId.toLowerCase().replace(/_/g, "-");
   if (["team", "business", "enterprise", "scale", "unlimited"].includes(id)) {
     return "organization";
@@ -302,7 +401,6 @@ export function resolvePlanAudience(input: {
   if (["family", "family-plus", "family-free"].includes(id)) {
     return "family";
   }
-  // Include live control-plane aliases (starter / max) still served by api.arrabai.com 0.14.x.
   if (["free", "pro", "solo", "studio", "starter", "max"].includes(id)) {
     return "individual";
   }
@@ -326,9 +424,9 @@ export function resolvePlanAudience(input: {
 
 /** Org employee seats included in a plan. Non-org plans and unknown ids fall back to 8. */
 export function orgSeatLimitForPlan(planId: string | null | undefined): number {
-  const id = (planId ?? "").trim();
-  if (id && Object.prototype.hasOwnProperty.call(SUBSCRIPTION_PLANS, id)) {
-    const plan = SUBSCRIPTION_PLANS[id as SubscriptionPlanId];
+  const normalized = normalizePlanId(planId);
+  if (normalized) {
+    const plan = SUBSCRIPTION_PLANS[normalized];
     if (plan.audience === "organization" && plan.seatLimit) return plan.seatLimit;
   }
   return 8;
@@ -381,17 +479,17 @@ export const TOKEN_TOP_UP_PACKS: Record<TokenTopUpPackId, TokenTopUpPack> = {
 
 /**
  * Custom credit is paid in SAR but metered in tokens like everything else. It converts at the rate of
- * the smallest usage pack (the least generous one): 500,000 tokens for 15 SAR. Previously the credit
- * was recorded and shown but never spent, so a customer could pay and receive nothing.
+ * the smallest usage pack (the least generous one): 500,000 tokens for 15 SAR.
  */
-export const CUSTOM_CREDIT_TOKENS_PER_HALALA = TOKEN_TOP_UP_PACKS.boost_500k.tokens / TOKEN_TOP_UP_PACKS.boost_500k.priceHalalas;
+export const CUSTOM_CREDIT_TOKENS_PER_HALALA =
+  TOKEN_TOP_UP_PACKS.boost_500k.tokens / TOKEN_TOP_UP_PACKS.boost_500k.priceHalalas;
 
 export function tokensForCredit(amountHalalas: number): number {
   return Math.max(0, Math.floor(amountHalalas * CUSTOM_CREDIT_TOKENS_PER_HALALA));
 }
 
 export interface TokenTopUpRecord {
-  /** Moyasar invoice id (or redeem reference) — makes applying a purchase idempotent. */
+  /** Tap charge id (or redeem reference) — makes applying a purchase idempotent. */
   invoiceId: string;
   packId: TokenTopUpPackId | "custom_credit";
   tokens: number;
@@ -468,12 +566,16 @@ export interface StudioAccountRecord {
   /** Custom credit balances. Absent until the first custom top-up. */
   modelCredit?: ModelCreditBalance;
   /**
-   * Paid plan invoices already applied (most recent 100). A paid invoice is single-use: without
-   * this, one payment could be re-confirmed every month to renew a plan for free.
+   * Paid plan invoices / Tap charge ids already applied (most recent 100). A paid charge is
+   * single-use: without this, one payment could be re-confirmed every month to renew for free.
    */
   paidInvoiceIds?: string[];
   /** Signed-in devices. `sessionTokenHash` is kept only so sessions issued before this existed still work. */
   sessions?: AccountSession[];
+  /** TOTP MFA is on for this account owner. */
+  mfaEnabled?: boolean;
+  /** Base32 TOTP secret — never returned on public account shapes. */
+  mfaSecret?: string | null;
 }
 
 /** One signed-in device. Tokens are stored only as hashes. */
@@ -530,6 +632,8 @@ export interface AccountPublic {
   connectedAt: string;
   /** e.g. platform_admin — optional control-plane role. */
   role?: string;
+  /** Whether TOTP MFA is enabled (secret is never exposed). */
+  mfaEnabled?: boolean;
 }
 
 export interface AccountEntitlements {
@@ -539,6 +643,7 @@ export interface AccountEntitlements {
   /** Prefer this over account.planCategory when routing shells. */
   planCategory?: PlanCategory | string;
   subscriptionStatus: SubscriptionStatus | null;
+  /** Hard monthly token cap. Never invent a higher local limit. */
   tokenLimit: number | null;
   tokensUsed: number;
   tokensRemaining: number | null;
@@ -558,15 +663,17 @@ export interface AccountEntitlements {
   planTokenLimit?: number | null;
   /** Usage-pack tokens added for this period. */
   topUpTokens?: number;
-  /** Custom credit for DeepSeek, in halalas. VAT is not included in the purchase price. */
+  /** Custom / included credit for DeepSeek, in halalas. */
   deepseekCreditHalalas?: number;
-  /** Custom credit for every model other than DeepSeek, in halalas. */
+  /** Custom / included credit for every model other than DeepSeek, in halalas. */
   otherCreditHalalas?: number;
   usageLevel?: TokenUsageLevel;
   /** Whether buying a usage pack would unpause (false while a renewal payment is due). */
   canTopUp?: boolean;
   /** Modes the control plane allows (workforce, etc.). */
   allowedModes?: string[];
+  /** Seat limit for family/org plans when the API reports it. */
+  seatLimit?: number | null;
 }
 
 export interface AccountStatusResponse {
@@ -574,4 +681,10 @@ export interface AccountStatusResponse {
   account: AccountPublic | null;
   entitlements: AccountEntitlements;
   plans: SubscriptionPlan[];
+}
+
+/** True when AI send/compose must be blocked from entitlements alone. */
+export function entitlementsBlockAi(entitlements: AccountEntitlements | null | undefined): boolean {
+  if (!entitlements) return false;
+  return Boolean(entitlements.overLimit) || entitlements.pauseMode != null;
 }

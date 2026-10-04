@@ -1,6 +1,6 @@
 # Arrab Testing Workspace (`testingworkspace.arrabai.com`)
 
-Sign-in (email + password every browser session), workspace, **Plans** (Moyasar), and **Download** for Studio installers.
+Sign-in (email + password every browser session), workspace, **Plans** (Tap Payments), and **Download** for Studio installers.
 
 ## Layout
 
@@ -17,9 +17,9 @@ apps/testingworkspace/
 
 Opening `/app` without a session always returns to `/`. Sign-in requires email and password. The session lives in `sessionStorage`, so closing the tab requires signing in again.
 
-## Plans / Moyasar
+## Plans / Tap Payments
 
-Paid plans create a Moyasar invoice and redirect to checkout. Set `MOYASAR_SECRET_KEY` on the API, then restart `arrab-api`. Plan copy and SAR prices live in `packages/shared/src/account.ts` until you send final details.
+Paid plans create a Tap charge and redirect to hosted checkout. Set `TAP_SECRET_KEY` on the API, then restart `arrab-api`. Plan copy and SAR prices live in `packages/shared/src/account.ts` until you send final details.
 
 ## Downloads
 

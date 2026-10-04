@@ -11,9 +11,11 @@ export type Json = Record<string, any>; // eslint-disable-line @typescript-eslin
 
 export type PlanCode =
   | "FREE-ARRAB"
+  | "STARTER-ARRAB"
+  | "PRO-ARRAB"
+  | "MAX-ARRAB"
   | "SOLO-ARRAB"
   | "STUDIO-ARRAB"
-  | "PRO-ARRAB"
   | "FAMILY-FREE-ARRAB"
   | "FAMILY-ARRAB"
   | "FAMILY-PLUS-ARRAB"
@@ -24,9 +26,11 @@ export type PlanCode =
 
 export const PLAN_CODE: Record<string, PlanCode> = {
   free: "FREE-ARRAB",
+  starter: "STARTER-ARRAB",
+  pro: "PRO-ARRAB",
+  max: "MAX-ARRAB",
   solo: "SOLO-ARRAB",
   studio: "STUDIO-ARRAB",
-  pro: "PRO-ARRAB",
   family_free: "FAMILY-FREE-ARRAB",
   family: "FAMILY-ARRAB",
   family_plus: "FAMILY-PLUS-ARRAB",

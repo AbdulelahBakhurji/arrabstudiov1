@@ -23,6 +23,9 @@ import {
   SUBSCRIPTION_PLANS,
   SUBSCRIPTION_REDEEM_CODES,
   brandId,
+  isLiveCatalogPlanId,
+  normalizePlanId,
+  planCategoryForAudience,
   type AccountEntitlements,
   type AccountPublic,
   type AccountStatusResponse,
@@ -39,6 +42,19 @@ import {
   type PollWebAuthResponse,
   type CompleteWebAuthRequest,
 } from "@arrab/shared";
+import { currentRequestActor } from "../../platform/context/request-actor.js";
+import { decryptField, encryptField } from "../../platform/crypto/field-crypto.js";
+import { generateTotpSecret, otpauthUri, verifyTotpCode } from "./totp.js";
+
+/** MFA secrets are stored as `arrab1:` ciphertext; legacy plaintext still verifies. */
+function plainMfaSecret(stored: string | null | undefined): string | null {
+  if (!stored) return null;
+  try {
+    return decryptField(stored);
+  } catch {
+    return null;
+  }
+}
 
 /** Who is signing in — shown in the user's device list so they can recognise and revoke it. */
 export interface SessionMeta {
@@ -141,11 +157,13 @@ function toPublic(account: StudioAccountRecord): AccountPublic {
     email: account.email,
     displayName: account.displayName,
     planId: account.planId,
-    planName: plan.name,
+    planName: plan?.name ?? String(account.planId),
+    planCategory: plan ? planCategoryForAudience(plan.audience) : undefined,
     subscriptionStatus: account.subscriptionStatus,
     periodStart: account.periodStart,
     periodEnd: account.periodEnd,
     connectedAt: account.connectedAt,
+    mfaEnabled: Boolean(account.mfaEnabled),
   };
 }
 
@@ -191,6 +209,25 @@ export class AccountService {
       throw new ValidationError("Paid plans are purchased in Billing. Choose a plan and complete checkout.");
     }
     return planId;
+  }
+
+  /**
+   * Selected live planId always wins over redeem-code aliases (SCALE-ARRAB → unlimited).
+   * Private access codes unlock the plan the user picked — never force Scale.
+   */
+  private resolveSelectedOrRedeemedPlan(input: {
+    planId?: string | null;
+    planCode?: string | null;
+  }): SubscriptionPlanId {
+    const selected = normalizePlanId(input.planId ?? null);
+    if (selected && isLiveCatalogPlanId(selected)) {
+      return selected;
+    }
+    if (input.planCode?.trim()) {
+      const mapped = this.resolveRedeemCode(input.planCode);
+      if (mapped) return mapped;
+    }
+    return "free";
   }
 
   private assertMaySignUp(email: string): void {
@@ -257,6 +294,9 @@ export class AccountService {
 
     const current = await this.ensurePeriod(account);
     const plan = SUBSCRIPTION_PLANS[current.planId];
+    if (!plan) {
+      throw new ValidationError(`Unknown plan on account: ${current.planId}`);
+    }
     const tokensUsed = await this.periodTokensUsed(current.periodStart, current.periodEnd);
     const planTokenLimit = plan.monthlyTokenLimit;
     const topUpTokens = activeTopUpTokens(current);
@@ -268,12 +308,20 @@ export class AccountService {
       current.subscriptionStatus === "past_due" ||
       current.subscriptionStatus === "canceled" ||
       this.clock.isoNow() >= current.periodEnd;
+    const deepseekCreditHalalas =
+      current.modelCredit?.deepseekHalalas ?? plan.includedDeepseekHalalas ?? 0;
+    const otherCreditHalalas =
+      current.modelCredit?.otherHalalas ?? plan.includedOtherHalalas ?? 0;
+    const seatLimit = plan.seatLimit ?? null;
+
+    const planCategory = planCategoryForAudience(plan.audience);
 
     if (paymentDue) {
       return {
         connected: true,
         planId: current.planId,
         planName: plan.name,
+        planCategory,
         subscriptionStatus: current.subscriptionStatus === "canceled" ? "canceled" : "past_due",
         tokenLimit,
         tokensUsed,
@@ -284,8 +332,9 @@ export class AccountService {
         periodEnd: current.periodEnd,
         planTokenLimit,
         topUpTokens,
-        deepseekCreditHalalas: current.modelCredit?.deepseekHalalas ?? 0,
-        otherCreditHalalas: current.modelCredit?.otherHalalas ?? 0,
+        deepseekCreditHalalas,
+        otherCreditHalalas,
+        seatLimit,
         usageLevel: "exhausted",
         canTopUp: false,
       };
@@ -298,6 +347,7 @@ export class AccountService {
       connected: true,
       planId: current.planId,
       planName: plan.name,
+      planCategory,
       subscriptionStatus: freeTier ? "trialing" : current.subscriptionStatus,
       tokenLimit,
       tokensUsed,
@@ -308,19 +358,26 @@ export class AccountService {
       periodEnd: current.periodEnd,
       planTokenLimit,
       topUpTokens,
-      deepseekCreditHalalas: current.modelCredit?.deepseekHalalas ?? 0,
-      otherCreditHalalas: current.modelCredit?.otherHalalas ?? 0,
+      deepseekCreditHalalas,
+      otherCreditHalalas,
+      seatLimit,
       usageLevel: usageLevel(tokensUsed, tokenLimit),
       canTopUp: true,
     };
   }
 
   /** Adds a paid usage pack to the current period. Applying the same invoice twice is a no-op. */
-  async addTopUp(pack: TokenTopUpPack, invoiceId: string): Promise<AccountStatusResponse> {
-    const account = await this.ensurePeriod(await this.requireConnectedAccount());
+  async addTopUp(
+    pack: TokenTopUpPack,
+    invoiceId: string,
+    accountId?: string,
+  ): Promise<AccountStatusResponse> {
+    const account = await this.ensurePeriod(
+      accountId ? await this.requireAccountById(accountId) : await this.requireConnectedAccount(),
+    );
     const existing = account.tokenTopUps ?? [];
     if (existing.some((entry) => entry.invoiceId === invoiceId)) {
-      return this.status();
+      return this.statusFor(account);
     }
     const now = this.clock.isoNow();
     const updated: StudioAccountRecord = {
@@ -339,23 +396,26 @@ export class AccountService {
       updatedAt: now,
     };
     await this.persistence.accounts.upsert(updated);
-    return this.status();
+    return this.statusFor(updated);
   }
 
   /** Adds custom credit: 10% DeepSeek, 60% other models. The same invoice is applied once. */
   async addModelCredit(
     quote: { deepseekHalalas: number; otherHalalas: number; amountHalalas: number },
     invoiceId: string,
+    accountId?: string,
   ): Promise<AccountStatusResponse> {
-    const account = await this.ensurePeriod(await this.requireConnectedAccount());
+    const account = await this.ensurePeriod(
+      accountId ? await this.requireAccountById(accountId) : await this.requireConnectedAccount(),
+    );
     const current = account.modelCredit ?? { deepseekHalalas: 0, otherHalalas: 0, appliedInvoiceIds: [] };
     const applied = current.appliedInvoiceIds ?? [];
     if (applied.includes(invoiceId)) {
-      return this.status();
+      return this.statusFor(account);
     }
     const now = this.clock.isoNow();
     const existingPacks = account.tokenTopUps ?? [];
-    await this.persistence.accounts.upsert({
+    const updated: StudioAccountRecord = {
       ...account,
       modelCredit: {
         deepseekHalalas: current.deepseekHalalas + quote.deepseekHalalas,
@@ -374,8 +434,9 @@ export class AccountService {
         },
       ],
       updatedAt: now,
-    });
-    return this.status();
+    };
+    await this.persistence.accounts.upsert(updated);
+    return this.statusFor(updated);
   }
 
   async statusFor(account: StudioAccountRecord | null): Promise<AccountStatusResponse> {
@@ -389,6 +450,10 @@ export class AccountService {
   }
 
   async status(): Promise<AccountStatusResponse> {
+    const actorId = currentRequestActor().accountId;
+    if (actorId) {
+      return this.statusFor(await this.persistence.accounts.getById(actorId));
+    }
     return this.statusFor(await this.persistence.accounts.get());
   }
 
@@ -544,14 +609,17 @@ export class AccountService {
   async connect(input: ConnectAccountRequest, meta?: SessionMeta): Promise<ConnectAccountResponse> {
     const email = this.validateCredentials(input.email ?? "", input.password ?? "");
     this.assertNewPassword(input.password ?? "");
-    const existing = await this.persistence.accounts.get();
-    if (existing) {
-      throw new ValidationError("An account is already connected. Sign out first.");
+    const byEmail = await this.persistence.accounts.getByEmail(email);
+    if (byEmail) {
+      throw new ValidationError("An account with this email already exists. Sign in instead.");
     }
     this.assertMaySignUp(email);
 
-    // A brand-new account starts clean — never inherit a previous account's connectors or chats.
-    await this.resetAccountScopedData();
+    const existingAccounts = await this.persistence.accounts.list();
+    // First account on an empty studio starts clean; additional tenants share workspace data.
+    if (existingAccounts.length === 0) {
+      await this.resetAccountScopedData();
+    }
     const now = this.clock.isoNow();
     const period = billingPeriod(new Date(now));
     const displayName = input.displayName?.trim() || email.split("@")[0] || "Arrab operator";
@@ -567,6 +635,8 @@ export class AccountService {
       periodEnd: period.end,
       sessionTokenHash: null,
       sessions: [],
+      mfaEnabled: false,
+      mfaSecret: null,
       connectedAt: now,
       createdAt: now,
       updatedAt: now,
@@ -603,12 +673,21 @@ export class AccountService {
 
   async signIn(input: SignInAccountRequest, meta?: SessionMeta): Promise<ConnectAccountResponse> {
     const email = this.validateCredentials(input.email ?? "", input.password ?? "");
-    const account = await this.persistence.accounts.get();
-    const matches = Boolean(account) && account!.email === email;
+    const account = await this.persistence.accounts.getByEmail(email);
     // Always do the scrypt work so a wrong email and a wrong password take the same time.
-    const passwordOk = await verifyPassword(input.password, matches ? account!.passwordHash : DUMMY_PASSWORD_HASH);
-    if (!account || !matches || !passwordOk) {
+    const passwordOk = await verifyPassword(
+      input.password,
+      account ? account.passwordHash : DUMMY_PASSWORD_HASH,
+    );
+    if (!account || !passwordOk) {
       throw new UnauthorizedError("Invalid email or password");
+    }
+    if (account.mfaEnabled) {
+      const code = (input.mfaCode ?? "").trim();
+      const secret = plainMfaSecret(account.mfaSecret);
+      if (!code || !secret || !verifyTotpCode(secret, code)) {
+        throw new UnauthorizedError("Invalid or missing authenticator code");
+      }
     }
 
     const now = this.clock.isoNow();
@@ -628,9 +707,22 @@ export class AccountService {
   }
 
   async requireConnectedAccount(): Promise<StudioAccountRecord> {
+    const actorId = currentRequestActor().accountId;
+    if (actorId) {
+      const byActor = await this.persistence.accounts.getById(actorId);
+      if (byActor) return this.ensurePeriod(byActor);
+    }
     const account = await this.persistence.accounts.get();
     if (!account) {
       throw new UnauthorizedError("Sign in with email and password first");
+    }
+    return this.ensurePeriod(account);
+  }
+
+  async requireAccountById(id: string): Promise<StudioAccountRecord> {
+    const account = await this.persistence.accounts.getById(id);
+    if (!account) {
+      throw new ValidationError("Paid charge does not belong to a known account");
     }
     return this.ensurePeriod(account);
   }
@@ -659,9 +751,9 @@ export class AccountService {
   ): Promise<{ account: StudioAccountRecord; sessionId: string; seatMemberId: string | null } | null> {
     const trimmed = token?.trim() ?? "";
     if (!trimmed) return null;
-    const account = await this.persistence.accounts.get();
-    if (!account) return null;
     const hash = hashSessionToken(trimmed);
+    const account = await this.persistence.accounts.findBySessionTokenHash(hash);
+    if (!account) return null;
     const now = this.clock.isoNow();
 
     let current = account;
@@ -813,7 +905,7 @@ export class AccountService {
 
   /** The signed-in devices of this account (never exposes token hashes). */
   async listSessions(currentSessionId: string | null): Promise<AccountSessionPublic[]> {
-    const account = await this.persistence.accounts.get();
+    const account = await this.requireConnectedAccount();
     const now = this.clock.isoNow();
     return (account?.sessions ?? [])
       .filter((item) => item.expiresAt > now)
@@ -907,18 +999,42 @@ export class AccountService {
   }
 
   /**
+   * Fix mistaken Scale (legacy id `unlimited`) → individual Studio/Solo/Pro.
+   * Website/checkout has routed Individual Studio onto the org Scale SKU; this
+   * lets the owner move onto the plan they meant without a second Tap charge.
+   */
+  async correctMistakenOrgPlan(planId: SubscriptionPlanId): Promise<AccountStatusResponse> {
+    const account = await this.requireConnectedAccount();
+    if (account.planId !== "unlimited") {
+      throw new ValidationError(
+        "This correction only applies when the account is on legacy Scale by mistake. Use Billing to change other plans.",
+      );
+    }
+    if (planId !== "max" && planId !== "pro" && planId !== "starter") {
+      throw new ValidationError("Choose Starter, Pro, or Max as the individual plan.");
+    }
+    return this.applyPlan(planId);
+  }
+
+  /**
    * Apply a plan that was paid for. The invoice is consumed: confirming the same paid invoice again
    * (callback retries, a second tab, or a deliberate replay next month) changes nothing.
    */
-  async applyPaidPlan(planId: SubscriptionPlanId, invoiceId: string): Promise<AccountStatusResponse> {
-    const account = await this.requireConnectedAccount();
+  async applyPaidPlan(
+    planId: SubscriptionPlanId,
+    invoiceId: string,
+    accountId?: string,
+  ): Promise<AccountStatusResponse> {
+    const account = accountId
+      ? await this.requireAccountById(accountId)
+      : await this.requireConnectedAccount();
     const consumed = account.paidInvoiceIds ?? [];
     if (consumed.includes(invoiceId)) {
-      return this.status();
+      return this.statusFor(account);
     }
     const now = this.clock.isoNow();
     const period = billingPeriod(new Date(now));
-    await this.persistence.accounts.upsert({
+    const updated: StudioAccountRecord = {
       ...account,
       planId,
       subscriptionStatus: "active",
@@ -926,14 +1042,81 @@ export class AccountService {
       periodEnd: period.end,
       paidInvoiceIds: [...consumed, invoiceId].slice(-100),
       updatedAt: now,
-    });
-    return this.status();
+    };
+    await this.persistence.accounts.upsert(updated);
+    return this.statusFor(updated);
   }
 
   async disconnect(): Promise<AccountStatusResponse> {
-    await this.resetAccountScopedData();
-    await this.persistence.accounts.delete();
+    const account = await this.requireConnectedAccount();
+    const others = (await this.persistence.accounts.list()).filter((item) => item.id !== account.id);
+    if (others.length === 0) {
+      await this.resetAccountScopedData();
+    }
+    await this.persistence.accounts.deleteById(account.id);
     return this.status();
+  }
+
+  /** Begin MFA setup: returns a new secret + otpauth URI. Does not enable MFA until confirmed. */
+  async beginMfaSetup(): Promise<{ secret: string; otpauthUrl: string }> {
+    const account = await this.requireConnectedAccount();
+    if (account.mfaEnabled) {
+      throw new ValidationError("Authenticator MFA is already enabled");
+    }
+    const secret = generateTotpSecret();
+    await this.persistence.accounts.upsert({
+      ...account,
+      mfaSecret: encryptField(secret),
+      mfaEnabled: false,
+      updatedAt: this.clock.isoNow(),
+    });
+    return {
+      secret,
+      otpauthUrl: otpauthUri({ secret, email: account.email }),
+    };
+  }
+
+  /** Confirm MFA with a valid TOTP code from the pending secret. */
+  async confirmMfaSetup(code: string): Promise<AccountStatusResponse> {
+    const account = await this.requireConnectedAccount();
+    const secret = plainMfaSecret(account.mfaSecret);
+    if (!secret) {
+      throw new ValidationError("Start authenticator setup first");
+    }
+    if (!verifyTotpCode(secret, code ?? "")) {
+      throw new ValidationError("Invalid authenticator code");
+    }
+    const updated = {
+      ...account,
+      mfaEnabled: true,
+      // Re-seal in case a legacy plaintext secret was still on the row.
+      mfaSecret: encryptField(secret),
+      updatedAt: this.clock.isoNow(),
+    };
+    await this.persistence.accounts.upsert(updated);
+    return this.statusFor(updated);
+  }
+
+  /** Turn MFA off after verifying the current password and a valid code. */
+  async disableMfa(input: { password: string; code: string }): Promise<AccountStatusResponse> {
+    const account = await this.requireConnectedAccount();
+    if (!(await verifyPassword(input.password ?? "", account.passwordHash))) {
+      throw new UnauthorizedError("Your current password is not correct");
+    }
+    if (account.mfaEnabled) {
+      const secret = plainMfaSecret(account.mfaSecret);
+      if (!secret || !verifyTotpCode(secret, input.code ?? "")) {
+        throw new ValidationError("Invalid authenticator code");
+      }
+    }
+    const updated = {
+      ...account,
+      mfaEnabled: false,
+      mfaSecret: null,
+      updatedAt: this.clock.isoNow(),
+    };
+    await this.persistence.accounts.upsert(updated);
+    return this.statusFor(updated);
   }
 
   /** End this device's session only; other devices stay signed in. */
@@ -1044,22 +1227,25 @@ export class AccountService {
     const displayName = input.displayName?.trim() || email.split("@")[0] || "Arrab operator";
     const period = billingPeriod(new Date(now));
 
-    let planId: SubscriptionPlanId = "free";
-    if (input.planCode?.trim()) {
+    // Live selected planId wins; planCode alone still applies when no selection.
+    if (input.planCode?.trim() && !isLiveCatalogPlanId(input.planId)) {
       const mapped = this.resolveRedeemCode(input.planCode);
       if (!mapped) {
         throw new ValidationError("Unknown plan code");
       }
-      planId = mapped;
     }
+    const planId = this.resolveSelectedOrRedeemedPlan({
+      planId: input.planId,
+      planCode: input.planCode,
+    });
 
-    const existing = await this.persistence.accounts.get();
+    const existing = await this.persistence.accounts.getByEmail(email);
     let account: StudioAccountRecord;
     let sessionToken = "";
     let refreshToken: string | undefined;
     let accessExpiresAt: string | undefined;
     let accountCreated = false;
-    if (existing && existing.email === email) {
+    if (existing) {
       if (!(await verifyPassword(input.password, existing.passwordHash))) {
         throw new UnauthorizedError("Invalid email or password");
       }
@@ -1077,15 +1263,13 @@ export class AccountService {
       sessionToken = issued.sessionToken;
       refreshToken = issued.refreshToken;
       accessExpiresAt = issued.accessExpiresAt;
-    } else if (existing) {
-      throw new ValidationError(
-        "Another account is already connected on this studio. Sign in with that email and password.",
-      );
     } else {
       this.assertMaySignUp(email);
       this.assertNewPassword(input.password ?? "");
       accountCreated = true;
-      await this.resetAccountScopedData();
+      if ((await this.persistence.accounts.list()).length === 0) {
+        await this.resetAccountScopedData();
+      }
       const issued = this.withNewSession(
         {
           id: brandId(this.ids.next("acc")),
@@ -1099,6 +1283,8 @@ export class AccountService {
           periodEnd: period.end,
           sessionTokenHash: null,
           sessions: [],
+          mfaEnabled: false,
+          mfaSecret: null,
           connectedAt: now,
           createdAt: now,
           updatedAt: now,
@@ -1145,10 +1331,23 @@ export class AccountService {
   }
 
   async activateSubscription(input: ActivateSubscriptionRequest): Promise<AccountStatusResponse> {
-    const planId = this.resolveRedeemCode(input.code);
-    if (!planId) {
+    const fromCode = this.resolveRedeemCode(input.code);
+    if (!fromCode) {
       throw new ValidationError("Unknown subscription code");
     }
+    const selected = normalizePlanId(input.planId ?? null);
+    const legacyAlias =
+      fromCode === "unlimited" ||
+      fromCode === "team" ||
+      fromCode === "solo" ||
+      fromCode === "studio";
+    // Selected live SKU wins over Scale/legacy aliases — never force unlimited.
+    const planId =
+      selected &&
+      isLiveCatalogPlanId(selected) &&
+      (legacyAlias || fromCode === selected || this.options.allowPlanCodes)
+        ? selected
+        : fromCode;
     if (!this.options.allowPlanCodes) {
       // A free-tier code must not be a way around the "free month ended, pay to continue" gate.
       const entitlements = await this.buildEntitlements(await this.requireConnectedAccount());
@@ -1162,10 +1361,7 @@ export class AccountService {
   }
 
   async updateProfile(input: UpdateAccountProfileRequest): Promise<AccountStatusResponse> {
-    const account = await this.persistence.accounts.get();
-    if (!account) {
-      throw new ValidationError("No account connected");
-    }
+    const account = await this.requireConnectedAccount();
     const displayName = input.displayName?.trim();
     if (!displayName) {
       throw new ValidationError("Display name is required");

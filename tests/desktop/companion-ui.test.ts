@@ -11,13 +11,13 @@ import {
   COMPANION_FOCUS_KEY,
   ensureGeneralCompanion,
   forgetEverything,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import {
   resolveAssistantChatTabs,
   writeAssistantChatTabs,
-} from "@/domains/chat/assistant-chat-tabs";
+} from "@/domains/chat/model/assistant-chat-tabs";
 import { writeAccountSession, clearAccountSession } from "@/core/session/account-session";
-import { createCompanionDraftStore } from "@/domains/companions/companion-drafts";
+import { createCompanionDraftStore } from "@/domains/companions/model/drafts";
 
 // Install a DOM before React DOM is imported. Explicit setup also works when
 // this isolated project uses a Vitest runtime from a parent workspace.

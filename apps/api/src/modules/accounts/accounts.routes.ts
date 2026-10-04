@@ -1,4 +1,4 @@
-import type { ChangePasswordRequest, ActivateSubscriptionRequest, ConnectAccountRequest, SignInAccountRequest, StartWebAuthRequest, CompleteWebAuthRequest, VerifyAccountSessionRequest, UpdateAccountProfileRequest } from "@arrab/shared";
+import type { ChangePasswordRequest, ActivateSubscriptionRequest, CorrectAccountPlanRequest, ConnectAccountRequest, SignInAccountRequest, StartWebAuthRequest, CompleteWebAuthRequest, VerifyAccountSessionRequest, UpdateAccountProfileRequest } from "@arrab/shared";
 import { escapeHtml } from "../../platform/http/html-safe.js";
 import { ForbiddenError } from "@arrab/core";
 import type { FastifyInstance, FastifyRequest } from "fastify";
@@ -71,6 +71,24 @@ export function registerAccountsRoutes(app: FastifyInstance, deps: V1Deps, { ass
     return deps.accounts.changePassword(request.body ?? { currentPassword: "", newPassword: "" }, request.sessionId);
   });
 
+  app.post("/v1/account/mfa/setup", async (request) => {
+    assertOwnerSession(request, "Only the account owner can set up authenticator MFA");
+    return deps.accounts.beginMfaSetup();
+  });
+
+  app.post<{ Body: { code?: string } }>("/v1/account/mfa/enable", async (request) => {
+    assertOwnerSession(request, "Only the account owner can enable authenticator MFA");
+    return deps.accounts.confirmMfaSetup(request.body?.code ?? "");
+  });
+
+  app.post<{ Body: { password?: string; code?: string } }>("/v1/account/mfa/disable", async (request) => {
+    assertOwnerSession(request, "Only the account owner can disable authenticator MFA");
+    return deps.accounts.disableMfa({
+      password: request.body?.password ?? "",
+      code: request.body?.code ?? "",
+    });
+  });
+
   app.post("/v1/account/disconnect", async (request) => {
     assertOwnerSession(request, "Only the account owner can remove the account");
     await deps.familyHousehold.clearSeatLock();
@@ -123,6 +141,13 @@ export function registerAccountsRoutes(app: FastifyInstance, deps: V1Deps, { ass
     assertOwnerSession(request, "Only the account owner can change the plan");
     await assertCap(request, "canAdminister", "Only admins can change organization plans");
     return deps.accounts.activateSubscription(request.body ?? { code: "" });
+  });
+
+  /** Owner fix: Scale (org) was applied instead of Solo/Studio/Pro (individual). */
+  app.post<{ Body: CorrectAccountPlanRequest }>("/v1/account/plan/correct", async (request) => {
+    assertOwnerSession(request, "Only the account owner can correct the plan");
+    await assertCap(request, "canAdminister", "Only admins can change organization plans");
+    return deps.accounts.correctMistakenOrgPlan(request.body?.planId ?? "max");
   });
 
   app.patch<{ Body: UpdateAccountProfileRequest }>("/v1/account", async (request) => {

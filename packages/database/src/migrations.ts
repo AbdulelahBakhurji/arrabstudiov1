@@ -765,6 +765,43 @@ create unique index if not exists studio_accounts_id_uidx on studio_accounts (id
 create index if not exists studio_accounts_workspace_idx on studio_accounts (workspace_id);
 `;
 
+/** Owner TOTP MFA (secret stays on the API; desktop never stores it). */
+export const MIGRATION_042_ACCOUNT_MFA = `
+alter table studio_accounts
+  add column if not exists mfa_enabled boolean not null default false;
+alter table studio_accounts
+  add column if not exists mfa_secret text;
+`;
+
+/** Partition connectors + chats by studio account when multiple accounts share a workspace. */
+export const MIGRATION_043_OWNER_ACCOUNT_ISOLATION = `
+alter table connectors
+  add column if not exists owner_account_id text;
+create index if not exists connectors_owner_account_idx
+  on connectors (workspace_id, owner_account_id);
+
+alter table conversations
+  add column if not exists owner_account_id text;
+create index if not exists conversations_owner_account_idx
+  on conversations (workspace_id, owner_account_id);
+`;
+
+export const MIGRATION_044_DOCUMENT_SPACES = `
+create table if not exists document_spaces (
+  workspace_id text primary key references workspaces(id) on delete cascade,
+  updated_at timestamptz not null,
+  document jsonb not null
+);
+`;
+
+export const MIGRATION_045_PROFESSIONAL_WORKSPACE = `
+create table if not exists professional_workspace (
+  workspace_id text primary key references workspaces(id) on delete cascade,
+  updated_at timestamptz not null,
+  document jsonb not null
+);
+`;
+
 export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "001_core", sql: MIGRATION_001_CORE },
   { id: "002_conversations", sql: MIGRATION_002_CONVERSATIONS },
@@ -807,4 +844,8 @@ export const MIGRATIONS: ReadonlyArray<{ id: string; sql: string }> = [
   { id: "039_sync_records", sql: MIGRATION_039_SYNC_RECORDS },
   { id: "040_task_run_lifecycle", sql: MIGRATION_040_TASK_RUN_LIFECYCLE },
   { id: "041_account_plan_and_primary", sql: MIGRATION_041_ACCOUNT_PLAN_AND_PRIMARY },
+  { id: "042_account_mfa", sql: MIGRATION_042_ACCOUNT_MFA },
+  { id: "043_owner_account_isolation", sql: MIGRATION_043_OWNER_ACCOUNT_ISOLATION },
+  { id: "044_document_spaces", sql: MIGRATION_044_DOCUMENT_SPACES },
+  { id: "045_professional_workspace", sql: MIGRATION_045_PROFESSIONAL_WORKSPACE },
 ];

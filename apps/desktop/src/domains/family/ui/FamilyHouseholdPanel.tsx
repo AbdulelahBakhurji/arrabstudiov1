@@ -27,7 +27,7 @@ import {
   updateCompanion,
   useCompanionState,
   type CompanionProfile,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import { PersonAvatar } from "@/domains/companions/ui/CompanionUI";
 import {
   refreshFamilyProfile,

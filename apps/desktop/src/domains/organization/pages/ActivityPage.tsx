@@ -18,8 +18,8 @@ import type {
 } from "@arrab/shared";
 import { Surface } from "@/shared/ui/Surface";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import { isDefaultSoloClone } from "@/domains/companions/agents-bootstrap";
-import { filterLiveWorkforceAgents } from "@/domains/chat/agent-session-policy";
+import { isDefaultSoloClone } from "@/domains/companions/lib/agents-bootstrap";
+import { filterLiveWorkforceAgents } from "@/domains/chat/lib/agent-session-policy";
 import { arrabApi, ApiRequestError } from "@/core/api/api";
 import { isCompanionAgent } from "@/domains/organization/org-chat";
 import {

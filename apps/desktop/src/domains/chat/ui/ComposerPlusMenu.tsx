@@ -29,10 +29,10 @@ import {
   DEFAULT_OLLAMA_BASE,
   fetchOllamaStatus,
   type OllamaStatus,
-} from "@/domains/chat/local-models";
+} from "@/domains/chat/lib/local-models";
 import { markGettingStartedStep } from "@/domains/account/getting-started";
 import { pushToast } from "@/domains/notifications/notify";
-import { ARRAB_PRIMARY_MODEL } from "@/domains/chat/ai-prefs";
+import { ARRAB_PRIMARY_MODEL } from "@/domains/chat/model/ai-prefs";
 import { readPrefs, subscribePrefs, updatePrefs, type StudioPrefs } from "@/shared/lib/prefs";
 import { cn } from "@/shared/lib/utils";
 import { ACCOUNT_EVENT } from "@/core/session/account-session";
@@ -44,7 +44,7 @@ import {
   toggleArmedSkill,
   useArmedSkillIds,
   useSkills,
-} from "@/domains/chat/user-skills";
+} from "@/domains/chat/lib/user-skills";
 
 export type ComposerPlusFeatures = {
   folder?: boolean;

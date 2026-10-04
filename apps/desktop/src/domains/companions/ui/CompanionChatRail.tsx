@@ -3,7 +3,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
-import type { AssistantChatTab } from "@/domains/chat/assistant-chat-tabs";
+import type { AssistantChatTab } from "@/domains/chat/model/assistant-chat-tabs";
 import { cn } from "@/shared/lib/utils";
 
 export type ChatRailMenuAction =

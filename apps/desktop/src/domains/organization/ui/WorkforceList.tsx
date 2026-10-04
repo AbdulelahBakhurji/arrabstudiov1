@@ -2,12 +2,12 @@ import { Check } from "lucide-react";
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { PersonAvatar } from "@/domains/companions/ui/CompanionUI";
 import { useLanguage } from "@/shared/i18n/LanguageProvider";
-import type { AgentSessionPolicy } from "@/domains/chat/agent-session-policy";
+import type { AgentSessionPolicy } from "@/domains/chat/lib/agent-session-policy";
 import {
   getCompanionState,
   liveCompanions,
   type CompanionProfile,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import { cn } from "@/shared/lib/utils";
 
 export type WorkforceListAgent = {

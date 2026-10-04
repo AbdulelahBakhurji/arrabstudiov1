@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   companionRoomKey,
   createCompanionDraftStore,
-} from "../../apps/desktop/src/domains/companions/companion-drafts";
+} from "../../apps/desktop/src/domains/companions/model/drafts";
 
 function memoryStorage() {
   const data = new Map<string, string>();

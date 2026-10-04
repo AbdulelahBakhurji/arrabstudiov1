@@ -30,17 +30,17 @@ import { useTheme } from "@/shared/theme/ThemeProvider";
 import { useRole } from "@/domains/account/roles/RoleProvider";
 import { arrabApi } from "@/core/api/api";
 import { PhotoAvatar } from "@/domains/companions/ui/CompanionFace";
-import { COMPANION_PRESETS, PRESET_HUES, type CompanionPreset } from "@/domains/companions/companion-catalog";
+import { COMPANION_PRESETS, PRESET_HUES, type CompanionPreset } from "@/domains/companions/catalog/catalog";
 import {
   companionPortraitUrl,
   presetPortraitSeed,
   resolveCompanionPortraitSrc,
-} from "@/domains/companions/companion-portrait";
+} from "@/domains/companions/catalog/portrait";
 import {
   addCompanion,
   liveCompanions,
   useCompanionState,
-} from "@/domains/companions/companions";
+} from "@/domains/companions/model/companions";
 import { openExternalUrl } from "@/core/platform/desktop";
 import {
   completeFirstLaunchSetup,

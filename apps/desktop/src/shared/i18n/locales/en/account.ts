@@ -44,7 +44,15 @@ export const accountEn = {
     amAccountId: "Account ID",
     amEmailLabel: "Email",
     amEmailReadonly: "Email is managed at sign-in and cannot be changed here.",
-    amPlanBillingBody: "Your current membership is shown here. Plans are changed on the Arrab website.",
+    amPlanBillingBody:
+      "Your current membership is shown here. Change or renew plans on the Arrab website.",
+    amManagePlansWebsiteOnly:
+      "Plans are managed on the Arrab website — choose, upgrade, or renew there. This app only shows your current plan and usage.",
+    amFixStudioPlan: "Switch to Max (individuals)",
+    amDeepseekCredit: "DeepSeek credit",
+    amOtherCredit: "Other model credit",
+    amSeatsIncluded: "Seats",
+    amPausedUpgradeCta: "Upgrade or renew",
     amUsageBody: "Token budget for chat, cowork, and agent runs this period.",
     amOverLimit: "Over quota — upgrade or wait for the next period.",
     amWithinQuota: "Within your plan limit for this period.",

@@ -12,7 +12,7 @@ import {
   type PresenceResolveRequest,
 } from "@/domains/notifications/agent-presence";
 import { pushToast } from "@/domains/notifications/notify";
-import { isApprovalId } from "@/domains/chat/ask-guard";
+import { isApprovalId } from "@/domains/chat/lib/ask-guard";
 import { isTauriRuntime } from "@/core/platform/terminal";
 
 async function handleResolve(request: PresenceResolveRequest): Promise<void> {

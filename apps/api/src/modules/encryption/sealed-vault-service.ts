@@ -79,6 +79,8 @@ export class SealedVaultService {
       const seatId = await this.familyHousehold.getActiveMemberId();
       if (seatId) return `seat:${seatId}`;
     }
+    const accountId = currentRequestActor().accountId;
+    if (accountId) return `acc:${accountId}`;
     return "owner";
   }
 

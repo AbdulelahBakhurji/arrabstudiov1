@@ -30,7 +30,7 @@ import { useTheme } from "@/shared/theme/ThemeProvider";
 import { arrabApi } from "@/core/api/api";
 import { clearAccountSession, initialsFromName } from "@/core/session/account-session";
 import { openExternalUrl } from "@/core/platform/desktop";
-import { useProfilePhoto } from "@/domains/companions/profile-photo";
+import { useProfilePhoto } from "@/domains/companions/lib/profile-photo";
 import { pushToast } from "@/domains/notifications/notify";
 import { useSignedInAccount } from "@/domains/account/use-signed-in-account";
 import { clearGuestLocalMode, isGuestLocalMode } from "@/core/session/guest-mode";
@@ -236,7 +236,7 @@ export function AccountMenu({ onOpenPalette }: { onOpenPalette: () => void }) {
                       {t("amUsage")}
                     </span>
                     <span className="acm-usage-value">
-                      {limit ? `${pct}%` : t("unlimitedTokens")}
+                      {limit ? `${pct}%` : "—"}
                     </span>
                   </span>
                   {limit ? (

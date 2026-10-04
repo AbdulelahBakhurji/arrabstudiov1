@@ -63,7 +63,8 @@ export const commonEn = {
     amTokenUtilization: "Usage",
     amApiEndpoint: "Connection",
     amConnectionManaged: "Managed by Arrab",
-    amBilledViaMoyasar: "Paid via Moyasar",
+    amPaymentLabel: "Payment",
+    amBilledViaTap: "Secure checkout",
     amOpenCheckout: "Open checkout",
     amCheckoutOpening: "Opening checkout…",
     amCheckoutOpened: "Checkout opened",
@@ -1260,4 +1261,8 @@ export const commonEn = {
     opsQueueEmpty: "Queue is clear. Dispatch the next move.",
     opsMetricOpen: "Open",
     opsMetricPriority: "Priority",
+  spacesTitle: "Spaces",
+  spacesBody: "Working documents for your companions — library, editor, and save-from-chat.",
+  professionalDeskTitle: "Professional desk",
+  professionalDeskBody: "Status, approvals, routines, skills, memory, reachability, boundaries, and audit for your organization workforce.",
 } as const;
