@@ -748,16 +748,23 @@ alter table studio_accounts
     'starter', 'max'
   ));
 
--- Drop workspace-only primary key so a legacy dual-account workspace can keep both rows.
--- id remains unique; get() selects one primary operator.
+-- Older databases keyed this table by workspace_id. When the key is already
+-- PRIMARY KEY (id), leave it: usage_events references that index.
 do $$
+declare
+  def text;
 begin
-  if exists (
-    select 1 from pg_constraint
-    where conname = 'studio_accounts_pkey'
-      and conrelid = 'studio_accounts'::regclass
-  ) then
+  select pg_get_constraintdef(oid) into def
+  from pg_constraint
+  where conname = 'studio_accounts_pkey'
+    and conrelid = 'studio_accounts'::regclass;
+  if def is not null and def <> 'PRIMARY KEY (id)' then
+    alter table usage_events drop constraint if exists usage_events_account_id_fkey;
     alter table studio_accounts drop constraint studio_accounts_pkey;
+    alter table studio_accounts add constraint studio_accounts_pkey primary key (id);
+    alter table usage_events
+      add constraint usage_events_account_id_fkey
+      foreign key (account_id) references studio_accounts (id) on delete set null;
   end if;
 end $$;
 
