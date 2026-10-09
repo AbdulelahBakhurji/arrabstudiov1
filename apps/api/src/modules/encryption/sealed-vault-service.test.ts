@@ -29,7 +29,10 @@ describe("sealed vault", () => {
     expect((await vault.getKey()).wrappedKey).toBeNull();
     await vault.putKey({ wrappedKey: wrapped });
     await expect(vault.putKey({ wrappedKey: wrapped })).rejects.toThrow(/already set up/);
-    await vault.putKey({ wrappedKey: { ...wrapped, ct: wrapped.ct.slice(4) + "AAAA" }, replace: true });
+    await vault.putKey({
+      wrappedKey: { ...wrapped, ct: wrapped.ct.slice(4) + "AAAA" },
+      replace: true,
+    });
     await expect(
       vault.putKey({ wrappedKey: { ...wrapped, fingerprint: "ffffffffffffffff" }, replace: true }),
     ).rejects.toThrow(/same chat key/);
@@ -57,10 +60,40 @@ describe("sealed vault", () => {
 
   it("rejects non-ciphertext payloads and bad ids", async () => {
     const vault = new SealedVaultService(createInMemoryPersistence("2026-01-01T00:00:00.000Z"));
-    await expect(vault.putChat("x", { sealed: "QUJD".repeat(8) })).rejects.toThrow(/Invalid chat id/);
-    await expect(vault.putChat("chat-12345678", { sealed: "plain text message!!" })).rejects.toThrow(
-      /base64/,
+    await expect(vault.putChat("x", { sealed: "QUJD".repeat(8) })).rejects.toThrow(
+      /Invalid chat id/,
     );
+    await expect(
+      vault.putChat("chat-12345678", { sealed: "plain text message!!" }),
+    ).rejects.toThrow(/base64/);
+  });
+
+  it("issues a one-time phone code for a sealed chat and hides the ticket from sync", async () => {
+    const vault = new SealedVaultService(createInMemoryPersistence("2026-01-01T00:00:00.000Z"));
+    const sealed = "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=";
+    await vault.putChat("chat-12345678", { sealed });
+    const ticket = await vault.createHandoff("chat-12345678");
+    expect(ticket.code).toMatch(/^\d{6}$/);
+    expect(ticket.qr).toBe(`arrab://handoff?code=${ticket.code}`);
+    expect((await vault.listChats()).items.map((chat) => chat.id)).toEqual(["chat-12345678"]);
+
+    const claimed = await vault.claimHandoff(ticket.code);
+    expect(claimed.conversationId).toBe("chat-12345678");
+    expect(claimed.sealed).toBe(sealed);
+    expect(claimed.chats).toEqual([
+      { conversationId: "chat-12345678", sealed, updatedAt: claimed.updatedAt },
+    ]);
+    await expect(vault.claimHandoff(ticket.code)).rejects.toThrow(/not active/);
+
+    await vault.putChat("chat-12345678", { sealed });
+    await vault.putChat("chat-87654321", { sealed });
+    const both = await vault.createHandoff("chat-12345678", ["chat-87654321", "chat-12345678"]);
+    const opened = await vault.claimHandoff(both.code);
+    expect(opened.chats.map((chat) => chat.conversationId)).toEqual([
+      "chat-12345678",
+      "chat-87654321",
+    ]);
+    await expect(vault.putChat("hcode123456", { sealed })).rejects.toThrow(/Invalid chat id/);
   });
 
   it("reset wipes key and chats", async () => {

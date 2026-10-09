@@ -3,11 +3,14 @@
  * their passphrase can unwrap; this service stores and syncs the ciphertext per user
  * and cannot read any of it.
  */
+import { randomInt } from "node:crypto";
 import { ValidationError } from "@arrab/core";
 import type { Persistence } from "@arrab/database";
 import type {
   E2eeChatsResponse,
   E2eeKeyResponse,
+  E2eeClaimHandoffResponse,
+  E2eeHandoffResponse,
   E2eePutChatRequest,
   E2eePutKeyRequest,
   SealedChat,
@@ -17,12 +20,44 @@ import { currentRequestActor } from "../../platform/context/request-actor.js";
 import type { FamilyHouseholdService } from "../family/family-household-service.js";
 
 const CHAT_ID = /^[A-Za-z0-9_-]{8,80}$/;
+/** Short-lived phone tickets live beside sealed chats and never sync as transcripts. */
+const HANDOFF_PREFIX = "hcode";
+const HANDOFF_TTL_MS = 10 * 60 * 1000;
 const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
 /** One sealed chat (ciphertext, base64) may be at most ~6 MB. */
 const MAX_SEALED_CHARS = 6 * 1024 * 1024;
 const MAX_CHATS_PER_USER = 2_000;
 const MIN_PBKDF2_ITERATIONS = 200_000;
 const MAX_PBKDF2_ITERATIONS = 2_000_000;
+
+function isHandoffId(id: string): boolean {
+  return id.startsWith(HANDOFF_PREFIX);
+}
+
+function readHandoff(sealed: string): { conversationIds: string[]; expiresAt: string } | null {
+  try {
+    const parsed = JSON.parse(Buffer.from(sealed, "base64").toString("utf8")) as {
+      conversationId?: unknown;
+      conversationIds?: unknown;
+      expiresAt?: unknown;
+    };
+    if (typeof parsed.expiresAt !== "string" || Number.isNaN(Date.parse(parsed.expiresAt))) {
+      return null;
+    }
+    const raw = Array.isArray(parsed.conversationIds)
+      ? parsed.conversationIds
+      : [parsed.conversationId];
+    const conversationIds = [
+      ...new Set(
+        raw.filter((id): id is string => typeof id === "string" && CHAT_ID.test(id) && !isHandoffId(id)),
+      ),
+    ];
+    if (!conversationIds.length) return null;
+    return { conversationIds, expiresAt: parsed.expiresAt };
+  } catch {
+    return null;
+  }
+}
 
 function assertB64(value: unknown, label: string, min: number, max: number): string {
   if (typeof value !== "string" || value.length < min || value.length > max || !B64.test(value)) {
@@ -107,15 +142,17 @@ export class SealedVaultService {
     const owner = await this.ownerKey();
     const cutoff = since && !Number.isNaN(Date.parse(since)) ? since : null;
     const items = (await this.persistence.sealedVault.listChats(owner)).filter(
-      (chat) => !cutoff || chat.updatedAt > cutoff,
+      (chat) => !isHandoffId(chat.id) && (!cutoff || chat.updatedAt > cutoff),
     );
     // Tombstones are tiny ids; always send them all so no deletion is missed by the cursor.
-    const deleted = (await this.persistence.sealedVault.listDeleted(owner)).map((tomb) => tomb.id);
+    const deleted = (await this.persistence.sealedVault.listDeleted(owner))
+      .map((tomb) => tomb.id)
+      .filter((id) => !isHandoffId(id));
     return { items, deleted };
   }
 
   async putChat(id: string, input: E2eePutChatRequest): Promise<SealedChat> {
-    if (!CHAT_ID.test(id)) throw new ValidationError("Invalid chat id");
+    if (!CHAT_ID.test(id) || isHandoffId(id)) throw new ValidationError("Invalid chat id");
     const owner = await this.ownerKey();
     const sealed = input?.sealed;
     if (typeof sealed !== "string" || sealed.length < 16 || sealed.length > MAX_SEALED_CHARS) {
@@ -141,6 +178,106 @@ export class SealedVaultService {
       new Date().toISOString(),
     );
     return { ok: true };
+  }
+
+  /**
+   * Desktop asks the phone to open one sealed chat. The code is useless without this
+   * account's session, and the transcript itself stays ciphertext.
+   */
+  async createHandoff(conversationId: string, also: string[] = []): Promise<E2eeHandoffResponse> {
+    const conversationIds = [
+      ...new Set(
+        [conversationId, ...also].filter(
+          (id) => CHAT_ID.test(id) && !isHandoffId(id),
+        ),
+      ),
+    ];
+    if (
+      !conversationIds.length ||
+      conversationIds.length > 40 ||
+      conversationIds[0] !== conversationId
+    ) {
+      throw new ValidationError("Invalid chat id");
+    }
+    const owner = await this.ownerKey();
+    const chats = await this.persistence.sealedVault.listChats(owner);
+    if (conversationIds.some((id) => !chats.some((chat) => chat.id === id))) {
+      throw new ValidationError("Seal this chat before sending it to your phone");
+    }
+    await this.dropExpiredHandoffs(owner, chats);
+    const fresh = await this.persistence.sealedVault.listChats(owner);
+    const wanted = new Set(conversationIds);
+    for (const chat of fresh) {
+      if (!isHandoffId(chat.id)) continue;
+      const ticket = readHandoff(chat.sealed);
+      if (ticket?.conversationIds.some((id) => wanted.has(id))) {
+        await this.persistence.sealedVault.deleteChat(owner, chat.id, new Date().toISOString());
+      }
+    }
+    const code = await this.mintCode(owner);
+    const expiresAt = new Date(Date.now() + HANDOFF_TTL_MS).toISOString();
+    const sealed = Buffer.from(
+      JSON.stringify({ conversationId, conversationIds, expiresAt }),
+      "utf8",
+    ).toString("base64");
+    await this.persistence.sealedVault.putChat(owner, {
+      id: `${HANDOFF_PREFIX}${code}`,
+      sealed,
+      updatedAt: new Date().toISOString(),
+    });
+    return { code, expiresAt, qr: `arrab://handoff?code=${code}` };
+  }
+
+  /** Phone claims the ticket once. A wrong account never sees another account's code. */
+  async claimHandoff(code: string): Promise<E2eeClaimHandoffResponse> {
+    const clean = String(code ?? "").replace(/\D/g, "");
+    if (!/^\d{6}$/.test(clean)) throw new ValidationError("Enter the 6-digit code");
+    const owner = await this.ownerKey();
+    const chats = await this.persistence.sealedVault.listChats(owner);
+    const ticketRow = chats.find((chat) => chat.id === `${HANDOFF_PREFIX}${clean}`);
+    if (!ticketRow) throw new ValidationError("That code is not active");
+    const ticket = readHandoff(ticketRow.sealed);
+    const now = new Date().toISOString();
+    if (!ticket || ticket.expiresAt <= now) {
+      await this.persistence.sealedVault.deleteChat(owner, ticketRow.id, now);
+      throw new ValidationError("That code expired");
+    }
+    const claimed = ticket.conversationIds
+      .map((id) => chats.find((item) => item.id === id))
+      .filter((item): item is SealedChat => Boolean(item))
+      .map((item) => ({
+        conversationId: item.id,
+        sealed: item.sealed,
+        updatedAt: item.updatedAt,
+      }));
+    await this.persistence.sealedVault.deleteChat(owner, ticketRow.id, now);
+    const first = claimed[0];
+    if (!first) throw new ValidationError("That encrypted chat is gone");
+    return { ...first, chats: claimed };
+  }
+
+  private async mintCode(owner: string): Promise<string> {
+    const taken = new Set(
+      (await this.persistence.sealedVault.listChats(owner))
+        .filter((chat) => isHandoffId(chat.id))
+        .map((chat) => chat.id.slice(HANDOFF_PREFIX.length)),
+    );
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const code = randomInt(0, 1_000_000).toString().padStart(6, "0");
+      if (!taken.has(code)) return code;
+    }
+    throw new ValidationError("Could not open a phone code. Try again.");
+  }
+
+  private async dropExpiredHandoffs(owner: string, chats: SealedChat[]): Promise<void> {
+    const now = new Date().toISOString();
+    for (const chat of chats) {
+      if (!isHandoffId(chat.id)) continue;
+      const ticket = readHandoff(chat.sealed);
+      if (!ticket || ticket.expiresAt <= now) {
+        await this.persistence.sealedVault.deleteChat(owner, chat.id, now);
+      }
+    }
   }
 
   /** Account removed or replaced: nobody inherits the previous account's ciphertext. */

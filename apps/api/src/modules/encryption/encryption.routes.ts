@@ -1,4 +1,9 @@
-import type { E2eePutKeyRequest, E2eePutChatRequest } from "@arrab/shared";
+import type {
+  E2eeClaimHandoffRequest,
+  E2eeCreateHandoffRequest,
+  E2eePutKeyRequest,
+  E2eePutChatRequest,
+} from "@arrab/shared";
 import type { FastifyInstance } from "fastify";
 import type { V1Deps } from "../../http/deps.js";
 
@@ -25,5 +30,17 @@ export function registerEncryptionRoutes(app: FastifyInstance, deps: V1Deps): vo
 
   app.delete<{ Params: { id: string } }>("/v1/e2ee/chats/:id", async (request) =>
     deps.sealedVault.deleteChat(request.params.id),
+  );
+
+  app.post<{ Body: E2eeCreateHandoffRequest }>("/v1/e2ee/handoffs", async (request) => {
+    const ids = Array.isArray(request.body?.conversationIds)
+      ? request.body.conversationIds.map((id) => String(id))
+      : [];
+    const primary = String(request.body?.conversationId ?? ids[0] ?? "");
+    return deps.sealedVault.createHandoff(primary, ids);
+  });
+
+  app.post<{ Body: E2eeClaimHandoffRequest }>("/v1/e2ee/handoffs/claim", async (request) =>
+    deps.sealedVault.claimHandoff(String(request.body?.code ?? "")),
   );
 }

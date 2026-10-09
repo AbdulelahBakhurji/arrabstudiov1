@@ -170,8 +170,17 @@ export interface CreateConversationRequest {
   visibility?: "private" | "department" | "workspace";
 }
 
+/** Longest chat message the API accepts (characters). Clients check it before sending. */
+export const CHAT_MESSAGE_MAX_CHARS = 8000;
+
 export interface SendMessageRequest {
   content: string;
+  /**
+   * Unique id the client gives this send (8–64 of A–Z a–z 0–9 _ -). Sending the same id again —
+   * after a dropped connection — never posts the message twice or runs a second reply: the server
+   * returns the stored reply, or answers 409 REPLY_IN_PROGRESS while the first one is still running.
+   */
+  clientMessageId?: string | null;
   workspaceHint?: WorkspaceHint | null;
   /** Mid-session override; persists on the conversation. */
   spend?: SessionSpendSettings;
@@ -617,7 +626,12 @@ export interface UsageSummaryResponse {
     outputTokens: number;
     events: number;
   };
-  byProvider: Array<{ providerId: string; inputTokens: number; outputTokens: number; events: number }>;
+  byProvider: Array<{
+    providerId: string;
+    inputTokens: number;
+    outputTokens: number;
+    events: number;
+  }>;
   byAgent: Array<{
     agentId: string | null;
     inputTokens: number;
@@ -713,6 +727,9 @@ export interface PollWebAuthResponse {
   account?: AccountPublic;
   entitlements?: AccountEntitlements;
   sessionToken?: string;
+  /** Present when the client asked for refresh rotation (`X-Arrab-Refresh: 1`) when it started sign-in. */
+  refreshToken?: string;
+  accessExpiresAt?: string;
   message?: string;
   /** True when the completed handoff created a new account. */
   accountCreated?: boolean;
@@ -724,6 +741,8 @@ export interface CompleteWebAuthRequest {
   /** Required — website and desktop linking always collect a password. */
   password: string;
   displayName?: string;
+  /** Authenticator code — required when the account has MFA on (same rule as /sign-in). */
+  mfaCode?: string | null;
   /** Optional plan redeem code applied on first web sign-in. */
   planCode?: string | null;
   /**
@@ -944,7 +963,6 @@ export interface ResolveApprovalRequest {
   toolResultAttestation?: string | null;
 }
 
-
 /**
  * Zero-knowledge chat vault. The server stores only ciphertext: a passphrase-wrapped
  * chat key and AES-GCM sealed transcripts. It can never decrypt either.
@@ -990,4 +1008,41 @@ export interface E2eeChatsResponse {
 /** PUT /v1/e2ee/chats/:id */
 export interface E2eePutChatRequest {
   sealed: string;
+}
+
+/**
+ * One-time ticket so another signed-in device on this account can pull a sealed chat.
+ * The server stores only the conversation id and expiry — the transcript stays ciphertext.
+ */
+export interface E2eeHandoffResponse {
+  /** Six digits, shown on desktop and typed or scanned on the phone. */
+  code: string;
+  expiresAt: string;
+  /** `arrab://handoff?code=######` — same account session still required to claim. */
+  qr: string;
+}
+
+/** POST /v1/e2ee/handoffs */
+export interface E2eeCreateHandoffRequest {
+  /** Newest selected chat. Kept so older clients still name one conversation. */
+  conversationId: string;
+  /** Every chat the desktop sealed for this code, including `conversationId`. */
+  conversationIds?: string[];
+}
+
+/** POST /v1/e2ee/handoffs/claim */
+export interface E2eeClaimHandoffRequest {
+  code: string;
+}
+
+export interface E2eeClaimedChat {
+  conversationId: string;
+  /** Same AES-GCM envelope as GET /v1/e2ee/chats. */
+  sealed: string;
+  updatedAt: string;
+}
+
+export interface E2eeClaimHandoffResponse extends E2eeClaimedChat {
+  /** Every chat named by the code, newest first. `conversationId` repeats the first. */
+  chats: E2eeClaimedChat[];
 }
